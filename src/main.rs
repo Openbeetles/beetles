@@ -97,6 +97,20 @@ const DISPLAY_LIFECYCLE_OWNER: &str = "display";
 
 type CapabilityPackageTextProvider = Arc<dyn Fn(&str, usize) -> Option<String> + Send + Sync>;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AgentHttpOpenFailureAction {
+    RetryAfterWifiRecovery,
+    RestartRuntime,
+}
+
+fn agent_http_open_failure_action(error: &beetle::Error) -> AgentHttpOpenFailureAction {
+    if error.stage() == "wifi_not_ready" {
+        AgentHttpOpenFailureAction::RetryAfterWifiRecovery
+    } else {
+        AgentHttpOpenFailureAction::RestartRuntime
+    }
+}
+
 struct VoiceEventChannel {
     speak_capable: bool,
     tx: std::sync::mpsc::SyncSender<beetle::audio::voice_session::VoiceEvent>,
@@ -692,6 +706,29 @@ mod tests {
         .expect_err("spawn should fail");
 
         assert_eq!(error.stage(), "synthetic_spawn");
+    }
+
+    #[test]
+    fn agent_http_open_wifi_not_ready_retries_without_runtime_restart() {
+        let error = beetle::Error::config(
+            "wifi_not_ready",
+            "STA outbound network is not ready for HTTP client creation",
+        );
+
+        assert_eq!(
+            super::agent_http_open_failure_action(&error),
+            super::AgentHttpOpenFailureAction::RetryAfterWifiRecovery
+        );
+    }
+
+    #[test]
+    fn agent_http_open_non_wifi_error_still_restarts_runtime() {
+        let error = beetle::Error::config("llm_config", "missing model");
+
+        assert_eq!(
+            super::agent_http_open_failure_action(&error),
+            super::AgentHttpOpenFailureAction::RestartRuntime
+        );
     }
 
     #[test]
@@ -4006,22 +4043,36 @@ fn start_agent_plane(
         agent_plan.core,
         agent_plan.role,
         move || {
-            let mut agent_http = match agent_network.open_http_client(HttpClientClass::Interactive)
-            {
-                Ok(client) => client,
-                Err(error) => {
-                    log::error!(
-                        "[{}] agent_loop open interactive HTTP client failed: {}",
-                        tag,
-                        error
-                    );
-                    beetle::state::set_last_error(&error);
-                    beetle::runtime::request_restart_with_continuity_flush(
-                        Arc::clone(&agent_platform),
-                        None,
-                        "agent_loop_http_init_failed",
-                    );
-                    return;
+            let mut agent_http = loop {
+                match agent_network.open_http_client(HttpClientClass::Interactive) {
+                    Ok(client) => break client,
+                    Err(error) => match agent_http_open_failure_action(&error) {
+                        AgentHttpOpenFailureAction::RetryAfterWifiRecovery => {
+                            log::warn!(
+                                "[{}] agent_loop waiting for WiFi before opening interactive HTTP client: {}",
+                                tag,
+                                error
+                            );
+                            beetle::state::set_last_error(&error);
+                            beetle::platform::task_wdt::feed_current_task();
+                            std::thread::sleep(std::time::Duration::from_secs(5));
+                            beetle::platform::task_wdt::feed_current_task();
+                        }
+                        AgentHttpOpenFailureAction::RestartRuntime => {
+                            log::error!(
+                                "[{}] agent_loop open interactive HTTP client failed: {}",
+                                tag,
+                                error
+                            );
+                            beetle::state::set_last_error(&error);
+                            beetle::runtime::request_restart_with_continuity_flush(
+                                Arc::clone(&agent_platform),
+                                None,
+                                "agent_loop_http_init_failed",
+                            );
+                            return;
+                        }
+                    },
                 }
             };
             log::info!("[{}] agent_loop running on Core1 thread", tag);

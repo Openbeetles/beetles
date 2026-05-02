@@ -1,8 +1,11 @@
 //! WiFi：SoftAP（配置热点） + 可选 STA（连接用户路由器）。
-//! 初次启动先开 SoftAP；当启用了配置/急救面时，STA 拿到 IP 后也继续保留 SoftAP，
-//! 避免设备在运行期失去用户可达的恢复入口。
+//! 未配置 STA 时启动 SoftAP 配网；已配置 STA 时以 STA-only 进入正常稳态，
+//! 仅在 STA 长时间不可用时临时打开 SoftAP 恢复入口。
 //! 支持通过通道向 WiFi 线程请求扫描，供 GET /api/wifi/scan 使用。
 
+use super::esp_lifecycle::{
+    keep_recovery_softap_after_sta_ip, startup_mode_for, EspWifiStartupMode,
+};
 use crate::config::AppConfig;
 use crate::constants::{WIFI_ESP_CONNECT_MAIN_WAIT_SECS, WIFI_SCAN_TIMEOUT_SECS};
 use crate::error::{Error, Result};
@@ -40,10 +43,6 @@ static WIFI_STA_EXPECTED: AtomicBool = AtomicBool::new(false);
 static WIFI_SOFTAP_READY: AtomicBool = AtomicBool::new(false);
 /// STA 刚拿到 IP 后额外等待一小段时间，再允许外联 DNS/TLS，减少启动瞬间假失败。
 const STA_OUTBOUND_READY_GRACE_SECS: u64 = 3;
-
-fn should_keep_softap_available_for_recovery() -> bool {
-    cfg!(feature = "config_api")
-}
 
 #[derive(Clone)]
 struct StaSoftApConfig {
@@ -164,9 +163,8 @@ impl WifiScan for WifiScanHandle {
     }
 }
 
-/// 启动 WiFi：若配置了 STA，则先开 SoftAP+STA；
-/// 当配置/急救面启用时，STA 真正拿到 IP 后仍保留 SoftAP，确保用户始终可回到恢复入口；
-/// 若未配置 STA，则保持纯 SoftAP。
+/// 启动 WiFi：若配置了 STA，则先以 STA-only 进入正常运行态；STA 长时间不可用时再打开
+/// SoftAP 恢复入口。若未配置 STA，则保持纯 SoftAP。
 /// 返回 `Ok(Some(handle))` 表示 WiFi 驱动已就绪且可请求扫描；STA 失败或超时仍返回 `Some`，
 /// 以便用户连热点改配；`is_wifi_sta_connected()` 反映 STA 是否真正连上。
 pub fn connect(config: &AppConfig) -> Result<Option<WifiScanHandle>> {
@@ -196,14 +194,14 @@ pub fn connect(config: &AppConfig) -> Result<Option<WifiScanHandle>> {
 
     let result = match rx.recv_timeout(Duration::from_secs(WIFI_ESP_CONNECT_MAIN_WAIT_SECS)) {
         Ok(Ok(())) => {
-            if has_sta && should_keep_softap_available_for_recovery() {
+            if has_sta {
                 log::info!(
-                    "[{}] WiFi ready (SoftAP recovery path stays available after STA DHCP)",
+                    "[{}] WiFi ready (STA-only boot; SoftAP recovery opens only if STA remains unavailable)",
                     TAG
                 );
             } else {
                 log::info!(
-                    "[{}] WiFi ready (SoftAP bootstrap active; STA will auto-close AP after DHCP)",
+                    "[{}] WiFi ready (SoftAP bootstrap active; waiting for WiFi credentials)",
                     TAG
                 );
             }
@@ -276,6 +274,7 @@ fn run_scan_loop(
     scan_resp_tx: &mpsc::Sender<ScanResponse>,
     has_sta: bool,
     initial_cooldown: bool,
+    initial_softap_enabled: bool,
     sta_softap_config: Option<&StaSoftApConfig>,
 ) {
     let mut cooldown_until: Option<Instant> = if initial_cooldown {
@@ -286,10 +285,7 @@ fn run_scan_loop(
     let mut sta_link_miss_count = 0u8;
     let mut next_sta_poll = Instant::now();
     let mut sta_ip_stable_since: Option<Instant> = None;
-    // Mixed mode starts with SoftAP enabled whenever STA is configured.
-    // The previous inverted initialization kept this false, so the auto-close
-    // branch never ran even after STA acquired a DHCP lease.
-    let mut softap_enabled = true;
+    let mut softap_enabled = initial_softap_enabled;
 
     loop {
         crate::platform::task_wdt::feed_current_task();
@@ -378,7 +374,7 @@ fn poll_sta_link(
         if *softap_enabled {
             let ready_to_disable =
                 stable_since.elapsed() >= Duration::from_millis(STA_SOFTAP_DISABLE_GRACE_MS);
-            if ready_to_disable && !should_keep_softap_available_for_recovery() {
+            if ready_to_disable && !keep_recovery_softap_after_sta_ip() {
                 if let Some(config) = sta_softap_config {
                     if let Err(e) = set_softap_enabled(wifi, config, softap_enabled, false) {
                         log::warn!(
@@ -543,10 +539,12 @@ fn set_softap_enabled(
         if let Err(e) = crate::platform::softap_ip::set_softap_ip() {
             log::warn!("[{}] SoftAP IP set failed after restore: {}", TAG, e);
         }
+        WIFI_SOFTAP_READY.store(true, Ordering::Relaxed);
         log::info!("[{}] SoftAP restored because STA is unavailable", TAG);
     } else {
+        WIFI_SOFTAP_READY.store(false, Ordering::Relaxed);
         log::info!(
-            "[{}] STA obtained local IP; SoftAP stopped to free WiFi SRAM",
+            "[{}] STA obtained local IP; recovery SoftAP stopped for STA-only steady state",
             TAG
         );
     }
@@ -676,7 +674,15 @@ fn do_connect(
         WIFI_SOFTAP_READY.store(true, Ordering::Relaxed);
         log::info!("[{}] SoftAP started (SSID: {})", TAG, SOFTAP_SSID);
         let _ = result_tx.send(Ok(()));
-        run_scan_loop(&mut wifi, &scan_req_rx, &scan_resp_tx, false, false, None);
+        run_scan_loop(
+            &mut wifi,
+            &scan_req_rx,
+            &scan_resp_tx,
+            false,
+            false,
+            true,
+            None,
+        );
         return;
     }
 
@@ -723,8 +729,15 @@ fn do_connect(
         ap: ap_config_mixed.clone(),
     };
 
+    let startup_mode = startup_mode_for(true);
+    let initial_configuration = match startup_mode {
+        EspWifiStartupMode::StaOnly => Configuration::Client(sta_config.clone()),
+        EspWifiStartupMode::SoftApOnly => Configuration::AccessPoint(ap_config_mixed.clone()),
+    };
+    let mut softap_enabled = matches!(startup_mode, EspWifiStartupMode::SoftApOnly);
+
     if let Err(e) = wifi
-        .set_configuration(&Configuration::Mixed(sta_config, ap_config_mixed))
+        .set_configuration(&initial_configuration)
         .map_err(|e| Error::Other {
             source: Box::new(e),
             stage: "wifi_set_config",
@@ -745,19 +758,14 @@ fn do_connect(
         esp_idf_svc::sys::esp_wifi_set_ps(0);
     }
 
-    if let Err(e) = crate::platform::softap_ip::set_softap_ip() {
-        log::warn!("[{}] SoftAP IP set failed: {}", TAG, e);
-    }
-    WIFI_SOFTAP_READY.store(true, Ordering::Relaxed);
     log::info!(
-        "[{}] SoftAP started (SSID: {}), connecting STA...",
-        TAG,
-        SOFTAP_SSID
+        "[{}] STA-only WiFi started, connecting STA; SoftAP recovery remains closed until needed",
+        TAG
     );
     crate::state::mark_network_wifi_connecting_attempt();
     if let Err(e) = issue_sta_connect(&mut wifi) {
         log::warn!(
-            "[{}] STA connect failed (SoftAP remains active for provisioning): {}",
+            "[{}] STA connect failed during STA-only boot; opening SoftAP recovery: {}",
             TAG,
             e
         );
@@ -768,6 +776,15 @@ fn do_connect(
             );
         }
         clear_sta_ip_cache();
+        if let Err(restore_error) =
+            set_softap_enabled(&mut wifi, &sta_softap_config, &mut softap_enabled, true)
+        {
+            log::warn!(
+                "[{}] failed to open SoftAP after initial STA connect failure: {}",
+                TAG,
+                restore_error
+            );
+        }
         let _ = result_tx.send(Ok(()));
         run_scan_loop(
             &mut wifi,
@@ -775,6 +792,7 @@ fn do_connect(
             &scan_resp_tx,
             true,
             false,
+            softap_enabled,
             Some(&sta_softap_config),
         );
         return;
@@ -788,6 +806,7 @@ fn do_connect(
         &scan_resp_tx,
         true,
         true,
+        softap_enabled,
         Some(&sta_softap_config),
     );
 }

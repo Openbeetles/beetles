@@ -201,6 +201,20 @@ impl StorageMaintenanceTaskKind {
     }
 }
 
+/// Result of attempting to enqueue governed storage maintenance.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum StorageMaintenanceScheduleResult {
+    Queued,
+    Skipped(&'static str),
+    QueueFull,
+}
+
+impl StorageMaintenanceScheduleResult {
+    pub(crate) fn is_queued(self) -> bool {
+        matches!(self, Self::Queued)
+    }
+}
+
 fn write_back_scheduler() -> &'static WriteBackScheduler {
     static SCHEDULER: OnceLock<WriteBackScheduler> = OnceLock::new();
     SCHEDULER.get_or_init(|| WriteBackScheduler {
@@ -357,14 +371,16 @@ fn schedule_write_back_task(label: &'static str, due_at: Instant, task: WriteBac
             }
             return true;
         }
-        if let Some(delay) = write_back_admission_delay() {
-            record_write_back_deferred(1);
+        if let Some(wait) = write_back_admission_delay() {
+            if wait.record_defer {
+                record_write_back_deferred(1);
+            }
             log::debug!(
                 "[write_back:{}] write-back deferred for {:?} before next quiet drain attempt",
                 label,
-                delay
+                wait.delay
             );
-            schedule_write_back_retry(delay);
+            schedule_write_back_retry(wait.delay);
             return true;
         }
         if ensure_write_back_worker_started_for_pending_jobs() {
@@ -383,16 +399,26 @@ fn schedule_write_back_task(label: &'static str, due_at: Instant, task: WriteBac
 pub(crate) fn schedule_storage_maintenance_task(
     kind: StorageMaintenanceTaskKind,
     task: impl FnOnce() + Send + 'static,
-) -> bool {
-    if kind.requires_periodic_idle_headroom() && !periodic_storage_maintenance_admitted() {
-        record_write_back_deferred(1);
-        log::debug!(
-            "[write_back:{}] periodic storage maintenance skipped by resource admission",
-            kind.label()
-        );
-        return false;
+) -> StorageMaintenanceScheduleResult {
+    if kind.requires_periodic_idle_headroom() {
+        match current_periodic_storage_maintenance_admission() {
+            PeriodicStorageMaintenanceAdmission::Admitted => {}
+            PeriodicStorageMaintenanceAdmission::Deferred(reason) => {
+                record_write_back_deferred(1);
+                log::debug!(
+                    "[write_back:{}] periodic storage maintenance skipped by resource admission reason={}",
+                    kind.label(),
+                    reason
+                );
+                return StorageMaintenanceScheduleResult::Skipped(reason);
+            }
+        }
     }
-    schedule_write_back_task(kind.label(), Instant::now(), Box::new(task))
+    if schedule_write_back_task(kind.label(), Instant::now(), Box::new(task)) {
+        StorageMaintenanceScheduleResult::Queued
+    } else {
+        StorageMaintenanceScheduleResult::QueueFull
+    }
 }
 
 pub(crate) fn schedule_session_gc(
@@ -406,6 +432,7 @@ pub(crate) fn schedule_session_gc(
             _ => {}
         }
     })
+    .is_queued()
 }
 
 pub(crate) fn schedule_due_reminder_sweep<C>(
@@ -425,6 +452,7 @@ where
             &resolve_locale,
         );
     })
+    .is_queued()
 }
 
 pub(crate) fn schedule_due_task_sweep(
@@ -435,6 +463,7 @@ pub(crate) fn schedule_due_task_sweep(
     schedule_storage_maintenance_task(StorageMaintenanceTaskKind::DueTaskSweep, move || {
         crate::task::task_due_tick(task_store.as_ref(), &system_inbound_tx, &resolve_locale);
     })
+    .is_queued()
 }
 
 pub(crate) struct IdleSelfRuntimeTickInputs {
@@ -465,6 +494,7 @@ pub(crate) fn schedule_idle_self_runtime_tick(inputs: IdleSelfRuntimeTickInputs)
             inputs.now_secs,
         );
     })
+    .is_queued()
 }
 
 pub(crate) fn schedule_initiative_tick(
@@ -475,6 +505,7 @@ pub(crate) fn schedule_initiative_tick(
     schedule_storage_maintenance_task(StorageMaintenanceTaskKind::InitiativeTick, move || {
         crate::runtime::initiative_tick(platform.as_ref(), &system_inbound_tx, now_secs);
     })
+    .is_queued()
 }
 
 fn ensure_write_back_worker_started_for_pending_jobs() -> bool {
@@ -570,10 +601,14 @@ fn defer_write_back_jobs_and_stop_worker(mut jobs: Vec<WriteBackJob>, delay: Dur
     }
 }
 
-fn write_back_admission_delay() -> Option<Duration> {
+fn write_back_admission_delay() -> Option<WriteBackAdmissionWait> {
     #[cfg(test)]
     match WRITE_BACK_TEST_ADMISSION_OVERRIDE.load(Ordering::Acquire) {
-        1 => return Some(Duration::from_millis(WRITE_BACK_RETRY_BACKOFF_MS)),
+        1 => {
+            return Some(WriteBackAdmissionWait::deferred(Duration::from_millis(
+                WRITE_BACK_RETRY_BACKOFF_MS,
+            )))
+        }
         2 => return None,
         _ => {}
     }
@@ -584,19 +619,21 @@ fn write_back_admission_delay() -> Option<Duration> {
 fn write_back_admission_delay_for_resource_now(
     resource: &crate::orchestrator::ResourceSnapshot,
     config_active: bool,
-) -> Option<Duration> {
+) -> Option<WriteBackAdmissionWait> {
     let scheduler = write_back_scheduler();
     let mut state = scheduler.state.lock().unwrap_or_else(|e| e.into_inner());
     let now = Instant::now();
+    if let Some(next_attempt_at) = state.next_attempt_at {
+        if next_attempt_at > now {
+            return Some(WriteBackAdmissionWait::waiting(
+                next_attempt_at.saturating_duration_since(now),
+            ));
+        }
+        state.next_attempt_at = None;
+    }
     if let Some(delay) = write_back_admission_delay_for_resource(resource, config_active) {
         state.quiet_started_at = None;
         return Some(record_next_write_back_attempt(&mut state, now, delay));
-    }
-    if let Some(next_attempt_at) = state.next_attempt_at {
-        if next_attempt_at > now {
-            return Some(next_attempt_at.saturating_duration_since(now));
-        }
-        state.next_attempt_at = None;
     }
     let quiet_started_at = *state.quiet_started_at.get_or_insert(now);
     let quiet_for = now.saturating_duration_since(quiet_started_at);
@@ -613,48 +650,22 @@ fn record_next_write_back_attempt(
     state: &mut WriteBackQueueState,
     now: Instant,
     delay: Duration,
-) -> Duration {
+) -> WriteBackAdmissionWait {
     let due_at = now + delay;
     if let Some(existing) = state.next_attempt_at {
         if existing > now && existing <= due_at {
-            return existing.saturating_duration_since(now);
+            return WriteBackAdmissionWait::waiting(existing.saturating_duration_since(now));
         }
     }
     state.next_attempt_at = Some(due_at);
-    delay
+    WriteBackAdmissionWait::deferred(delay)
 }
 
 fn write_back_admission_delay_for_resource(
     resource: &crate::orchestrator::ResourceSnapshot,
     config_active: bool,
 ) -> Option<Duration> {
-    let internal_free_low = resource.heap_free_internal > 0
-        && resource.heap_free_internal < WRITE_BACK_MIN_INTERNAL_FREE_BYTES as u32;
-    let largest_block_low = resource.heap_largest_block_internal > 0
-        && resource.heap_largest_block_internal < WRITE_BACK_MIN_LARGEST_BLOCK_BYTES as u32;
-    if resource.pressure == crate::orchestrator::PressureLevel::Critical
-        || internal_free_low
-        || largest_block_low
-        || resource.storage_contention_risk != crate::orchestrator::StorageContentionRisk::Healthy
-    {
-        return Some(Duration::from_millis(WRITE_BACK_RETRY_BACKOFF_MS));
-    }
-    if write_back_foreground_activity_active(resource, config_active) {
-        return Some(Duration::from_millis(WRITE_BACK_RETRY_BACKOFF_MS));
-    }
-    None
-}
-
-fn write_back_foreground_activity_active(
-    resource: &crate::orchestrator::ResourceSnapshot,
-    config_active: bool,
-) -> bool {
-    // Established WSS sessions are steady-state channel capacity, not short foreground work.
-    config_active
-        || resource.active_http_count > 0
-        || resource.active_agent_tasks > 0
-        || resource.inbound_depth > 0
-        || resource.outbound_depth > 0
+    StorageAdmissionEvaluator::new(resource, config_active).durable_write_back_delay()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -663,20 +674,120 @@ enum PeriodicStorageMaintenanceAdmission {
     Deferred(&'static str),
 }
 
-pub(crate) fn periodic_storage_maintenance_admitted() -> bool {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct WriteBackAdmissionWait {
+    delay: Duration,
+    record_defer: bool,
+}
+
+impl WriteBackAdmissionWait {
+    fn deferred(delay: Duration) -> Self {
+        Self {
+            delay,
+            record_defer: true,
+        }
+    }
+
+    fn waiting(delay: Duration) -> Self {
+        Self {
+            delay,
+            record_defer: false,
+        }
+    }
+}
+
+struct StorageAdmissionEvaluator<'a> {
+    resource: &'a crate::orchestrator::ResourceSnapshot,
+    config_active: bool,
+}
+
+impl<'a> StorageAdmissionEvaluator<'a> {
+    fn new(resource: &'a crate::orchestrator::ResourceSnapshot, config_active: bool) -> Self {
+        Self {
+            resource,
+            config_active,
+        }
+    }
+
+    fn durable_write_back_delay(&self) -> Option<Duration> {
+        if self.resource.pressure == crate::orchestrator::PressureLevel::Critical {
+            return self.durable_delay();
+        }
+        if self.internal_heap_low(WRITE_BACK_MIN_INTERNAL_FREE_BYTES) {
+            return self.durable_delay();
+        }
+        if self.largest_block_low(WRITE_BACK_MIN_LARGEST_BLOCK_BYTES) {
+            return self.durable_delay();
+        }
+        if self.resource.storage_contention_risk
+            != crate::orchestrator::StorageContentionRisk::Healthy
+        {
+            return self.durable_delay();
+        }
+        if self.foreground_activity_active() {
+            return self.durable_delay();
+        }
+        None
+    }
+
+    fn periodic_storage_maintenance_admission(&self) -> PeriodicStorageMaintenanceAdmission {
+        if self.resource.pressure != crate::orchestrator::PressureLevel::Normal {
+            return PeriodicStorageMaintenanceAdmission::Deferred("pressure");
+        }
+        if self.resource.storage_contention_risk
+            != crate::orchestrator::StorageContentionRisk::Healthy
+        {
+            return PeriodicStorageMaintenanceAdmission::Deferred("storage_contention");
+        }
+        if self.foreground_activity_active() {
+            return PeriodicStorageMaintenanceAdmission::Deferred("foreground_activity");
+        }
+        if self.internal_heap_low(PERIODIC_STORAGE_MAINTENANCE_MIN_INTERNAL_BYTES) {
+            return PeriodicStorageMaintenanceAdmission::Deferred("internal_heap_headroom");
+        }
+        if self.largest_block_low(PERIODIC_STORAGE_MAINTENANCE_MIN_LARGEST_BLOCK_BYTES) {
+            return PeriodicStorageMaintenanceAdmission::Deferred("largest_block_headroom");
+        }
+        if self.durable_write_back_delay().is_some() {
+            return PeriodicStorageMaintenanceAdmission::Deferred("write_back_admission");
+        }
+        PeriodicStorageMaintenanceAdmission::Admitted
+    }
+
+    fn durable_delay(&self) -> Option<Duration> {
+        Some(Duration::from_millis(WRITE_BACK_RETRY_BACKOFF_MS))
+    }
+
+    fn foreground_activity_active(&self) -> bool {
+        // Established WSS sessions are steady-state channel capacity, not short foreground work.
+        self.config_active
+            || self.resource.active_http_count > 0
+            || self.resource.active_agent_tasks > 0
+            || self.resource.inbound_depth > 0
+            || self.resource.outbound_depth > 0
+    }
+
+    fn internal_heap_low(&self, floor: usize) -> bool {
+        self.resource.heap_free_internal > 0 && self.resource.heap_free_internal < floor as u32
+    }
+
+    fn largest_block_low(&self, floor: usize) -> bool {
+        self.resource.heap_largest_block_internal > 0
+            && self.resource.heap_largest_block_internal < floor as u32
+    }
+}
+
+fn current_periodic_storage_maintenance_admission() -> PeriodicStorageMaintenanceAdmission {
     #[cfg(test)]
     match PERIODIC_STORAGE_MAINTENANCE_TEST_ADMISSION_OVERRIDE.load(Ordering::Acquire) {
-        1 => return false,
-        2 => return true,
+        1 => return PeriodicStorageMaintenanceAdmission::Deferred("test_override"),
+        2 => return PeriodicStorageMaintenanceAdmission::Admitted,
         _ => {}
     }
     let resource = crate::orchestrator::snapshot();
-    matches!(
-        periodic_storage_maintenance_admission_for_resource(
-            &resource,
-            crate::runtime::config_activity_active()
-        ),
-        PeriodicStorageMaintenanceAdmission::Admitted
+    periodic_storage_maintenance_admission_for_resource(
+        &resource,
+        crate::runtime::config_activity_active(),
     )
 }
 
@@ -684,35 +795,7 @@ fn periodic_storage_maintenance_admission_for_resource(
     resource: &crate::orchestrator::ResourceSnapshot,
     config_active: bool,
 ) -> PeriodicStorageMaintenanceAdmission {
-    if resource.pressure != crate::orchestrator::PressureLevel::Normal {
-        return PeriodicStorageMaintenanceAdmission::Deferred("pressure");
-    }
-    if resource.storage_contention_risk != crate::orchestrator::StorageContentionRisk::Healthy {
-        return PeriodicStorageMaintenanceAdmission::Deferred("storage_contention");
-    }
-    if config_active
-        || resource.active_http_count > 0
-        || resource.active_agent_tasks > 0
-        || resource.inbound_depth > 0
-        || resource.outbound_depth > 0
-    {
-        return PeriodicStorageMaintenanceAdmission::Deferred("foreground_activity");
-    }
-    if resource.heap_free_internal > 0
-        && resource.heap_free_internal < PERIODIC_STORAGE_MAINTENANCE_MIN_INTERNAL_BYTES as u32
-    {
-        return PeriodicStorageMaintenanceAdmission::Deferred("internal_heap_headroom");
-    }
-    if resource.heap_largest_block_internal > 0
-        && resource.heap_largest_block_internal
-            < PERIODIC_STORAGE_MAINTENANCE_MIN_LARGEST_BLOCK_BYTES as u32
-    {
-        return PeriodicStorageMaintenanceAdmission::Deferred("largest_block_headroom");
-    }
-    if write_back_admission_delay_for_resource(resource, config_active).is_some() {
-        return PeriodicStorageMaintenanceAdmission::Deferred("write_back_admission");
-    }
-    PeriodicStorageMaintenanceAdmission::Admitted
+    StorageAdmissionEvaluator::new(resource, config_active).periodic_storage_maintenance_admission()
 }
 
 struct WriteBackLeaseGuard {
@@ -776,12 +859,12 @@ fn write_back_worker_loop() {
             }
         };
 
-        if let Some(delay) = write_back_admission_delay() {
+        if let Some(wait) = write_back_admission_delay() {
             mark_write_back_lifecycle(
                 crate::runtime::PlaneLifecycleState::Draining,
                 "pressure_defer",
             );
-            defer_write_back_jobs_and_stop_worker(due, delay);
+            defer_write_back_jobs_and_stop_worker(due, wait.delay);
             mark_write_back_lifecycle(
                 crate::runtime::PlaneLifecycleState::Unloaded,
                 "pressure_defer",
@@ -872,15 +955,17 @@ pub fn service_write_back_tasks() {
         }
         return;
     }
-    if let Some(delay) = write_back_admission_delay() {
+    if let Some(wait) = write_back_admission_delay() {
         if pending_write_back_jobs() {
-            record_write_back_deferred(1);
+            if wait.record_defer {
+                record_write_back_deferred(1);
+            }
             log::debug!(
                 "[write_back] write-back service deferred for {:?} before next quiet drain attempt",
-                delay
+                wait.delay
             );
             if should_auto_service_write_back_tasks() {
-                schedule_write_back_retry(delay);
+                schedule_write_back_retry(wait.delay);
             }
         }
         return;
@@ -2483,12 +2568,15 @@ mod tests {
         let caller_thread = std::thread::current().id();
         let (tx, rx) = std::sync::mpsc::channel();
 
-        assert!(schedule_storage_maintenance_task(
-            StorageMaintenanceTaskKind::SelfRuntimeIdleTick,
-            move || {
-                tx.send(std::thread::current().id()).unwrap();
-            },
-        ));
+        assert_eq!(
+            schedule_storage_maintenance_task(
+                StorageMaintenanceTaskKind::SelfRuntimeIdleTick,
+                move || {
+                    tx.send(std::thread::current().id()).unwrap();
+                },
+            ),
+            StorageMaintenanceScheduleResult::Queued
+        );
         mark_write_back_quiet_window_stable_for_tests();
         service_write_back_tasks();
         let worker_thread = rx
@@ -3185,12 +3273,16 @@ mod tests {
         reset_write_back_queue_for_tests();
         WRITE_BACK_TEST_AUTO_SERVICE.store(false, Ordering::Release);
 
-        assert!(!schedule_storage_maintenance_task(
-            StorageMaintenanceTaskKind::SelfRuntimeIdleTick,
-            || {}
-        ));
+        assert_eq!(
+            schedule_storage_maintenance_task(
+                StorageMaintenanceTaskKind::SelfRuntimeIdleTick,
+                || {}
+            ),
+            StorageMaintenanceScheduleResult::Skipped("test_override")
+        );
         assert!(
-            schedule_storage_maintenance_task(StorageMaintenanceTaskKind::DueReminderSweep, || {}),
+            schedule_storage_maintenance_task(StorageMaintenanceTaskKind::DueReminderSweep, || {})
+                .is_queued(),
             "due user timer sweeps must still enter the write-back queue; worker start remains separately governed"
         );
 
@@ -3295,6 +3387,49 @@ mod tests {
         );
 
         WRITE_BACK_TEST_AUTO_SERVICE.store(false, Ordering::Release);
+    }
+
+    #[test]
+    fn write_back_service_waits_for_recorded_next_attempt_without_counting_poll_churn() {
+        let _write_back_guard = write_back_test_guard();
+        let (_state_guard, _delayed_guard) =
+            crate::runtime::delayed_task::delayed_task_test_scope();
+        reset_write_back_queue_for_tests();
+        WRITE_BACK_TEST_AUTO_SERVICE.store(false, Ordering::Release);
+        crate::orchestrator::apply_memory_snapshot(crate::platform::MemorySnapshot {
+            heap_free_internal: (WRITE_BACK_MIN_INTERNAL_FREE_BYTES as u32).saturating_sub(1024),
+            heap_min_free_internal: 40 * 1024,
+            heap_free_spiram: 8 * 1024 * 1024,
+            heap_total_spiram: 8 * 1024 * 1024,
+            heap_min_free_spiram: 8 * 1024 * 1024,
+            heap_largest_block_spiram: 8 * 1024 * 1024,
+            heap_largest_block: 128 * 1024,
+        });
+        crate::metrics::record_spiffs_lock_wait_us(0);
+        crate::metrics::record_spiffs_lock_hold_us(0);
+        let deferred_before = snapshot().deferred_total;
+
+        assert!(schedule_write_back_task(
+            "next_attempt_poll_churn_test",
+            Instant::now(),
+            Box::new(|| {})
+        ));
+        service_write_back_tasks();
+        let deferred_after_first_service = snapshot().deferred_total;
+        service_write_back_tasks();
+        let deferred_after_second_service = snapshot().deferred_total;
+
+        assert_eq!(
+            deferred_after_first_service,
+            deferred_before + 1,
+            "first rejected service should record one durable write-back defer"
+        );
+        assert_eq!(
+            deferred_after_second_service, deferred_after_first_service,
+            "agent idle polling before next_attempt_at must not inflate deferred_total"
+        );
+
+        reset_write_back_queue_for_tests();
     }
 
     fn write_back_lifecycle_state() -> Option<crate::runtime::PlaneLifecycleState> {

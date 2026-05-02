@@ -338,7 +338,7 @@ fn run_post_reply_maintenance_job(
             };
         }
     };
-    match embedded_post_reply_admission(
+    match embedded_post_reply_gate_policy(
         config.runtime.memory_system_kind.memory_profile(),
         crate::agent::DetachedJobKind::PostReplyMaintenance,
         &crate::orchestrator::snapshot(),
@@ -346,8 +346,8 @@ fn run_post_reply_maintenance_job(
         Some(payload.first_deferred_at_ms),
         super::now_unix_ms(),
     ) {
-        EmbeddedPostReplyAdmission::Full => {}
-        EmbeddedPostReplyAdmission::RunLightweight => {
+        BackgroundGatePolicy::Run => {}
+        BackgroundGatePolicy::Lightweight => {
             log::info!(
                 "[agent_memory] lightweight post-reply maintenance advanced chat_id={} after bounded deferral",
                 msg.chat_id
@@ -361,7 +361,7 @@ fn run_post_reply_maintenance_job(
             );
             return DetachedJobRunDisposition::Completed;
         }
-        EmbeddedPostReplyAdmission::Defer { reason, delay_ms } => {
+        BackgroundGatePolicy::Defer { reason, delay_ms } => {
             return DetachedJobRunDisposition::RetryLater { reason, delay_ms };
         }
     }
@@ -1290,20 +1290,28 @@ fn append_detached_work_defer_audit(key: &crate::agent::DetachedWorkKey, reason:
     );
 }
 
-fn embedded_post_reply_pressure_defer_reason(
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BackgroundGatePolicy {
+    Run,
+    Lightweight,
+    Defer { reason: &'static str, delay_ms: u64 },
+}
+
+fn embedded_post_reply_gate_applies(
     memory_profile: crate::memory::MemoryProfile,
     kind: crate::agent::DetachedJobKind,
-    pressure: crate::orchestrator::PressureLevel,
-) -> Option<(&'static str, u64)> {
-    if !matches!(memory_profile, crate::memory::MemoryProfile::Embedded)
-        || !matches!(
+) -> bool {
+    matches!(memory_profile, crate::memory::MemoryProfile::Embedded)
+        && matches!(
             kind,
             crate::agent::DetachedJobKind::PostReplyMaintenance
                 | crate::agent::DetachedJobKind::SelfRuntimePostReply
         )
-    {
-        return None;
-    }
+}
+
+fn post_reply_pressure_defer_reason_for_level(
+    pressure: crate::orchestrator::PressureLevel,
+) -> Option<(&'static str, u64)> {
     match pressure {
         crate::orchestrator::PressureLevel::Normal => None,
         crate::orchestrator::PressureLevel::Cautious => Some((
@@ -1317,29 +1325,30 @@ fn embedded_post_reply_pressure_defer_reason(
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum EmbeddedPostReplyAdmission {
-    Full,
-    RunLightweight,
-    Defer { reason: &'static str, delay_ms: u64 },
+fn embedded_post_reply_pressure_policy(
+    memory_profile: crate::memory::MemoryProfile,
+    kind: crate::agent::DetachedJobKind,
+    pressure: crate::orchestrator::PressureLevel,
+) -> BackgroundGatePolicy {
+    if !embedded_post_reply_gate_applies(memory_profile, kind) {
+        return BackgroundGatePolicy::Run;
+    }
+    match post_reply_pressure_defer_reason_for_level(pressure) {
+        Some((reason, delay_ms)) => BackgroundGatePolicy::Defer { reason, delay_ms },
+        None => BackgroundGatePolicy::Run,
+    }
 }
 
-fn embedded_post_reply_admission(
+fn embedded_post_reply_gate_policy(
     memory_profile: crate::memory::MemoryProfile,
     kind: crate::agent::DetachedJobKind,
     resource: &crate::orchestrator::ResourceSnapshot,
     current_background_agent_task_slots: u32,
     first_deferred_at_ms: Option<u64>,
     now_ms: u64,
-) -> EmbeddedPostReplyAdmission {
-    if !matches!(memory_profile, crate::memory::MemoryProfile::Embedded)
-        || !matches!(
-            kind,
-            crate::agent::DetachedJobKind::PostReplyMaintenance
-                | crate::agent::DetachedJobKind::SelfRuntimePostReply
-        )
-    {
-        return EmbeddedPostReplyAdmission::Full;
+) -> BackgroundGatePolicy {
+    if !embedded_post_reply_gate_applies(memory_profile, kind) {
+        return BackgroundGatePolicy::Run;
     }
     if first_deferred_at_ms
         .filter(|first| {
@@ -1347,7 +1356,7 @@ fn embedded_post_reply_admission(
         })
         .is_some()
     {
-        return EmbeddedPostReplyAdmission::RunLightweight;
+        return BackgroundGatePolicy::Lightweight;
     }
     let largest_low = resource.heap_largest_block_internal > 0
         && resource.heap_largest_block_internal
@@ -1360,39 +1369,43 @@ fn embedded_post_reply_admission(
         || other_active_agent_tasks > 0
         || resource.inbound_depth > 0
         || resource.outbound_depth > 0;
-    if !matches!(
-        resource.pressure,
-        crate::orchestrator::PressureLevel::Normal
-    ) || largest_low
+    if post_reply_pressure_defer_reason_for_level(resource.pressure).is_some()
+        || largest_low
         || foreground_busy
     {
-        return EmbeddedPostReplyAdmission::Defer {
+        return BackgroundGatePolicy::Defer {
             reason: "post_reply_resource_window_busy",
             delay_ms: super::BACKGROUND_DEFER_DELAY_MS,
         };
     }
-    EmbeddedPostReplyAdmission::Full
+    BackgroundGatePolicy::Run
 }
 
-fn detached_work_defer_reason(
+fn detached_work_gate_policy(
     config: &AgentLoopConfig,
     key: &crate::agent::DetachedWorkKey,
-) -> Result<Option<(&'static str, Option<u64>)>> {
+) -> Result<BackgroundGatePolicy> {
     if matches!(
         key.kind,
         crate::agent::DetachedJobKind::PostReplyMaintenance
             | crate::agent::DetachedJobKind::SelfRuntimePostReply
     ) {
         if let Some(delay_ms) = super::post_reply_quiet_delay_ms() {
-            return Ok(Some(("post_reply_quiet_window", Some(delay_ms))));
+            return Ok(BackgroundGatePolicy::Defer {
+                reason: "post_reply_quiet_window",
+                delay_ms,
+            });
         }
     }
-    if let Some((reason, delay_ms)) = embedded_post_reply_pressure_defer_reason(
+    match embedded_post_reply_pressure_policy(
         config.runtime.memory_system_kind.memory_profile(),
         key.kind,
         crate::orchestrator::current_pressure(),
     ) {
-        return Ok(Some((reason, Some(delay_ms))));
+        BackgroundGatePolicy::Defer { reason, delay_ms } => {
+            return Ok(BackgroundGatePolicy::Defer { reason, delay_ms });
+        }
+        BackgroundGatePolicy::Run | BackgroundGatePolicy::Lightweight => {}
     }
     let live = crate::agent::live_foreground_state_for_chat(
         config.runtime.active_work_store.as_ref(),
@@ -1400,8 +1413,11 @@ fn detached_work_defer_reason(
     )?;
     Ok(
         match crate::agent::classify_background_job_disposition(key.kind, live) {
-            crate::agent::BackgroundDisposition::RunNow => None,
-            crate::agent::BackgroundDisposition::Defer(reason) => Some((reason, None)),
+            crate::agent::BackgroundDisposition::RunNow => BackgroundGatePolicy::Run,
+            crate::agent::BackgroundDisposition::Defer(reason) => BackgroundGatePolicy::Defer {
+                reason,
+                delay_ms: detached_work_defer_delay_ms(key.kind, reason, None),
+            },
         },
     )
 }
@@ -1520,18 +1536,18 @@ fn run_detached_background_work_wake(
     if record.revision != wake.revision {
         return;
     }
-    match detached_work_defer_reason(config, &wake.key) {
-        Ok(Some((reason, explicit_delay_ms))) => {
+    match detached_work_gate_policy(config, &wake.key) {
+        Ok(BackgroundGatePolicy::Defer { reason, delay_ms }) => {
             reschedule_detached_work(
                 config.runtime.detached_work_store.as_ref(),
                 &wake.key,
                 wake.revision,
                 reason,
-                detached_work_defer_delay_ms(wake.key.kind, reason, explicit_delay_ms),
+                delay_ms,
             );
             return;
         }
-        Ok(None) => {}
+        Ok(BackgroundGatePolicy::Run | BackgroundGatePolicy::Lightweight) => {}
         Err(error) => {
             log::warn!(
                 "[agent] detached foreground gate failed channel={} chat_id={} kind={:?}: {}",
@@ -1662,18 +1678,18 @@ fn run_volatile_background_job(
         );
         return;
     }
-    match detached_work_defer_reason(config, &key) {
-        Ok(Some((reason, explicit_delay_ms))) => {
+    match detached_work_gate_policy(config, &key) {
+        Ok(BackgroundGatePolicy::Defer { reason, delay_ms }) => {
             append_detached_work_defer_audit(&key, reason);
             schedule_volatile_background_retry(
                 system_inbound_tx,
                 msg,
-                detached_work_defer_delay_ms(key.kind, reason, explicit_delay_ms),
+                delay_ms,
                 "volatile_background_defer",
             );
             return;
         }
-        Ok(None) => {}
+        Ok(BackgroundGatePolicy::Run | BackgroundGatePolicy::Lightweight) => {}
         Err(error) => {
             log::warn!(
                 "[agent] volatile background foreground gate failed channel={} chat_id={} kind={:?}: {}",
@@ -2303,36 +2319,42 @@ mod tests {
     #[test]
     fn embedded_post_reply_jobs_wait_for_normal_pressure() {
         assert_eq!(
-            embedded_post_reply_pressure_defer_reason(
+            embedded_post_reply_pressure_policy(
                 crate::memory::MemoryProfile::Embedded,
                 DetachedJobKind::PostReplyMaintenance,
                 crate::orchestrator::PressureLevel::Cautious,
             ),
-            Some(("post_reply_pressure_cautious", BACKGROUND_DEFER_DELAY_MS))
+            BackgroundGatePolicy::Defer {
+                reason: "post_reply_pressure_cautious",
+                delay_ms: BACKGROUND_DEFER_DELAY_MS,
+            }
         );
         assert_eq!(
-            embedded_post_reply_pressure_defer_reason(
+            embedded_post_reply_pressure_policy(
                 crate::memory::MemoryProfile::Embedded,
                 DetachedJobKind::SelfRuntimePostReply,
                 crate::orchestrator::PressureLevel::Critical,
             ),
-            Some(("post_reply_pressure_critical", BACKGROUND_DEFER_DELAY_MS))
+            BackgroundGatePolicy::Defer {
+                reason: "post_reply_pressure_critical",
+                delay_ms: BACKGROUND_DEFER_DELAY_MS,
+            }
         );
         assert_eq!(
-            embedded_post_reply_pressure_defer_reason(
+            embedded_post_reply_pressure_policy(
                 crate::memory::MemoryProfile::Embedded,
                 DetachedJobKind::SelfRuntimePostReply,
                 crate::orchestrator::PressureLevel::Normal,
             ),
-            None
+            BackgroundGatePolicy::Run
         );
         assert_eq!(
-            embedded_post_reply_pressure_defer_reason(
+            embedded_post_reply_pressure_policy(
                 crate::memory::MemoryProfile::Standard,
                 DetachedJobKind::SelfRuntimePostReply,
                 crate::orchestrator::PressureLevel::Cautious,
             ),
-            None
+            BackgroundGatePolicy::Run
         );
     }
 
@@ -2347,7 +2369,7 @@ mod tests {
         let resource = crate::orchestrator::ResourceSnapshot::from_state(&state);
 
         assert!(matches!(
-            embedded_post_reply_admission(
+            embedded_post_reply_gate_policy(
                 crate::memory::MemoryProfile::Embedded,
                 DetachedJobKind::PostReplyMaintenance,
                 &resource,
@@ -2355,14 +2377,14 @@ mod tests {
                 Some(1_000),
                 5_000,
             ),
-            EmbeddedPostReplyAdmission::Defer {
+            BackgroundGatePolicy::Defer {
                 reason: "post_reply_resource_window_busy",
                 ..
             }
         ));
 
         assert_eq!(
-            embedded_post_reply_admission(
+            embedded_post_reply_gate_policy(
                 crate::memory::MemoryProfile::Embedded,
                 DetachedJobKind::PostReplyMaintenance,
                 &resource,
@@ -2370,7 +2392,7 @@ mod tests {
                 Some(1_000),
                 1_000u64.saturating_add(crate::constants::POST_REPLY_BACKGROUND_MAX_DEFER_MS),
             ),
-            EmbeddedPostReplyAdmission::RunLightweight
+            BackgroundGatePolicy::Lightweight
         );
     }
 
@@ -2387,7 +2409,7 @@ mod tests {
         resource.outbound_depth = 0;
 
         assert_eq!(
-            embedded_post_reply_admission(
+            embedded_post_reply_gate_policy(
                 crate::memory::MemoryProfile::Embedded,
                 DetachedJobKind::PostReplyMaintenance,
                 &resource,
@@ -2395,7 +2417,7 @@ mod tests {
                 None,
                 5_000,
             ),
-            EmbeddedPostReplyAdmission::Full
+            BackgroundGatePolicy::Run
         );
     }
 
@@ -2410,7 +2432,7 @@ mod tests {
         resource.outbound_depth = 0;
 
         assert_eq!(
-            embedded_post_reply_admission(
+            embedded_post_reply_gate_policy(
                 crate::memory::MemoryProfile::Embedded,
                 DetachedJobKind::PostReplyMaintenance,
                 &resource,
@@ -2418,7 +2440,7 @@ mod tests {
                 None,
                 5_000,
             ),
-            EmbeddedPostReplyAdmission::Full
+            BackgroundGatePolicy::Run
         );
     }
 
@@ -2435,7 +2457,7 @@ mod tests {
         resource.outbound_depth = 0;
 
         assert!(matches!(
-            embedded_post_reply_admission(
+            embedded_post_reply_gate_policy(
                 crate::memory::MemoryProfile::Embedded,
                 DetachedJobKind::PostReplyMaintenance,
                 &resource,
@@ -2443,7 +2465,7 @@ mod tests {
                 None,
                 5_000,
             ),
-            EmbeddedPostReplyAdmission::Defer {
+            BackgroundGatePolicy::Defer {
                 reason: "post_reply_resource_window_busy",
                 ..
             }

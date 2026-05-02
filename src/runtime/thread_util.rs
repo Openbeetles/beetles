@@ -46,6 +46,39 @@ pub fn thread_plan(name: &str) -> ThreadPlan {
     }
 }
 
+/// Return the declared stack budget for a planned runtime thread name.
+pub fn stack_budget_for_thread(name: &str) -> Option<usize> {
+    match name {
+        "runtime_bootstrap" => Some(crate::util::STACK_ESP_RUNTIME_BOOT),
+        "startup_recovery" => Some(crate::util::STACK_STARTUP_RECOVERY),
+        "config_plane_watch" => Some(crate::util::STACK_CONFIG_PLANE_WATCH),
+        "http_snapshot_exec" => Some(crate::util::STACK_HTTP_SNAPSHOT_WORKER),
+        "http_config_exec" => Some(crate::util::STACK_HTTP_CONFIG_WORKER),
+        "http_diag_exec" => Some(crate::util::STACK_HTTP_DIAG_WORKER),
+        "qq_ws" | "feishu_ws" | "wecom_aibot" | "dingtalk_stream" => {
+            Some(crate::util::STACK_CHANNEL_WS)
+        }
+        "qq_sender" | "tg_sender" | "fs_sender" | "dt_sender" | "wc_sender" | "tg_poll" => {
+            Some(crate::util::STACK_CHANNEL_SENDER)
+        }
+        "os_outbound" => Some(crate::util::STACK_OS_OUTBOUND),
+        "dispatch" => Some(crate::util::STACK_DISPATCH),
+        "agent_loop" => Some(crate::util::STACK_AGENT_LOOP),
+        "display" => Some(crate::util::STACK_DISPLAY),
+        "voice_session" => Some(crate::util::STACK_VOICE_CONTROL),
+        "voice_session_worker" => Some(crate::util::STACK_VOICE_SESSION),
+        "voice_realtime" => Some(crate::util::STACK_VOICE_REALTIME),
+        "voice_realtime_connect" => Some(crate::util::STACK_CHANNEL_WS),
+        "write_back" => Some(crate::runtime::write_back::WRITE_BACK_WORKER_STACK),
+        "wifi_worker" => Some(crate::util::STACK_WIFI_WORKER),
+        "audio_io_worker" => Some(crate::util::STACK_AUDIO_IO_STD_COMPAT),
+        "bg_timer" => Some(crate::util::STACK_BG_TIMER),
+        "sntp" => Some(crate::util::STACK_SNTP_WORKER),
+        "cli_repl" => Some(crate::util::STACK_CLI_REPL),
+        _ => None,
+    }
+}
+
 pub fn spawn_planned<F>(name: &str, stack_size: usize, f: F)
 where
     F: FnOnce() + Send + 'static,
@@ -97,6 +130,10 @@ mod tests {
 
         assert_eq!(plan.core, Some(crate::util::SpawnCore::Core1));
         assert_eq!(plan.role, crate::util::HttpThreadRole::Io);
+        assert_eq!(
+            super::stack_budget_for_thread("http_snapshot_exec"),
+            Some(crate::util::STACK_HTTP_SNAPSHOT_WORKER)
+        );
     }
 
     #[test]
@@ -106,6 +143,7 @@ mod tests {
 
             assert_eq!(plan.core, Some(crate::util::SpawnCore::Core0));
             assert_eq!(plan.role, crate::util::HttpThreadRole::Io);
+            assert!(super::stack_budget_for_thread(name).is_some());
         }
     }
 }

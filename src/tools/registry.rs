@@ -361,7 +361,12 @@ impl ToolRegistry {
         {
             return Cow::Borrowed(args);
         }
-        match normalize_flat_json_like_object(args) {
+        let schema_string_properties = self
+            .tools
+            .get(name)
+            .map(|entry| schema_string_properties(entry.llm_spec.parameters_json.as_ref()))
+            .unwrap_or_default();
+        match normalize_flat_json_like_object(args, &schema_string_properties) {
             Some(normalized) => Cow::Owned(normalized),
             None => Cow::Borrowed(args),
         }
@@ -966,7 +971,10 @@ fn validate_tool_input_protocol(
     Ok(())
 }
 
-fn normalize_flat_json_like_object(args: &str) -> Option<String> {
+fn normalize_flat_json_like_object(
+    args: &str,
+    schema_string_properties: &[String],
+) -> Option<String> {
     let trimmed = args.trim();
     if !trimmed.starts_with('{') || !trimmed.ends_with('}') {
         return None;
@@ -980,10 +988,40 @@ fn normalize_flat_json_like_object(args: &str) -> Option<String> {
     for pair in split_relaxed_object_pairs(inner)? {
         let colon = find_relaxed_pair_colon(pair)?;
         let key = parse_relaxed_object_key(pair[..colon].trim())?;
-        let value = parse_relaxed_object_value(pair[colon + 1..].trim())?;
+        let allow_freeform_string = schema_string_properties
+            .iter()
+            .any(|property| property == &key);
+        let value = parse_relaxed_object_value(pair[colon + 1..].trim(), allow_freeform_string)?;
         object.insert(key, value);
     }
     Some(serde_json::Value::Object(object).to_string())
+}
+
+fn schema_string_properties(parameters_json: &str) -> Vec<String> {
+    let Ok(schema) = serde_json::from_str::<serde_json::Value>(parameters_json) else {
+        return Vec::new();
+    };
+    let Some(properties) = schema
+        .get("properties")
+        .and_then(serde_json::Value::as_object)
+    else {
+        return Vec::new();
+    };
+    properties
+        .iter()
+        .filter(|&(_, property_schema)| schema_property_declares_string(property_schema))
+        .map(|(name, _)| name.to_string())
+        .collect()
+}
+
+fn schema_property_declares_string(property_schema: &serde_json::Value) -> bool {
+    match property_schema.get("type") {
+        Some(serde_json::Value::String(kind)) => kind == "string",
+        Some(serde_json::Value::Array(kinds)) => kinds
+            .iter()
+            .any(|kind| kind.as_str().is_some_and(|kind| kind == "string")),
+        _ => false,
+    }
 }
 
 fn split_relaxed_object_pairs(inner: &str) -> Option<Vec<&str>> {
@@ -1074,7 +1112,10 @@ fn is_relaxed_identifier(raw: &str) -> bool {
         && chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
 }
 
-fn parse_relaxed_object_value(raw: &str) -> Option<serde_json::Value> {
+fn parse_relaxed_object_value(
+    raw: &str,
+    allow_bare_string_with_whitespace: bool,
+) -> Option<serde_json::Value> {
     if raw.is_empty() {
         return None;
     }
@@ -1090,7 +1131,9 @@ fn parse_relaxed_object_value(raw: &str) -> Option<serde_json::Value> {
             return Some(value);
         }
     }
-    is_relaxed_bare_scalar(raw).then(|| serde_json::Value::String(raw.to_string()))
+    (is_relaxed_bare_scalar(raw)
+        || (allow_bare_string_with_whitespace && is_relaxed_bare_string(raw)))
+    .then(|| serde_json::Value::String(raw.to_string()))
 }
 
 fn is_relaxed_bare_scalar(raw: &str) -> bool {
@@ -1099,6 +1142,13 @@ fn is_relaxed_bare_scalar(raw: &str) -> bool {
             && !ch.is_whitespace()
             && !matches!(ch, '{' | '}' | '[' | ']' | ':' | ',' | '"' | '\'')
     })
+}
+
+fn is_relaxed_bare_string(raw: &str) -> bool {
+    raw.chars().any(|ch| !ch.is_whitespace())
+        && raw.chars().all(|ch| {
+            !ch.is_control() && !matches!(ch, '{' | '}' | '[' | ']' | ':' | ',' | '"' | '\'')
+        })
 }
 
 fn normalize_and_validate_tool_outcome(
@@ -3050,6 +3100,22 @@ mod tests {
             value,
             serde_json::json!({"op":"query","kind":"fact","topic":"随手记"})
         );
+    }
+
+    #[test]
+    fn registry_normalizes_schema_declared_freeform_string_values() {
+        let mut registry =
+            ToolRegistry::new().with_tool_protocol_authority(synthetic_protocol_authority(&[(
+                "visible",
+                ToolProtocolContract::structured_object_json(),
+            )]));
+        registry.register(Box::new(VisibleTool));
+
+        let normalized = registry.normalize_llm_tool_args("visible", "{x: conversation history}");
+        let value: serde_json::Value =
+            serde_json::from_str(normalized.as_ref()).expect("normalized args are strict JSON");
+
+        assert_eq!(value, serde_json::json!({"x":"conversation history"}));
     }
 
     #[test]

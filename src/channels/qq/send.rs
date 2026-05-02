@@ -115,11 +115,14 @@ impl QqTurnReservationTracker {
             .by_turn
             .entry(turn_key_for_message(message))
             .or_insert_with(|| QqTurnReservationState {
-                msg_id: pop_msg_id(cache, &message.chat_id)
-                    .or_else(|| message_platform_message_id(message)),
+                msg_id: message_platform_message_id(message)
+                    .or_else(|| pop_msg_id(cache, &message.chat_id)),
                 next_seq: 1,
                 last_used_at_secs: now_secs,
             });
+        if state.msg_id.is_none() {
+            state.msg_id = message_platform_message_id(message);
+        }
         let start = state.next_seq;
         state.next_seq = state.next_seq.saturating_add(normalized_chunk_count as u64);
         state.last_used_at_secs = now_secs;
@@ -1152,6 +1155,63 @@ mod tests {
 
         assert_eq!(reservation.msg_id.as_deref(), Some("msg-1"));
         assert_eq!(pop_msg_id(&cache, "c2c:chat-1"), None);
+    }
+
+    #[test]
+    fn retryable_reservation_prefers_turn_platform_message_id_over_chat_cache() {
+        let cache: QqMsgIdCache = Arc::new(Mutex::new(HashMap::new()));
+        cache_msg_id(&cache, "c2c:chat-1", "msg-b").expect("cache msg_id");
+        let mut message = queued_message(
+            43,
+            "c2c:chat-1",
+            "reply A",
+            Some("req-a"),
+            OutboundKind::Primary,
+        );
+        message.platform_message_id = "msg-a".to_string();
+        let mut active = None;
+        let mut turn_tracker = QqTurnReservationTracker::default();
+
+        let reservation =
+            resolve_retryable_send_reservation(&mut active, &mut turn_tracker, &cache, &message);
+
+        assert_eq!(reservation.msg_id.as_deref(), Some("msg-a"));
+        assert_eq!(pop_msg_id(&cache, "c2c:chat-1").as_deref(), Some("msg-b"));
+    }
+
+    #[test]
+    fn retryable_reservation_fills_missing_anchor_when_primary_follows_supplemental() {
+        let cache: QqMsgIdCache = Arc::new(Mutex::new(HashMap::new()));
+        let supplemental = queued_message(
+            44,
+            "c2c:chat-1",
+            "ack",
+            Some("req-b"),
+            OutboundKind::Supplemental,
+        );
+        let mut primary = queued_message(
+            45,
+            "c2c:chat-1",
+            "reply B",
+            Some("req-b"),
+            OutboundKind::Primary,
+        );
+        primary.platform_message_id = "msg-b".to_string();
+        let mut active = None;
+        let mut turn_tracker = QqTurnReservationTracker::default();
+
+        let first = resolve_retryable_send_reservation(
+            &mut active,
+            &mut turn_tracker,
+            &cache,
+            &supplemental,
+        );
+        release_retryable_send_reservation(&mut active, supplemental.transport_send_id);
+        let second =
+            resolve_retryable_send_reservation(&mut active, &mut turn_tracker, &cache, &primary);
+
+        assert_eq!(first.msg_id, None);
+        assert_eq!(second.msg_id.as_deref(), Some("msg-b"));
     }
 
     #[test]

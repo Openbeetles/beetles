@@ -6431,7 +6431,7 @@ mod tests {
             tool_calls: Some(vec![crate::llm::ToolCall {
                 id: "call_memory".to_string(),
                 name: "memory_search".to_string(),
-                input: "{query: conversation history, limit: 3}".to_string(),
+                input: "{query: conversation history, limit: }".to_string(),
             }]),
         };
         let llm = ObservedSequenceStubLlm {
@@ -6563,7 +6563,7 @@ mod tests {
                     tool_calls: Some(vec![crate::llm::ToolCall {
                         id: "call_memory_bad".to_string(),
                         name: "memory_search".to_string(),
-                        input: "{query: conversation history, limit: 3}".to_string(),
+                        input: "{query: conversation history, limit: }".to_string(),
                     }]),
                 },
                 LlmResponse {

@@ -28,6 +28,7 @@ import type {
   MetricsSnapshotData,
 } from "../api/endpoints/system";
 import { createAsyncState } from "../types/asyncState";
+import { buildSystemLogMetricItems } from "./systemLogsPageModel";
 
 function kvEntries(obj: object | null | undefined) {
   if (!obj) return [];
@@ -131,6 +132,7 @@ export function SystemLogsPage() {
     Boolean(logsState.data.health) ||
     Boolean(logsState.data.metrics) ||
     logsState.data.diagnose.length > 0;
+  const metricItems = buildSystemLogMetricItems(logsState.data.metrics);
   const logsErrorState = splitPageErrorState({
     hasData: hasLogData,
     loading: logsState.loading,
@@ -205,7 +207,12 @@ export function SystemLogsPage() {
                   <Typography variant="caption" sx={TEXT_BODY_TERTIARY_SX}>
                     {t("systemLogs.snapshotMetrics")}
                   </Typography>
-                  <KvList items={kvEntries(logsState.data.metrics)} />
+                  <KvList
+                    items={metricItems.map((item) => [
+                      t(item.labelKey),
+                      item.value,
+                    ])}
+                  />
                 </Box>
               </Box>
             )}

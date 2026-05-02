@@ -205,19 +205,12 @@ pub fn run_bg_timer(ctx: BgTimerContext) -> std::io::Result<crate::util::TaskHan
                     if runtime_mode.action_budget.allow_periodic_maintenance
                         && heartbeat_state.should_schedule_session_gc()
                     {
-                        if crate::runtime::write_back::periodic_storage_maintenance_admitted() {
-                            let scheduled = crate::runtime::write_back::schedule_session_gc(
-                                Arc::clone(&ctx.session_store),
-                                crate::constants::SESSION_GC_MAX_AGE_SECS,
-                            );
-                            if !scheduled {
-                                log::warn!("[{}] session GC deferred by write-back scheduler", TAG);
-                            }
-                        } else {
-                            log::debug!(
-                                "[{}] session GC skipped by periodic storage admission",
-                                TAG
-                            );
+                        let scheduled = crate::runtime::write_back::schedule_session_gc(
+                            Arc::clone(&ctx.session_store),
+                            crate::constants::SESSION_GC_MAX_AGE_SECS,
+                        );
+                        if !scheduled {
+                            log::debug!("[{}] session GC not queued by write-back scheduler", TAG);
                         }
                     }
                     advance_periodic_deadline(&mut next_heartbeat_at, heartbeat_interval, now);
@@ -232,36 +225,27 @@ pub fn run_bg_timer(ctx: BgTimerContext) -> std::io::Result<crate::util::TaskHan
                         &mut cron_state,
                     );
 
-                    let periodic_storage_admitted =
-                        crate::runtime::write_back::periodic_storage_maintenance_admitted();
-                    if periodic_storage_admitted {
-                        let scheduled = crate::runtime::write_back::schedule_idle_self_runtime_tick(
-                            crate::runtime::write_back::IdleSelfRuntimeTickInputs {
-                                system_inbound_tx: ctx.system_inbound_tx.clone(),
-                                detached_work_store: ctx.platform.detached_work_store(),
-                                session_store: Arc::clone(&ctx.session_store),
-                                self_continuity_store: Arc::clone(&ctx.self_continuity_store),
-                                autonomy_strategy_store: Arc::clone(&ctx.autonomy_strategy_store),
-                                self_authored_core_store: Arc::clone(&ctx.self_authored_core_store),
-                                relationship_portfolio_store: Arc::clone(
-                                    &ctx.relationship_portfolio_store,
-                                ),
-                                relationship_topology_store: Arc::clone(
-                                    &ctx.relationship_topology_store,
-                                ),
-                                profile: ctx.memory_system_kind.memory_profile(),
-                                now_secs: now_unix_secs,
-                            },
-                        );
-                        if !scheduled {
-                            log::warn!(
-                                "[{}] self-runtime idle tick deferred by write-back scheduler",
-                                TAG
-                            );
-                        }
-                    } else {
+                    let scheduled = crate::runtime::write_back::schedule_idle_self_runtime_tick(
+                        crate::runtime::write_back::IdleSelfRuntimeTickInputs {
+                            system_inbound_tx: ctx.system_inbound_tx.clone(),
+                            detached_work_store: ctx.platform.detached_work_store(),
+                            session_store: Arc::clone(&ctx.session_store),
+                            self_continuity_store: Arc::clone(&ctx.self_continuity_store),
+                            autonomy_strategy_store: Arc::clone(&ctx.autonomy_strategy_store),
+                            self_authored_core_store: Arc::clone(&ctx.self_authored_core_store),
+                            relationship_portfolio_store: Arc::clone(
+                                &ctx.relationship_portfolio_store,
+                            ),
+                            relationship_topology_store: Arc::clone(
+                                &ctx.relationship_topology_store,
+                            ),
+                            profile: ctx.memory_system_kind.memory_profile(),
+                            now_secs: now_unix_secs,
+                        },
+                    );
+                    if !scheduled {
                         log::debug!(
-                            "[{}] self-runtime idle tick skipped by periodic storage admission",
+                            "[{}] self-runtime idle tick not queued by write-back scheduler",
                             TAG
                         );
                     }
@@ -272,21 +256,14 @@ pub fn run_bg_timer(ctx: BgTimerContext) -> std::io::Result<crate::util::TaskHan
                         ctx.platform.state_fs().as_ref(),
                         now_unix_secs,
                     );
-                    if periodic_storage_admitted {
-                        let scheduled = crate::runtime::write_back::schedule_initiative_tick(
-                            Arc::clone(&ctx.platform),
-                            ctx.system_inbound_tx.clone(),
-                            now_unix_secs,
-                        );
-                        if !scheduled {
-                            log::warn!(
-                                "[{}] initiative tick deferred by write-back scheduler",
-                                TAG
-                            );
-                        }
-                    } else {
+                    let scheduled = crate::runtime::write_back::schedule_initiative_tick(
+                        Arc::clone(&ctx.platform),
+                        ctx.system_inbound_tx.clone(),
+                        now_unix_secs,
+                    );
+                    if !scheduled {
                         log::debug!(
-                            "[{}] initiative tick skipped by periodic storage admission",
+                            "[{}] initiative tick not queued by write-back scheduler",
                             TAG
                         );
                     }

@@ -1,6 +1,8 @@
 //! WiFi：ESP 上 SoftAP+STA；Linux 嵌入式接入系统 WiFi 栈；其余 host 为桩。
 //! WiFi: SoftAP+STA on ESP; system WiFi stack on Linux embedded; stubs on other hosts.
 
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
+pub(crate) mod esp_lifecycle;
 mod linux_startup_policy;
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]

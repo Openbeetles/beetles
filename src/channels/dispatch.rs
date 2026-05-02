@@ -221,10 +221,46 @@ fn record_channel_ok(channel: &str) {
     crate::orchestrator::record_channel_result_pub(channel, true);
 }
 
+fn outbound_admission_decision(channel: &str) -> AdmissionDecision {
+    crate::orchestrator::should_accept_outbound_pub(channel)
+}
+
 fn outbound_reject_reason(msg: &crate::bus::PcMsg) -> Option<&'static str> {
-    match crate::orchestrator::should_accept_outbound_pub(&msg.channel) {
+    match outbound_admission_decision(&msg.channel) {
         AdmissionDecision::Reject { reason } => Some(reason),
         AdmissionDecision::Accept | AdmissionDecision::Defer { .. } => None,
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PrimaryOutboundAdmission {
+    Proceed,
+    Deferred,
+}
+
+fn apply_primary_outbound_admission(
+    tag: &str,
+    req_id: Option<&str>,
+    channel: &str,
+) -> PrimaryOutboundAdmission {
+    match outbound_admission_decision(channel) {
+        AdmissionDecision::Accept => PrimaryOutboundAdmission::Proceed,
+        AdmissionDecision::Defer { delay_ms } => {
+            log::info!("[{}] outbound deferred {}ms (pressure)", tag, delay_ms);
+            std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+            crate::platform::task_wdt::feed_current_task();
+            PrimaryOutboundAdmission::Proceed
+        }
+        AdmissionDecision::Reject { reason } => {
+            log::info!(
+                "[{}] req_id={} channel={} outbound rejected by admission reason={}",
+                tag,
+                req_id.unwrap_or("-"),
+                channel,
+                reason
+            );
+            PrimaryOutboundAdmission::Deferred
+        }
     }
 }
 
@@ -499,23 +535,11 @@ fn dispatch_via_sink(
         }
     }
 
-    match crate::orchestrator::should_accept_outbound_pub(&msg.channel) {
-        AdmissionDecision::Accept => {}
-        AdmissionDecision::Defer { delay_ms } => {
-            log::info!("[{}] outbound deferred {}ms (pressure)", tag, delay_ms);
-            std::thread::sleep(std::time::Duration::from_millis(delay_ms));
-            crate::platform::task_wdt::feed_current_task();
-        }
-        AdmissionDecision::Reject { reason } => {
-            log::info!(
-                "[{}] req_id={} channel={} outbound rejected by admission reason={}",
-                tag,
-                msg.req_id.as_deref().unwrap_or("-"),
-                msg.channel,
-                reason
-            );
-            return DispatchOutcome::Deferred;
-        }
+    if matches!(
+        apply_primary_outbound_admission(tag, msg.req_id.as_deref(), &msg.channel),
+        PrimaryOutboundAdmission::Deferred
+    ) {
+        return DispatchOutcome::Deferred;
     }
     let background_yield = crate::orchestrator::background_outbound_yield_ms_pub();
     if background_yield > 0 {
@@ -703,23 +727,11 @@ fn dispatch_via_active_driver(
         }
     }
 
-    match crate::orchestrator::should_accept_outbound_pub(&msg.channel) {
-        AdmissionDecision::Accept => {}
-        AdmissionDecision::Defer { delay_ms } => {
-            log::info!("[{}] outbound deferred {}ms (pressure)", tag, delay_ms);
-            std::thread::sleep(std::time::Duration::from_millis(delay_ms));
-            crate::platform::task_wdt::feed_current_task();
-        }
-        AdmissionDecision::Reject { reason } => {
-            log::info!(
-                "[{}] req_id={} channel={} outbound rejected by admission reason={}",
-                tag,
-                queued.req_id.as_deref().unwrap_or("-"),
-                msg.channel,
-                reason
-            );
-            return DispatchOutcome::Deferred;
-        }
+    if matches!(
+        apply_primary_outbound_admission(tag, queued.req_id.as_deref(), &msg.channel),
+        PrimaryOutboundAdmission::Deferred
+    ) {
+        return DispatchOutcome::Deferred;
     }
     let background_yield = crate::orchestrator::background_outbound_yield_ms_pub();
     if background_yield > 0 {

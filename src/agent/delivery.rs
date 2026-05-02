@@ -1,5 +1,7 @@
 use super::{TaskTerminalVisibilityStatus, TurnVisibilityFact};
-use crate::bus::{CanonicalMessageBody, IngressKind, OutboundKind, OutboundTx, PcMsg};
+use crate::bus::{
+    CanonicalMessageBody, IngressKind, MessageTransport, OutboundKind, OutboundTx, PcMsg,
+};
 use crate::channel_capability::ChannelDeliveryOrderingModel;
 use crate::error::Result;
 use crate::i18n::Locale as UiLocale;
@@ -108,6 +110,11 @@ struct AppendOnlyVisibilityDelivery {
     chat_id: Arc<str>,
     req_id: String,
     is_group: bool,
+    source_transport: MessageTransport,
+    platform_thread_id: String,
+    platform_message_id: String,
+    platform_event_id: String,
+    inbound_dedup_key: String,
     outbound_tx: OutboundTx,
     contract: AppendOnlyVisibilityContract,
 }
@@ -750,6 +757,11 @@ impl AppendOnlyVisibilityShared {
                 chat_id: Arc::clone(&msg.chat_id),
                 req_id: req_id.to_string(),
                 is_group: msg.is_group,
+                source_transport: msg.source_transport,
+                platform_thread_id: msg.platform_thread_id.clone(),
+                platform_message_id: msg.platform_message_id.clone(),
+                platform_event_id: msg.platform_event_id.clone(),
+                inbound_dedup_key: msg.inbound_dedup_key.clone(),
                 outbound_tx: outbound_tx.clone(),
                 contract: AppendOnlyVisibilityContract { loc },
             },
@@ -1151,6 +1163,14 @@ fn send_current_chat_supplemental(
             return Err(());
         }
     };
+    msg = msg
+        .with_inbound_provenance(
+            delivery.source_transport,
+            delivery.platform_message_id.clone(),
+            delivery.platform_event_id.clone(),
+            delivery.inbound_dedup_key.clone(),
+        )
+        .with_platform_thread_id(delivery.platform_thread_id.clone());
     msg.outbound_kind = OutboundKind::Supplemental;
     match delivery.outbound_tx.try_send(msg) {
         Ok(()) => {
@@ -1444,7 +1464,12 @@ mod tests {
         let _guard = delayed_task_test_lock();
         reset_delayed_tasks();
         let (outbound_tx, outbound_rx, _) = new_inbound_channel(8);
-        let msg = build_msg("qq_channel");
+        let msg = build_msg("qq_channel").with_inbound_provenance(
+            crate::bus::MessageTransport::Wss,
+            "msg-1",
+            "event-1",
+            "qq_message:msg-1",
+        );
         let delivery = DeliverySession::new(
             &msg,
             "req-append-only-ack",
@@ -1460,6 +1485,10 @@ mod tests {
         let outbound = outbound_rx.try_recv().expect("append-only ack");
         assert_eq!(outbound.content, "已收到，正在处理");
         assert_eq!(outbound.outbound_kind, OutboundKind::Supplemental);
+        assert_eq!(outbound.source_transport, crate::bus::MessageTransport::Wss);
+        assert_eq!(outbound.platform_message_id, "msg-1");
+        assert_eq!(outbound.platform_event_id, "event-1");
+        assert_eq!(outbound.inbound_dedup_key, "qq_message:msg-1");
         assert_eq!(delivery.report().append_only_ack_sent, 1);
         assert_eq!(delivery.report().append_only_first_tool_milestone_sent, 0);
     }

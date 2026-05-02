@@ -216,7 +216,8 @@ if ! rg -n 'schedule_session_gc_runs_on_write_back_worker' src/runtime/write_bac
   exit 1
 fi
 
-if ! rg -n 'periodic_storage_maintenance_admitted\(\)' src/bg_timer.rs >/dev/null ||
+if ! rg -n 'current_periodic_storage_maintenance_admission\(\)' src/runtime/write_back.rs >/dev/null ||
+   ! rg -n 'requires_periodic_idle_headroom\(\)' src/runtime/write_back.rs >/dev/null ||
    ! rg -n 'PERIODIC_STORAGE_MAINTENANCE_MIN_LARGEST_BLOCK_BYTES' src/runtime/write_back.rs >/dev/null; then
   echo "FAIL: optional periodic storage maintenance must reserve write-back worker stack plus TLS headroom before scheduling" >&2
   exit 1

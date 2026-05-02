@@ -3,7 +3,7 @@
 
 use crate::runtime::mode::RuntimeMode;
 use crate::runtime::plane::{self, PlaneResidency};
-use crate::runtime::thread_registry;
+use crate::runtime::{thread_registry, thread_util};
 
 /// Static runtime execution-budget snapshot.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
@@ -30,143 +30,11 @@ pub struct ExecutionBudgetSnapshot {
     pub require_external_wss_suspended: bool,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct ThreadStackBudget {
-    name: &'static str,
-    stack_budget_bytes: usize,
-}
-
-const THREAD_STACK_BUDGETS: &[ThreadStackBudget] = &[
-    ThreadStackBudget {
-        name: "runtime_bootstrap",
-        stack_budget_bytes: crate::util::STACK_ESP_RUNTIME_BOOT,
-    },
-    ThreadStackBudget {
-        name: "startup_recovery",
-        stack_budget_bytes: crate::util::STACK_STARTUP_RECOVERY,
-    },
-    ThreadStackBudget {
-        name: "config_plane_watch",
-        stack_budget_bytes: crate::util::STACK_CONFIG_PLANE_WATCH,
-    },
-    ThreadStackBudget {
-        name: "http_snapshot_exec",
-        stack_budget_bytes: crate::util::STACK_HTTP_SNAPSHOT_WORKER,
-    },
-    ThreadStackBudget {
-        name: "http_config_exec",
-        stack_budget_bytes: crate::util::STACK_HTTP_CONFIG_WORKER,
-    },
-    ThreadStackBudget {
-        name: "http_diag_exec",
-        stack_budget_bytes: crate::util::STACK_HTTP_DIAG_WORKER,
-    },
-    ThreadStackBudget {
-        name: "qq_ws",
-        stack_budget_bytes: crate::util::STACK_CHANNEL_WS,
-    },
-    ThreadStackBudget {
-        name: "feishu_ws",
-        stack_budget_bytes: crate::util::STACK_CHANNEL_WS,
-    },
-    ThreadStackBudget {
-        name: "wecom_aibot",
-        stack_budget_bytes: crate::util::STACK_CHANNEL_WS,
-    },
-    ThreadStackBudget {
-        name: "dingtalk_stream",
-        stack_budget_bytes: crate::util::STACK_CHANNEL_WS,
-    },
-    ThreadStackBudget {
-        name: "qq_sender",
-        stack_budget_bytes: crate::util::STACK_CHANNEL_SENDER,
-    },
-    ThreadStackBudget {
-        name: "tg_sender",
-        stack_budget_bytes: crate::util::STACK_CHANNEL_SENDER,
-    },
-    ThreadStackBudget {
-        name: "fs_sender",
-        stack_budget_bytes: crate::util::STACK_CHANNEL_SENDER,
-    },
-    ThreadStackBudget {
-        name: "dt_sender",
-        stack_budget_bytes: crate::util::STACK_CHANNEL_SENDER,
-    },
-    ThreadStackBudget {
-        name: "wc_sender",
-        stack_budget_bytes: crate::util::STACK_CHANNEL_SENDER,
-    },
-    ThreadStackBudget {
-        name: "tg_poll",
-        stack_budget_bytes: crate::util::STACK_CHANNEL_SENDER,
-    },
-    ThreadStackBudget {
-        name: "os_outbound",
-        stack_budget_bytes: crate::util::STACK_OS_OUTBOUND,
-    },
-    ThreadStackBudget {
-        name: "dispatch",
-        stack_budget_bytes: crate::util::STACK_DISPATCH,
-    },
-    ThreadStackBudget {
-        name: "agent_loop",
-        stack_budget_bytes: crate::util::STACK_AGENT_LOOP,
-    },
-    ThreadStackBudget {
-        name: "display",
-        stack_budget_bytes: crate::util::STACK_DISPLAY,
-    },
-    ThreadStackBudget {
-        name: "voice_session",
-        stack_budget_bytes: crate::util::STACK_VOICE_CONTROL,
-    },
-    ThreadStackBudget {
-        name: "voice_session_worker",
-        stack_budget_bytes: crate::util::STACK_VOICE_SESSION,
-    },
-    ThreadStackBudget {
-        name: "voice_realtime",
-        stack_budget_bytes: crate::util::STACK_VOICE_REALTIME,
-    },
-    ThreadStackBudget {
-        name: "voice_realtime_connect",
-        stack_budget_bytes: crate::util::STACK_CHANNEL_WS,
-    },
-    ThreadStackBudget {
-        name: "write_back",
-        stack_budget_bytes: crate::runtime::write_back::WRITE_BACK_WORKER_STACK,
-    },
-    ThreadStackBudget {
-        name: "wifi_worker",
-        stack_budget_bytes: crate::util::STACK_WIFI_WORKER,
-    },
-    ThreadStackBudget {
-        name: "audio_io_worker",
-        stack_budget_bytes: crate::util::STACK_AUDIO_IO_STD_COMPAT,
-    },
-    ThreadStackBudget {
-        name: "bg_timer",
-        stack_budget_bytes: crate::util::STACK_BG_TIMER,
-    },
-    ThreadStackBudget {
-        name: "sntp",
-        stack_budget_bytes: crate::util::STACK_SNTP_WORKER,
-    },
-    ThreadStackBudget {
-        name: "cli_repl",
-        stack_budget_bytes: crate::util::STACK_CLI_REPL,
-    },
-];
-
 const LOGICAL_THREAD_OWNERS: &[&str] = &["http_server", "heartbeat", "cron", "remind"];
 
 /// Return the declared stack budget for a runtime plane thread name.
 pub fn stack_budget_for_thread(name: &str) -> Option<usize> {
-    THREAD_STACK_BUDGETS
-        .iter()
-        .find(|budget| budget.name == name)
-        .map(|budget| budget.stack_budget_bytes)
+    thread_util::stack_budget_for_thread(name)
 }
 
 fn is_logical_thread_owner(name: &str) -> bool {

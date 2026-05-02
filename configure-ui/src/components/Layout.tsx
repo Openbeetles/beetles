@@ -23,6 +23,7 @@ import { useDeviceApi } from "../hooks/useDeviceApi";
 import { useToast } from "../hooks/useToast";
 import {
   useDeviceConnected,
+  useDeviceStatus,
   useRestartPhase,
   consumeReconnectedAfterRestart,
   consumeRestartTimeout,
@@ -89,6 +90,7 @@ export function Layout({ onOpenSettings }: LayoutProps) {
   const { appMode } = useDeviceApi();
   const { showToast } = useToast();
   const deviceConnected = useDeviceConnected();
+  const { auth, localPairing } = useDeviceStatus();
   const restartPhase = useRestartPhase();
   const [pendingPath, setPendingPath] = useState<string | null>(null);
   const showRestartBanner = restartPhase !== "idle";
@@ -97,6 +99,8 @@ export function Layout({ onOpenSettings }: LayoutProps) {
     appMode,
     deviceConnected,
     restartPhase,
+    localPairing,
+    auth,
   });
 
   const attemptNavigate = useCallback(
