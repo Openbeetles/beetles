@@ -931,7 +931,7 @@ mod tests {
     }
 
     #[test]
-    fn embedded_first_user_turn_keeps_governed_recall_but_skips_private_depth_and_background() {
+    fn embedded_first_user_turn_skips_governed_recall_private_depth_and_background() {
         let session_store = StubSessionStore {
             recent: Mutex::new(vec![SessionMessage {
                 role: "user".to_string(),
@@ -1069,7 +1069,7 @@ mod tests {
         assert!(context.self_authored_core_text.is_some());
         assert!(context.relationship_constitution_text.is_some());
         assert!(context.summary_text.is_some() || !context.recent_messages.is_empty());
-        assert!(context.long_term_memory_text.is_some());
+        assert!(context.long_term_memory_text.is_none());
         assert!(context.archive_evidence_text.is_none());
         assert!(context.runtime_skill_text.is_none());
         assert!(context.world_snapshot_text.is_none());
@@ -1130,7 +1130,7 @@ mod tests {
         let mut health = crate::memory::prompt_context_stages::PromptContextLoadHealth::default();
         let seed = crate::memory::prompt_context_stages::seed_prompt_context(&params, &mut health);
         assert!(seed.esp_compact_first_turn_graph);
-        assert!(seed.governed_memory_enabled);
+        assert!(!seed.governed_memory_enabled);
         assert!(!seed.reuse_stored_relationship_constitution);
     }
 

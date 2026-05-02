@@ -28,7 +28,9 @@ pub fn passive_scan_handle() -> Option<WifiScanHandle> {
 }
 
 /// 阻塞直到出站网络就绪；host 立即返回。
-pub fn wait_for_network_ready() {}
+pub fn wait_for_network_ready() -> bool {
+    true
+}
 
 /// GET /api/wifi/scan 返回的单个 AP。
 #[derive(Clone, Debug, serde::Serialize)]

@@ -247,6 +247,7 @@ pub fn network_last_wifi_stage_has_reasoned_failure() -> bool {
         NetworkWifiStage::StaAuthFailed
             | NetworkWifiStage::StaApNotFound
             | NetworkWifiStage::StaFallbackAp
+            | NetworkWifiStage::StaRecovering
     ) && NETWORK_WIFI_REASON_CODE.load(Ordering::Relaxed) != u32::MAX
 }
 
@@ -540,6 +541,23 @@ mod tests {
             NetworkWifiStage::StaApNotFound
         );
         assert_eq!(reconnecting.last_wifi_reason_code, Some(201));
+    }
+
+    #[test]
+    fn recovering_wifi_disconnect_reason_survives_generic_reconnect_attempt() {
+        let _guard = test_state_guard();
+        set_network_sta_expected(true, true);
+        set_network_wifi_stage(NetworkWifiStage::StaRecovering, Some(15));
+
+        assert!(network_last_wifi_stage_has_reasoned_failure());
+
+        mark_network_wifi_connecting_attempt();
+        let reconnecting = network_runtime_snapshot(false, 0);
+        assert_eq!(
+            reconnecting.last_wifi_stage,
+            NetworkWifiStage::StaRecovering
+        );
+        assert_eq!(reconnecting.last_wifi_reason_code, Some(15));
     }
 
     #[test]

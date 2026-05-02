@@ -935,14 +935,16 @@ pub fn is_private_url(url: &str) -> bool {
 // | agent guard (bg_timer)                | n/a                    | 0 KB  | n/a   | ← ESP-only: supervised by bg_timer, no dedicated long-lived stack
 // | display                               | STACK_DISPLAY          | 8 KB  | 8 KB  | ← no TLS; recover 4KB internal SRAM while keeping a safer floor above the old 6 KB budget
 // | audio_io_worker                       | STACK_AUDIO_IO_STD_COMPAT | 8 KB  | 8 KB  | ← no TLS, I2S + acoustic wake state; std-compatible surface
-// | http_server                           | (inline 6144)          | 6 KB  | 6 KB  | ← wrapper thread owns config-plane lifecycle; keep pre-regression headroom
+// | config_plane_watch                    | STACK_CONFIG_PLANE_WATCH | 6 KB | 6 KB  | ← wrapper thread owns config-plane lifecycle; keep pre-regression headroom
+// | wifi_worker                           | STACK_WIFI_WORKER      | 8 KB  | n/a   | ← ESP WiFi driver + scan + STA keepalive owner
 // | http_snapshot_exec                     | STACK_HTTP_SNAPSHOT_WORKER | 24 KB | 24 KB | ← local read-only snapshots; P4 smoke exposed >20 KB use, S3 soak remains the ESP baseline gate
 // | http_config_exec                       | STACK_HTTP_CONFIG_WORKER | 28 KB | 32 KB | ← config writes must fit normal post-startup largest-block budget
 // | http_diag_exec                         | STACK_HTTP_DIAG_WORKER   | 28 KB | 32 KB | ← scan/diagnostic lane after first-screen fan-out was moved off this worker
 // | dispatch                              | STACK_DISPATCH         | 6 KB  | 6 KB  | ← 常驻逻辑只做 admission/retry/cooldown，不承接重执行链
 // | bg_timer                              | STACK_BG_TIMER         | 24 KB | 96 KB | ← heartbeat + cron + delayed-task wake; write-back flushes moved to `write_back`
 // | write_back                            | runtime local          | 24 KB | 24 KB | ← SPIFFS/serde flush worker, lazy-started, idle-stopped, separate from agent_loop
-// | heartbeat, cli_repl                  | (inline 8192)          | 8 KB  | 8 KB  | ← no TLS
+// | sntp                                  | STACK_SNTP_WORKER      | 8 KB  | 96 KB | ← default guarded worker, no direct TLS call
+// | cli_repl                              | STACK_CLI_REPL         | 8 KB  | 8 KB  | ← no TLS
 // | voice_session                         | STACK_VOICE_CONTROL    | 8 KB  | 8 KB  | ← scheduler only; realtime WSS moved off this always-on thread
 // | voice_session_worker                  | STACK_VOICE_SESSION    | 16 KB | 96 KB | ← STT + TTS HTTPS
 // | voice_realtime_connect                | STACK_CHANNEL_WS       | 12 KB | 96 KB | ← shared WSS/TLS connect budget
@@ -964,6 +966,8 @@ const DEFAULT_GUARD_STACK_SIZE: usize = LINUX_RUSTLS_THREAD_STACK;
 /// ESP runtime bootstrap：承接 SPIFFS recovery、runtime assembly、registry、audio init
 /// 与后续 guard loop。不能继续跑在 ESP-IDF `main_task` 的窄栈上。
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+pub const STACK_ESP_RUNTIME_BOOT: usize = 32 * 1024;
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub const STACK_ESP_RUNTIME_BOOT: usize = 32 * 1024;
 
 /// `qq_ws` / `feishu_ws`：WSS 握手 + 帧处理。
@@ -1082,6 +1086,20 @@ pub const STACK_BG_TIMER: usize = LINUX_RUSTLS_THREAD_STACK;
 /// `startup_recovery`：启动期 soul/runtime recovery 线程。
 /// 该线程会做恢复状态扫描与 SPIFFS 读写，不能复用普通后台线程预算。
 pub const STACK_STARTUP_RECOVERY: usize = 32 * 1024;
+
+/// `sntp`：由默认 guarded worker 启动，保持与 `spawn_guarded` 隐式预算一致。
+pub const STACK_SNTP_WORKER: usize = DEFAULT_GUARD_STACK_SIZE;
+
+/// `cli_repl`：host 交互入口，不承接 TLS/HTTP deep path。
+pub const STACK_CLI_REPL: usize = 8 * 1024;
+
+/// `config_plane_watch`：HTTP 配置/恢复面的外层生命周期 wrapper。
+/// 该线程只注册和监管配置面，不承接 deep route worker。
+pub const STACK_CONFIG_PLANE_WATCH: usize = 6 * 1024;
+
+/// `wifi_worker`：ESP WiFi driver + scan + STA keepalive owner。
+/// Host/Linux WiFi has a separate implementation; this value documents the ESP execution budget.
+pub const STACK_WIFI_WORKER: usize = 8 * 1024;
 
 /// 线程目标核心。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

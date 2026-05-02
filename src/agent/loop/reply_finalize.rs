@@ -477,6 +477,21 @@ pub(super) fn complete_turn_boxed(
             .runtime
             .important_message_store
             .set_important_offset_from_end(&ctx.msg.chat_id, 1);
+    } else if delivered
+        && ctx
+            .config
+            .runtime
+            .important_message_store
+            .get_important_offset(&ctx.msg.chat_id)
+            .ok()
+            .flatten()
+            .is_some()
+    {
+        let _ = ctx
+            .config
+            .runtime
+            .important_message_store
+            .clear_important(&ctx.msg.chat_id);
     }
     let now_secs = super::now_unix_ms() / 1000;
     let reply_requests_input = finalized
@@ -825,14 +840,6 @@ pub(super) fn complete_turn_boxed(
                 adjudication,
                 ctx.turn_ledger.finished_at_ms / 1000,
             ),
-        );
-    }
-    if ctx.msg.ingress == IngressKind::User {
-        super::turn_finalize::sync_user_turn_relationship_topology(
-            ctx.config,
-            ctx.msg.channel.as_ref(),
-            ctx.msg.chat_id.as_ref(),
-            ctx.turn_ledger.finished_at_ms / 1000,
         );
     }
     metrics::record_react_rounds(finalized.worker_latency.react_rounds);

@@ -1,6 +1,7 @@
 //! ESP HTTP 服务器薄适配：`Request` → `router::IncomingRequest` → 写回响应。
 //! ESP HTTP server thin adapter: map `Request` → `router::IncomingRequest` → write response.
 
+use crate::constants::TLS_ADMISSION_MIN_LARGEST_BLOCK_BYTES;
 use crate::error::Result;
 use crate::platform::http_server::api_contract;
 use crate::platform::http_server::common::{
@@ -11,7 +12,7 @@ use crate::platform::http_server::lazy_executor::LazyExecutor;
 use crate::platform::http_server::router::{
     self,
     catalog::{
-        route_worker_memory_requirements, HttpRouteSpec, RouteBodyMode, RouteExecutionClass,
+        self, route_worker_memory_requirements, HttpRouteSpec, RouteBodyMode, RouteExecutionClass,
         RouteMethod, RouteRuntimeAdmission, RouteWorkerContract, RouteWorkerLane,
         ACTION_ROUTE_SPECS, MEMORY_AND_SKILL_ROUTE_SPECS, OBSERVABILITY_ROUTE_SPECS,
         PAIRING_AND_CONFIG_ROUTE_SPECS, ROOT_ROUTE_SPECS,
@@ -33,8 +34,10 @@ use std::time::{Duration, Instant};
 
 const ESP_ROUTE_EXEC_SUBMIT_ATTEMPTS: usize = 2;
 const ESP_ROUTE_EXEC_POLL_INTERVAL_MS: u64 = 20;
+const ESP_LARGE_RESPONSE_GUARD_BYTES: usize = 4 * 1024;
 
 struct EspRouteJob {
+    contract: RouteWorkerContract,
     incoming: IncomingRequest,
     reply_tx: SyncSender<OutgoingResponse>,
     enqueued_at: Instant,
@@ -62,52 +65,69 @@ impl RouteSubmitGate {
 
 #[derive(Clone)]
 struct EspRouteExecutor {
-    contract: RouteWorkerContract,
+    lane: RouteWorkerLane,
     inner: LazyExecutor<EspRouteExecutorInner, std::io::Error>,
 }
 
 impl EspRouteExecutor {
     fn new(
-        class: RouteExecutionClass,
+        lane: RouteWorkerLane,
         ctx: &Arc<HandlerContext>,
         config_store: &Arc<dyn ConfigStore + Send + Sync>,
     ) -> Self {
-        let contract = class
-            .worker_contract()
-            .expect("route executor requires worker contract");
+        let spawn_contract = route_worker_spawn_contract(lane);
         mark_route_worker_lifecycle(
-            contract.lane,
+            lane,
             crate::runtime::PlaneLifecycleState::Registered,
             "registered",
         );
         let ctx = Arc::clone(ctx);
         let store = Arc::clone(config_store);
         Self {
-            contract,
+            lane,
             inner: LazyExecutor::new(move || {
-                let (submit_tx, rx) = sync_channel(contract.queue_capacity);
+                let (submit_tx, rx) = sync_channel(spawn_contract.queue_capacity);
                 let submit_gate = Arc::new(RouteSubmitGate::new());
                 let ctx = Arc::clone(&ctx);
                 let store = Arc::clone(&store);
                 let worker_gate = Arc::clone(&submit_gate);
-                let thread_name = route_worker_thread_name(contract.lane);
+                let thread_name = route_worker_thread_name(lane);
                 mark_route_worker_lifecycle(
-                    contract.lane,
+                    lane,
                     crate::runtime::PlaneLifecycleState::Starting,
                     "spawn",
                 );
+                let route_worker_lease = match acquire_route_worker_lease(spawn_contract) {
+                    Ok(lease) => lease,
+                    Err(error) => {
+                        mark_route_worker_lifecycle(
+                            lane,
+                            crate::runtime::PlaneLifecycleState::Failed,
+                            "lease_error",
+                        );
+                        return Err(std::io::Error::other(error.to_string()));
+                    }
+                };
                 let spawn_result = crate::runtime::thread_util::spawn_planned_handle(
                     thread_name,
-                    contract.stack_size,
+                    spawn_contract.stack_size,
                     move || {
-                        run_esp_route_executor(thread_name, contract, ctx, store, rx, worker_gate)
+                        let _route_worker_lease = route_worker_lease;
+                        run_esp_route_executor(
+                            thread_name,
+                            spawn_contract,
+                            ctx,
+                            store,
+                            rx,
+                            worker_gate,
+                        )
                     },
                 );
                 let _task = match spawn_result {
                     Ok(task) => task,
                     Err(err) => {
                         mark_route_worker_lifecycle(
-                            contract.lane,
+                            lane,
                             crate::runtime::PlaneLifecycleState::Failed,
                             "spawn_error",
                         );
@@ -115,27 +135,23 @@ impl EspRouteExecutor {
                     }
                 };
                 mark_route_worker_lifecycle(
-                    contract.lane,
+                    lane,
                     crate::runtime::PlaneLifecycleState::Active,
                     "spawn_ok",
                 );
                 log::info!(
-                    "[http_server] {} lazy-started class={:?} lane={:?} stack={} workers={} queue_cap={} timeout={}s idle_timeout={}s reject_status={} socket_reserve={} counter={}",
+                    "[http_server] {} lazy-started lane={:?} stack={} workers={} queue_cap={} timeout={}s idle_timeout={}s reject_status={} socket_reserve={}",
                     thread_name,
-                    class,
-                    contract.lane,
-                    contract.stack_size,
-                    contract.worker_threads,
-                    contract.queue_capacity,
-                    contract.timeout_secs,
-                    contract.idle_timeout_secs,
-                    contract.reject_status,
-                    contract.socket_reserve,
-                    contract.counter_name
+                    lane,
+                    spawn_contract.stack_size,
+                    spawn_contract.worker_threads,
+                    spawn_contract.queue_capacity,
+                    spawn_contract.timeout_secs,
+                    spawn_contract.idle_timeout_secs,
+                    spawn_contract.reject_status,
+                    spawn_contract.socket_reserve,
                 );
-                crate::orchestrator::log_startup_memory_checkpoint(route_worker_spawn_stage(
-                    contract.lane,
-                ));
+                crate::orchestrator::log_cached_memory_checkpoint(route_worker_spawn_stage(lane));
                 Ok(EspRouteExecutorInner {
                     submit_tx,
                     submit_gate,
@@ -152,6 +168,11 @@ impl EspRouteExecutor {
         memory_system_kind: crate::memory::MemorySystemKind,
         mut config_activity_guard: Option<crate::runtime::ConfigActivityGuard>,
     ) -> OutgoingResponse {
+        let job_contract = spec
+            .execution_class
+            .worker_contract()
+            .expect("worker route must have job contract");
+        debug_assert_eq!(job_contract.lane, self.lane);
         if let Some(response) = router::auth::worker_route_pre_admission_response(
             store,
             memory_system_kind,
@@ -162,19 +183,20 @@ impl EspRouteExecutor {
             finish_config_activity_guard(&mut config_activity_guard, response.status);
             return api_response_to_outgoing(response);
         }
-        if let Some(detail) = route_worker_memory_reject_detail(self.contract) {
+        if let Some(reject) = route_worker_admission_reject(job_contract) {
             let out = route_worker_reject_response(
                 store,
-                self.contract,
+                job_contract,
                 spec.path,
-                "http_route_worker_admission",
-                detail,
+                reject.stage,
+                reject.detail,
             );
             finish_config_activity_guard(&mut config_activity_guard, out.status);
             return out;
         }
         let (reply_tx, reply_rx) = sync_channel(1);
         let mut pending_job = Some(EspRouteJob {
+            contract: job_contract,
             incoming,
             reply_tx,
             enqueued_at: Instant::now(),
@@ -187,7 +209,7 @@ impl EspRouteExecutor {
                     let mut job = pending_job.take();
                     let out = route_worker_reject_response(
                         store,
-                        self.contract,
+                        job_contract,
                         spec.path,
                         "http_route_worker_start",
                         format!("dispatch worker start failed: {}", err),
@@ -213,7 +235,7 @@ impl EspRouteExecutor {
                 if attempt + 1 == ESP_ROUTE_EXEC_SUBMIT_ATTEMPTS {
                     let out = route_worker_reject_response(
                         store,
-                        self.contract,
+                        job_contract,
                         spec.path,
                         "http_route_worker_submit",
                         "dispatch worker exited before accepting job".to_string(),
@@ -230,14 +252,14 @@ impl EspRouteExecutor {
                     drop(submit_guard);
                     return match route_recv_timeout(
                         &reply_rx,
-                        Duration::from_secs(self.contract.timeout_secs),
+                        Duration::from_secs(job_contract.timeout_secs),
                     ) {
                         Ok(out) => out,
                         Err(RecvTimeoutError::Timeout) => {
                             crate::metrics::record_http_route_timeout();
                             route_worker_reject_response(
                                 store,
-                                self.contract,
+                                job_contract,
                                 spec.path,
                                 "http_route_worker_wait",
                                 "dispatch timed out".to_string(),
@@ -246,13 +268,13 @@ impl EspRouteExecutor {
                         Err(RecvTimeoutError::Disconnected) => {
                             let _ = self.inner.clear_if(&inner);
                             mark_route_worker_lifecycle(
-                                self.contract.lane,
+                                self.lane,
                                 crate::runtime::PlaneLifecycleState::Failed,
                                 "worker_disconnected",
                             );
                             route_worker_reject_response(
                                 store,
-                                self.contract,
+                                job_contract,
                                 spec.path,
                                 "http_route_worker_wait",
                                 "dispatch worker stopped".to_string(),
@@ -264,7 +286,7 @@ impl EspRouteExecutor {
                     drop(submit_guard);
                     let _ = self.inner.clear_if(&inner);
                     mark_route_worker_lifecycle(
-                        self.contract.lane,
+                        self.lane,
                         crate::runtime::PlaneLifecycleState::Failed,
                         "worker_disconnected",
                     );
@@ -272,7 +294,7 @@ impl EspRouteExecutor {
                     if attempt + 1 == ESP_ROUTE_EXEC_SUBMIT_ATTEMPTS {
                         return route_worker_reject_response(
                             store,
-                            self.contract,
+                            job_contract,
                             spec.path,
                             "http_route_worker_submit",
                             "dispatch queue unavailable after worker restart".to_string(),
@@ -284,7 +306,7 @@ impl EspRouteExecutor {
                     let mut job = job;
                     let out = route_worker_reject_response(
                         store,
-                        self.contract,
+                        job_contract,
                         spec.path,
                         "http_route_worker_submit",
                         "dispatch queue full".to_string(),
@@ -297,7 +319,7 @@ impl EspRouteExecutor {
         let mut job = pending_job;
         let out = route_worker_reject_response(
             store,
-            self.contract,
+            job_contract,
             spec.path,
             "http_route_worker_submit",
             "dispatch queue unavailable".to_string(),
@@ -318,61 +340,76 @@ fn finish_config_activity_guard(
     }
 }
 
-fn route_worker_memory_reject_detail(contract: RouteWorkerContract) -> Option<String> {
-    let snap = crate::orchestrator::memory_snapshot_live();
-    crate::orchestrator::apply_memory_snapshot(snap);
+struct RouteWorkerAdmissionReject {
+    stage: &'static str,
+    detail: String,
+}
+
+fn route_worker_admission_reject(
+    contract: RouteWorkerContract,
+) -> Option<RouteWorkerAdmissionReject> {
+    let resource = crate::orchestrator::resource_light_snapshot();
+    let snap = crate::orchestrator::cached_memory_snapshot();
+    if let Some(detail) = catalog::route_worker_runtime_busy_detail(contract, (&resource).into()) {
+        return Some(RouteWorkerAdmissionReject {
+            stage: "http_route_worker_runtime_busy",
+            detail,
+        });
+    }
     let requirements = route_worker_memory_requirements(contract);
     if (snap.heap_largest_block as usize) >= requirements.required_largest
         && (snap.heap_free_internal as usize) >= requirements.required_internal
     {
         return None;
     }
-    Some(format!(
-        "insufficient internal heap for {:?} route worker: internal_free={} largest_block={} stack_size={} required_internal={} required_largest={}",
-        contract.lane,
-        snap.heap_free_internal,
-        snap.heap_largest_block,
-        contract.stack_size,
-        requirements.required_internal,
-        requirements.required_largest
-    ))
+    Some(RouteWorkerAdmissionReject {
+        stage: "http_route_worker_admission",
+        detail: format!(
+            "insufficient internal heap for {:?} route worker: internal_free={} largest_block={} stack_size={} required_internal={} required_largest={}",
+            contract.lane,
+            snap.heap_free_internal,
+            snap.heap_largest_block,
+            contract.stack_size,
+            requirements.required_internal,
+            requirements.required_largest
+        ),
+    })
 }
 
 #[derive(Clone)]
 struct EspRouteExecutors {
     snapshot: EspRouteExecutor,
     config: EspRouteExecutor,
-    local_diagnostic: EspRouteExecutor,
     diagnostic: EspRouteExecutor,
 }
 
 impl EspRouteExecutors {
     fn new(ctx: &Arc<HandlerContext>, config_store: &Arc<dyn ConfigStore + Send + Sync>) -> Self {
         Self {
-            snapshot: EspRouteExecutor::new(RouteExecutionClass::SnapshotRoute, ctx, config_store),
-            config: EspRouteExecutor::new(RouteExecutionClass::AsyncConfigRoute, ctx, config_store),
-            local_diagnostic: EspRouteExecutor::new(
-                RouteExecutionClass::LocalDiagnosticRoute,
-                ctx,
-                config_store,
-            ),
-            diagnostic: EspRouteExecutor::new(
-                RouteExecutionClass::SlowDiagnosticRoute,
-                ctx,
-                config_store,
-            ),
+            snapshot: EspRouteExecutor::new(RouteWorkerLane::Snapshot, ctx, config_store),
+            config: EspRouteExecutor::new(RouteWorkerLane::Config, ctx, config_store),
+            diagnostic: EspRouteExecutor::new(RouteWorkerLane::Diagnostic, ctx, config_store),
         }
     }
 
     fn for_class(&self, class: RouteExecutionClass) -> Option<&EspRouteExecutor> {
-        match class {
-            RouteExecutionClass::ImmediateRoute | RouteExecutionClass::RejectedRoute => None,
-            RouteExecutionClass::SnapshotRoute => Some(&self.snapshot),
-            RouteExecutionClass::AsyncConfigRoute => Some(&self.config),
-            RouteExecutionClass::LocalDiagnosticRoute => Some(&self.local_diagnostic),
-            RouteExecutionClass::SlowDiagnosticRoute => Some(&self.diagnostic),
+        let contract = class.worker_contract()?;
+        match contract.lane {
+            RouteWorkerLane::Snapshot => Some(&self.snapshot),
+            RouteWorkerLane::Config => Some(&self.config),
+            RouteWorkerLane::Diagnostic => Some(&self.diagnostic),
         }
     }
+}
+
+fn route_worker_spawn_contract(lane: RouteWorkerLane) -> RouteWorkerContract {
+    match lane {
+        RouteWorkerLane::Snapshot => RouteExecutionClass::SnapshotRoute,
+        RouteWorkerLane::Config => RouteExecutionClass::AsyncConfigRoute,
+        RouteWorkerLane::Diagnostic => RouteExecutionClass::SlowDiagnosticRoute,
+    }
+    .worker_contract()
+    .expect("route worker lane must have a spawn contract")
 }
 
 fn route_worker_thread_name(lane: RouteWorkerLane) -> &'static str {
@@ -595,11 +632,11 @@ fn dispatch_incoming(
 }
 
 fn execute_esp_route_job(
-    contract: RouteWorkerContract,
     ctx: &Arc<HandlerContext>,
     store: &Arc<dyn ConfigStore + Send + Sync>,
     mut job: EspRouteJob,
 ) {
+    let contract = job.contract;
     let queue_wait = job.enqueued_at.elapsed();
     crate::metrics::record_http_route_queue_wait_ms(queue_wait.as_millis());
     log::debug!(
@@ -612,23 +649,6 @@ fn execute_esp_route_job(
     let out = {
         let _wdt_pause =
             crate::platform::esp_runtime_policy::TaskWdtSubscriptionPause::current_task();
-        let route_path = job.incoming.uri.clone();
-        let _route_worker_lease = match acquire_route_worker_lease(contract) {
-            Ok(lease) => lease,
-            Err(error) => {
-                let out = route_worker_reject_response(
-                    store.as_ref(),
-                    contract,
-                    route_path.as_str(),
-                    "http_route_worker_lease",
-                    error.to_string(),
-                );
-                finish_config_activity_guard(&mut job.config_activity_guard, out.status);
-                let _ = job.reply_tx.send(out);
-                crate::platform::task_wdt::feed_current_task();
-                return;
-            }
-        };
         let handler_start = Instant::now();
         let out = match router::dispatch_without_inbound(ctx.as_ref(), job.incoming) {
             Ok(out) => out,
@@ -693,7 +713,7 @@ fn run_esp_route_executor(
     loop {
         match route_recv_timeout(&rx, Duration::from_secs(contract.idle_timeout_secs)) {
             Ok(job) => {
-                execute_esp_route_job(contract, &ctx, &store, job);
+                execute_esp_route_job(&ctx, &store, job);
             }
             Err(RecvTimeoutError::Timeout) => {
                 let _submit_guard = submit_gate
@@ -703,7 +723,7 @@ fn run_esp_route_executor(
                 match rx.try_recv() {
                     Ok(job) => {
                         drop(_submit_guard);
-                        execute_esp_route_job(contract, &ctx, &store, job);
+                        execute_esp_route_job(&ctx, &store, job);
                     }
                     Err(TryRecvError::Empty) => {
                         submit_gate.accepting.store(false, Ordering::Release);
@@ -842,6 +862,51 @@ fn route_runtime_admission_response(
     ))
 }
 
+fn response_pressure_reject(out: &OutgoingResponse) -> Option<ApiResponse> {
+    if out.status >= 400 || out.body.len() < ESP_LARGE_RESPONSE_GUARD_BYTES {
+        return None;
+    }
+    let resource = crate::orchestrator::resource_light_snapshot();
+    let largest = resource.heap_largest_block_internal as usize;
+    if resource.pressure != crate::orchestrator::pressure::PressureLevel::Critical
+        && largest >= TLS_ADMISSION_MIN_LARGEST_BLOCK_BYTES
+    {
+        return None;
+    }
+
+    crate::metrics::record_http_route_reject();
+    log::warn!(
+        "[http_server] response write refused under pressure: status={} body_len={} pressure={:?} largest_block={}",
+        out.status,
+        out.body.len(),
+        resource.pressure,
+        largest
+    );
+    let mut extra = serde_json::Map::new();
+    extra.insert(
+        "body_len".to_string(),
+        serde_json::Value::from(out.body.len() as u64),
+    );
+    extra.insert(
+        "pressure".to_string(),
+        serde_json::Value::String(format!("{:?}", resource.pressure)),
+    );
+    extra.insert(
+        "largest_block".to_string(),
+        serde_json::Value::from(largest as u64),
+    );
+    Some(ApiResponse::err_key_with_meta(
+        503,
+        "Service Unavailable",
+        "http.response_pressure",
+        Some("http_response_pressure"),
+        None,
+        None,
+        None,
+        extra,
+    ))
+}
+
 #[inline(never)]
 fn write_outgoing<C: Connection>(
     ctx: &Arc<HandlerContext>,
@@ -849,6 +914,10 @@ fn write_outgoing<C: Connection>(
     out: OutgoingResponse,
     restart_reason: &str,
 ) -> HandlerResult {
+    let out = match response_pressure_reject(&out) {
+        Some(response) => api_response_to_outgoing(response),
+        None => out,
+    };
     let mut resp = req
         .into_response(out.status, Some(out.status_text), out.headers)
         .map_err(common::to_io)?;
@@ -913,9 +982,37 @@ fn esp_dispatch_route<C: Connection>(
             return write_api_resp(req, response);
         }
     }
-    let mut config_activity_guard = spec
-        .config_activity_phase()
-        .map(|phase| crate::runtime::ConfigActivityGuard::enter(phase, spec.path));
+    let mut config_activity_guard = match spec.config_activity_phase() {
+        Some(phase) => match crate::runtime::ConfigActivityGuard::try_enter(phase, spec.path) {
+            Ok(guard) => Some(guard),
+            Err(error) => {
+                crate::metrics::record_http_route_reject();
+                let mut extra = serde_json::Map::new();
+                extra.insert(
+                    "path".to_string(),
+                    serde_json::Value::String(spec.path.to_string()),
+                );
+                extra.insert(
+                    "reason".to_string(),
+                    serde_json::Value::String(error.to_string()),
+                );
+                return write_api_resp(
+                    req,
+                    ApiResponse::err_key_with_meta(
+                        503,
+                        "Service Unavailable",
+                        "runtime.config_wss_suspend_timeout",
+                        Some(error.stage()),
+                        None,
+                        None,
+                        None,
+                        extra,
+                    ),
+                );
+            }
+        },
+        None => None,
+    };
     let body = match read_body_esp(&mut req, store.as_ref(), spec.body_mode) {
         Ok(b) => b,
         Err(r) => {
@@ -1090,6 +1187,10 @@ mod tests {
             "http.route_worker_memory_low"
         );
         assert_eq!(
+            super::route_worker_reject_error_key("http_route_worker_runtime_busy"),
+            "http.route_worker_busy"
+        );
+        assert_eq!(
             super::route_worker_reject_error_key("http_route_worker_submit"),
             "http.route_worker_busy"
         );
@@ -1116,7 +1217,7 @@ mod tests {
         let _guard = default_test_handler_context_guard();
         let ctx = Arc::new(build_default_test_handler_context());
         let store = Arc::clone(&ctx.config_store);
-        let executor = EspRouteExecutor::new(RouteExecutionClass::AsyncConfigRoute, &ctx, &store);
+        let executor = EspRouteExecutor::new(RouteWorkerLane::Config, &ctx, &store);
         let incoming = IncomingRequest {
             method: "POST".to_string(),
             uri: "/api/config/system".to_string(),
@@ -1217,7 +1318,7 @@ mod tests {
     }
 
     #[test]
-    fn esp_observability_routes_keep_crash_sensitive_paths_immediate() {
+    fn esp_observability_routes_keep_default_resource_immediate() {
         assert_eq!(
             execution_class_for("/api/operator/status", Method::Get),
             Some(RouteExecutionClass::SlowDiagnosticRoute)
@@ -1253,6 +1354,26 @@ mod tests {
         assert_eq!(
             execution_class_for("/api/skills/import", Method::Post),
             Some(RouteExecutionClass::SlowDiagnosticRoute)
+        );
+    }
+
+    #[test]
+    fn esp_route_executors_are_one_per_worker_lane() {
+        let _guard = default_test_handler_context_guard();
+        let ctx = Arc::new(build_default_test_handler_context());
+        let store = Arc::clone(&ctx.config_store);
+        let executors = super::EspRouteExecutors::new(&ctx, &store);
+
+        let local = executors
+            .for_class(RouteExecutionClass::LocalDiagnosticRoute)
+            .expect("local diagnostic executor");
+        let slow = executors
+            .for_class(RouteExecutionClass::SlowDiagnosticRoute)
+            .expect("slow diagnostic executor");
+
+        assert!(
+            std::ptr::eq(local, slow),
+            "local and slow diagnostic route classes must share the Diagnostic lane executor"
         );
     }
 

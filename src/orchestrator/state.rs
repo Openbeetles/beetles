@@ -307,6 +307,39 @@ pub struct ResourceSnapshot {
     pub process_memory_kb: u32,
 }
 
+/// 默认资源 API 使用的轻量快照；不聚合 leases/channels/thread/plane 等 deep 对象。
+/// Lightweight snapshot for the default resource API; it avoids deep runtime
+/// objects so first-screen polling stays cheap on ESP.
+#[derive(serde::Serialize)]
+pub struct ResourceLightSnapshot {
+    pub pressure: super::pressure::PressureLevel,
+    pub tls_fragmentation_risk: super::pressure::TlsFragmentationRisk,
+    pub storage_contention_risk: StorageContentionRisk,
+    pub heap_free_internal: u32,
+    pub heap_min_free_internal: u32,
+    pub heap_free_spiram: u32,
+    pub heap_total_spiram: u32,
+    pub heap_min_free_spiram: u32,
+    pub heap_largest_block_spiram: u32,
+    pub heap_used_spiram_est: u32,
+    pub heap_largest_block_internal: u32,
+    pub active_http_count: u32,
+    pub active_wss_count: u32,
+    pub active_agent_tasks: u32,
+    pub inbound_depth: u32,
+    pub outbound_depth: u32,
+    pub budget: super::pressure::ResourceBudget,
+    pub session_count: u32,
+    pub storage_used_kb: u32,
+    pub storage_total_kb: u32,
+    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    pub cpu_usage_percent: f32,
+    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    pub load_average: (f32, f32, f32),
+    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    pub process_memory_kb: u32,
+}
+
 /// Admission counters and last-latency facts folded into the resource diagnostic snapshot.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct ResourceAdmissionSnapshot {
@@ -347,7 +380,8 @@ pub struct CrashMetadataSnapshot {
     pub last_resource_baseline_before_panic: Option<String>,
 }
 
-/// Deep resource diagnostic snapshot. This is the single aggregation point for `/api/resource`.
+/// Deep resource diagnostic snapshot. This is the internal aggregation point
+/// for operator diagnostics, not the default cached-light `/api/resource` body.
 #[derive(serde::Serialize)]
 pub struct ResourceDiagnosticSnapshot {
     pub resource: ResourceSnapshot,
@@ -438,6 +472,67 @@ impl ResourceSnapshot {
     }
 }
 
+impl ResourceLightSnapshot {
+    pub fn from_state(state: &OrchestratorState) -> Self {
+        let pressure =
+            super::pressure::PressureLevel::from_byte(state.pressure_level.load(Ordering::Relaxed));
+        let metrics = crate::metrics::snapshot();
+        let heap_free_spiram = state.heap_free_spiram.load(Ordering::Relaxed);
+        let heap_total_spiram = state.heap_total_spiram.load(Ordering::Relaxed);
+        Self {
+            pressure,
+            tls_fragmentation_risk: super::pressure::tls_fragmentation_risk(
+                state.heap_largest_block.load(Ordering::Relaxed),
+                heap_free_spiram,
+            ),
+            storage_contention_risk: storage_contention_risk_from_metrics(&metrics),
+            heap_free_internal: state.heap_free_internal.load(Ordering::Relaxed),
+            heap_min_free_internal: state.heap_min_free_internal.load(Ordering::Relaxed),
+            heap_free_spiram,
+            heap_total_spiram,
+            heap_min_free_spiram: state.heap_min_free_spiram.load(Ordering::Relaxed),
+            heap_largest_block_spiram: state.heap_largest_block_spiram.load(Ordering::Relaxed),
+            heap_used_spiram_est: heap_total_spiram.saturating_sub(heap_free_spiram),
+            heap_largest_block_internal: state.heap_largest_block.load(Ordering::Relaxed),
+            active_http_count: crate::network::active_http_count(),
+            active_wss_count: crate::network::active_wss_count(),
+            active_agent_tasks: state.active_agent_tasks.load(Ordering::Relaxed),
+            inbound_depth: state.inbound_depth.load(Ordering::Relaxed),
+            outbound_depth: state.outbound_depth.load(Ordering::Relaxed),
+            budget: super::pressure::budget_for_level(pressure),
+            session_count: state.session_count.load(Ordering::Relaxed),
+            storage_used_kb: state.storage_used_kb.load(Ordering::Relaxed),
+            storage_total_kb: state.storage_total_kb.load(Ordering::Relaxed),
+            #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+            cpu_usage_percent: get_cpu_usage(),
+            #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+            load_average: get_load_average(),
+            #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+            process_memory_kb: get_process_memory_kb(),
+        }
+    }
+}
+
+impl ResourceGovernanceMetricsSnapshot {
+    pub(crate) fn from_metrics(metrics: &crate::metrics::MetricsSnapshot) -> Self {
+        Self {
+            runtime_spawn_failure_total: metrics.runtime_spawn_failure_total,
+            http_route_reject_total: metrics.http_route_reject_total,
+            lease_conflict_total: metrics.lease_conflict_total,
+            lease_expired_replacement_total: metrics.lease_expired_replacement_total,
+            plane_drain_timeout_total: metrics.plane_drain_timeout_total,
+            inbound_queue_full_total: metrics.inbound_queue_full_total,
+            inbound_defer_total: metrics.inbound_defer_total,
+            inbound_drop_total: metrics.inbound_drop_total,
+            event_ingress_enqueued_total: metrics.event_ingress_enqueued_total,
+            event_ingress_rejected_total: metrics.event_ingress_rejected_total,
+            event_ingress_purged_total: metrics.event_ingress_purged_total,
+            event_ingress_cancelled_total: metrics.event_ingress_cancelled_total,
+            event_ingress_stale_drop_total: metrics.event_ingress_stale_drop_total,
+        }
+    }
+}
+
 impl CrashMetadataSnapshot {
     pub fn is_empty(&self) -> bool {
         self.last_panic_pc.is_none()
@@ -471,21 +566,7 @@ impl ResourceDiagnosticSnapshot {
                 http_route_handler_last_ms: metrics.http_route_handler_last_ms,
                 http_route_timeout_total: metrics.http_route_timeout_total,
             },
-            governance_metrics: ResourceGovernanceMetricsSnapshot {
-                runtime_spawn_failure_total: metrics.runtime_spawn_failure_total,
-                http_route_reject_total: metrics.http_route_reject_total,
-                lease_conflict_total: metrics.lease_conflict_total,
-                lease_expired_replacement_total: metrics.lease_expired_replacement_total,
-                plane_drain_timeout_total: metrics.plane_drain_timeout_total,
-                inbound_queue_full_total: metrics.inbound_queue_full_total,
-                inbound_defer_total: metrics.inbound_defer_total,
-                inbound_drop_total: metrics.inbound_drop_total,
-                event_ingress_enqueued_total: metrics.event_ingress_enqueued_total,
-                event_ingress_rejected_total: metrics.event_ingress_rejected_total,
-                event_ingress_purged_total: metrics.event_ingress_purged_total,
-                event_ingress_cancelled_total: metrics.event_ingress_cancelled_total,
-                event_ingress_stale_drop_total: metrics.event_ingress_stale_drop_total,
-            },
+            governance_metrics: ResourceGovernanceMetricsSnapshot::from_metrics(&metrics),
             runtime_capabilities: crate::orchestrator::runtime_capability_snapshot(),
             crash: crate::orchestrator::crash_metadata_snapshot(),
             planes: crate::runtime::plane::snapshot(),

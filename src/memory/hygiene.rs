@@ -18,7 +18,6 @@ const DAILY_PLACEHOLDER_MARKER: &str = "<!-- beetle:hygiene:daily-placeholder --
 const TRANSCRIPT_AGING_PREFIX: &str = "transcript-aging-";
 const TRANSCRIPT_AGING_MAX_CHATS: usize = 4;
 const DAILY_AGGREGATE_MIN_AGE_DAYS: u64 = 7;
-const SESSION_GC_AGE_SECS: u64 = 21 * 86_400;
 
 pub struct MemoryHygieneContext<'a> {
     pub session_store: &'a dyn SessionStore,
@@ -90,7 +89,9 @@ pub fn run_memory_hygiene_jobs(
     let mut outcome = MemoryHygieneOutcome {
         daily_notes_aggregated: daily_report.archived_note_names.len(),
         transcripts_rolled_up: transcript_report.chat_ids.len(),
-        sessions_gc: ctx.session_store.gc_stale(SESSION_GC_AGE_SECS).unwrap_or(0),
+        // Session file removal belongs to the governed write-back plane; hygiene
+        // can report it, but must not perform SPIFFS remove from post-reply jobs.
+        sessions_gc: 0,
         daily_aggregate_targets: daily_report.aggregate_targets,
         transcript_rollup_chat_ids: transcript_report.chat_ids,
         ..MemoryHygieneOutcome::default()

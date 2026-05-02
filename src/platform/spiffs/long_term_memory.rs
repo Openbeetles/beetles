@@ -6,9 +6,9 @@ use crate::memory::{
     canonicalize_long_term_memory_entry, compare_long_term_memory_query_results,
     govern_long_term_memory_entries, long_term_memory_entry_from_draft,
     long_term_memory_matches_query, merge_long_term_memory_entry,
-    score_long_term_memory_recall_breakdown, touch_long_term_memory_usage, LongTermMemoryDraft,
-    LongTermMemoryEntry, LongTermMemoryQuery, LongTermMemorySlot, LongTermMemoryStore,
-    MAX_LONG_TERM_MEMORY_ITEMS, REL_PATH_LONG_TERM_MEMORIES,
+    score_long_term_memory_recall_breakdown, LongTermMemoryDraft, LongTermMemoryEntry,
+    LongTermMemoryQuery, LongTermMemorySlot, LongTermMemoryStore, MAX_LONG_TERM_MEMORY_ITEMS,
+    REL_PATH_LONG_TERM_MEMORIES,
 };
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -83,6 +83,20 @@ impl SpiffsLongTermMemoryStore {
         f(entries)
     }
 
+    fn with_entries<R>(&self, f: impl FnOnce(&[LongTermMemoryEntry]) -> Result<R>) -> Result<R> {
+        let mut guard = self
+            .cache
+            .lock()
+            .map_err(|e| Error::config("long_term_memory_cache_lock", e.to_string()))?;
+        if guard.is_none() {
+            *guard = Some(self.load_entries_from_disk()?);
+        }
+        let entries = guard
+            .as_ref()
+            .ok_or_else(|| Error::config("long_term_memory_cache", "cache not initialized"))?;
+        f(entries)
+    }
+
     fn persist(&self, entries: &[LongTermMemoryEntry]) -> Result<()> {
         let json = serde_json::to_vec(entries)
             .map_err(|e| Error::config("long_term_memory_persist", e.to_string()))?;
@@ -143,7 +157,7 @@ impl LongTermMemoryStore for SpiffsLongTermMemoryStore {
     ) -> Result<Vec<LongTermMemoryEntry>> {
         let limit = limit.clamp(1, MAX_LONG_TERM_MEMORY_ITEMS);
         let now_secs = crate::util::current_unix_secs();
-        self.with_entries_mut(|entries| {
+        self.with_entries(|entries| {
             let mut scored: Vec<(u32, u32, String)> = entries
                 .iter()
                 .filter_map(|entry| {
@@ -180,38 +194,19 @@ impl LongTermMemoryStore for SpiffsLongTermMemoryStore {
                 })
             });
             scored.truncate(limit);
-            let mut touched = false;
             let selected_ids: Vec<String> = scored.into_iter().map(|(_, _, id)| id).collect();
             let mut out = Vec::with_capacity(selected_ids.len());
             for selected_id in selected_ids {
-                if let Some(entry) = entries.iter_mut().find(|entry| entry.id == selected_id) {
-                    touched |= touch_long_term_memory_usage(entry, now_secs);
+                if let Some(entry) = entries.iter().find(|entry| entry.id == selected_id) {
                     out.push(entry.clone());
                 }
-            }
-            if touched {
-                self.persist(entries)?;
             }
             Ok(out)
         })
     }
 
     fn get(&self, id: &str) -> Result<Option<LongTermMemoryEntry>> {
-        let now_secs = crate::util::current_unix_secs();
-        self.with_entries_mut(|entries| {
-            let mut touched = false;
-            let item = entries
-                .iter_mut()
-                .find(|entry| entry.id == id)
-                .map(|entry| {
-                    touched = touch_long_term_memory_usage(entry, now_secs);
-                    entry.clone()
-                });
-            if touched {
-                self.persist(entries)?;
-            }
-            Ok(item)
-        })
+        self.with_entries(|entries| Ok(entries.iter().find(|entry| entry.id == id).cloned()))
     }
 
     fn get_slot(&self, slot: &LongTermMemorySlot) -> Result<Option<LongTermMemoryEntry>> {
@@ -224,31 +219,26 @@ impl LongTermMemoryStore for SpiffsLongTermMemoryStore {
     fn query(&self, query: &LongTermMemoryQuery) -> Result<Vec<LongTermMemoryEntry>> {
         let normalized = query.normalized();
         let now_secs = crate::util::current_unix_secs();
-        self.with_entries_mut(|entries| {
-            let mut touched = false;
+        self.with_entries(|entries| {
             let mut out = Vec::with_capacity(entries.len().min(normalized.limit));
-            for entry in entries.iter_mut() {
+            for entry in entries.iter() {
                 if !long_term_memory_matches_query(entry, &normalized, now_secs) {
                     continue;
                 }
-                touched |= touch_long_term_memory_usage(entry, now_secs);
                 out.push(entry.clone());
             }
             out.sort_by(|left, right| {
                 compare_long_term_memory_query_results(left, right, &normalized)
             });
             out.truncate(normalized.limit);
-            if touched {
-                self.persist(entries)?;
-            }
             Ok(out)
         })
     }
 
     fn list(&self, limit: usize) -> Result<Vec<LongTermMemoryEntry>> {
         let limit = limit.clamp(1, MAX_LONG_TERM_MEMORY_ITEMS);
-        self.with_entries_mut(|entries| {
-            let mut out = entries.clone();
+        self.with_entries(|entries| {
+            let mut out = entries.to_vec();
             out.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
             out.truncate(limit);
             Ok(out)
@@ -275,7 +265,7 @@ impl LongTermMemoryStore for SpiffsLongTermMemoryStore {
     }
 
     fn count(&self) -> Result<usize> {
-        self.with_entries_mut(|entries| Ok(entries.len()))
+        self.with_entries(|entries| Ok(entries.len()))
     }
 }
 
@@ -294,6 +284,20 @@ mod tests {
                 .unwrap_or_default()
                 .as_nanos();
             let root = std::env::temp_dir().join(format!("beetle-long-term-memory-{unique}"));
+            std::fs::create_dir_all(&root).unwrap();
+            root.join("long_term_memories.json")
+        })
+        .clone()
+    }
+
+    fn read_paths_test_store_path() -> PathBuf {
+        static PATH: OnceLock<PathBuf> = OnceLock::new();
+        PATH.get_or_init(|| {
+            let unique = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos();
+            let root = std::env::temp_dir().join(format!("beetle-long-term-memory-read-{unique}"));
             std::fs::create_dir_all(&root).unwrap();
             root.join("long_term_memories.json")
         })
@@ -319,5 +323,63 @@ mod tests {
 
         let bytes = std::fs::read(&path).expect("read original bytes");
         assert_eq!(bytes, br#"{"entries": }"#);
+    }
+
+    #[test]
+    fn read_paths_do_not_touch_or_rewrite_long_term_memory_file() {
+        let path = read_paths_test_store_path();
+        reset_test_store(&path);
+        let store = SpiffsLongTermMemoryStore::with_path_fn(read_paths_test_store_path);
+        store
+            .upsert_many(
+                &[LongTermMemoryDraft {
+                    kind: crate::memory::LongTermMemoryKind::Fact,
+                    topic: "rust".to_string(),
+                    content: "Rust is used in Beetle runtime governance.".to_string(),
+                    keywords: vec!["rust".to_string(), "runtime".to_string()],
+                    source_chat_id: None,
+                    source_type: None,
+                    source_scope: None,
+                    confidence: None,
+                    freshness: None,
+                    stale_hint: None,
+                    supporting_citations: Vec::new(),
+                    evidence_count: None,
+                    observed_at: None,
+                    last_confirmed_at: None,
+                    source_revision: None,
+                }],
+                1,
+            )
+            .unwrap();
+        let before = std::fs::read(&path).expect("read memory file before query");
+
+        let recalled = store.recall("rust runtime", None, 4).unwrap();
+        assert_eq!(recalled.len(), 1);
+        let id = recalled[0].id.clone();
+        assert!(store.get(&id).unwrap().is_some());
+        assert_eq!(store.count().unwrap(), 1);
+        assert_eq!(store.list(8).unwrap().len(), 1);
+        assert_eq!(
+            store
+                .query(&LongTermMemoryQuery {
+                    kind: Some(crate::memory::LongTermMemoryKind::Fact),
+                    topic: Some("rust".to_string()),
+                    source_scope: None,
+                    source_chat_id: None,
+                    freshness: None,
+                    include_stale: true,
+                    limit: 8,
+                })
+                .unwrap()
+                .len(),
+            1
+        );
+
+        let after = std::fs::read(&path).expect("read memory file after query");
+        assert_eq!(
+            after, before,
+            "long-term memory read paths must not persist last_used/governance from hot routes or turn prepare"
+        );
     }
 }

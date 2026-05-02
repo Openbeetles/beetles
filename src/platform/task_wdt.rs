@@ -284,6 +284,10 @@ mod tests {
             TaskWdtThreadPolicy::Unmanaged
         );
         assert_eq!(
+            thread_policy_for_name("startup_recovery"),
+            TaskWdtThreadPolicy::Unmanaged
+        );
+        assert_eq!(
             thread_policy_for_name("http_snapshot_exec"),
             TaskWdtThreadPolicy::FeedOnly
         );

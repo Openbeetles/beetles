@@ -39,6 +39,7 @@ pub(crate) enum RouteBodyMode {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RouteExecutionClass {
     ImmediateRoute,
+    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
     SnapshotRoute,
     AsyncConfigRoute,
     LocalDiagnosticRoute,
@@ -118,6 +119,68 @@ pub(crate) const fn route_worker_memory_requirements(
         required_internal: contract.stack_size.saturating_add(internal_headroom),
         required_largest: contract.stack_size.saturating_add(largest_headroom),
     }
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
+#[derive(Clone, Copy)]
+pub(crate) struct RouteWorkerRuntimeLoad {
+    pub(crate) pressure: crate::orchestrator::pressure::PressureLevel,
+    pub(crate) storage_contention: crate::orchestrator::StorageContentionRisk,
+    pub(crate) active_agent_tasks: u32,
+    pub(crate) inbound_depth: u32,
+    pub(crate) outbound_depth: u32,
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
+impl From<&crate::orchestrator::ResourceSnapshot> for RouteWorkerRuntimeLoad {
+    fn from(snapshot: &crate::orchestrator::ResourceSnapshot) -> Self {
+        Self {
+            pressure: snapshot.pressure,
+            storage_contention: snapshot.storage_contention_risk,
+            active_agent_tasks: snapshot.active_agent_tasks,
+            inbound_depth: snapshot.inbound_depth,
+            outbound_depth: snapshot.outbound_depth,
+        }
+    }
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
+impl From<&crate::orchestrator::ResourceLightSnapshot> for RouteWorkerRuntimeLoad {
+    fn from(snapshot: &crate::orchestrator::ResourceLightSnapshot) -> Self {
+        Self {
+            pressure: snapshot.pressure,
+            storage_contention: snapshot.storage_contention_risk,
+            active_agent_tasks: snapshot.active_agent_tasks,
+            inbound_depth: snapshot.inbound_depth,
+            outbound_depth: snapshot.outbound_depth,
+        }
+    }
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
+pub(crate) fn route_worker_runtime_busy_detail(
+    contract: RouteWorkerContract,
+    load: RouteWorkerRuntimeLoad,
+) -> Option<String> {
+    if load.pressure != crate::orchestrator::pressure::PressureLevel::Normal {
+        return Some(format!(
+            "route worker start deferred for {:?}: pressure={:?}",
+            contract.lane, load.pressure
+        ));
+    }
+    if load.storage_contention != crate::orchestrator::StorageContentionRisk::Healthy {
+        return Some(format!(
+            "route worker start deferred for {:?}: storage_contention={:?}",
+            contract.lane, load.storage_contention
+        ));
+    }
+    if load.active_agent_tasks > 0 || load.inbound_depth > 0 || load.outbound_depth > 0 {
+        return Some(format!(
+            "route worker start deferred for {:?}: active_agent_tasks={} inbound_depth={} outbound_depth={}",
+            contract.lane, load.active_agent_tasks, load.inbound_depth, load.outbound_depth
+        ));
+    }
+    None
 }
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
@@ -269,6 +332,7 @@ impl HttpRouteSpec {
         }
     }
 
+    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
     pub(crate) const fn snapshot_operator(
         path: &'static str,
         method: RouteMethod,
@@ -836,7 +900,7 @@ pub(crate) const OBSERVABILITY_ROUTE_SPECS: &[HttpRouteSpec] = &[
         OperatorRouteAccess::Windowed,
     ),
     HttpRouteSpec::immediate(ROUTE_METRICS, RouteMethod::Options, RouteBodyMode::None),
-    HttpRouteSpec::snapshot_operator(
+    HttpRouteSpec::immediate_operator(
         ROUTE_RESOURCE,
         RouteMethod::Get,
         RouteBodyMode::None,
@@ -1115,6 +1179,35 @@ mod tests {
         assert!(matches!(spec.body_mode, RouteBodyMode::Utf8(_)));
     }
 
+    #[test]
+    fn storage_touching_routes_never_run_on_httpd_callback() {
+        for (method, path) in [
+            ("POST", ROUTE_CHANNEL_CONNECTIVITY_REFRESH),
+            ("GET", ROUTE_SESSIONS),
+            ("DELETE", ROUTE_SESSIONS),
+            ("GET", ROUTE_MEMORY_STATUS),
+            ("POST", ROUTE_MEMORY_MAINTENANCE),
+            ("GET", ROUTE_CAPABILITY_PACKAGES),
+            ("POST", ROUTE_CAPABILITY_PACKAGES),
+        ] {
+            let spec = route_spec_for(method, path).expect("storage route spec");
+            assert_ne!(
+                spec.execution_class,
+                RouteExecutionClass::ImmediateRoute,
+                "{} {} must stay off the HTTPD callback",
+                method,
+                path
+            );
+            assert_eq!(
+                spec.operator_access,
+                OperatorRouteAccess::Windowed,
+                "{} {} must require an explicit operator window",
+                method,
+                path
+            );
+        }
+    }
+
     #[cfg(not(feature = "capability_office"))]
     #[test]
     fn office_config_collection_routes_are_structured_rejections_without_office_feature() {
@@ -1154,6 +1247,7 @@ mod tests {
                             | (RouteMethod::Get, ROUTE_CONFIG_AUDIO)
                             | (RouteMethod::Get, ROUTE_CONFIG_DISPLAY)
                             | (RouteMethod::Get, ROUTE_HEALTH)
+                            | (RouteMethod::Get, ROUTE_RESOURCE)
                             | (RouteMethod::Get, ROUTE_TOOLS)
                             | (RouteMethod::Post, ROUTE_OPERATOR_WINDOW)
                             | (RouteMethod::Get, ROUTE_CHANNEL_CONNECTIVITY)
@@ -1453,6 +1547,40 @@ mod tests {
     }
 
     #[test]
+    fn route_worker_runtime_admission_blocks_front_plane_contention() {
+        let contract = RouteExecutionClass::SnapshotRoute
+            .worker_contract()
+            .expect("snapshot contract");
+        let idle = RouteWorkerRuntimeLoad {
+            pressure: crate::orchestrator::pressure::PressureLevel::Normal,
+            storage_contention: crate::orchestrator::StorageContentionRisk::Healthy,
+            active_agent_tasks: 0,
+            inbound_depth: 0,
+            outbound_depth: 0,
+        };
+
+        assert!(route_worker_runtime_busy_detail(contract, idle).is_none());
+
+        let mut active_agent = idle;
+        active_agent.active_agent_tasks = 1;
+        assert!(route_worker_runtime_busy_detail(contract, active_agent)
+            .expect("active agent should defer snapshot worker")
+            .contains("active_agent_tasks=1"));
+
+        let mut storage_busy = idle;
+        storage_busy.storage_contention = crate::orchestrator::StorageContentionRisk::Cautious;
+        assert!(route_worker_runtime_busy_detail(contract, storage_busy)
+            .expect("storage contention should defer snapshot worker")
+            .contains("storage_contention=Cautious"));
+
+        let mut pressure_busy = idle;
+        pressure_busy.pressure = crate::orchestrator::pressure::PressureLevel::Cautious;
+        assert!(route_worker_runtime_busy_detail(contract, pressure_busy)
+            .expect("pressure should defer snapshot worker")
+            .contains("pressure=Cautious"));
+    }
+
+    #[test]
     fn worker_route_lanes_map_to_runtime_lease_kinds() {
         let cases = [
             (
@@ -1562,10 +1690,10 @@ mod tests {
     }
 
     #[test]
-    fn resource_route_uses_snapshot_worker_on_esp() {
+    fn resource_route_stays_cached_light_immediate() {
         let spec = route_spec_for("GET", ROUTE_RESOURCE).expect("resource route");
 
-        assert_eq!(spec.execution_class, RouteExecutionClass::SnapshotRoute);
+        assert_eq!(spec.execution_class, RouteExecutionClass::ImmediateRoute);
         assert_eq!(spec.operator_access, OperatorRouteAccess::AlwaysOn);
     }
 
@@ -1576,7 +1704,10 @@ mod tests {
         assert_eq!(health.operator_access, OperatorRouteAccess::AlwaysOn);
 
         let resource = route_spec_for("GET", ROUTE_RESOURCE).expect("resource route");
-        assert_eq!(resource.execution_class, RouteExecutionClass::SnapshotRoute);
+        assert_eq!(
+            resource.execution_class,
+            RouteExecutionClass::ImmediateRoute
+        );
         assert_eq!(resource.operator_access, OperatorRouteAccess::AlwaysOn);
 
         let operator_status =
@@ -1605,6 +1736,89 @@ mod tests {
             metrics.execution_class,
             RouteExecutionClass::SlowDiagnosticRoute
         );
+    }
+
+    #[test]
+    fn pairing_and_csrf_routes_stay_immediate_without_config_activity() {
+        for (method, path) in [
+            ("GET", ROUTE_PAIRING_CODE),
+            ("GET", ROUTE_CSRF_TOKEN),
+            ("OPTIONS", ROUTE_PAIRING_CODE),
+            ("OPTIONS", ROUTE_CSRF_TOKEN),
+        ] {
+            let spec = route_spec_for(method, path).expect("pairing/csrf route");
+            assert_eq!(
+                spec.execution_class,
+                RouteExecutionClass::ImmediateRoute,
+                "{} {} must not start a route worker",
+                method,
+                path
+            );
+            assert_eq!(
+                spec.config_activity_phase(),
+                None,
+                "{} {} must not mark config activity",
+                method,
+                path
+            );
+        }
+    }
+
+    #[test]
+    fn default_config_ui_route_allowlist_stays_cached_lightweight() {
+        for (method, path) in [
+            ("GET", ROUTE_PAIRING_CODE),
+            ("GET", ROUTE_CSRF_TOKEN),
+            ("GET", ROUTE_CONFIG_SYSTEM),
+            ("GET", ROUTE_CONFIG_LLM),
+            ("GET", ROUTE_CONFIG_CHANNELS),
+            ("GET", ROUTE_CONFIG_HARDWARE),
+            ("GET", ROUTE_CONFIG_AUDIO),
+            ("GET", ROUTE_CONFIG_DISPLAY),
+            ("GET", ROUTE_HEALTH),
+            ("GET", ROUTE_RESOURCE),
+            ("GET", ROUTE_CHANNEL_CONNECTIVITY),
+        ] {
+            let spec = route_spec_for(method, path).expect("default UI route");
+            assert_eq!(
+                spec.execution_class,
+                RouteExecutionClass::ImmediateRoute,
+                "{} {} must remain immediate cached-light, got {:?}",
+                method,
+                path,
+                spec.execution_class
+            );
+            assert_ne!(
+                spec.operator_access,
+                OperatorRouteAccess::Windowed,
+                "{} {} must not require the deep operator window by default",
+                method,
+                path
+            );
+        }
+
+        for (method, path) in [
+            ("GET", ROUTE_WIFI_SCAN),
+            ("GET", ROUTE_HARDWARE_DISCOVERY),
+            ("GET", ROUTE_DIAGNOSE),
+            ("POST", ROUTE_CHANNEL_CONNECTIVITY_REFRESH),
+            ("GET", ROUTE_MEMORY_STATUS),
+            ("POST", ROUTE_MEMORY_MAINTENANCE),
+            ("POST", ROUTE_SKILLS_IMPORT),
+        ] {
+            let spec = route_spec_for(method, path).expect("deep route");
+            assert!(
+                matches!(
+                    spec.execution_class,
+                    RouteExecutionClass::LocalDiagnosticRoute
+                        | RouteExecutionClass::SlowDiagnosticRoute
+                ),
+                "{} {} must stay worker-backed, got {:?}",
+                method,
+                path,
+                spec.execution_class
+            );
+        }
     }
 
     #[test]

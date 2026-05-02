@@ -39,8 +39,6 @@ pub const MAX_LONG_TERM_MEMORY_BLOCK_LEN: usize = 1024;
 const LONG_TERM_MEMORY_TASK_TTL_SECS: u64 = 45 * 86_400;
 /// 长期记忆治理：项目超时后视为陈旧。
 const LONG_TERM_MEMORY_PROJECT_TTL_SECS: u64 = 180 * 86_400;
-/// 召回触达后更新 last_used_at 的最小间隔，避免每轮都刷盘。
-const LONG_TERM_MEMORY_TOUCH_INTERVAL_SECS: u64 = 6 * 3_600;
 
 impl LongTermRecallPolicy {
     fn recall_block_max_len(self, system_max_len: usize) -> usize {
@@ -983,26 +981,6 @@ fn render_age_hint(entry: &LongTermMemoryEntry, now_secs: u64) -> Option<String>
         _ => format!("{prefix} {}mo ago", age_secs / 2_592_000),
     };
     Some(value)
-}
-
-fn maybe_touch_last_used(entry: &mut LongTermMemoryEntry, now_secs: u64) -> bool {
-    if now_secs == 0 {
-        return false;
-    }
-    if entry.last_used_at > 0
-        && now_secs.saturating_sub(entry.last_used_at) < LONG_TERM_MEMORY_TOUCH_INTERVAL_SECS
-    {
-        return false;
-    }
-    if entry.last_used_at == now_secs {
-        return false;
-    }
-    entry.last_used_at = now_secs;
-    true
-}
-
-pub(crate) fn touch_long_term_memory_usage(entry: &mut LongTermMemoryEntry, now_secs: u64) -> bool {
-    maybe_touch_last_used(entry, now_secs)
 }
 
 fn entry_observed_at(entry: &LongTermMemoryEntry) -> u64 {

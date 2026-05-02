@@ -39,9 +39,14 @@ impl HeartbeatTickState {
     pub fn new() -> Self {
         Self { round: 0 }
     }
+
+    pub(crate) fn should_schedule_session_gc(&self) -> bool {
+        self.round
+            .is_multiple_of(crate::constants::SESSION_GC_INTERVAL_ROUNDS)
+    }
 }
 
-/// 单次 heartbeat tick：日志、队列深度、会话 GC、待办注入等。
+/// 单次 heartbeat tick：日志、队列深度、轻量存储指标、待办注入等。
 /// 由 bg_timer 每 30s 调用一次。
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn heartbeat_tick(
@@ -53,26 +58,12 @@ pub(crate) fn heartbeat_tick(
     outbound_depth: &std::sync::atomic::AtomicUsize,
     session_store: &dyn crate::memory::SessionStore,
     platform: &dyn crate::Platform,
+    config: &crate::config::AppConfig,
     resolve_locale: &Arc<dyn Fn() -> Locale + Send + Sync>,
     state: &mut HeartbeatTickState,
 ) {
     state.round = state.round.wrapping_add(1);
     let runtime_mode = crate::runtime::thread_registry::runtime_mode_snapshot();
-
-    // Session GC: run every SESSION_GC_INTERVAL_ROUNDS rounds.
-    if runtime_mode.action_budget.allow_periodic_maintenance
-        && state
-            .round
-            .is_multiple_of(crate::constants::SESSION_GC_INTERVAL_ROUNDS)
-    {
-        match session_store.gc_stale(crate::constants::SESSION_GC_MAX_AGE_SECS) {
-            Ok(n) if n > 0 => {
-                log::info!("[{}] session GC removed {} stale files", TAG, n)
-            }
-            Err(e) => log::warn!("[{}] session GC error: {}", TAG, e),
-            _ => {}
-        }
-    }
 
     let mut storage_state_fs_ready = None;
 
@@ -96,8 +87,9 @@ pub(crate) fn heartbeat_tick(
         crate::memory::MemorySystemKind::LinuxFull => true,
         crate::memory::MemorySystemKind::EspCompact => crate::state::wifi_sta_connected(),
     };
-    crate::orchestrator::observe_runtime_capabilities_from_platform(
+    crate::orchestrator::observe_runtime_capabilities_from_platform_with_config(
         platform,
+        Some(config),
         outbound_transport_ready,
         storage_state_fs_ready,
     );
@@ -152,6 +144,11 @@ pub(crate) fn heartbeat_tick(
         "[{}] {}",
         TAG,
         crate::runtime::lease::format_baseline_log_line()
+    );
+    log::info!(
+        "[{}] {}",
+        TAG,
+        crate::runtime::execution_budget::format_baseline_log_line()
     );
     log::info!(
         "[{}] {}",

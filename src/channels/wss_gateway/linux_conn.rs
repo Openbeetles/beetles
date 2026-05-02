@@ -251,7 +251,7 @@ pub fn connect_linux_wss_with_headers_and_profile(
         ws,
         last_read_timeout: Some(Duration::from_secs(tuning.socket_read_timeout_secs)),
         read_timeout_cap: Duration::from_secs(tuning.socket_read_timeout_secs),
-        _wss_session_guard: Some(crate::orchestrator::begin_wss_session()),
+        _wss_session_guard: Some(crate::orchestrator::begin_wss_session(profile.into())),
     })
 }
 

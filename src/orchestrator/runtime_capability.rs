@@ -1,6 +1,7 @@
 //! Runtime sub-capability authority: compact, fixed-size, single-writer-friendly state.
 //! 运行态子能力权威中心：固定小状态、单一口径、低开销。
 
+use crate::config::AppConfig;
 use crate::memory::MemorySystemKind;
 use crate::Error;
 use crate::Platform;
@@ -14,12 +15,22 @@ pub const RUNTIME_CAPABILITY_AUDIO_OUTPUT: &str = "audio_output";
 pub const RUNTIME_CAPABILITY_AUDIO_INPUT: &str = "audio_input";
 pub const RUNTIME_CAPABILITY_NETWORK_OUTBOUND_HTTP: &str = "network.outbound_http";
 pub const RUNTIME_CAPABILITY_STORAGE_STATE_FS: &str = "storage.state_fs";
+pub const RUNTIME_CAPABILITY_DISPLAY_OUTPUT: &str = "display.output";
+pub const RUNTIME_CAPABILITY_HARDWARE_GPIO: &str = "hardware.gpio";
+pub const RUNTIME_CAPABILITY_HARDWARE_I2C: &str = "hardware.i2c";
+pub const RUNTIME_CAPABILITY_SENSOR: &str = "sensor";
+pub const RUNTIME_CAPABILITY_CAMERA_FRAME: &str = "camera.frame";
 
-const RUNTIME_CAPABILITY_IDS: [&str; 4] = [
+const RUNTIME_CAPABILITY_IDS: [&str; 9] = [
     RUNTIME_CAPABILITY_AUDIO_OUTPUT,
     RUNTIME_CAPABILITY_AUDIO_INPUT,
     RUNTIME_CAPABILITY_NETWORK_OUTBOUND_HTTP,
     RUNTIME_CAPABILITY_STORAGE_STATE_FS,
+    RUNTIME_CAPABILITY_DISPLAY_OUTPUT,
+    RUNTIME_CAPABILITY_HARDWARE_GPIO,
+    RUNTIME_CAPABILITY_HARDWARE_I2C,
+    RUNTIME_CAPABILITY_SENSOR,
+    RUNTIME_CAPABILITY_CAMERA_FRAME,
 ];
 
 #[repr(u8)]
@@ -182,6 +193,11 @@ impl RuntimeCapabilityAuthorityState {
     const fn new() -> Self {
         Self {
             slots: [
+                RuntimeCapabilitySlot::new(),
+                RuntimeCapabilitySlot::new(),
+                RuntimeCapabilitySlot::new(),
+                RuntimeCapabilitySlot::new(),
+                RuntimeCapabilitySlot::new(),
                 RuntimeCapabilitySlot::new(),
                 RuntimeCapabilitySlot::new(),
                 RuntimeCapabilitySlot::new(),
@@ -394,6 +410,21 @@ fn default_recovery_hint(
         (RUNTIME_CAPABILITY_STORAGE_STATE_FS, RuntimeCapabilityReason::DriverError)
         | (RUNTIME_CAPABILITY_STORAGE_STATE_FS, RuntimeCapabilityReason::RuntimeNotInitialized) => {
             Some("wait_for_storage_recovery")
+        }
+        (RUNTIME_CAPABILITY_DISPLAY_OUTPUT, RuntimeCapabilityReason::DeviceMissing) => {
+            Some("check_display_wiring_or_disable_display")
+        }
+        (RUNTIME_CAPABILITY_HARDWARE_GPIO, RuntimeCapabilityReason::NotConfigured) => {
+            Some("configure_hardware_devices")
+        }
+        (RUNTIME_CAPABILITY_HARDWARE_I2C, RuntimeCapabilityReason::RuntimeNotInitialized) => {
+            Some("check_i2c_bus_initialization")
+        }
+        (RUNTIME_CAPABILITY_SENSOR, RuntimeCapabilityReason::NotConfigured) => {
+            Some("configure_sensor_devices")
+        }
+        (RUNTIME_CAPABILITY_CAMERA_FRAME, RuntimeCapabilityReason::NotConfigured) => {
+            Some("configure_camera")
         }
         (_, RuntimeCapabilityReason::RecoveryStabilizing) => {
             Some("wait_for_recovery_stabilization")
@@ -765,6 +796,20 @@ pub fn observe_runtime_capabilities_from_platform(
     outbound_http_client_ready: bool,
     storage_state_fs_ready: Option<bool>,
 ) {
+    observe_runtime_capabilities_from_platform_with_config(
+        platform,
+        None,
+        outbound_http_client_ready,
+        storage_state_fs_ready,
+    );
+}
+
+pub fn observe_runtime_capabilities_from_platform_with_config(
+    platform: &dyn Platform,
+    config: Option<&AppConfig>,
+    outbound_http_client_ready: bool,
+    storage_state_fs_ready: Option<bool>,
+) {
     let now_secs = crate::util::current_unix_secs().min(u32::MAX as u64) as u32;
     let speaker_online = platform.audio_speaker_ready();
     update_runtime_capability(RuntimeCapabilityUpdate {
@@ -828,6 +873,137 @@ pub fn observe_runtime_capabilities_from_platform(
             recovery_hint: None,
         });
     }
+    observe_display_capability(platform, config, now_secs);
+    observe_hardware_capabilities(platform, config, now_secs);
+    observe_camera_capability(config, now_secs);
+}
+
+fn observe_display_capability(platform: &dyn Platform, config: Option<&AppConfig>, now_secs: u32) {
+    let display_configured = config
+        .and_then(|config| config.display.as_ref())
+        .is_some_and(|display| display.enabled);
+    let display_online = platform.display_available();
+    update_runtime_capability(RuntimeCapabilityUpdate {
+        id: RUNTIME_CAPABILITY_DISPLAY_OUTPUT,
+        status: if display_online {
+            RuntimeCapabilityStatus::Online
+        } else {
+            RuntimeCapabilityStatus::Offline
+        },
+        reason: if display_online {
+            RuntimeCapabilityReason::Nominal
+        } else if display_configured {
+            RuntimeCapabilityReason::DeviceMissing
+        } else {
+            RuntimeCapabilityReason::NotConfigured
+        },
+        observed_at_secs: now_secs,
+        recovery_hint: None,
+    });
+}
+
+fn observe_hardware_capabilities(
+    platform: &dyn Platform,
+    config: Option<&AppConfig>,
+    now_secs: u32,
+) {
+    let memory_system_kind = platform.memory_system_kind();
+    let gpio_configured = config.is_some_and(|config| !config.hardware_devices.is_empty());
+    let hardware_backend_serviceable =
+        hardware_backend_serviceable_for_capability(memory_system_kind);
+    let i2c_configured = config.is_some_and(|config| {
+        config.i2c_bus.is_some() || !config.i2c_devices.is_empty() || !config.i2c_sensors.is_empty()
+    });
+    let gpio_sensor_configured = config.is_some_and(|config| {
+        config
+            .hardware_devices
+            .iter()
+            .any(|device| matches!(device.device_type.as_str(), "gpio_in" | "adc_in" | "dht"))
+    });
+    let sensor_configured = config.is_some_and(|config| {
+        config
+            .hardware_devices
+            .iter()
+            .any(|device| matches!(device.device_type.as_str(), "gpio_in" | "adc_in" | "dht"))
+            || config
+                .i2c_sensors
+                .iter()
+                .any(|sensor| sensor.model.as_str() != "raw")
+    });
+    let i2c_ready = platform.i2c_ready()
+        || (memory_system_kind == MemorySystemKind::LinuxFull && i2c_configured);
+    update_runtime_capability(RuntimeCapabilityUpdate {
+        id: RUNTIME_CAPABILITY_HARDWARE_GPIO,
+        status: if gpio_configured && hardware_backend_serviceable {
+            RuntimeCapabilityStatus::Online
+        } else {
+            RuntimeCapabilityStatus::Offline
+        },
+        reason: if gpio_configured && hardware_backend_serviceable {
+            RuntimeCapabilityReason::Nominal
+        } else if gpio_configured {
+            RuntimeCapabilityReason::RuntimeNotInitialized
+        } else {
+            RuntimeCapabilityReason::NotConfigured
+        },
+        observed_at_secs: now_secs,
+        recovery_hint: None,
+    });
+    update_runtime_capability(RuntimeCapabilityUpdate {
+        id: RUNTIME_CAPABILITY_HARDWARE_I2C,
+        status: if i2c_ready {
+            RuntimeCapabilityStatus::Online
+        } else {
+            RuntimeCapabilityStatus::Offline
+        },
+        reason: if i2c_ready {
+            RuntimeCapabilityReason::Nominal
+        } else if i2c_configured {
+            RuntimeCapabilityReason::RuntimeNotInitialized
+        } else {
+            RuntimeCapabilityReason::NotConfigured
+        },
+        observed_at_secs: now_secs,
+        recovery_hint: None,
+    });
+    let gpio_sensor_ready = gpio_sensor_configured && hardware_backend_serviceable;
+    let i2c_sensor_ready = i2c_configured && i2c_ready;
+    let sensor_online = sensor_configured && (gpio_sensor_ready || i2c_sensor_ready);
+    update_runtime_capability(RuntimeCapabilityUpdate {
+        id: RUNTIME_CAPABILITY_SENSOR,
+        status: if sensor_online {
+            RuntimeCapabilityStatus::Online
+        } else {
+            RuntimeCapabilityStatus::Offline
+        },
+        reason: if sensor_online {
+            RuntimeCapabilityReason::Nominal
+        } else if !sensor_configured {
+            RuntimeCapabilityReason::NotConfigured
+        } else {
+            RuntimeCapabilityReason::RuntimeNotInitialized
+        },
+        observed_at_secs: now_secs,
+        recovery_hint: None,
+    });
+}
+
+fn hardware_backend_serviceable_for_capability(memory_system_kind: MemorySystemKind) -> bool {
+    matches!(
+        memory_system_kind,
+        MemorySystemKind::EspCompact | MemorySystemKind::LinuxFull
+    )
+}
+
+fn observe_camera_capability(config: Option<&AppConfig>, now_secs: u32) {
+    let _ = config;
+    update_runtime_capability(RuntimeCapabilityUpdate {
+        id: RUNTIME_CAPABILITY_CAMERA_FRAME,
+        status: RuntimeCapabilityStatus::Offline,
+        reason: RuntimeCapabilityReason::NotConfigured,
+        observed_at_secs: now_secs,
+        recovery_hint: None,
+    });
 }
 
 #[cfg(test)]
@@ -1012,6 +1188,39 @@ mod tests {
         let third = get_runtime_capability(RUNTIME_CAPABILITY_AUDIO_OUTPUT).expect("state");
         assert_eq!(third.epoch, 2);
         assert_eq!(third.status, RuntimeCapabilityStatus::Online);
+    }
+
+    #[test]
+    fn runtime_capability_snapshot_includes_p7_hardware_planes() {
+        let _guard = RUNTIME_CAPABILITY_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        reset_runtime_capabilities_for_tests();
+
+        let ids: Vec<&'static str> = runtime_capability_snapshot()
+            .into_iter()
+            .map(|state| state.id)
+            .collect();
+
+        for id in [
+            RUNTIME_CAPABILITY_DISPLAY_OUTPUT,
+            RUNTIME_CAPABILITY_HARDWARE_GPIO,
+            RUNTIME_CAPABILITY_HARDWARE_I2C,
+            RUNTIME_CAPABILITY_SENSOR,
+            RUNTIME_CAPABILITY_CAMERA_FRAME,
+        ] {
+            assert!(ids.contains(&id), "missing runtime capability id: {id}");
+        }
+    }
+
+    #[test]
+    fn hardware_capability_preserves_linux_host_stub_backend() {
+        assert!(hardware_backend_serviceable_for_capability(
+            MemorySystemKind::EspCompact
+        ));
+        assert!(hardware_backend_serviceable_for_capability(
+            MemorySystemKind::LinuxFull
+        ));
     }
 
     #[test]

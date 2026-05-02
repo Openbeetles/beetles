@@ -150,7 +150,7 @@ pub fn body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
 
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
     {
-        let has_psram = ctx.platform.memory_snapshot().heap_free_spiram > 0;
+        let has_psram = crate::orchestrator::cached_memory_snapshot().heap_free_spiram > 0;
         let hw = crate::platform::runtime_board::hardware_summary_line(has_psram);
         if let Some(obj) = json.as_object_mut() {
             obj.insert("hardware_model".to_string(), serde_json::json!(hw));

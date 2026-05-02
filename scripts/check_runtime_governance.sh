@@ -15,6 +15,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
 
+prod_source() {
+  sed '/^#\[cfg(test)\]/,$d' "$1"
+}
+
 RESPONSE_BODY_INTO_VEC_HOT_PATH='ResponseBody::into_vec|\b(body|resp_body|response_body)\.into_vec\s*\('
 if rg -n "$RESPONSE_BODY_INTO_VEC_HOT_PATH" src \
   --glob '!src/platform/response_body.rs' >/dev/null; then
@@ -165,8 +169,79 @@ check_no_prod_timed_wait_before_tests \
   'recv_timeout\s*\(' \
   "voice_session"
 
-if ! rg -n 'let _route_worker_lease = match acquire_route_worker_lease\s*\(' src/platform/http_server/esp_transport.rs >/dev/null; then
-  echo "FAIL: ESP route workers no longer acquire runtime route-worker leases at the execution-window call site" >&2
+check_no_prod_pattern_before_tests() {
+  local file="$1"
+  local pattern="$2"
+  local label="$3"
+  local message="$4"
+  local matches
+  matches="$(sed '/^#\[cfg(test)\]/,$d' "$file" | rg -n "$pattern" || true)"
+  if [[ -n "$matches" ]]; then
+    echo "FAIL: $message in $label" >&2
+    printf '%s\n' "$matches" >&2
+    exit 1
+  fi
+}
+
+BG_TIMER_STORAGE_HEAVY='gc_stale\s*\(|pop_due\s*\(|claim_due\s*\(|write_json_file|write_file(_unlocked)?|remove_file\s*\(|SessionRepairMode::Immediate|write_session_messages_unlocked|load_session_snapshot_unlocked|flush_session_store|serde_json::to_(vec|vec_pretty)|crate::memory::remind_tick|crate::task::task_due_tick|crate::memory::self_runtime_tick|crate::runtime::initiative_tick'
+check_no_prod_pattern_before_tests \
+  src/bg_timer.rs \
+  "$BG_TIMER_STORAGE_HEAVY" \
+  "bg_timer" \
+  "bg_timer must schedule storage mutation through the write-back plane instead of running it inline"
+check_no_prod_pattern_before_tests \
+  src/heartbeat/mod.rs \
+  'gc_stale\s*\(|pop_due\s*\(|claim_due\s*\(|write_json_file|write_file(_unlocked)?|remove_file\s*\(' \
+  "heartbeat" \
+  "heartbeat must remain a lightweight observability tick"
+check_no_prod_pattern_before_tests \
+  src/memory/hygiene.rs \
+  'gc_stale\s*\(' \
+  "memory hygiene" \
+  "post-reply memory hygiene must not remove session files inline"
+check_no_prod_pattern_before_tests \
+  src/agent/loop/reply_finalize.rs \
+  'write_json_file|write_file(_unlocked)?|remove_file\s*\(|SessionRepairMode::Immediate|write_session_messages_unlocked|load_session_snapshot_unlocked|flush_session_store|gc_stale\s*\(' \
+  "reply_finalize" \
+  "reply finalization must not perform direct storage repair, compaction, or file rewrite"
+
+if ! rg -n 'schedule_session_gc_runs_on_write_back_worker' src/runtime/write_back.rs >/dev/null ||
+   ! rg -n 'service_write_back_tasks_runs_due_work_off_caller_thread' src/runtime/write_back.rs >/dev/null ||
+   ! rg -n 'scheduler_storage_ticks_run_on_write_back_worker' src/runtime/write_back.rs >/dev/null ||
+   ! rg -n 'periodic_storage_maintenance_defers_when_worker_stack_would_break_tls_floor' src/runtime/write_back.rs >/dev/null ||
+   ! rg -n 'read_paths_do_not_touch_or_rewrite_long_term_memory_file' src/platform/spiffs/long_term_memory.rs >/dev/null ||
+   ! rg -n 'append_batch_defers_cold_malformed_session_repair' src/platform/spiffs/session.rs >/dev/null ||
+   ! rg -n 'load_recent_records_defers_repair_and_synthesizes_stable_ids' src/platform/spiffs/session.rs >/dev/null; then
+  echo "FAIL: P4 storage/write-back/session deferred repair contract tests are missing" >&2
+  exit 1
+fi
+
+if ! rg -n 'periodic_storage_maintenance_admitted\(\)' src/bg_timer.rs >/dev/null ||
+   ! rg -n 'PERIODIC_STORAGE_MAINTENANCE_MIN_LARGEST_BLOCK_BYTES' src/runtime/write_back.rs >/dev/null; then
+  echo "FAIL: optional periodic storage maintenance must reserve write-back worker stack plus TLS headroom before scheduling" >&2
+  exit 1
+fi
+
+if rg -n 'touch_long_term_memory_usage' src/platform/spiffs/long_term_memory.rs >/dev/null; then
+  echo "FAIL: long-term memory read paths must not touch/persist usage metadata from hot routes or turn prepare" >&2
+  rg -n 'touch_long_term_memory_usage' src/platform/spiffs/long_term_memory.rs >&2
+  exit 1
+fi
+
+HTTP_RESPONSE_HEAVY='write_json_file|write_file(_unlocked)?|remove_file\s*\(|state_fs\(\)\.(write|remove)|create_http_client|connect_wss|std::thread::spawn|spawn_guarded'
+http_response_body="$(
+  sed -n '/^fn write_api_resp/,/^fn route_runtime_admission_response/p' src/platform/http_server/esp_transport.rs
+  sed -n '/^fn write_outgoing/,/^fn esp_dispatch_route/p' src/platform/http_server/esp_transport.rs
+)"
+if printf '%s\n' "$http_response_body" | rg -n "$HTTP_RESPONSE_HEAVY" >/dev/null; then
+  echo "FAIL: ESP HTTP response write path must not perform storage/network/spawn work" >&2
+  printf '%s\n' "$http_response_body" | rg -n "$HTTP_RESPONSE_HEAVY" >&2
+  exit 1
+fi
+
+if ! rg -n 'let route_worker_lease = match acquire_route_worker_lease\(spawn_contract\)' src/platform/http_server/esp_transport.rs >/dev/null ||
+   ! rg -n 'let _route_worker_lease = route_worker_lease' src/platform/http_server/esp_transport.rs >/dev/null; then
+  echo "FAIL: ESP route workers must acquire lane lease before spawning the worker stack and hold it for the worker lifetime" >&2
   exit 1
 fi
 
@@ -206,6 +281,55 @@ if ! rg -n 'runtime::lease::format_baseline_log_line' src/heartbeat/mod.rs >/dev
   exit 1
 fi
 
+if ! rg -n 'pub mod execution_budget' src/runtime/mod.rs >/dev/null ||
+   ! rg -n 'pub struct ExecutionBudgetSnapshot' src/runtime/execution_budget.rs >/dev/null ||
+   ! rg -n 'runtime::execution_budget::format_baseline_log_line' src/heartbeat/mod.rs >/dev/null; then
+  echo "FAIL: runtime execution budget projection is no longer exposed through heartbeat" >&2
+  exit 1
+fi
+
+if ! rg -n 'worker_route_classes_have_complete_contracts' src/platform/http_server/router/catalog.rs >/dev/null ||
+   ! rg -n 'route_worker_runtime_admission_blocks_front_plane_contention' src/platform/http_server/router/catalog.rs >/dev/null ||
+   ! rg -n 'execution_budget_maps_every_plane_thread_to_stack_or_logical_owner' src/runtime/plane.rs >/dev/null; then
+  echo "FAIL: route/runtime execution budget contracts are no longer tested against their truth sources" >&2
+  exit 1
+fi
+
+if rg -n 'local_diagnostic:\s*EspRouteExecutor|EspRouteExecutor::new\(RouteExecutionClass::LocalDiagnosticRoute' src/platform/http_server/esp_transport.rs >/dev/null; then
+  echo "FAIL: ESP route executors must be keyed by RouteWorkerLane; local and slow diagnostic routes must share one diagnostic executor" >&2
+  rg -n 'local_diagnostic:\s*EspRouteExecutor|EspRouteExecutor::new\(RouteExecutionClass::LocalDiagnosticRoute' src/platform/http_server/esp_transport.rs >&2
+  exit 1
+fi
+
+if ! rg -n 'esp_route_executors_are_one_per_worker_lane' src/platform/http_server/esp_transport.rs >/dev/null; then
+  echo "FAIL: ESP route executor lane cardinality test is missing" >&2
+  exit 1
+fi
+
+if ! rg -n 'route_worker_runtime_busy_detail' src/platform/http_server/router/catalog.rs >/dev/null ||
+   ! rg -n 'active_agent_tasks|storage_contention' src/platform/http_server/router/catalog.rs >/dev/null ||
+   ! rg -n 'http_route_worker_runtime_busy' src/platform/http_server/esp_transport.rs >/dev/null; then
+  echo "FAIL: ESP route worker lazy-start admission must reject front-plane/storage contention before spawning worker stacks" >&2
+  exit 1
+fi
+
+if prod_source src/platform/http_server/esp_transport.rs |
+   rg -n 'memory_snapshot_live|log_startup_memory_checkpoint' >/dev/null; then
+  echo "FAIL: ESP HTTP request/route-worker path must not live-sample heap" >&2
+  exit 1
+fi
+
+if ! rg -n 'storage_touching_routes_never_run_on_httpd_callback' src/platform/http_server/router/catalog.rs >/dev/null; then
+  echo "FAIL: storage-touching route callback confinement contract test is missing" >&2
+  exit 1
+fi
+
+if rg -n 'ConfigStore|pairing::|orchestrator::snapshot|resource_diagnostic_snapshot|RouteExecutionClass|route_worker' src/platform/http_server/handlers/csrf_token.rs >/dev/null; then
+  echo "FAIL: csrf token read path must stay lightweight and must not depend on config/resource/route-worker state" >&2
+  rg -n 'ConfigStore|pairing::|orchestrator::snapshot|resource_diagnostic_snapshot|RouteExecutionClass|route_worker' src/platform/http_server/handlers/csrf_token.rs >&2
+  exit 1
+fi
+
 if rg -n '"restart_defer"|STACK_RESTART_DEFER|spawn_restart_defer_worker' src >/dev/null; then
   echo "FAIL: restart_defer must stay retired; restart responses must use the runtime delayed-task coordinator" >&2
   rg -n '"restart_defer"|STACK_RESTART_DEFER|spawn_restart_defer_worker' src >&2
@@ -228,13 +352,14 @@ if rg -n '(spawn(_guarded|_planned|_required)?|std::thread::spawn|Builder::new).
   exit 1
 fi
 
-if ! rg -n 'threads:\s*runtime::thread_registry::ThreadRegistrySnapshot' src/platform/http_server/handlers/resource.rs >/dev/null; then
-  echo "FAIL: /api/resource no longer exposes thread registry summary" >&2
+if ! rg -n 'resource_light_snapshot\s*\(' src/platform/http_server/handlers/resource.rs src/orchestrator/mod.rs >/dev/null ||
+   ! rg -n 'pub struct ResourceLightSnapshot' src/orchestrator/state.rs >/dev/null; then
+  echo "FAIL: /api/resource must use the orchestrator cached-light resource snapshot" >&2
   exit 1
 fi
 
-if ! rg -n 'admission:\s*orchestrator::ResourceAdmissionSnapshot' src/platform/http_server/handlers/resource.rs >/dev/null; then
-  echo "FAIL: /api/resource no longer exposes admission summary" >&2
+if ! rg -n 'admission:\s*ResourceAdmissionSnapshot' src/orchestrator/state.rs >/dev/null; then
+  echo "FAIL: orchestrator resource diagnostic no longer retains admission summary for internal governance/logging" >&2
   exit 1
 fi
 
@@ -260,25 +385,24 @@ if ! rg -n 'crash:\s*CrashMetadataSnapshot' src/orchestrator/state.rs >/dev/null
   exit 1
 fi
 
-if ! rg -n 'crash:\s*orchestrator::CrashMetadataSnapshot' src/platform/http_server/handlers/resource.rs >/dev/null ||
-   ! rg -n 'crash:\s*diag\.crash' src/platform/http_server/handlers/resource.rs >/dev/null; then
-  echo "FAIL: /api/resource no longer exposes aggregated crash diagnostics" >&2
+if rg -n 'crash:\s*orchestrator::CrashMetadataSnapshot|crash:\s*diag\.crash|resource_diagnostic_snapshot\s*\(' src/platform/http_server/handlers/resource.rs >/dev/null; then
+  echo "FAIL: default /api/resource must not expose crash diagnostics or call the deep diagnostic snapshot" >&2
   exit 1
 fi
 
-if ! rg -n 'runtime_capabilities:\s*Vec<orchestrator::RuntimeCapabilityState>' src/platform/http_server/handlers/resource.rs >/dev/null ||
-   ! rg -n 'runtime_capabilities:\s*Vec<crate::orchestrator::RuntimeCapabilityState>' src/orchestrator/state.rs >/dev/null ||
+if ! rg -n 'runtime_capabilities:\s*Vec<crate::orchestrator::RuntimeCapabilityState>' src/orchestrator/state.rs >/dev/null ||
    ! rg -n 'runtime_capability_snapshot\s*\(' src/orchestrator/state.rs >/dev/null; then
-  echo "FAIL: /api/resource no longer exposes runtime capability diagnostic snapshot" >&2
+  echo "FAIL: orchestrator deep diagnostic snapshot no longer retains runtime capability facts" >&2
   exit 1
 fi
 
-if ! rg -n 'resource_diagnostic_snapshot\s*\(' src/platform/http_server/handlers/resource.rs src/orchestrator/mod.rs >/dev/null; then
-  echo "FAIL: /api/resource no longer uses orchestrator diagnostic resource aggregation" >&2
+if prod_source src/platform/http_server/handlers/resource.rs |
+   rg -n 'runtime_capabilities|execution_budget|plane_lifecycle|threads|write_back' >/dev/null; then
+  echo "FAIL: default /api/resource must not expose deep diagnostic objects" >&2
   exit 1
 fi
-if ! rg -n 'resource_route_uses_snapshot_worker_on_esp' src/platform/http_server/router/catalog.rs >/dev/null; then
-  echo "FAIL: /api/resource must use the snapshot route worker on ESP instead of the HTTPD callback" >&2
+if ! rg -n 'resource_route_stays_cached_light_immediate' src/platform/http_server/router/catalog.rs >/dev/null; then
+  echo "FAIL: /api/resource must stay an immediate cached-light route on ESP" >&2
   exit 1
 fi
 
@@ -301,6 +425,72 @@ done
 
 if ! rg -n 'try_begin_runtime_capability_call_with_policy\s*\(' src/tools/registry.rs >/dev/null; then
   echo "FAIL: tool execution no longer acquires runtime capability call guard" >&2
+  exit 1
+fi
+
+if rg -n 'delivery\.finalize\(&final_content\)' src/agent/loop/turn_execution.rs >/dev/null; then
+  echo "FAIL: raw final content must not be streamed before ReplyFinalize canonicalizes it" >&2
+  rg -n 'delivery\.finalize\(&final_content\)' src/agent/loop/turn_execution.rs >&2
+  exit 1
+fi
+
+if rg -n 'delivery\.on_stream_delta|on_stream_delta\(accumulated\)' src/agent/loop/turn_execution.rs >/dev/null; then
+  echo "FAIL: LLM progress callback must not stream raw accumulated text before ReplyFinalize" >&2
+  rg -n 'delivery\.on_stream_delta|on_stream_delta\(accumulated\)' src/agent/loop/turn_execution.rs >&2
+  exit 1
+fi
+
+if rg -n 'sync_user_turn_relationship_topology' src/agent/loop/reply_finalize.rs src/agent/loop/turn_finalize.rs >/dev/null; then
+  echo "FAIL: relationship topology sync must stay out of synchronous reply finalization" >&2
+  rg -n 'sync_user_turn_relationship_topology' src/agent/loop/reply_finalize.rs src/agent/loop/turn_finalize.rs >&2
+  exit 1
+fi
+
+if ! rg -n 'esp_compact_user_prompt_assembly_uses_compact_carry_without_governed_recall' src/memory/profile.rs >/dev/null; then
+  echo "FAIL: EspCompact user prompt hot path must have a contract test for governed recall being off" >&2
+  exit 1
+fi
+
+if ! rg -n 'build_context_messages_does_not_mutate_important_marker' src/memory/context_window.rs >/dev/null; then
+  echo "FAIL: prompt context window must prove build-time important marker reads are non-mutating" >&2
+  exit 1
+fi
+
+for capability_id in \
+  RUNTIME_CAPABILITY_DISPLAY_OUTPUT \
+  RUNTIME_CAPABILITY_HARDWARE_GPIO \
+  RUNTIME_CAPABILITY_HARDWARE_I2C \
+  RUNTIME_CAPABILITY_SENSOR \
+  RUNTIME_CAPABILITY_CAMERA_FRAME; do
+  if ! rg -n "$capability_id" src/orchestrator/runtime_capability.rs src/orchestrator/mod.rs >/dev/null; then
+    echo "FAIL: P7 runtime capability id missing: $capability_id" >&2
+    exit 1
+  fi
+done
+
+if ! rg -n 'RUNTIME_CAPABILITY_HARDWARE_GPIO' src/tools/hardware.rs >/dev/null ||
+   ! rg -n 'RUNTIME_CAPABILITY_HARDWARE_I2C' src/tools/i2c_device.rs src/tools/i2c_sensor.rs >/dev/null ||
+   ! rg -n 'RUNTIME_CAPABILITY_SENSOR' src/tools/i2c_sensor.rs src/tools/sensor_watch.rs >/dev/null; then
+  echo "FAIL: hardware/I2C/sensor tools must declare runtime capability guards" >&2
+  exit 1
+fi
+
+if ! rg -n 'ToolEffectClass::HardwareRead.*RUNTIME_CAPABILITY_SENSOR|RUNTIME_CAPABILITY_SENSOR.*ToolEffectClass::HardwareRead' src/tools/policy.rs >/dev/null; then
+  echo "FAIL: hardware read tool execution must require the sensor runtime capability" >&2
+  exit 1
+fi
+
+if ! rg -n 'RUNTIME_CAPABILITY_HARDWARE_GPIO' src/tools/sensor_watch.rs >/dev/null ||
+   ! rg -n 'RUNTIME_CAPABILITY_HARDWARE_I2C' src/tools/sensor_watch.rs >/dev/null; then
+  echo "FAIL: sensor watch must hold underlying hardware.gpio/i2c active-call guards while sampling" >&2
+  exit 1
+fi
+
+if ! rg -n 'hardware_drivers::drive_gpio_out' src/platform/linux/mod.rs >/dev/null ||
+   ! rg -n 'hardware_drivers::drive_i2c_sensor_stub' src/platform/linux/mod.rs >/dev/null ||
+   ! rg -n 'hardware_backend_serviceable_for_capability' src/orchestrator/runtime_capability.rs >/dev/null ||
+   ! rg -n 'MemorySystemKind::LinuxFull' src/orchestrator/runtime_capability.rs >/dev/null; then
+  echo "FAIL: Linux/host hardware stub contract must stay serviceable; ESP runtime capability governance must not disable the existing Linux development/test backend" >&2
   exit 1
 fi
 

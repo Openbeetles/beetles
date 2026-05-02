@@ -5,6 +5,7 @@ pub mod acceptance;
 pub mod agent_supervision;
 pub mod continuity_flush;
 pub mod delayed_task;
+pub mod execution_budget;
 pub mod frame_lease;
 pub mod governance;
 pub mod initiative;
@@ -45,6 +46,7 @@ pub use delayed_task::{
     schedule_critical_delayed_task, schedule_delayed_task, schedule_keyed_system_inbound_msg,
     schedule_system_inbound_msg, service_delayed_tasks,
 };
+pub use execution_budget::ExecutionBudgetSnapshot;
 pub use frame_lease::{
     admit_current_camera_frame_capture, try_borrow_frame, try_borrow_frame_with_admission,
     FrameLease, FrameLeaseAdmission,

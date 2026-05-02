@@ -1228,13 +1228,13 @@ Success response: `200 application/json`
 
 ### Observability API Layers
 
-- `/api/health` is lightweight liveness for first-screen status and LEDs; its route class is `ImmediateRoute`. Do not put resource diagnostics, workflow data, or full network snapshots here.
-- `/api/resource` is the source of truth for resource and admission diagnostics; its route class is `SnapshotRoute`. It is not the device-wide status endpoint and does not return health overview fields.
-- `/api/metrics` carries counters and recent latency values; it is immediate on ESP and may be diagnostic on Linux/host builds. Do not put heap/resource/network objects here.
+- `/api/health` is lightweight liveness for first-screen status and LEDs. Do not put resource diagnostics, workflow data, or full network snapshots here.
+- `/api/resource` is the lightweight resource-pressure snapshot for default status polling. It is not the device-wide status endpoint and does not return health overview or detailed runtime internals.
+- `/api/metrics` carries counters and recent latency values. Do not put heap/resource/network objects here.
 - `/api/operator/status` is the explanation surface for humans and UI. It may aggregate several sources to explain why the device is in its current state, but it is not a machine-admission source.
-- `/api/diagnose` returns active diagnosis results and suggestions; its route class is `SlowDiagnosticRoute`. It returns diagnosis items, not a raw snapshot warehouse.
+- `/api/diagnose` returns active diagnosis results and suggestions. It returns diagnosis items, not a raw snapshot warehouse.
 
-The old fields `health.wifi`, `health.network`, `health.workflow`, `resource.network`, and `resource.firmware_identity` have been removed with no compatibility layer. Custom frontends must not depend on diagnostic fields from `/api/health`, and must not treat `/api/resource` as the device-wide status endpoint. Crash evidence remains available as `resource.crash` for operator diagnostics.
+The old fields `health.wifi`, `health.network`, `health.workflow`, `resource.network`, and `resource.firmware_identity` have been removed with no compatibility layer. Custom frontends must not depend on diagnostic fields from `/api/health`, and must not treat `/api/resource` as the device-wide status or detailed diagnostic endpoint.
 
 **GET /api/health**
 
@@ -1312,7 +1312,7 @@ Success response: `200 text/plain`
 
 **GET /api/resource**
 
-Purpose: read the resource, admission, and execution-plane diagnostic snapshot.
+Purpose: read the lightweight resource-pressure snapshot.
 
 Auth: `Activated`
 
@@ -1337,17 +1337,7 @@ Top-level fields:
 - `inbound_depth`
 - `outbound_depth`
 - `budget`
-- `admission`
 - `governance_metrics`
-- `runtime_capabilities`
-- `crash`
-- `network_gate_summary`
-- `planes`
-- `plane_lifecycle`
-- `leases`
-- `threads`
-- `display_lease_denied_total`
-- `write_back`
 - `session_count`
 - `storage_used_kb`
 - `storage_total_kb`
@@ -1355,7 +1345,7 @@ Top-level fields:
 - `load_average` (Linux/host-only)
 - `process_memory_kb` (Linux/host-only)
 
-The resource endpoint is a resource-diagnostics contract. `heap_free_spiram` is free PSRAM, not used PSRAM; `heap_used_spiram_est = heap_total_spiram - heap_free_spiram` and is only an interpretation aid. `display_lease_denied_total` is a resource-governance counter for denied display-plane leases, not the `/api/health.display` health field. `crash` carries real panic/reset evidence when available and keeps missing facts as null. Governance fields diagnose runtime pressure and may grow as new execution-plane guards are added; clients should tolerate unknown fields, but should not expect health overview or firmware identity here.
+The resource endpoint is a default polling contract and is intentionally lightweight. `heap_free_spiram` is free PSRAM, not used PSRAM; `heap_used_spiram_est = heap_total_spiram - heap_free_spiram` is only an interpretation aid. `governance_metrics` carries compact pressure and rejection counters. Clients should tolerate unknown fields, but should not expect health overview, detailed runtime internals, crash evidence, or firmware identity here.
 
 **GET /api/diagnose**
 

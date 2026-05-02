@@ -1,5 +1,5 @@
-import { request, requestProtected, API_ERROR } from '../client'
-import type { ApiResult } from '../client'
+import { request, requestProtected, API_ERROR } from '../client.ts'
+import type { ApiResult } from '../client.ts'
 
 /** 与固件 `metrics::MetricsSnapshot` serde 字段一致。 */
 export interface MetricsSnapshotData {
@@ -39,19 +39,6 @@ export interface ResourceBudgetData {
   reconnect_backoff_secs?: number
 }
 
-export interface ResourceAdmissionData {
-  http_permit_wait_last_ms?: number
-  http_route_queue_wait_last_ms?: number
-  http_route_handler_last_ms?: number
-  http_route_timeout_total?: number
-}
-
-export interface ResourceNetworkGateSummaryData {
-  stage?: string
-  outbound_settled?: boolean
-  wall_clock_trusted?: boolean
-}
-
 export interface ResourceGovernanceMetricsData {
   runtime_spawn_failure_total?: number
   http_route_reject_total?: number
@@ -68,15 +55,7 @@ export interface ResourceGovernanceMetricsData {
   event_ingress_stale_drop_total?: number
 }
 
-export interface ResourceCrashMetadataData {
-  last_panic_pc?: string | null
-  last_panic_core?: number | null
-  last_panic_reason?: string | null
-  last_symbolize_hint?: string | null
-  last_resource_baseline_before_panic?: string | null
-}
-
-/** 与固件 `handlers/resource.rs` 的收口后资源诊断契约一致。 */
+/** 与固件 `handlers/resource.rs` 的轻量资源压力快照契约一致。 */
 export interface ResourceSnapshotData {
   pressure?: string
   tls_fragmentation_risk?: string
@@ -95,17 +74,7 @@ export interface ResourceSnapshotData {
   inbound_depth?: number
   outbound_depth?: number
   budget?: ResourceBudgetData
-  admission?: ResourceAdmissionData
   governance_metrics?: ResourceGovernanceMetricsData
-  crash?: ResourceCrashMetadataData
-  runtime_capabilities?: unknown[]
-  network_gate_summary?: ResourceNetworkGateSummaryData
-  planes?: unknown
-  plane_lifecycle?: unknown
-  leases?: unknown
-  threads?: unknown
-  display_lease_denied_total?: number
-  write_back?: unknown
   session_count?: number
   storage_used_kb?: number
   storage_total_kb?: number

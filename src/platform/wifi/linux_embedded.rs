@@ -100,7 +100,9 @@ pub fn passive_scan_handle() -> Option<WifiScanHandle> {
 }
 
 /// Linux 启动后不阻塞全局启动流程；连接状态由后台与 API 查询。
-pub fn wait_for_network_ready() {}
+pub fn wait_for_network_ready() -> bool {
+    true
+}
 
 /// 若 iface 上已有 STA 地址落在 `192.168.4.0/24`，则 AP 避让至备用网段，避免与 SoftAP 默认网段冲突。
 fn choose_ap_ip(iface: &str) -> &'static str {

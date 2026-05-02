@@ -111,7 +111,7 @@ const SNTP_RESYNC_SECS: u64 = 6 * 3600;
 ))]
 pub fn init_sntp() {
     SNTP_ONCE.call_once(|| {
-        crate::util::spawn_guarded("sntp", || {
+        crate::util::spawn_guarded_with_stack("sntp", crate::util::STACK_SNTP_WORKER, || {
             log::info!("[{}] Linux SNTP background sync started", TAG);
 
             // 先判断系统时间是否已正确（RTC 或 NTP 已设置过）。

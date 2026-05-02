@@ -2,23 +2,29 @@
 //! 将热路径上的小型持久化写入从用户/语音临界区中移出，复用现有 delayed task，
 //! 并由独立 write-back 执行面承接 SPIFFS/serde/session flush 重活。
 
-use crate::agent::{ActiveWorkRecord, ActiveWorkStore};
+use crate::agent::{ActiveWorkRecord, ActiveWorkStore, DetachedWorkStore};
+use crate::bus::SystemInboundTx;
 use crate::channels::inbound_backpressure::{self, EventIngressSource};
 use crate::error::{Error, Result};
+use crate::i18n::Locale;
 use crate::memory::{
     derive_recent_persona_evidence, AutonomyStrategy, AutonomyStrategyStore, CoreRevisionLedger,
     CoreRevisionLedgerStore, ExecutionState, ExecutionStateStore, FeltSignificance,
     FeltSignificanceStore, ImportantMessageStore, InnerConflict, InnerConflictStore, InnerLife,
     InnerLifeStore, LongTermMemoryExtractionState, LongTermMemoryExtractionStateStore,
-    MentalPrivacyState, MentalPrivacyStore, OuterVoice, OuterVoiceStore, RecentPersonaEvidence,
-    RelationshipConstitution, RelationshipConstitutionStore, RelationshipPortfolio,
-    RelationshipPortfolioStore, RelationshipTopology, RelationshipTopologyStore, SelfAuthoredCore,
-    SelfAuthoredCoreStore, SelfContinuity, SelfContinuityStore, SelfModel, SelfModelStore,
-    SessionMessage, SessionStore, SessionSummaryStore, TemperamentContinuity,
-    TemperamentContinuityStore, TurnLedger, TurnLedgerStore, WorldSense, WorldSenseStore,
-    RECENT_PERSONA_EVIDENCE_MEANINGFUL_TURNS,
+    MemoryProfile, MentalPrivacyState, MentalPrivacyStore, OuterVoice, OuterVoiceStore,
+    RecentPersonaEvidence, RelationshipConstitution, RelationshipConstitutionStore,
+    RelationshipPortfolio, RelationshipPortfolioStore, RelationshipTopology,
+    RelationshipTopologyStore, RemindAtStore, SelfAuthoredCore, SelfAuthoredCoreStore,
+    SelfContinuity, SelfContinuityStore, SelfModel, SelfModelStore, SessionMessage, SessionStore,
+    SessionSummaryStore, TemperamentContinuity, TemperamentContinuityStore, TurnLedger,
+    TurnLedgerStore, WorldSense, WorldSenseStore, RECENT_PERSONA_EVIDENCE_MEANINGFUL_TURNS,
 };
+use crate::platform::Platform;
+use crate::task::TaskStore;
 use std::collections::{HashMap, HashSet};
+#[cfg(test)]
+use std::sync::atomic::AtomicU8;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -45,9 +51,9 @@ struct WriteBackScheduler {
     state: Mutex<WriteBackQueueState>,
 }
 
-// Keep enough slots for one flush job from every buffered runtime store family.
+// Keep enough slots for one flush/maintenance job from every buffered runtime store family.
 // This is a queue of small delayed closures, not a stack reservation.
-const WRITE_BACK_RUNTIME_DOMAIN_FLOOR: usize = 24;
+const WRITE_BACK_RUNTIME_DOMAIN_FLOOR: usize = 30;
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 pub(crate) const WRITE_BACK_QUEUE_MAX: usize = WRITE_BACK_RUNTIME_DOMAIN_FLOOR + 8;
@@ -57,14 +63,18 @@ pub(crate) const WRITE_BACK_QUEUE_MAX: usize = WRITE_BACK_RUNTIME_DOMAIN_FLOOR +
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 // SPIFFS + serde flushes need their own ESP stack budget, separate from agent_loop.
 // 24KB matches the old bg_timer write-back budget without adding an oversized SRAM reserve.
-const WRITE_BACK_WORKER_STACK: usize = 24 * 1024;
+pub(crate) const WRITE_BACK_WORKER_STACK: usize = 24 * 1024;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 // Host tests and Linux embedded targets still execute the same serde/session flush
 // path; 8KB can overflow before the worker reaches its idle-stop release point.
-const WRITE_BACK_WORKER_STACK: usize = 24 * 1024;
+pub(crate) const WRITE_BACK_WORKER_STACK: usize = 24 * 1024;
 
 const WRITE_BACK_ADMISSION_DEFER_MS: u64 = 500;
 const WRITE_BACK_FOREGROUND_ADMISSION_DEFER_MS: u64 = 2_000;
+pub(crate) const PERIODIC_STORAGE_MAINTENANCE_MIN_INTERNAL_BYTES: usize =
+    crate::constants::TLS_ADMISSION_MIN_INTERNAL_BYTES + WRITE_BACK_WORKER_STACK;
+pub(crate) const PERIODIC_STORAGE_MAINTENANCE_MIN_LARGEST_BLOCK_BYTES: usize =
+    crate::constants::TLS_ADMISSION_MIN_LARGEST_BLOCK_BYTES + WRITE_BACK_WORKER_STACK;
 #[cfg(test)]
 const WRITE_BACK_IDLE_STOP_MS: u64 = 30;
 #[cfg(all(any(target_arch = "xtensa", target_arch = "riscv32"), not(test)))]
@@ -104,6 +114,11 @@ const BUFFERED_RUNTIME_WRITE_BACK_LABELS: &[&str] = &[
     "session_summary_write_back",
     "important_message_write_back",
     "session_store",
+    "session_gc_write_back",
+    "due_reminder_sweep_write_back",
+    "due_task_sweep_write_back",
+    "self_runtime_idle_tick_write_back",
+    "initiative_tick_write_back",
 ];
 
 static WRITE_BACK_DEFERRED_TOTAL: AtomicU32 = AtomicU32::new(0);
@@ -114,6 +129,8 @@ static WRITE_BACK_RETRY_SCHEDULED: AtomicBool = AtomicBool::new(false);
 
 #[cfg(test)]
 static WRITE_BACK_TEST_AUTO_SERVICE: AtomicBool = AtomicBool::new(false);
+#[cfg(test)]
+static PERIODIC_STORAGE_MAINTENANCE_TEST_ADMISSION_OVERRIDE: AtomicU8 = AtomicU8::new(0);
 
 #[derive(Clone, Copy, Debug, serde::Serialize, PartialEq, Eq)]
 pub struct WriteBackSnapshot {
@@ -123,6 +140,35 @@ pub struct WriteBackSnapshot {
     pub dropped_total: u64,
     pub coalesced_total: u64,
     pub worker_starts_total: u64,
+}
+
+/// Storage maintenance jobs that must run on the governed write-back plane.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum StorageMaintenanceTaskKind {
+    SessionGc,
+    DueReminderSweep,
+    DueTaskSweep,
+    SelfRuntimeIdleTick,
+    InitiativeTick,
+}
+
+impl StorageMaintenanceTaskKind {
+    fn label(self) -> &'static str {
+        match self {
+            Self::SessionGc => "session_gc_write_back",
+            Self::DueReminderSweep => "due_reminder_sweep_write_back",
+            Self::DueTaskSweep => "due_task_sweep_write_back",
+            Self::SelfRuntimeIdleTick => "self_runtime_idle_tick_write_back",
+            Self::InitiativeTick => "initiative_tick_write_back",
+        }
+    }
+
+    fn requires_periodic_idle_headroom(self) -> bool {
+        matches!(
+            self,
+            Self::SessionGc | Self::SelfRuntimeIdleTick | Self::InitiativeTick
+        )
+    }
 }
 
 fn write_back_scheduler() -> &'static WriteBackScheduler {
@@ -168,6 +214,11 @@ fn is_coalescible_write_back_label(label: &str) -> bool {
             | "active_work_write_back"
             | "session_summary_write_back"
             | "session_store"
+            | "session_gc_write_back"
+            | "due_reminder_sweep_write_back"
+            | "due_task_sweep_write_back"
+            | "self_runtime_idle_tick_write_back"
+            | "initiative_tick_write_back"
     )
 }
 
@@ -257,6 +308,108 @@ fn schedule_write_back_task(label: &'static str, due_at: Instant, task: WriteBac
         }
     }
     true
+}
+
+/// Schedule a bounded storage-maintenance task on the write-back plane.
+///
+/// Callers must keep the closure scoped to storage mutation or storage-backed
+/// due-item claiming. The caller thread only queues the task; serde/SPIFFS work
+/// runs under the write-back worker's storage lease and admission policy.
+pub(crate) fn schedule_storage_maintenance_task(
+    kind: StorageMaintenanceTaskKind,
+    task: impl FnOnce() + Send + 'static,
+) -> bool {
+    if kind.requires_periodic_idle_headroom() && !periodic_storage_maintenance_admitted() {
+        record_write_back_deferred(1);
+        log::debug!(
+            "[write_back:{}] periodic storage maintenance skipped by resource admission",
+            kind.label()
+        );
+        return false;
+    }
+    schedule_write_back_task(kind.label(), Instant::now(), Box::new(task))
+}
+
+pub(crate) fn schedule_session_gc(
+    session_store: Arc<dyn SessionStore + Send + Sync>,
+    max_age_secs: u64,
+) -> bool {
+    schedule_storage_maintenance_task(StorageMaintenanceTaskKind::SessionGc, move || {
+        match session_store.gc_stale(max_age_secs) {
+            Ok(n) if n > 0 => log::info!("[write_back] session GC removed {} stale files", n),
+            Err(error) => log::warn!("[write_back] session GC error: {}", error),
+            _ => {}
+        }
+    })
+}
+
+pub(crate) fn schedule_due_reminder_sweep<C>(
+    remind_store: Arc<dyn RemindAtStore + Send + Sync>,
+    cleanup: C,
+    system_inbound_tx: SystemInboundTx,
+    resolve_locale: Arc<dyn Fn() -> Locale + Send + Sync>,
+) -> bool
+where
+    C: FnMut(&crate::reminder::ReminderItem) -> Result<()> + Send + 'static,
+{
+    schedule_storage_maintenance_task(StorageMaintenanceTaskKind::DueReminderSweep, move || {
+        crate::memory::remind_tick(
+            remind_store.as_ref(),
+            cleanup,
+            &system_inbound_tx,
+            &resolve_locale,
+        );
+    })
+}
+
+pub(crate) fn schedule_due_task_sweep(
+    task_store: Arc<dyn TaskStore + Send + Sync>,
+    system_inbound_tx: SystemInboundTx,
+    resolve_locale: Arc<dyn Fn() -> Locale + Send + Sync>,
+) -> bool {
+    schedule_storage_maintenance_task(StorageMaintenanceTaskKind::DueTaskSweep, move || {
+        crate::task::task_due_tick(task_store.as_ref(), &system_inbound_tx, &resolve_locale);
+    })
+}
+
+pub(crate) struct IdleSelfRuntimeTickInputs {
+    pub(crate) system_inbound_tx: SystemInboundTx,
+    pub(crate) detached_work_store: Arc<dyn DetachedWorkStore + Send + Sync>,
+    pub(crate) session_store: Arc<dyn SessionStore + Send + Sync>,
+    pub(crate) self_continuity_store: Arc<dyn SelfContinuityStore + Send + Sync>,
+    pub(crate) autonomy_strategy_store: Arc<dyn AutonomyStrategyStore + Send + Sync>,
+    pub(crate) self_authored_core_store: Arc<dyn SelfAuthoredCoreStore + Send + Sync>,
+    pub(crate) relationship_portfolio_store: Arc<dyn RelationshipPortfolioStore + Send + Sync>,
+    pub(crate) relationship_topology_store: Arc<dyn RelationshipTopologyStore + Send + Sync>,
+    pub(crate) profile: MemoryProfile,
+    pub(crate) now_secs: u64,
+}
+
+pub(crate) fn schedule_idle_self_runtime_tick(inputs: IdleSelfRuntimeTickInputs) -> bool {
+    schedule_storage_maintenance_task(StorageMaintenanceTaskKind::SelfRuntimeIdleTick, move || {
+        crate::memory::self_runtime_tick(
+            &inputs.system_inbound_tx,
+            inputs.detached_work_store.as_ref(),
+            inputs.session_store.as_ref(),
+            inputs.self_continuity_store.as_ref(),
+            inputs.autonomy_strategy_store.as_ref(),
+            inputs.self_authored_core_store.as_ref(),
+            inputs.relationship_portfolio_store.as_ref(),
+            inputs.relationship_topology_store.as_ref(),
+            inputs.profile,
+            inputs.now_secs,
+        );
+    })
+}
+
+pub(crate) fn schedule_initiative_tick(
+    platform: Arc<dyn Platform>,
+    system_inbound_tx: SystemInboundTx,
+    now_secs: u64,
+) -> bool {
+    schedule_storage_maintenance_task(StorageMaintenanceTaskKind::InitiativeTick, move || {
+        crate::runtime::initiative_tick(platform.as_ref(), &system_inbound_tx, now_secs);
+    })
 }
 
 fn ensure_write_back_worker_started_for_pending_jobs() -> bool {
@@ -383,6 +536,64 @@ fn write_back_interactive_foreground_activity_active(
     resource: &crate::orchestrator::ResourceSnapshot,
 ) -> bool {
     resource.active_http_count > 0 || resource.active_agent_tasks > 0
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PeriodicStorageMaintenanceAdmission {
+    Admitted,
+    Deferred(&'static str),
+}
+
+pub(crate) fn periodic_storage_maintenance_admitted() -> bool {
+    #[cfg(test)]
+    match PERIODIC_STORAGE_MAINTENANCE_TEST_ADMISSION_OVERRIDE.load(Ordering::Acquire) {
+        1 => return false,
+        2 => return true,
+        _ => {}
+    }
+    let resource = crate::orchestrator::snapshot();
+    matches!(
+        periodic_storage_maintenance_admission_for_resource(
+            &resource,
+            crate::runtime::config_activity_active()
+        ),
+        PeriodicStorageMaintenanceAdmission::Admitted
+    )
+}
+
+fn periodic_storage_maintenance_admission_for_resource(
+    resource: &crate::orchestrator::ResourceSnapshot,
+    config_active: bool,
+) -> PeriodicStorageMaintenanceAdmission {
+    if write_back_admission_delay_for_resource(resource, config_active).is_some() {
+        return PeriodicStorageMaintenanceAdmission::Deferred("write_back_admission");
+    }
+    if resource.pressure != crate::orchestrator::PressureLevel::Normal {
+        return PeriodicStorageMaintenanceAdmission::Deferred("pressure");
+    }
+    if resource.storage_contention_risk != crate::orchestrator::StorageContentionRisk::Healthy {
+        return PeriodicStorageMaintenanceAdmission::Deferred("storage_contention");
+    }
+    if config_active
+        || resource.active_http_count > 0
+        || resource.active_agent_tasks > 0
+        || resource.inbound_depth > 0
+        || resource.outbound_depth > 0
+    {
+        return PeriodicStorageMaintenanceAdmission::Deferred("foreground_activity");
+    }
+    if resource.heap_free_internal > 0
+        && resource.heap_free_internal < PERIODIC_STORAGE_MAINTENANCE_MIN_INTERNAL_BYTES as u32
+    {
+        return PeriodicStorageMaintenanceAdmission::Deferred("internal_heap_headroom");
+    }
+    if resource.heap_largest_block_internal > 0
+        && resource.heap_largest_block_internal
+            < PERIODIC_STORAGE_MAINTENANCE_MIN_LARGEST_BLOCK_BYTES as u32
+    {
+        return PeriodicStorageMaintenanceAdmission::Deferred("largest_block_headroom");
+    }
+    PeriodicStorageMaintenanceAdmission::Admitted
 }
 
 struct WriteBackLeaseGuard {
@@ -593,6 +804,28 @@ fn write_back_test_guard() -> std::sync::MutexGuard<'static, ()> {
     LOCK.get_or_init(|| Mutex::new(()))
         .lock()
         .unwrap_or_else(|e| e.into_inner())
+}
+
+#[cfg(test)]
+struct PeriodicStorageMaintenanceAdmissionOverrideGuard {
+    previous: u8,
+}
+
+#[cfg(test)]
+impl Drop for PeriodicStorageMaintenanceAdmissionOverrideGuard {
+    fn drop(&mut self) {
+        PERIODIC_STORAGE_MAINTENANCE_TEST_ADMISSION_OVERRIDE
+            .store(self.previous, Ordering::Release);
+    }
+}
+
+#[cfg(test)]
+fn periodic_storage_maintenance_admission_override_for_tests(
+    admitted: bool,
+) -> PeriodicStorageMaintenanceAdmissionOverrideGuard {
+    let previous = PERIODIC_STORAGE_MAINTENANCE_TEST_ADMISSION_OVERRIDE
+        .swap(if admitted { 2 } else { 1 }, Ordering::AcqRel);
+    PeriodicStorageMaintenanceAdmissionOverrideGuard { previous }
 }
 
 #[derive(Clone)]
@@ -1574,6 +1807,8 @@ mod tests {
     #[derive(Default)]
     struct StubSessionStore {
         entries: Mutex<HashMap<String, Vec<SessionMessage>>>,
+        gc_calls: AtomicUsize,
+        gc_thread_tx: Mutex<Option<std::sync::mpsc::Sender<std::thread::ThreadId>>>,
     }
 
     #[derive(Default)]
@@ -1667,6 +1902,19 @@ mod tests {
                 .keys()
                 .cloned()
                 .collect())
+        }
+
+        fn gc_stale(&self, _max_age_secs: u64) -> Result<usize> {
+            self.gc_calls.fetch_add(1, Ordering::Relaxed);
+            if let Some(tx) = self
+                .gc_thread_tx
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .take()
+            {
+                let _ = tx.send(std::thread::current().id());
+            }
+            Ok(1)
         }
     }
 
@@ -2034,6 +2282,57 @@ mod tests {
         assert_ne!(
             worker_thread, caller_thread,
             "service_write_back_tasks must not execute heavy storage work on the caller stack"
+        );
+    }
+
+    #[test]
+    fn schedule_session_gc_runs_on_write_back_worker() {
+        let _write_back_guard = write_back_test_guard();
+        let _periodic_admission = periodic_storage_maintenance_admission_override_for_tests(true);
+        reset_write_back_queue_for_tests();
+        let caller_thread = std::thread::current().id();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let store = Arc::new(StubSessionStore {
+            gc_thread_tx: Mutex::new(Some(tx)),
+            ..StubSessionStore::default()
+        });
+        let session_store: Arc<dyn SessionStore + Send + Sync> = store.clone();
+
+        assert!(schedule_session_gc(session_store, 60));
+        service_write_back_tasks();
+        let worker_thread = rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("session GC should be serviced by the write-back plane");
+
+        assert_ne!(
+            worker_thread, caller_thread,
+            "session GC must not perform SPIFFS remove on the scheduler caller stack"
+        );
+        assert_eq!(store.gc_calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn scheduler_storage_ticks_run_on_write_back_worker() {
+        let _write_back_guard = write_back_test_guard();
+        let _periodic_admission = periodic_storage_maintenance_admission_override_for_tests(true);
+        reset_write_back_queue_for_tests();
+        let caller_thread = std::thread::current().id();
+        let (tx, rx) = std::sync::mpsc::channel();
+
+        assert!(schedule_storage_maintenance_task(
+            StorageMaintenanceTaskKind::SelfRuntimeIdleTick,
+            move || {
+                tx.send(std::thread::current().id()).unwrap();
+            },
+        ));
+        service_write_back_tasks();
+        let worker_thread = rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("scheduler storage tick should be serviced by the write-back plane");
+
+        assert_ne!(
+            worker_thread, caller_thread,
+            "scheduler storage mutation must not run on the bg_timer caller stack"
         );
     }
 
@@ -2434,6 +2733,104 @@ mod tests {
             write_back_admission_delay_for_resource(&resource, false).is_some(),
             "low internal largest-block must defer the 24KB write-back worker"
         );
+    }
+
+    fn periodic_storage_resource_for_tests() -> crate::orchestrator::ResourceSnapshot {
+        let mut resource = write_back_resource_for_tests(
+            crate::orchestrator::PressureLevel::Normal,
+            crate::orchestrator::StorageContentionRisk::Healthy,
+        );
+        resource.heap_free_internal = PERIODIC_STORAGE_MAINTENANCE_MIN_INTERNAL_BYTES as u32 + 1024;
+        resource.heap_largest_block_internal =
+            PERIODIC_STORAGE_MAINTENANCE_MIN_LARGEST_BLOCK_BYTES as u32 + 1024;
+        resource
+    }
+
+    #[test]
+    fn periodic_storage_maintenance_defers_when_worker_stack_would_break_tls_floor() {
+        let mut resource = periodic_storage_resource_for_tests();
+        resource.heap_largest_block_internal =
+            (PERIODIC_STORAGE_MAINTENANCE_MIN_LARGEST_BLOCK_BYTES as u32).saturating_sub(1);
+
+        assert_eq!(
+            write_back_admission_delay_for_resource(&resource, false),
+            None,
+            "durable write-back admission should not use the stricter optional-maintenance floor"
+        );
+        assert_eq!(
+            periodic_storage_maintenance_admission_for_resource(&resource, false),
+            PeriodicStorageMaintenanceAdmission::Deferred("largest_block_headroom")
+        );
+    }
+
+    #[test]
+    fn periodic_storage_maintenance_defers_when_internal_heap_cannot_cover_worker_stack() {
+        let mut resource = periodic_storage_resource_for_tests();
+        resource.heap_free_internal =
+            (PERIODIC_STORAGE_MAINTENANCE_MIN_INTERNAL_BYTES as u32).saturating_sub(1);
+
+        assert_eq!(
+            periodic_storage_maintenance_admission_for_resource(&resource, false),
+            PeriodicStorageMaintenanceAdmission::Deferred("internal_heap_headroom")
+        );
+    }
+
+    #[test]
+    fn periodic_storage_maintenance_defers_when_steady_state_not_idle() {
+        let mut resource = periodic_storage_resource_for_tests();
+        resource.inbound_depth = 1;
+
+        assert_eq!(
+            periodic_storage_maintenance_admission_for_resource(&resource, false),
+            PeriodicStorageMaintenanceAdmission::Deferred("foreground_activity")
+        );
+
+        resource.inbound_depth = 0;
+        assert_eq!(
+            periodic_storage_maintenance_admission_for_resource(&resource, true),
+            PeriodicStorageMaintenanceAdmission::Deferred("foreground_activity")
+        );
+    }
+
+    #[test]
+    fn periodic_storage_maintenance_allows_when_worker_stack_and_tls_floor_fit() {
+        let resource = periodic_storage_resource_for_tests();
+
+        assert_eq!(
+            periodic_storage_maintenance_admission_for_resource(&resource, false),
+            PeriodicStorageMaintenanceAdmission::Admitted
+        );
+    }
+
+    #[test]
+    fn optional_periodic_storage_does_not_queue_when_periodic_admission_denies() {
+        let _write_back_guard = write_back_test_guard();
+        let _periodic_admission = periodic_storage_maintenance_admission_override_for_tests(false);
+        reset_write_back_queue_for_tests();
+        WRITE_BACK_TEST_AUTO_SERVICE.store(false, Ordering::Release);
+
+        assert!(!schedule_storage_maintenance_task(
+            StorageMaintenanceTaskKind::SelfRuntimeIdleTick,
+            || {}
+        ));
+        assert!(
+            schedule_storage_maintenance_task(StorageMaintenanceTaskKind::DueReminderSweep, || {}),
+            "due user timer sweeps must still enter the write-back queue; worker start remains separately governed"
+        );
+
+        let state = write_back_scheduler()
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        assert_eq!(
+            state.jobs.len(),
+            1,
+            "optional periodic maintenance should be skipped, but due user work should remain queued"
+        );
+        drop(state);
+
+        WRITE_BACK_TEST_AUTO_SERVICE.store(false, Ordering::Release);
+        reset_write_back_queue_for_tests();
     }
 
     #[test]

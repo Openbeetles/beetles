@@ -904,6 +904,11 @@ pub trait Platform: Send + Sync + PlatformCamera {
         Ok(())
     }
 
+    /// Whether the configured I2C bus has been successfully initialized.
+    fn i2c_ready(&self) -> bool {
+        false
+    }
+
     /// I2C 读取：从指定地址的寄存器读取数据。默认返回不支持错误。
     /// I2C read: read data from register at given address. Default returns unsupported error.
     fn i2c_read(&self, _addr: u8, _register: u8, _len: usize) -> Result<Vec<u8>> {

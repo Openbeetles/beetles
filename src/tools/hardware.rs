@@ -4,8 +4,8 @@
 use crate::config::DeviceEntry;
 use crate::error::{Error, Result};
 use crate::tools::{
-    Tool, ToolApprovalMode, ToolContext, ToolEffectClass, ToolExecutionShape, ToolMetadata,
-    ToolRiskLevel, ToolRollbackKind,
+    Tool, ToolApprovalMode, ToolCapabilityContract, ToolContext, ToolEffectClass,
+    ToolExecutionShape, ToolMetadata, ToolRiskLevel, ToolRollbackKind,
 };
 use serde_json::Value;
 use std::collections::HashMap;
@@ -277,6 +277,10 @@ impl Tool for DeviceControlTool {
 
     fn requires_network(&self) -> bool {
         false
+    }
+
+    fn capability_contract(&self) -> ToolCapabilityContract {
+        ToolCapabilityContract::required(&[crate::orchestrator::RUNTIME_CAPABILITY_HARDWARE_GPIO])
     }
 
     fn metadata(&self) -> ToolMetadata {

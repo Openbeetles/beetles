@@ -301,45 +301,56 @@ fn spawn_http_config_server(
     #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
     let (linux_config_listen, linux_config_listener) =
         beetle::platform::http_server::bind_linux_config_http_listener()?;
+    let restart_platform = Arc::clone(&ctx.platform);
     // Wrapper thread still owns the control-plane lifecycle and route registration surface;
     // keep the historical stack headroom while the direct/worker split is under validation.
-    spawn_planned_handle("config_plane_watch", 6144, move || {
-        #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-        let result = beetle::platform::http_server::run(
-            ctx.platform,
-            ctx.tool_registry,
-            ctx.channel_capability_registry,
-            ctx.capability_package_runtime_capabilities,
-            ctx.inbound_depth,
-            ctx.outbound_depth,
-            ctx.memory_store,
-            ctx.session_store,
-            ctx.system_inbound_tx,
-            ctx.skill_prompt_cache,
-            ctx.inbound_tx,
-            ctx.shared_config,
-        );
-        #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-        let result = beetle::platform::http_server::run_with_bound_listener(
-            linux_config_listener,
-            linux_config_listen,
-            ctx.platform,
-            ctx.tool_registry,
-            ctx.channel_capability_registry,
-            ctx.capability_package_runtime_capabilities,
-            ctx.inbound_depth,
-            ctx.outbound_depth,
-            ctx.memory_store,
-            ctx.session_store,
-            ctx.system_inbound_tx,
-            ctx.skill_prompt_cache,
-            ctx.inbound_tx,
-            ctx.shared_config,
-        );
-        if let Err(e) = result {
-            log::warn!("[{}] HTTP config API server error: {}", TAG, e);
-        }
-    })
+    spawn_planned_handle(
+        "config_plane_watch",
+        beetle::util::STACK_CONFIG_PLANE_WATCH,
+        move || {
+            #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+            let result = beetle::platform::http_server::run(
+                ctx.platform,
+                ctx.tool_registry,
+                ctx.channel_capability_registry,
+                ctx.capability_package_runtime_capabilities,
+                ctx.inbound_depth,
+                ctx.outbound_depth,
+                ctx.memory_store,
+                ctx.session_store,
+                ctx.system_inbound_tx,
+                ctx.skill_prompt_cache,
+                ctx.inbound_tx,
+                ctx.shared_config,
+            );
+            #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+            let result = beetle::platform::http_server::run_with_bound_listener(
+                linux_config_listener,
+                linux_config_listen,
+                ctx.platform,
+                ctx.tool_registry,
+                ctx.channel_capability_registry,
+                ctx.capability_package_runtime_capabilities,
+                ctx.inbound_depth,
+                ctx.outbound_depth,
+                ctx.memory_store,
+                ctx.session_store,
+                ctx.system_inbound_tx,
+                ctx.skill_prompt_cache,
+                ctx.inbound_tx,
+                ctx.shared_config,
+            );
+            if let Err(e) = result {
+                beetle::state::set_last_error(&e);
+                log::error!(
+                    "[{}] HTTP config API server failed; requesting restart: {}",
+                    TAG,
+                    e
+                );
+                restart_platform.request_restart();
+            }
+        },
+    )
     .map_err(|error| beetle::Error::io("config_plane_spawn", error))
 }
 
@@ -410,17 +421,6 @@ fn voice_sink_sender(
         .map(|session| session.tx.clone())
 }
 
-#[cfg(any(
-    feature = "telegram",
-    feature = "feishu",
-    all(
-        feature = "dingtalk",
-        not(any(target_arch = "xtensa", target_arch = "riscv32"))
-    ),
-    feature = "wecom",
-    feature = "qq_channel",
-    test
-))]
 fn finalize_required_thread_start<F>(
     tag: &str,
     started_label: &str,
@@ -498,8 +498,9 @@ mod tests {
     use super::{
         compute_voice_runtime_capabilities, finalize_required_thread_start,
         format_soul_kernel_recovery_report_for_log, register_process_memory_snapshot_provider,
-        startup_banner_lines, voice_sink_sender, DisplayChannelRuntimeStatus, DisplayLoopState,
-        StartedVoiceSession, VERSION,
+        startup_banner_lines, voice_sink_sender, wait_for_startup_recovery_report,
+        DisplayChannelRuntimeStatus, DisplayLoopState, StartedVoiceSession,
+        StartupRecoveryWaitOutcome, VERSION,
     };
     use beetle::{
         config::default_disabled_audio_segment, DisplaySystemState, LinuxPlatform, Platform,
@@ -691,6 +692,52 @@ mod tests {
         .expect_err("spawn should fail");
 
         assert_eq!(error.stage(), "synthetic_spawn");
+    }
+
+    #[test]
+    fn startup_recovery_wait_returns_report_without_sleeping() {
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        tx.send("ready").expect("send report");
+        let mut feed_count = 0;
+
+        let outcome = wait_for_startup_recovery_report(
+            &rx,
+            Duration::from_millis(50),
+            Duration::from_millis(5),
+            || feed_count += 1,
+        );
+
+        assert_eq!(outcome, StartupRecoveryWaitOutcome::Report("ready"));
+        assert_eq!(feed_count, 0);
+    }
+
+    #[test]
+    fn startup_recovery_wait_times_out_instead_of_blocking_forever() {
+        let (_tx, rx) = std::sync::mpsc::sync_channel::<&'static str>(1);
+        let mut feed_count = 0;
+
+        let outcome =
+            wait_for_startup_recovery_report(&rx, Duration::ZERO, Duration::from_millis(5), || {
+                feed_count += 1
+            });
+
+        assert_eq!(outcome, StartupRecoveryWaitOutcome::TimedOut);
+        assert_eq!(feed_count, 0);
+    }
+
+    #[test]
+    fn startup_recovery_wait_reports_worker_exit_without_report() {
+        let (tx, rx) = std::sync::mpsc::sync_channel::<&'static str>(1);
+        drop(tx);
+
+        let outcome = wait_for_startup_recovery_report(
+            &rx,
+            Duration::from_millis(50),
+            Duration::from_millis(5),
+            || {},
+        );
+
+        assert_eq!(outcome, StartupRecoveryWaitOutcome::Disconnected);
     }
 
     #[test]
@@ -2985,6 +3032,59 @@ fn startup_soul_kernel_recovery(platform: Arc<dyn Platform>) {
 }
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+const STARTUP_RECOVERY_REPORT_WAIT_SECS: u64 = 20;
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+const STARTUP_RECOVERY_REPORT_POLL_MS: u64 = 250;
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
+#[derive(Debug, PartialEq, Eq)]
+enum StartupRecoveryWaitOutcome<T> {
+    Report(T),
+    Disconnected,
+    TimedOut,
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
+fn wait_for_startup_recovery_report<T, F>(
+    rx: &std::sync::mpsc::Receiver<T>,
+    timeout: std::time::Duration,
+    poll_interval: std::time::Duration,
+    mut feed: F,
+) -> StartupRecoveryWaitOutcome<T>
+where
+    F: FnMut(),
+{
+    let started = std::time::Instant::now();
+    loop {
+        match rx.try_recv() {
+            Ok(report) => return StartupRecoveryWaitOutcome::Report(report),
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                return StartupRecoveryWaitOutcome::Disconnected;
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+        }
+
+        let elapsed = started.elapsed();
+        if elapsed >= timeout {
+            return StartupRecoveryWaitOutcome::TimedOut;
+        }
+
+        let remaining = timeout.saturating_sub(elapsed);
+        let sleep_for = if poll_interval.is_zero() || poll_interval > remaining {
+            remaining
+        } else {
+            poll_interval
+        };
+        if sleep_for.is_zero() {
+            std::thread::yield_now();
+        } else {
+            std::thread::sleep(sleep_for);
+        }
+        feed();
+    }
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 fn startup_soul_kernel_recovery(platform: Arc<dyn Platform>) {
     let now_secs = beetle::util::current_unix_secs();
     let (tx, rx) = std::sync::mpsc::sync_channel(1);
@@ -3003,26 +3103,52 @@ fn startup_soul_kernel_recovery(platform: Arc<dyn Platform>) {
         },
     ) {
         Ok(handle) => {
-            match rx.recv() {
-                Ok(report) => log_soul_kernel_recovery_report(&report),
-                Err(error) => {
-                    log::error!(
-                        "[{}] startup_recovery worker exited without report: {}",
-                        TAG,
-                        error
-                    );
+            let wait_outcome = wait_for_startup_recovery_report(
+                &rx,
+                std::time::Duration::from_secs(STARTUP_RECOVERY_REPORT_WAIT_SECS),
+                std::time::Duration::from_millis(STARTUP_RECOVERY_REPORT_POLL_MS),
+                beetle::platform::task_wdt::feed_current_task,
+            );
+            match wait_outcome {
+                StartupRecoveryWaitOutcome::Report(report) => {
+                    log_soul_kernel_recovery_report(&report);
+                    if let Err(error) = handle.join() {
+                        let message = panic_payload_message(error.as_ref());
+                        log::error!("[{}] startup_recovery join failed: {}", TAG, message);
+                    }
                 }
-            }
-            if let Err(error) = handle.join() {
-                let message = panic_payload_message(error.as_ref());
-                log::error!("[{}] startup_recovery join failed: {}", TAG, message);
+                StartupRecoveryWaitOutcome::Disconnected => {
+                    let error = beetle::Error::config(
+                        "startup_recovery_disconnected",
+                        "startup recovery worker exited without report",
+                    );
+                    beetle::state::set_last_error(&error);
+                    log::error!("[{}] startup_recovery worker exited without report", TAG);
+                    if let Err(error) = handle.join() {
+                        let message = panic_payload_message(error.as_ref());
+                        log::error!("[{}] startup_recovery join failed: {}", TAG, message);
+                    }
+                }
+                StartupRecoveryWaitOutcome::TimedOut => {
+                    let error = beetle::Error::config(
+                        "startup_recovery_timeout",
+                        format!(
+                            "startup recovery did not report within {}s; continuing with degraded startup fact",
+                            STARTUP_RECOVERY_REPORT_WAIT_SECS
+                        ),
+                    );
+                    beetle::state::set_last_error(&error);
+                    log::error!("[{}] {}", TAG, error);
+                }
             }
         }
         Err(error) => {
+            let startup_error = beetle::Error::io("startup_recovery_spawn", error);
+            beetle::state::set_last_error(&startup_error);
             log::error!(
                 "[{}] startup_recovery spawn failed; continuing without pre-WiFi recovery: {}",
                 TAG,
-                error
+                startup_error
             );
         }
     }
@@ -3090,6 +3216,16 @@ fn prepare_runtime_assembly(
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
     beetle::orchestrator::log_startup_memory_checkpoint("audio_init_phase_done");
     beetle::bootstrap::observe_heap_checkpoint(TAG, "heap_after_audio_init");
+
+    if let Some(ref bus_cfg) = config.i2c_bus {
+        if let Err(error) = platform.init_i2c(bus_cfg) {
+            log::warn!(
+                "[{}] I2C bus init failed (devices will be unavailable): {}",
+                TAG,
+                error
+            );
+        }
+    }
 
     let voice_event_channel =
         build_voice_event_channel(&platform, &config, baidu_token_cache.as_ref());
@@ -3174,8 +3310,9 @@ fn prepare_runtime_assembly(
         wall_clock_valid,
         spiffs_info
     );
-    beetle::orchestrator::observe_runtime_capabilities_from_platform(
+    beetle::orchestrator::observe_runtime_capabilities_from_platform_with_config(
         platform.as_ref(),
+        Some(config.as_ref()),
         false,
         Some(state_fs_ready),
     );
@@ -3243,35 +3380,42 @@ fn start_support_planes(assembly: &mut PreparedRuntimeAssembly) -> beetle::Resul
         beetle::orchestrator::log_startup_memory_checkpoint("config_api_spawned");
     }
 
-    beetle::bg_timer::run_bg_timer(beetle::bg_timer::BgTimerContext {
-        system_inbound_tx: assembly.bus.system_inbound_tx.clone(),
-        resolve_locale: Arc::clone(&assembly.resolve_locale_ui),
-        platform: Arc::clone(&assembly.runtime.platform),
-        config: Arc::clone(&assembly.config),
-        version: VERSION,
-        read_heartbeat: Box::new(|| beetle::platform::read_heartbeat_file().unwrap_or_default()),
-        user_inbound_depth: Arc::clone(&assembly.bus.user_inbound_depth),
-        system_inbound_depth: Arc::clone(&assembly.bus.system_inbound_depth),
-        outbound_depth: Arc::clone(&assembly.bus.outbound_depth),
-        session_store: Arc::clone(&assembly.runtime.session_store),
-        memory_system_kind: assembly.runtime.memory_system_kind,
-        autonomy_strategy_store: Arc::clone(&assembly.runtime.autonomy_strategy_store),
-        self_authored_core_store: Arc::clone(&assembly.runtime.self_authored_core_store),
-        self_continuity_store: Arc::clone(&assembly.runtime.self_continuity_store),
-        relationship_portfolio_store: Arc::clone(&assembly.runtime.relationship_portfolio_store),
-        relationship_topology_store: Arc::clone(&assembly.runtime.relationship_topology_store),
-        memory_store: Some(Arc::clone(&assembly.runtime.memory_store)),
-        sensor_watch: assembly
-            .device_capability_registry
-            .is_mounted(beetle::DEVICE_CAPABILITY_SENSOR)
-            .then(|| beetle::cron::SensorWatchContext {
-                platform: Arc::clone(&assembly.runtime.platform),
-                devices: assembly.config.hardware_devices.clone(),
-                i2c_sensors: assembly.config.i2c_sensors.clone(),
+    finalize_required_thread_start(TAG, "bg_timer spawn confirmed", "bg_timer_spawn", || {
+        beetle::bg_timer::run_bg_timer(beetle::bg_timer::BgTimerContext {
+            system_inbound_tx: assembly.bus.system_inbound_tx.clone(),
+            resolve_locale: Arc::clone(&assembly.resolve_locale_ui),
+            platform: Arc::clone(&assembly.runtime.platform),
+            config: Arc::clone(&assembly.config),
+            version: VERSION,
+            read_heartbeat: Box::new(|| {
+                beetle::platform::read_heartbeat_file().unwrap_or_default()
             }),
-        remind_store: Arc::clone(&assembly.runtime.remind_at_store),
-        task_store: Arc::clone(&assembly.runtime.task_store),
-    });
+            user_inbound_depth: Arc::clone(&assembly.bus.user_inbound_depth),
+            system_inbound_depth: Arc::clone(&assembly.bus.system_inbound_depth),
+            outbound_depth: Arc::clone(&assembly.bus.outbound_depth),
+            session_store: Arc::clone(&assembly.runtime.session_store),
+            memory_system_kind: assembly.runtime.memory_system_kind,
+            autonomy_strategy_store: Arc::clone(&assembly.runtime.autonomy_strategy_store),
+            self_authored_core_store: Arc::clone(&assembly.runtime.self_authored_core_store),
+            self_continuity_store: Arc::clone(&assembly.runtime.self_continuity_store),
+            relationship_portfolio_store: Arc::clone(
+                &assembly.runtime.relationship_portfolio_store,
+            ),
+            relationship_topology_store: Arc::clone(&assembly.runtime.relationship_topology_store),
+            memory_store: Some(Arc::clone(&assembly.runtime.memory_store)),
+            sensor_watch: assembly
+                .device_capability_registry
+                .is_mounted(beetle::DEVICE_CAPABILITY_SENSOR)
+                .then(|| beetle::cron::SensorWatchContext {
+                    platform: Arc::clone(&assembly.runtime.platform),
+                    devices: assembly.config.hardware_devices.clone(),
+                    i2c_sensors: assembly.config.i2c_sensors.clone(),
+                }),
+            remind_store: Arc::clone(&assembly.runtime.remind_at_store),
+            task_store: Arc::clone(&assembly.runtime.task_store),
+        })
+    })?;
+    beetle::bg_timer::log_bg_timer_started();
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
     beetle::orchestrator::log_startup_memory_checkpoint("bg_timer_started");
 
@@ -3283,8 +3427,9 @@ fn start_support_planes(assembly: &mut PreparedRuntimeAssembly) -> beetle::Resul
     };
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
     beetle::orchestrator::log_startup_memory_checkpoint("communication_plane_ready");
-    beetle::orchestrator::observe_runtime_capabilities_from_platform(
+    beetle::orchestrator::observe_runtime_capabilities_from_platform_with_config(
         assembly.runtime.platform.as_ref(),
+        Some(assembly.config.as_ref()),
         outbound_transport_ready,
         None,
     );
@@ -3666,16 +3811,6 @@ fn start_communication_planes(assembly: &mut PreparedRuntimeAssembly) -> beetle:
         )?;
     }
 
-    if let Some(ref bus_cfg) = assembly.config.i2c_bus {
-        if let Err(error) = assembly.runtime.platform.init_i2c(bus_cfg) {
-            log::warn!(
-                "[{}] I2C bus init failed (devices will be unavailable): {}",
-                TAG,
-                error
-            );
-        }
-    }
-
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
     if !os_outbound_active {
         beetle::channels::spawn_sender_threads(
@@ -3842,7 +3977,7 @@ fn start_agent_plane(
             Some(Arc::clone(&assembly.bus.user_inbound_depth)),
             Some(Arc::clone(&assembly.bus.outbound_depth)),
         );
-        spawn_planned("cli_repl", 8192, move || {
+        spawn_planned("cli_repl", beetle::util::STACK_CLI_REPL, move || {
             let reader = std::io::BufReader::new(std::io::stdin());
             beetle::cli::run_repl(cli_ctx, reader);
         });

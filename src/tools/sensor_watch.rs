@@ -384,6 +384,14 @@ pub(crate) fn check_sensor_watches(
     if watches.is_empty() {
         return;
     }
+    let Ok(_capability_guard) = crate::orchestrator::try_begin_runtime_capability_call(
+        crate::orchestrator::RUNTIME_CAPABILITY_SENSOR,
+    ) else {
+        log::warn!(
+            "[sensor_watch] skipped because sensor runtime capability is not accepting calls"
+        );
+        return;
+    };
 
     let now_secs = crate::util::current_unix_secs();
     let mut changed = false;
@@ -482,6 +490,9 @@ fn read_sensor_value(
                 "i2c_sensor raw model has no numeric temperature/humidity for threshold watches",
             ));
         }
+        let _i2c_guard = crate::orchestrator::try_begin_runtime_capability_call(
+            crate::orchestrator::RUNTIME_CAPABILITY_HARDWARE_I2C,
+        )?;
         let s = platform.drive_i2c_sensor(
             e.addr,
             e.model.as_str(),
@@ -518,6 +529,9 @@ fn read_sensor_value(
     let empty = json!({});
     match dev.device_type.as_str() {
         "gpio_in" => {
+            let _gpio_guard = crate::orchestrator::try_begin_runtime_capability_call(
+                crate::orchestrator::RUNTIME_CAPABILITY_HARDWARE_GPIO,
+            )?;
             let s = platform.drive_gpio_in(&dev.pins, &empty, &dev.options)?;
             let v: Value = serde_json::from_str(&s)
                 .map_err(|e| Error::config("sensor_watch", format!("gpio_in JSON: {}", e)))?;
@@ -534,6 +548,9 @@ fn read_sensor_value(
             Ok(n)
         }
         "adc_in" => {
+            let _gpio_guard = crate::orchestrator::try_begin_runtime_capability_call(
+                crate::orchestrator::RUNTIME_CAPABILITY_HARDWARE_GPIO,
+            )?;
             let s = platform.drive_adc_in(&dev.pins, &empty, &dev.options)?;
             let v: Value = serde_json::from_str(&s)
                 .map_err(|e| Error::config("sensor_watch", format!("adc_in JSON: {}", e)))?;
@@ -546,6 +563,9 @@ fn read_sensor_value(
             Ok(raw)
         }
         "dht" => {
+            let _gpio_guard = crate::orchestrator::try_begin_runtime_capability_call(
+                crate::orchestrator::RUNTIME_CAPABILITY_HARDWARE_GPIO,
+            )?;
             let s = platform.drive_dht(&dev.pins, &empty, &dev.options)?;
             let v: Value = serde_json::from_str(&s)
                 .map_err(|e| Error::config("sensor_watch", format!("dht JSON: {}", e)))?;

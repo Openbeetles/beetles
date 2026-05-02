@@ -45,9 +45,13 @@ const ROLE_SLOTS_MAX: usize = 16;
 
 static ACTIVE_HTTP_COUNT: AtomicU32 = AtomicU32::new(0);
 static ACTIVE_WSS_COUNT: AtomicU32 = AtomicU32::new(0);
+static ACTIVE_EXTERNAL_WSS_COUNT: AtomicU32 = AtomicU32::new(0);
+static ACTIVE_REALTIME_WSS_COUNT: AtomicU32 = AtomicU32::new(0);
 static EXTERNAL_WSS_CONNECTING_COUNT: AtomicU32 = AtomicU32::new(0);
 static EXTERNAL_WSS_MANAGED_PRESENT: AtomicBool = AtomicBool::new(false);
 static EXTERNAL_WSS_SUSPEND_REQUEST_COUNT: AtomicU32 = AtomicU32::new(0);
+static EXTERNAL_WSS_VOICE_SUSPEND_REQUEST_COUNT: AtomicU32 = AtomicU32::new(0);
+static EXTERNAL_WSS_CONFIG_SUSPEND_REQUEST_COUNT: AtomicU32 = AtomicU32::new(0);
 static EXTERNAL_WSS_SUSPENDED: AtomicBool = AtomicBool::new(false);
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 static TLS_PERMIT: Mutex<()> = Mutex::new(());
@@ -94,6 +98,8 @@ pub type HttpFactory = dyn Fn() -> Result<Box<dyn PlatformHttpClient>> + Send + 
 pub struct ExternalWssRuntimeSnapshot {
     pub managed_present: bool,
     pub connecting_count: u32,
+    pub active_external_count: u32,
+    pub active_realtime_count: u32,
     pub suspend_requested: bool,
     pub suspended: bool,
 }
@@ -172,12 +178,54 @@ impl Drop for TransportHttpPermitGuard {
     }
 }
 
+/// Runtime class for a live WSS session.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TransportWssProfile {
+    ExternalGateway,
+    RealtimeVoice,
+}
+
+/// Reason why the external WSS plane is being suspended.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExternalWssSuspendReason {
+    VoiceExclusive,
+    ConfigPersisting,
+}
+
+impl ExternalWssSuspendReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::VoiceExclusive => "voice_exclusive_suspend",
+            Self::ConfigPersisting => "config_persisting_suspend",
+        }
+    }
+}
+
+impl From<WssConnectProfile> for TransportWssProfile {
+    fn from(profile: WssConnectProfile) -> Self {
+        match profile {
+            WssConnectProfile::Gateway => Self::ExternalGateway,
+            WssConnectProfile::Realtime => Self::RealtimeVoice,
+        }
+    }
+}
+
 /// Low-level transport WSS session guard.
-pub struct TransportWssSessionGuard;
+pub struct TransportWssSessionGuard {
+    profile: TransportWssProfile,
+}
 
 impl Drop for TransportWssSessionGuard {
     fn drop(&mut self) {
         ACTIVE_WSS_COUNT.fetch_sub(1, Ordering::Relaxed);
+        match self.profile {
+            TransportWssProfile::ExternalGateway => {
+                ACTIVE_EXTERNAL_WSS_COUNT.fetch_sub(1, Ordering::Relaxed);
+            }
+            TransportWssProfile::RealtimeVoice => {
+                ACTIVE_REALTIME_WSS_COUNT.fetch_sub(1, Ordering::Relaxed);
+            }
+        }
     }
 }
 
@@ -252,12 +300,29 @@ impl WssConnection for LeasedExternalWssConnection {
 /// Scoped external WSS suspend request. Multiple owners may hold this concurrently.
 pub struct ExternalWssSuspendGuard {
     active: bool,
+    reason: ExternalWssSuspendReason,
+}
+
+#[derive(Debug)]
+struct VoiceExclusiveLeaseGuard {
+    owner: crate::runtime::lease::LeaseOwner,
+    token: u64,
+}
+
+impl Drop for VoiceExclusiveLeaseGuard {
+    fn drop(&mut self) {
+        let _ = crate::runtime::lease::release_token(
+            crate::runtime::lease::LeaseKind::VoiceExclusive,
+            self.owner,
+            self.token,
+        );
+    }
 }
 
 impl Drop for ExternalWssSuspendGuard {
     fn drop(&mut self) {
         if self.active {
-            release_external_wss_suspend_request();
+            release_external_wss_suspend_request(self.reason);
             self.active = false;
         }
     }
@@ -277,6 +342,14 @@ pub fn active_http_count() -> u32 {
 
 pub fn active_wss_count() -> u32 {
     ACTIVE_WSS_COUNT.load(Ordering::Relaxed)
+}
+
+pub fn active_external_wss_count() -> u32 {
+    ACTIVE_EXTERNAL_WSS_COUNT.load(Ordering::Relaxed)
+}
+
+pub fn active_realtime_wss_count() -> u32 {
+    ACTIVE_REALTIME_WSS_COUNT.load(Ordering::Relaxed)
 }
 
 pub fn active_external_wss_lease_count() -> usize {
@@ -485,9 +558,17 @@ pub fn request_http_permit(
     })
 }
 
-pub fn begin_wss_session() -> TransportWssSessionGuard {
+pub fn begin_wss_session(profile: TransportWssProfile) -> TransportWssSessionGuard {
     ACTIVE_WSS_COUNT.fetch_add(1, Ordering::Relaxed);
-    TransportWssSessionGuard
+    match profile {
+        TransportWssProfile::ExternalGateway => {
+            ACTIVE_EXTERNAL_WSS_COUNT.fetch_add(1, Ordering::Relaxed);
+        }
+        TransportWssProfile::RealtimeVoice => {
+            ACTIVE_REALTIME_WSS_COUNT.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+    TransportWssSessionGuard { profile }
 }
 
 pub fn begin_external_wss_connect_attempt() -> ExternalWssConnectAttemptGuard {
@@ -547,22 +628,40 @@ pub fn create_http_client_with_config(
 ) -> Result<Box<dyn PlatformHttpClient>> {
     // On ESP, outbound callers own the STA settle wait. Keep it on the
     // governed HTTP entrypoint instead of blocking the entire startup path.
-    crate::platform::wait_for_network_ready();
+    if !crate::platform::wait_for_network_ready() {
+        return Err(Error::config(
+            "wifi_not_ready",
+            "STA outbound network is not ready for HTTP client creation",
+        ));
+    }
     match class {
         HttpClientClass::Background => platform.create_http_client(config),
         HttpClientClass::Interactive => platform.create_interactive_http_client(config),
     }
 }
 
+fn ensure_outbound_network_ready(stage: &'static str, operation: &'static str) -> Result<()> {
+    if crate::platform::wait_for_network_ready() {
+        return Ok(());
+    }
+    Err(Error::config(
+        stage,
+        format!("STA outbound network is not ready for {operation}"),
+    ))
+}
+
 /// RAII guard for entering voice-exclusive transport ownership.
 pub struct VoiceExclusiveTransportGuard {
     log_tag: &'static str,
     suspend_guard: Option<ExternalWssSuspendGuard>,
+    voice_exclusive_lease: Option<VoiceExclusiveLeaseGuard>,
 }
 
 impl VoiceExclusiveTransportGuard {
     pub fn enter(platform: &dyn Platform, log_tag: &'static str) -> Result<Self> {
-        let suspend_guard = begin_external_wss_suspend_request();
+        let voice_exclusive_lease = acquire_voice_exclusive_lease()?;
+        let suspend_guard =
+            begin_external_wss_suspend_request(ExternalWssSuspendReason::VoiceExclusive);
         crate::state::set_voice_exclusive_active(true);
         log::info!(
             "[{}] realtime session switching runtime mode (external WSS suspended)",
@@ -571,6 +670,7 @@ impl VoiceExclusiveTransportGuard {
         if let Err(error) = wait_for_external_wss_to_suspend_and_drain(platform, log_tag) {
             crate::state::set_voice_exclusive_active(false);
             drop(suspend_guard);
+            drop(voice_exclusive_lease);
             return Err(error);
         }
         log::info!(
@@ -580,6 +680,7 @@ impl VoiceExclusiveTransportGuard {
         Ok(Self {
             log_tag,
             suspend_guard: Some(suspend_guard),
+            voice_exclusive_lease: Some(voice_exclusive_lease),
         })
     }
 }
@@ -588,6 +689,7 @@ impl Drop for VoiceExclusiveTransportGuard {
     fn drop(&mut self) {
         crate::state::set_voice_exclusive_active(false);
         self.suspend_guard.take();
+        self.voice_exclusive_lease.take();
         log::info!(
             "[{}] realtime session left voice-exclusive mode",
             self.log_tag
@@ -595,10 +697,38 @@ impl Drop for VoiceExclusiveTransportGuard {
     }
 }
 
+fn acquire_voice_exclusive_lease() -> Result<VoiceExclusiveLeaseGuard> {
+    let owner = crate::runtime::lease::LeaseOwner::new("voice", "voice_exclusive");
+    match crate::runtime::lease::try_acquire(
+        crate::runtime::lease::LeaseKind::VoiceExclusive,
+        owner,
+        crate::runtime::lease::LeaseMode::Exclusive,
+        None,
+    ) {
+        crate::runtime::lease::LeaseDecision::Acquired(record)
+        | crate::runtime::lease::LeaseDecision::Reentered(record)
+        | crate::runtime::lease::LeaseDecision::ReplacedExpired {
+            current: record, ..
+        } => Ok(VoiceExclusiveLeaseGuard {
+            owner,
+            token: record.token,
+        }),
+        crate::runtime::lease::LeaseDecision::Denied(denial) => Err(Error::config(
+            "voice_exclusive_lease",
+            format!(
+                "owner={}:{} denied reason={} held_by={:?}",
+                owner.plane, owner.name, denial.reason, denial.held_by
+            ),
+        )),
+    }
+}
+
 pub fn external_wss_runtime_snapshot() -> ExternalWssRuntimeSnapshot {
     ExternalWssRuntimeSnapshot {
         managed_present: external_wss_managed_present(),
         connecting_count: external_wss_connecting_count(),
+        active_external_count: active_external_wss_count(),
+        active_realtime_count: active_realtime_wss_count(),
         suspend_requested: external_wss_suspend_requested(),
         suspended: external_wss_suspended(),
     }
@@ -622,6 +752,8 @@ pub fn set_external_wss_managed_present(active: bool) {
     EXTERNAL_WSS_MANAGED_PRESENT.store(active, Ordering::Relaxed);
     if !active {
         EXTERNAL_WSS_SUSPEND_REQUEST_COUNT.store(0, Ordering::Relaxed);
+        EXTERNAL_WSS_VOICE_SUSPEND_REQUEST_COUNT.store(0, Ordering::Relaxed);
+        EXTERNAL_WSS_CONFIG_SUSPEND_REQUEST_COUNT.store(0, Ordering::Relaxed);
         EXTERNAL_WSS_CONNECTING_COUNT.store(0, Ordering::Relaxed);
         EXTERNAL_WSS_SUSPENDED.store(false, Ordering::Relaxed);
         let _ = crate::runtime::lease::release_kind(crate::runtime::lease::LeaseKind::ExternalWss);
@@ -634,19 +766,31 @@ pub fn external_wss_managed_present() -> bool {
 }
 
 pub fn request_external_wss_suspend() {
+    request_external_wss_suspend_for_reason(ExternalWssSuspendReason::VoiceExclusive);
+}
+
+pub fn request_external_wss_suspend_for_reason(reason: ExternalWssSuspendReason) {
+    increment_external_wss_suspend_reason(reason);
     EXTERNAL_WSS_SUSPEND_REQUEST_COUNT.fetch_add(1, Ordering::Relaxed);
 }
 
 pub fn request_external_wss_resume() {
-    release_external_wss_suspend_request();
+    let reason = external_wss_suspend_reason().unwrap_or(ExternalWssSuspendReason::VoiceExclusive);
+    release_external_wss_suspend_request(reason);
 }
 
-pub fn begin_external_wss_suspend_request() -> ExternalWssSuspendGuard {
-    request_external_wss_suspend();
-    ExternalWssSuspendGuard { active: true }
+pub fn begin_external_wss_suspend_request(
+    reason: ExternalWssSuspendReason,
+) -> ExternalWssSuspendGuard {
+    request_external_wss_suspend_for_reason(reason);
+    ExternalWssSuspendGuard {
+        active: true,
+        reason,
+    }
 }
 
-fn release_external_wss_suspend_request() {
+fn release_external_wss_suspend_request(reason: ExternalWssSuspendReason) {
+    decrement_external_wss_suspend_reason(reason);
     let _ = EXTERNAL_WSS_SUSPEND_REQUEST_COUNT.fetch_update(
         Ordering::Relaxed,
         Ordering::Relaxed,
@@ -654,7 +798,30 @@ fn release_external_wss_suspend_request() {
     );
     if !external_wss_suspend_requested() {
         EXTERNAL_WSS_SUSPENDED.store(false, Ordering::Relaxed);
+        EXTERNAL_WSS_VOICE_SUSPEND_REQUEST_COUNT.store(0, Ordering::Relaxed);
+        EXTERNAL_WSS_CONFIG_SUSPEND_REQUEST_COUNT.store(0, Ordering::Relaxed);
     }
+}
+
+fn increment_external_wss_suspend_reason(reason: ExternalWssSuspendReason) {
+    match reason {
+        ExternalWssSuspendReason::VoiceExclusive => {
+            EXTERNAL_WSS_VOICE_SUSPEND_REQUEST_COUNT.fetch_add(1, Ordering::Relaxed);
+        }
+        ExternalWssSuspendReason::ConfigPersisting => {
+            EXTERNAL_WSS_CONFIG_SUSPEND_REQUEST_COUNT.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+}
+
+fn decrement_external_wss_suspend_reason(reason: ExternalWssSuspendReason) {
+    let counter = match reason {
+        ExternalWssSuspendReason::VoiceExclusive => &EXTERNAL_WSS_VOICE_SUSPEND_REQUEST_COUNT,
+        ExternalWssSuspendReason::ConfigPersisting => &EXTERNAL_WSS_CONFIG_SUSPEND_REQUEST_COUNT,
+    };
+    let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
+        count.checked_sub(1)
+    });
 }
 
 pub fn external_wss_suspend_requested() -> bool {
@@ -669,8 +836,18 @@ pub fn external_wss_suspended() -> bool {
     EXTERNAL_WSS_SUSPENDED.load(Ordering::Relaxed)
 }
 
+pub fn external_wss_suspend_reason() -> Option<ExternalWssSuspendReason> {
+    if EXTERNAL_WSS_VOICE_SUSPEND_REQUEST_COUNT.load(Ordering::Relaxed) > 0 {
+        Some(ExternalWssSuspendReason::VoiceExclusive)
+    } else if EXTERNAL_WSS_CONFIG_SUSPEND_REQUEST_COUNT.load(Ordering::Relaxed) > 0 {
+        Some(ExternalWssSuspendReason::ConfigPersisting)
+    } else {
+        None
+    }
+}
+
 fn external_wss_suspend_target_drained() -> bool {
-    active_wss_count() == 0
+    active_external_wss_count() == 0
         && active_external_wss_lease_count() == 0
         && external_wss_connecting_count() == 0
         && (!external_wss_managed_present()
@@ -680,16 +857,20 @@ fn external_wss_suspend_target_drained() -> bool {
 
 /// Wait until the external WSS plane is not established or handshaking.
 pub fn wait_for_external_wss_suspend(tag: &str) {
-    if !external_wss_suspend_requested() {
-        return;
+    if let Err(error) = wait_for_external_wss_suspend_result(tag) {
+        log::warn!("[{}] external WSS suspend wait failed: {}", tag, error);
     }
-    if let Err(error) = wait_for_external_wss_suspend_with_timeout(
+}
+
+pub fn wait_for_external_wss_suspend_result(tag: &str) -> Result<()> {
+    if !external_wss_suspend_requested() {
+        return Ok(());
+    }
+    wait_for_external_wss_suspend_with_timeout(
         tag,
         Duration::from_millis(EXTERNAL_WSS_SUSPEND_WAIT_TIMEOUT_MS),
         Duration::from_millis(EXTERNAL_WSS_SUSPEND_WAIT_POLL_MS),
-    ) {
-        log::warn!("[{}] external WSS suspend wait failed: {}", tag, error);
-    }
+    )
 }
 
 fn wait_for_external_wss_suspend_with_timeout(
@@ -709,9 +890,10 @@ fn wait_for_external_wss_suspend_with_timeout(
             return Err(Error::config(
                 "external_wss_suspend_timeout",
                 format!(
-                    "external WSS suspend timed out tag={} active_wss={} active_wss_leases={} connecting_wss={}",
+                    "external WSS suspend timed out tag={} active_external_wss={} active_realtime_wss={} active_wss_leases={} connecting_wss={}",
                     tag,
-                    active_wss_count(),
+                    active_external_wss_count(),
+                    active_realtime_wss_count(),
                     active_external_wss_lease_count(),
                     external_wss_connecting_count()
                 ),
@@ -721,9 +903,13 @@ fn wait_for_external_wss_suspend_with_timeout(
         crate::platform::task_wdt::feed_current_task();
         if Instant::now() >= next_warn_at {
             log::warn!(
-                "[{}] waiting for external WSS suspend active_wss={} active_wss_leases={} connecting_wss={}",
+                "[{}] waiting for external WSS suspend reason={} active_external_wss={} active_realtime_wss={} active_wss_leases={} connecting_wss={}",
                 tag,
-                active_wss_count(),
+                external_wss_suspend_reason()
+                    .map(ExternalWssSuspendReason::as_str)
+                    .unwrap_or("unknown"),
+                active_external_wss_count(),
+                active_realtime_wss_count(),
                 active_external_wss_lease_count(),
                 external_wss_connecting_count()
             );
@@ -740,8 +926,11 @@ pub fn wait_for_external_wss_resume(tag: &str) {
     while external_wss_suspend_requested() {
         if !logged {
             log::info!(
-                "[{}] external WSS suspended for realtime voice mode switch",
-                tag
+                "[{}] external WSS suspended reason={}",
+                tag,
+                external_wss_suspend_reason()
+                    .map(ExternalWssSuspendReason::as_str)
+                    .unwrap_or("unknown")
             );
             logged = true;
         }
@@ -752,7 +941,7 @@ pub fn wait_for_external_wss_resume(tag: &str) {
     }
     if logged {
         set_external_wss_suspended(false);
-        log::info!("[{}] external WSS resume after realtime voice session", tag);
+        log::info!("[{}] external WSS resume", tag);
     }
 }
 
@@ -946,6 +1135,7 @@ where
     Conn: FnMut(&str) -> Result<C>,
 {
     loop {
+        ensure_outbound_network_ready("external_wss_network_ready", "external WSS connect")?;
         wait_for_external_wss_resume("external_wss_connect");
         let _connect_guard = begin_external_wss_connect_attempt();
         if external_wss_suspend_requested() {
@@ -986,6 +1176,7 @@ pub fn connect_realtime_wss_with_retry(
     url: &str,
     headers: &[(&str, &str)],
 ) -> Result<Box<dyn WssConnection>> {
+    ensure_outbound_network_ready("realtime_wss_network_ready", "realtime WSS connect")?;
     let mut last_err: Option<Error> = None;
     for attempt in 0..REALTIME_TLS_ADMISSION_RETRY_MAX {
         crate::platform::task_wdt::feed_current_task();
@@ -1038,7 +1229,8 @@ fn wait_for_realtime_admission_window(platform: &dyn Platform) {
         let enough_free = snap.heap_free_internal >= min_free;
         let enough_largest = snap.heap_free_spiram == 0
             || snap.heap_largest_block >= TLS_ADMISSION_MIN_LARGEST_BLOCK_BYTES as u32;
-        let no_external_wss = active_wss_count() == 0 && external_wss_connecting_count() == 0;
+        let no_external_wss =
+            active_external_wss_count() == 0 && external_wss_connecting_count() == 0;
         if enough_free && enough_largest && no_external_wss {
             return;
         }
@@ -1097,6 +1289,75 @@ mod tests {
         assert!(!snap.managed_present);
         assert!(!snap.suspend_requested);
         assert!(!snap.suspended);
+    }
+
+    #[test]
+    fn wss_session_counts_external_and_realtime_profiles_separately() {
+        let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(active_wss_count(), 0);
+        assert_eq!(active_external_wss_count(), 0);
+        assert_eq!(active_realtime_wss_count(), 0);
+
+        let external = begin_wss_session(TransportWssProfile::ExternalGateway);
+        assert_eq!(active_wss_count(), 1);
+        assert_eq!(active_external_wss_count(), 1);
+        assert_eq!(active_realtime_wss_count(), 0);
+
+        let realtime = begin_wss_session(TransportWssProfile::RealtimeVoice);
+        assert_eq!(active_wss_count(), 2);
+        assert_eq!(active_external_wss_count(), 1);
+        assert_eq!(active_realtime_wss_count(), 1);
+
+        drop(external);
+        assert_eq!(active_wss_count(), 1);
+        assert_eq!(active_external_wss_count(), 0);
+        assert_eq!(active_realtime_wss_count(), 1);
+
+        drop(realtime);
+        assert_eq!(active_wss_count(), 0);
+        assert_eq!(active_external_wss_count(), 0);
+        assert_eq!(active_realtime_wss_count(), 0);
+    }
+
+    #[test]
+    fn external_wss_suspend_reason_round_trips() {
+        let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        set_external_wss_managed_present(false);
+        let guard = begin_external_wss_suspend_request(ExternalWssSuspendReason::ConfigPersisting);
+        assert_eq!(
+            external_wss_suspend_reason().map(ExternalWssSuspendReason::as_str),
+            Some("config_persisting_suspend")
+        );
+        drop(guard);
+        assert_eq!(external_wss_suspend_reason(), None);
+    }
+
+    #[test]
+    fn external_wss_suspend_reason_tracks_concurrent_owners() {
+        let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        set_external_wss_managed_present(false);
+        let config = begin_external_wss_suspend_request(ExternalWssSuspendReason::ConfigPersisting);
+        assert_eq!(
+            external_wss_suspend_reason(),
+            Some(ExternalWssSuspendReason::ConfigPersisting)
+        );
+
+        let voice = begin_external_wss_suspend_request(ExternalWssSuspendReason::VoiceExclusive);
+        assert_eq!(
+            external_wss_suspend_reason(),
+            Some(ExternalWssSuspendReason::VoiceExclusive)
+        );
+
+        drop(voice);
+        assert!(external_wss_suspend_requested());
+        assert_eq!(
+            external_wss_suspend_reason(),
+            Some(ExternalWssSuspendReason::ConfigPersisting)
+        );
+
+        drop(config);
+        assert!(!external_wss_suspend_requested());
+        assert_eq!(external_wss_suspend_reason(), None);
     }
 
     #[test]

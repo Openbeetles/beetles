@@ -280,6 +280,34 @@ fn handle_wake_interaction<F>(
             );
             return;
         }
+        let _audio_input_call = match crate::orchestrator::try_begin_runtime_capability_call(
+            crate::orchestrator::RUNTIME_CAPABILITY_AUDIO_INPUT,
+        ) {
+            Ok(guard) => guard,
+            Err(error) => {
+                log::warn!(
+                    "[{}] realtime audio input capability denied: {}",
+                    TAG,
+                    error
+                );
+                crate::metrics::record_voice_tool_failure("voice_session_realtime");
+                return;
+            }
+        };
+        let _audio_output_call = match crate::orchestrator::try_begin_runtime_capability_call(
+            crate::orchestrator::RUNTIME_CAPABILITY_AUDIO_OUTPUT,
+        ) {
+            Ok(guard) => guard,
+            Err(error) => {
+                log::warn!(
+                    "[{}] realtime audio output capability denied: {}",
+                    TAG,
+                    error
+                );
+                crate::metrics::record_voice_tool_failure("voice_session_realtime");
+                return;
+            }
+        };
         let _audio_input_lease = match acquire_audio_lease(
             crate::runtime::lease::LeaseKind::AudioInput,
             AudioLeaseOwner::VoiceRealtime,

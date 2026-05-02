@@ -160,6 +160,20 @@ pub fn build_device_capability_registry(
 ) -> DeviceCapabilityRegistry {
     let sensor_candidate_count = configured_sensor_candidate_count(config);
     let voice_candidate_count = voice_candidate_count(platform);
+    let gpio_sensor_configured = config
+        .hardware_devices
+        .iter()
+        .any(|device| matches!(device.device_type.as_str(), "gpio_in" | "adc_in" | "dht"));
+    let hardware_driver_supported = matches!(
+        platform.memory_system_kind(),
+        crate::memory::MemorySystemKind::EspCompact
+    );
+    let i2c_sensor_configured = config
+        .i2c_sensors
+        .iter()
+        .any(|sensor| sensor.model.as_str() != "raw");
+    let sensor_runtime_active = (gpio_sensor_configured && hardware_driver_supported)
+        || (i2c_sensor_configured && platform.i2c_ready());
     let build_input = DeviceCapabilityBuildInput {
         voice_compiled: crate::compiled_voice_capability(),
         voice_configured: config.audio.as_ref().is_some_and(|audio| audio.enabled),
@@ -173,7 +187,7 @@ pub fn build_device_capability_registry(
         sensor_compiled: crate::compiled_sensor_capability(),
         sensor_configured: sensor_candidate_count > 0,
         sensor_candidate_count,
-        sensor_runtime_active: sensor_candidate_count > 0,
+        sensor_runtime_active,
         linux_discovery_first: cfg!(not(any(target_arch = "xtensa", target_arch = "riscv32"))),
     };
     build_device_capability_registry_from_input(build_input)

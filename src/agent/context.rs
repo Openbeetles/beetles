@@ -474,11 +474,13 @@ fn build_context_inner(
     p: &ContextParams<'_>,
     mode: ContextAssemblyMode,
 ) -> Result<(String, Vec<Message>)> {
-    let mem_res = p.memory.get_memory();
-    let mem = mem_res.unwrap_or_else(|e| {
-        log::warn!("[context] get_memory failed: {}", e);
-        String::new()
-    });
+    let mem = match mode {
+        ContextAssemblyMode::LinuxFull => p.memory.get_memory().unwrap_or_else(|e| {
+            log::warn!("[context] get_memory failed: {}", e);
+            String::new()
+        }),
+        ContextAssemblyMode::EspCompactUser => String::new(),
+    };
     let post_memory_tail_len = estimate_post_memory_system_tail_len(PostMemoryTailParams {
         channel: p.msg.channel.as_ref(),
         has_tools: p.has_tools,

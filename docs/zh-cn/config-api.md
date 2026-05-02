@@ -1228,13 +1228,13 @@ ESP 嵌入式说明：`/api/tools` 在激活后保持可用。它仍要求设备
 
 ### 观测接口分层
 
-- `/api/health` 是轻量生命体征，适合首屏和状态灯；route class 为 `ImmediateRoute`。不要把资源诊断、workflow、完整网络快照放进这里。
-- `/api/resource` 是资源与准入诊断真源，适合状态面板和运维排查；route class 为 `SnapshotRoute`。它不是设备总状态，也不返回健康总览字段。
-- `/api/metrics` 是计数器和最近耗时；ESP 上为 immediate，Linux/宿主侧可走 diagnostic。不要在这里放 heap/resource/network 对象。
+- `/api/health` 是轻量生命体征，适合首屏和状态灯。不要把资源诊断、workflow、完整网络快照放进这里。
+- `/api/resource` 是轻量资源压力快照，适合状态面板默认轮询。它不是设备总状态，也不返回健康总览或详细运行态内部对象。
+- `/api/metrics` 是计数器和最近耗时。不要在这里放 heap/resource/network 对象。
 - `/api/operator/status` 是面向人和 UI 的解释面，可聚合多个真源说明“为什么是这个状态”；不作为机器准入真源。
-- `/api/diagnose` 是主动诊断结果和建议；route class 为 `SlowDiagnosticRoute`，输出诊断项，不是原始快照仓库。
+- `/api/diagnose` 是主动诊断结果和建议，输出诊断项，不是原始快照仓库。
 
-旧字段 `health.wifi`、`health.network`、`health.workflow`、`resource.network`、`resource.firmware_identity` 已删除，不提供兼容。自定义前端不要依赖 `/api/health` 的诊断字段，也不要把 `/api/resource` 当作设备总状态接口。Crash 证据仍通过 `resource.crash` 提供给运维诊断使用。
+旧字段 `health.wifi`、`health.network`、`health.workflow`、`resource.network`、`resource.firmware_identity` 已删除，不提供兼容。自定义前端不要依赖 `/api/health` 的诊断字段，也不要把 `/api/resource` 当作设备总状态或详细诊断接口。
 
 **GET /api/health**
 
@@ -1312,7 +1312,7 @@ ESP 嵌入式说明：`/api/tools` 在激活后保持可用。它仍要求设备
 
 **GET /api/resource**
 
-用途：读取资源、准入和执行面诊断快照。
+用途：读取轻量资源压力快照。
 
 鉴权：`已激活`
 
@@ -1337,17 +1337,7 @@ ESP 嵌入式说明：`/api/tools` 在激活后保持可用。它仍要求设备
 - `inbound_depth`
 - `outbound_depth`
 - `budget`
-- `admission`
 - `governance_metrics`
-- `runtime_capabilities`
-- `crash`
-- `network_gate_summary`
-- `planes`
-- `plane_lifecycle`
-- `leases`
-- `threads`
-- `display_lease_denied_total`
-- `write_back`
 - `session_count`
 - `storage_used_kb`
 - `storage_total_kb`
@@ -1355,7 +1345,7 @@ ESP 嵌入式说明：`/api/tools` 在激活后保持可用。它仍要求设备
 - `load_average`（仅 Linux / 宿主侧）
 - `process_memory_kb`（仅 Linux / 宿主侧）
 
-资源端点属于资源诊断契约。`heap_free_spiram` 表示 PSRAM 空闲量，不是已用量；`heap_used_spiram_est = heap_total_spiram - heap_free_spiram`，仅用于帮助判读 PSRAM 是否被实际消耗。`display_lease_denied_total` 是显示执行面 lease 被拒绝的资源治理计数，不是 `/api/health.display` 健康字段。`crash` 携带真实 panic / reset 证据；缺失事实保持为 null，不合成。治理字段用于诊断运行态压力，会随着新的执行面 guard 继续扩展；客户端应允许未知字段存在，但不要期待这里返回健康总览或固件身份。
+资源端点属于默认轮询契约，必须保持轻量。`heap_free_spiram` 表示 PSRAM 空闲量，不是已用量；`heap_used_spiram_est = heap_total_spiram - heap_free_spiram`，仅用于帮助判读 PSRAM 是否被实际消耗。`governance_metrics` 提供精简的压力和拒绝计数；客户端应允许未知字段存在，但不要期待这里返回健康总览、详细运行态内部对象、crash 证据或固件身份。
 
 **GET /api/diagnose**
 

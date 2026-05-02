@@ -69,6 +69,25 @@ if ! rg -n 'config_persisting_suspend' src/channels/wss_gateway/loop.rs >/dev/nu
   exit 1
 fi
 
+if rg -n 'wait_for_external_wss_suspend\(' src \
+  --glob '!src/network/mod.rs' >/dev/null; then
+  echo "FAIL: external WSS suspend waits outside network must use the Result-returning hard gate" >&2
+  rg -n 'wait_for_external_wss_suspend\(' src --glob '!src/network/mod.rs' >&2
+  exit 1
+fi
+
+if ! rg -n 'ConfigActivityGuard::try_enter' src/platform/http_server/esp_transport.rs >/dev/null ||
+   ! rg -n 'runtime\.config_wss_suspend_timeout' src/platform/http_server/esp_transport.rs >/dev/null; then
+  echo "FAIL: config mutating routes must fail closed when external WSS suspend/drain cannot complete" >&2
+  exit 1
+fi
+
+if ! rg -n 'begin_wss_session\(profile\.into\(\)\)' src/channels/wss_gateway/esp_conn.rs src/channels/wss_gateway/linux_conn.rs >/dev/null ||
+   ! rg -n 'active_external_wss_count|active_realtime_wss_count' src/network/mod.rs >/dev/null; then
+  echo "FAIL: WSS sessions must carry an external/realtime profile and expose separate counters" >&2
+  exit 1
+fi
+
 if ! rg -n 'dingtalk_stream|wecom_aibot' src/channels/wss_gateway/loop.rs >/dev/null; then
   echo "FAIL: WSS lifecycle owners no longer cover all external WSS channel owners" >&2
   exit 1

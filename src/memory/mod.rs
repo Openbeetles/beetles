@@ -178,8 +178,7 @@ pub(crate) use long_term::{
     long_term_memory_effective_stale_hint, long_term_memory_entry_from_draft,
     long_term_memory_evidence_state, long_term_memory_matches_query, merge_long_term_memory_entry,
     recall_long_term_memory_entries, score_long_term_memory_recall_breakdown,
-    select_long_term_recall_entries, touch_long_term_memory_usage,
-    LongTermMemoryMergeGuardDecision,
+    select_long_term_recall_entries, LongTermMemoryMergeGuardDecision,
 };
 pub use long_term::{
     long_term_memory_evidence_summary, lookup_long_term_memory_slot,

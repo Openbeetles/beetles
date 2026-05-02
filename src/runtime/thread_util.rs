@@ -98,4 +98,14 @@ mod tests {
         assert_eq!(plan.core, Some(crate::util::SpawnCore::Core1));
         assert_eq!(plan.role, crate::util::HttpThreadRole::Io);
     }
+
+    #[test]
+    fn startup_io_workers_have_explicit_core_and_io_role() {
+        for name in ["wifi_worker", "config_plane_watch"] {
+            let plan = super::thread_plan(name);
+
+            assert_eq!(plan.core, Some(crate::util::SpawnCore::Core0));
+            assert_eq!(plan.role, crate::util::HttpThreadRole::Io);
+        }
+    }
 }

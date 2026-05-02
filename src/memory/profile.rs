@@ -96,7 +96,7 @@ impl PromptParticipationPlan {
         Self {
             load_l1_constitutional: true,
             load_l1_session: true,
-            load_l2_governed_recall: true,
+            load_l2_governed_recall: false,
             load_l2_background_governance: false,
             load_l3_private_depth: false,
         }
@@ -893,7 +893,7 @@ pub(crate) fn decide_prompt_assembly(
                 crate::bus::IngressKind::User => PromptParticipationPlan {
                     load_l1_constitutional: true,
                     load_l1_session: true,
-                    load_l2_governed_recall: budget_allows_governed && mode_allows_governed,
+                    load_l2_governed_recall: false,
                     load_l2_background_governance: false,
                     load_l3_private_depth: false,
                 },
@@ -1070,7 +1070,7 @@ mod tests {
     }
 
     #[test]
-    fn esp_compact_prompt_assembly_keeps_governed_recall_but_skips_background_on_first_user_turn() {
+    fn esp_compact_user_prompt_assembly_uses_compact_carry_without_governed_recall() {
         let plan = decide_prompt_assembly(
             MemorySystemKind::EspCompact,
             crate::bus::IngressKind::User,
@@ -1113,7 +1113,7 @@ mod tests {
         assert_eq!(plan.memory_system_kind, MemorySystemKind::EspCompact);
         assert!(plan.participation_plan.load_l1_constitutional);
         assert!(plan.participation_plan.load_l1_session);
-        assert!(plan.participation_plan.load_l2_governed_recall);
+        assert!(!plan.participation_plan.load_l2_governed_recall);
         assert!(!plan.participation_plan.load_l2_background_governance);
         assert!(!plan.participation_plan.load_l3_private_depth);
         assert!(!plan.include_capability_package_text);

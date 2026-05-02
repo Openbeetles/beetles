@@ -98,11 +98,11 @@ impl ToolEffectClass {
     }
 }
 
-/// Maps effect classes with an unambiguous shared transport dependency to a runtime capability.
+/// Maps effect classes with an unambiguous shared runtime dependency to a capability.
 ///
-/// Hardware and diagnostic effects are resource-bearing, but they are not all audio or network
-/// calls. Those tools must declare precise [`crate::tools::ToolCapabilityContract`] requirements
-/// instead of being coarse-mapped here.
+/// Hardware actuation and diagnostics remain tool-specific; hardware reads are sensor reads in the
+/// current production catalog and must respect the sensor drain/offline gate in addition to their
+/// underlying bus or GPIO contract.
 pub(crate) const fn tool_effect_runtime_capability_id(
     effect_class: ToolEffectClass,
 ) -> Option<&'static str> {
@@ -110,6 +110,7 @@ pub(crate) const fn tool_effect_runtime_capability_id(
         ToolEffectClass::NetworkSearch | ToolEffectClass::VisibleOutbound => {
             Some(crate::orchestrator::RUNTIME_CAPABILITY_NETWORK_OUTBOUND_HTTP)
         }
+        ToolEffectClass::HardwareRead => Some(crate::orchestrator::RUNTIME_CAPABILITY_SENSOR),
         _ => None,
     }
 }
@@ -513,9 +514,12 @@ mod tests {
             tool_effect_runtime_capability_id(ToolEffectClass::ReadOnly),
             None
         );
+        assert_eq!(
+            tool_effect_runtime_capability_id(ToolEffectClass::HardwareRead),
+            Some(crate::orchestrator::RUNTIME_CAPABILITY_SENSOR)
+        );
         for effect_class in [
             ToolEffectClass::Diagnostic,
-            ToolEffectClass::HardwareRead,
             ToolEffectClass::HardwareActuation,
         ] {
             assert_eq!(tool_effect_runtime_capability_id(effect_class), None);

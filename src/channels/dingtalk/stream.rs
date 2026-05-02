@@ -83,6 +83,12 @@ fn mark_wss_lifecycle(state: crate::runtime::PlaneLifecycleState, reason: &'stat
     );
 }
 
+fn external_wss_suspend_lifecycle_reason() -> &'static str {
+    crate::network::external_wss_suspend_reason()
+        .map(crate::network::ExternalWssSuspendReason::as_str)
+        .unwrap_or("external_wss_suspend")
+}
+
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 fn esp_network_suspend_reason() -> Option<&'static str> {
     let snapshot = crate::state::network_runtime_snapshot(
@@ -201,10 +207,16 @@ pub fn run_dingtalk_stream_loop<H, C, CreateHttp, Connect>(
                     Duration::from_secs(backoff_secs),
                 );
             } else {
-                crate::platform::wifi::wait_for_network_ready();
+                let _ = crate::platform::wifi::wait_for_network_ready();
                 std::thread::sleep(Duration::from_secs(backoff_secs));
             }
             continue;
+        }
+        if crate::network::external_wss_suspend_requested() {
+            mark_wss_lifecycle(
+                crate::runtime::PlaneLifecycleState::Suspended,
+                external_wss_suspend_lifecycle_reason(),
+            );
         }
         crate::network::wait_for_external_wss_resume(TAG);
         mark_wss_lifecycle(
@@ -259,10 +271,12 @@ pub fn run_dingtalk_stream_loop<H, C, CreateHttp, Connect>(
                     "[{}] disconnecting external WSS under runtime mode gate",
                     TAG
                 );
-                mark_wss_lifecycle(
-                    crate::runtime::PlaneLifecycleState::Suspended,
-                    "runtime_mode_gate",
-                );
+                let reason = if crate::network::external_wss_suspend_requested() {
+                    external_wss_suspend_lifecycle_reason()
+                } else {
+                    "runtime_mode_gate"
+                };
+                mark_wss_lifecycle(crate::runtime::PlaneLifecycleState::Suspended, reason);
                 break;
             }
             match conn.recv_timeout(Duration::from_secs(RECV_TIMEOUT_SECS)) {

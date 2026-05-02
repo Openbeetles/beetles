@@ -6,7 +6,7 @@ use crate::constants::{
     I2C_MAX_READ_LEN, I2C_MAX_WRITE_LEN, I2C_READ_MIN_INTERVAL_MS, I2C_WRITE_MIN_INTERVAL_MS,
 };
 use crate::error::{Error, Result};
-use crate::tools::{parse_tool_args, Tool, ToolContext, ToolMetadata};
+use crate::tools::{parse_tool_args, Tool, ToolCapabilityContract, ToolContext, ToolMetadata};
 use crate::Platform;
 use serde_json::json;
 use std::collections::HashMap;
@@ -298,5 +298,9 @@ impl Tool for I2cDeviceTool {
 
     fn metadata(&self) -> ToolMetadata {
         ToolMetadata::debug()
+    }
+
+    fn capability_contract(&self) -> ToolCapabilityContract {
+        ToolCapabilityContract::required(&[crate::orchestrator::RUNTIME_CAPABILITY_HARDWARE_I2C])
     }
 }

@@ -396,6 +396,6 @@ pub fn connect_esp_wss_with_headers_and_profile(
         raw,
         send_timeout_ms: duration_to_timeout_ms(tuning.send_timeout),
         max_send_payload_bytes: tuning.max_send_payload_bytes,
-        _wss_session_guard: Some(crate::orchestrator::begin_wss_session()),
+        _wss_session_guard: Some(crate::orchestrator::begin_wss_session(profile.into())),
     })
 }

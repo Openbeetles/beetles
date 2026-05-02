@@ -272,6 +272,7 @@ impl<'a> DeliverySession<'a> {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn on_stream_delta(&mut self, accumulated: &str) {
         match self.mode {
             DeliveryMode::Edit(ref mut delivery) => delivery.on_stream_delta(accumulated),
@@ -313,6 +314,7 @@ impl<'a> DeliverySession<'a> {
     }
 
     /// 返回 true 表示最终答复已经直接交付到通道，外层应跳过 outbound_tx。
+    #[cfg(test)]
     pub(crate) fn finalize(&mut self, _final_content: &str) -> bool {
         if !self.policy.supports_current_primary {
             if let DeliveryMode::Queued(ref mut delivery) = self.mode {
@@ -322,6 +324,19 @@ impl<'a> DeliverySession<'a> {
         }
         match self.mode {
             DeliveryMode::Edit(ref mut delivery) => delivery.finalize(_final_content),
+            DeliveryMode::Queued(ref mut delivery) => delivery.finalize(),
+            DeliveryMode::Silent => false,
+        }
+    }
+
+    /// Close any progress delivery before ReplyFinalize produces canonical text.
+    /// This never sends raw final content; the canonical reply is delivered later.
+    pub(crate) fn close_before_canonical_reply(&mut self) -> bool {
+        match self.mode {
+            DeliveryMode::Edit(ref mut delivery) => {
+                delivery.close_without_primary();
+                false
+            }
             DeliveryMode::Queued(ref mut delivery) => delivery.finalize(),
             DeliveryMode::Silent => false,
         }
@@ -458,6 +473,7 @@ impl DeliveryFactState {
 }
 
 impl<'a> EditDelivery<'a> {
+    #[cfg(test)]
     fn on_stream_delta(&mut self, accumulated: &str) {
         if self.edit_disabled || self.lifecycle.is_closed() || accumulated.trim().is_empty() {
             return;
@@ -508,6 +524,7 @@ impl<'a> EditDelivery<'a> {
         self.sync_composed(had_no_body);
     }
 
+    #[cfg(test)]
     fn finalize(&mut self, final_content: &str) -> bool {
         if self.lifecycle == DeliveryLifecycle::Finalized {
             return self.report.finalize_streamed;
@@ -535,6 +552,16 @@ impl<'a> EditDelivery<'a> {
         self.lifecycle = DeliveryLifecycle::Finalized;
         self.report.finalize_streamed = streamed;
         streamed
+    }
+
+    fn close_without_primary(&mut self) {
+        if self.lifecycle == DeliveryLifecycle::Finalized {
+            return;
+        }
+        self.pending_compose.clear();
+        self.status_header = None;
+        self.lifecycle = DeliveryLifecycle::Finalized;
+        self.report.finalize_streamed = false;
     }
 
     fn clear_placeholder_header_for_body(&mut self) {
@@ -1652,6 +1679,46 @@ mod tests {
                 .unwrap_or_else(|e| e.into_inner())
                 .as_slice(),
             ["最终答案"]
+        );
+    }
+
+    #[test]
+    fn edit_delivery_close_before_canonical_reply_does_not_send_raw_final() {
+        let _guard = delayed_task_test_lock();
+        reset_delayed_tasks();
+        let (outbound_tx, _outbound_rx, _) = new_inbound_channel(4);
+        let msg = build_msg("telegram");
+        let editor = StubEditor::default();
+        let mut delivery = DeliverySession::new(
+            &msg,
+            "req-1",
+            &outbound_tx,
+            Some(&editor),
+            Some(capability_entry("telegram", true, true, true)),
+            MemorySystemKind::LinuxFull,
+            UiLocale::Zh,
+        );
+
+        delivery.emit_fact(TurnVisibilityFact::TaskPlanner);
+        let streamed = delivery.close_before_canonical_reply();
+
+        assert!(!streamed);
+        assert!(!delivery.report().finalize_streamed);
+        assert_eq!(
+            editor
+                .sends
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_slice(),
+            ["正在规划当前任务"]
+        );
+        assert!(
+            editor
+                .edits
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .is_empty(),
+            "raw final content must not be edited before ReplyFinalize"
         );
     }
 

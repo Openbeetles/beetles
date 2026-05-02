@@ -157,7 +157,7 @@ fn wait_for_wifi(tag: &str) -> bool {
         }
     }
     log::warn!(
-        "[{}] WiFi STA still not ready after {}s, proceeding anyway",
+        "[{}] WiFi STA still not ready after {}s, connect deferred",
         tag,
         WIFI_WAIT_MAX_SECS
     );
@@ -299,11 +299,16 @@ pub fn run_wss_gateway_loop<D, H, C, CreateHttp, Conn>(
             mark_wss_lifecycle(
                 lifecycle_owner,
                 crate::runtime::PlaneLifecycleState::Suspended,
-                "voice_exclusive_suspend",
+                crate::network::external_wss_suspend_reason()
+                    .map(crate::network::ExternalWssSuspendReason::as_str)
+                    .unwrap_or("external_wss_suspend"),
             );
         }
         crate::network::wait_for_external_wss_resume(tag);
-        wait_for_wifi(tag);
+        if !wait_for_wifi(tag) {
+            sleep_with_wdt(TLS_ADMISSION_RETRY_SLEEP_SECS);
+            continue;
+        }
 
         let runtime_mode = crate::runtime::thread_registry::runtime_mode_snapshot();
         if !runtime_mode.action_budget.allow_external_wss_connect {
@@ -749,7 +754,9 @@ pub fn run_wss_gateway_loop<D, H, C, CreateHttp, Conn>(
             mark_wss_lifecycle(
                 lifecycle_owner,
                 crate::runtime::PlaneLifecycleState::Suspended,
-                "voice_exclusive_suspend",
+                crate::network::external_wss_suspend_reason()
+                    .map(crate::network::ExternalWssSuspendReason::as_str)
+                    .unwrap_or("external_wss_suspend"),
             );
             continue;
         }

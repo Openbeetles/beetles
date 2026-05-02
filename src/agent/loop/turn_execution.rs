@@ -289,7 +289,7 @@ pub(super) fn render_programmatic_clarification_question(
 }
 
 /// 完整 context + worker LLM + ReAct 循环，返回执行结果与 telemetry。
-/// telemetry.streamed=true 表示已通过流式编辑发送到通道，调用方应跳过 outbound_tx。
+/// telemetry.streamed=true 表示规范化最终答复已交付到通道，调用方应跳过 outbound_tx。
 #[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub(super) fn execute_turn(
@@ -583,13 +583,6 @@ pub(super) fn execute_turn_boxed(
                 latency.ttft_ms = Some(progress_base.elapsed().as_millis());
                 first_token_marked = true;
             }
-            if matches!(
-                crate::orchestrator::current_pressure(),
-                crate::orchestrator::PressureLevel::Critical
-            ) {
-                return;
-            }
-            delivery.on_stream_delta(accumulated);
         };
         let response = worker_llm.chat_with_progress(
             &mut tool_ctx,
@@ -815,7 +808,7 @@ pub(super) fn execute_turn_boxed(
         });
     }
     delivery.emit_fact(crate::agent::TurnVisibilityFact::Finalizing);
-    let streamed = delivery.finalize(&final_content);
+    let streamed = delivery.close_before_canonical_reply();
     let outcome = WorkerOutcome::Content(final_content);
     Ok(Box::new(ExecutedTurn {
         outcome,

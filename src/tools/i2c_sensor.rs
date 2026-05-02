@@ -4,7 +4,7 @@
 use crate::config::I2cSensorEntry;
 use crate::constants::I2C_SENSOR_RATE_LIMIT_MS;
 use crate::error::{Error, Result};
-use crate::tools::{parse_tool_args, Tool, ToolContext, ToolMetadata};
+use crate::tools::{parse_tool_args, Tool, ToolCapabilityContract, ToolContext, ToolMetadata};
 use crate::Platform;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -218,5 +218,12 @@ impl Tool for I2cSensorTool {
 
     fn metadata(&self) -> ToolMetadata {
         ToolMetadata::task()
+    }
+
+    fn capability_contract(&self) -> ToolCapabilityContract {
+        ToolCapabilityContract::required(&[
+            crate::orchestrator::RUNTIME_CAPABILITY_HARDWARE_I2C,
+            crate::orchestrator::RUNTIME_CAPABILITY_SENSOR,
+        ])
     }
 }

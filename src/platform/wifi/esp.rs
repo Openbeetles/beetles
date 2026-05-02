@@ -22,10 +22,6 @@ const TAG: &str = "platform::wifi";
 const SCAN_RESP_TIMEOUT: Duration = Duration::from_secs(WIFI_SCAN_TIMEOUT_SECS);
 const SCAN_RETRY: u32 = 3;
 const SCAN_RETRY_DELAY: Duration = Duration::from_millis(400);
-/// WiFi worker 负责 ESP WiFi 驱动 + 扫描 + STA 保活。
-/// 当前路径已去掉阻塞式 `BlockingWifi::connect()`；常驻循环只做 poll/scan/重连驱动，
-/// 继续收回到 8KB internal SRAM。
-const WIFI_WORKER_STACK_BYTES: usize = 8 * 1024;
 /// STA 状态轮询间隔（毫秒）。
 const STA_POLL_INTERVAL_MS: u64 = 5_000;
 /// 发起 connect() 后的冷却期（毫秒）：给 WiFi 驱动足够时间完成 auth/assoc/DHCP，
@@ -80,9 +76,13 @@ pub fn passive_scan_handle() -> Option<WifiScanHandle> {
 ///
 /// 该等待可能由任意出站线程调用；它只做 feed-only 边界让步，禁止在请求路径注册 TWDT。
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-pub fn wait_for_network_ready() {
+pub fn wait_for_network_ready() -> bool {
     if !WIFI_STA_EXPECTED.load(Ordering::Relaxed) {
-        return;
+        log::warn!(
+            "[{}] wait_for_network_ready denied: STA is not configured for outbound",
+            TAG
+        );
+        return false;
     }
     let deadline = Instant::now() + Duration::from_secs(WIFI_ESP_CONNECT_MAIN_WAIT_SECS);
     while !crate::state::wifi_sta_settled_for_outbound(STA_OUTBOUND_READY_GRACE_SECS) {
@@ -93,20 +93,23 @@ pub fn wait_for_network_ready() {
                 STA_OUTBOUND_READY_GRACE_SECS,
             );
             log::warn!(
-                "[{}] wait_for_network_ready timed out after {}s; stage={:?} reason_code={:?}; continuing startup without STA",
+                "[{}] wait_for_network_ready timed out after {}s; stage={:?} reason_code={:?}; outbound request not admitted",
                 TAG,
                 WIFI_ESP_CONNECT_MAIN_WAIT_SECS,
                 snapshot.last_wifi_stage,
                 snapshot.last_wifi_reason_code
             );
-            break;
+            return false;
         }
         std::thread::sleep(Duration::from_millis(500));
     }
+    true
 }
 
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-pub fn wait_for_network_ready() {}
+pub fn wait_for_network_ready() -> bool {
+    true
+}
 
 /// GET /api/wifi/scan 返回的单个 AP；按信号强度排序后供前端下拉选择。
 #[derive(Clone, Debug, serde::Serialize)]
@@ -180,15 +183,16 @@ pub fn connect(config: &AppConfig) -> Result<Option<WifiScanHandle>> {
     let (tx, rx) = mpsc::channel();
     let (scan_req_tx, scan_req_rx) = mpsc::channel();
     let (scan_resp_tx, scan_resp_rx) = mpsc::channel::<ScanResponse>();
-    crate::util::spawn_guarded_with_profile(
+    crate::util::spawn_guarded_with_profile_handle(
         "wifi_worker",
-        WIFI_WORKER_STACK_BYTES,
+        crate::util::STACK_WIFI_WORKER,
         Some(crate::util::SpawnCore::Core0),
         crate::util::HttpThreadRole::Io,
         move || {
             do_connect(ssid.as_str(), pass.as_str(), tx, scan_req_rx, scan_resp_tx);
         },
-    );
+    )
+    .map_err(|error| Error::io("wifi_worker_spawn", error))?;
 
     let result = match rx.recv_timeout(Duration::from_secs(WIFI_ESP_CONNECT_MAIN_WAIT_SECS)) {
         Ok(Ok(())) => {
@@ -445,10 +449,12 @@ fn poll_sta_link(
             );
         }
         Err(e) => {
-            crate::state::set_network_wifi_stage(
-                crate::state::NetworkWifiStage::StaRecovering,
-                None,
-            );
+            if !crate::state::network_last_wifi_stage_has_reasoned_failure() {
+                crate::state::set_network_wifi_stage(
+                    crate::state::NetworkWifiStage::StaRecovering,
+                    None,
+                );
+            }
             crate::metrics::record_wifi_failure_stage("wifi_connect");
             log::warn!("[{}] STA connect() failed: {}", TAG, e);
         }
@@ -755,7 +761,12 @@ fn do_connect(
             TAG,
             e
         );
-        crate::state::set_network_wifi_stage(crate::state::NetworkWifiStage::StaRecovering, None);
+        if !crate::state::network_last_wifi_stage_has_reasoned_failure() {
+            crate::state::set_network_wifi_stage(
+                crate::state::NetworkWifiStage::StaRecovering,
+                None,
+            );
+        }
         clear_sta_ip_cache();
         let _ = result_tx.send(Ok(()));
         run_scan_loop(

@@ -172,6 +172,16 @@ fn disabled_recall_report(
     }
 }
 
+fn governed_recall_disabled_reason(params: &PromptMemoryContextParams<'_>) -> String {
+    if !params.participation_plan.load_l2_governed_recall {
+        "prompt_participation_disabled".to_string()
+    } else if !params.load_long_term_memory {
+        "long_term_recall_disabled".to_string()
+    } else {
+        "system_budget_below_block_threshold".to_string()
+    }
+}
+
 fn should_load_recent_persona_evidence_for_prompt(
     params: &PromptMemoryContextParams<'_>,
     seed: &PromptContextSeed,
@@ -210,7 +220,8 @@ pub(crate) fn seed_prompt_context(
     let esp_compact_first_turn_graph = matches!(
         params.memory_system_kind,
         super::MemorySystemKind::EspCompact
-    ) && params.participation_plan.load_l2_governed_recall
+    ) && params.participation_plan.load_l1_constitutional
+        && params.participation_plan.load_l1_session
         && !params.participation_plan.load_l2_background_governance
         && !params.participation_plan.load_l3_private_depth;
     let reuse_stored_relationship_constitution =
@@ -799,11 +810,7 @@ pub(crate) fn load_governed_memory_stage(
             disabled_recall_report(
                 RecallPlane::ContinuityCapsule,
                 "continuity_capsule_heuristic",
-                Some(if params.load_long_term_memory {
-                    "system_budget_below_block_threshold".to_string()
-                } else {
-                    "continuity_capsule_recall_disabled".to_string()
-                }),
+                Some(governed_recall_disabled_reason(params)),
             ),
             Vec::new(),
         )
@@ -843,11 +850,7 @@ pub(crate) fn load_governed_memory_stage(
         disabled_recall_report(
             RecallPlane::SharedFactual,
             "hybrid_canonical",
-            Some(if params.load_long_term_memory {
-                "system_budget_below_block_threshold".to_string()
-            } else {
-                "long_term_recall_disabled".to_string()
-            }),
+            Some(governed_recall_disabled_reason(params)),
         )
     };
     let archive_recall_report =
@@ -869,10 +872,8 @@ pub(crate) fn load_governed_memory_stage(
                 "archive_search",
                 Some(if seed.esp_compact_first_turn_graph {
                     "assembly_graph_disabled".to_string()
-                } else if params.load_long_term_memory {
-                    "system_budget_below_block_threshold".to_string()
                 } else {
-                    "archive_recall_disabled".to_string()
+                    governed_recall_disabled_reason(params)
                 }),
             )
         };
@@ -928,10 +929,8 @@ pub(crate) fn load_governed_memory_stage(
                 "runtime_skill_hybrid",
                 Some(if seed.esp_compact_first_turn_graph {
                     "assembly_graph_disabled".to_string()
-                } else if params.load_long_term_memory {
-                    "system_budget_below_block_threshold".to_string()
                 } else {
-                    "runtime_skill_recall_disabled".to_string()
+                    governed_recall_disabled_reason(params)
                 }),
             )
         };

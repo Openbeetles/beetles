@@ -359,6 +359,7 @@ const PLANE_PROFILES: &[PlaneProfile] = &[
         required_leases: &[
             LeaseKind::AudioInput,
             LeaseKind::AudioOutput,
+            LeaseKind::VoiceExclusive,
             LeaseKind::TlsHandshake,
         ],
         thread_names: &["voice_session_worker"],
@@ -695,5 +696,23 @@ mod tests {
         assert!(snapshot.steady_count > 0);
         assert!(snapshot.lazy_count > 0);
         assert!(format_baseline_log_line().contains("planes profiles="));
+    }
+
+    #[test]
+    fn execution_budget_maps_every_plane_thread_to_stack_or_logical_owner() {
+        let snapshot = crate::runtime::execution_budget::static_budget_snapshot();
+
+        assert_eq!(snapshot.unmapped_thread_count, 0);
+        assert!(snapshot.budgeted_thread_count > snapshot.logical_thread_count);
+        assert!(snapshot.steady_stack_bytes >= crate::util::STACK_AGENT_LOOP);
+        assert!(snapshot.lazy_stack_bytes >= crate::util::STACK_HTTP_DIAG_WORKER);
+        assert_eq!(
+            snapshot.tls_floor_internal_bytes,
+            crate::constants::TLS_ADMISSION_MIN_INTERNAL_BYTES
+        );
+        assert_eq!(
+            snapshot.tls_floor_largest_block_bytes,
+            crate::constants::TLS_ADMISSION_MIN_LARGEST_BLOCK_BYTES
+        );
     }
 }

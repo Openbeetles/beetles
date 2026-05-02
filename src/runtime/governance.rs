@@ -271,23 +271,73 @@ impl Drop for ConfigReadBurstGuard {
 
 impl ConfigActivityGuard {
     pub fn enter(phase: ConfigActivityPhase, route: &'static str) -> Self {
-        Self::enter_at(phase, route, crate::util::current_unix_secs())
+        Self::try_enter(phase, route).unwrap_or_else(|error| {
+            panic!("config activity enter failed route={route}: {error}");
+        })
     }
 
+    pub fn try_enter(phase: ConfigActivityPhase, route: &'static str) -> crate::Result<Self> {
+        Self::try_enter_at(phase, route, crate::util::current_unix_secs())
+    }
+
+    #[cfg(test)]
     pub(crate) fn enter_at(phase: ConfigActivityPhase, route: &'static str, now_secs: u64) -> Self {
+        Self::try_enter_at(phase, route, now_secs).unwrap_or_else(|error| {
+            panic!("config activity enter failed route={route}: {error}");
+        })
+    }
+
+    pub(crate) fn try_enter_at(
+        phase: ConfigActivityPhase,
+        route: &'static str,
+        now_secs: u64,
+    ) -> crate::Result<Self> {
+        Self::try_enter_at_inner(phase, route, now_secs, |route| {
+            crate::network::wait_for_external_wss_suspend_result(route)
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn try_enter_at_with_suspend_wait_for_tests<F>(
+        phase: ConfigActivityPhase,
+        route: &'static str,
+        now_secs: u64,
+        wait_for_external_wss_suspend_result: F,
+    ) -> crate::Result<Self>
+    where
+        F: FnOnce(&'static str) -> crate::Result<()>,
+    {
+        Self::try_enter_at_inner(phase, route, now_secs, wait_for_external_wss_suspend_result)
+    }
+
+    fn try_enter_at_inner<F>(
+        phase: ConfigActivityPhase,
+        route: &'static str,
+        now_secs: u64,
+        wait_for_external_wss_suspend_result: F,
+    ) -> crate::Result<Self>
+    where
+        F: FnOnce(&'static str) -> crate::Result<()>,
+    {
         extend_config_activity_at(phase, route, now_secs);
         let external_wss_suspend = if phase.blocks_new_non_voice_network_work() {
-            let guard = crate::network::begin_external_wss_suspend_request();
-            crate::network::wait_for_external_wss_suspend(route);
+            let guard = crate::network::begin_external_wss_suspend_request(
+                crate::network::ExternalWssSuspendReason::ConfigPersisting,
+            );
+            if let Err(error) = wait_for_external_wss_suspend_result(route) {
+                extend_config_activity_at(ConfigActivityPhase::Fail, route, now_secs);
+                drop(guard);
+                return Err(error);
+            }
             Some(guard)
         } else {
             None
         };
-        Self {
+        Ok(Self {
             route,
             finished: false,
             external_wss_suspend,
-        }
+        })
     }
 
     pub fn finish_status(&mut self, status: u16) {
@@ -386,12 +436,17 @@ mod tests {
                 100,
             );
             assert!(crate::network::external_wss_suspend_requested());
+            assert_eq!(
+                crate::network::external_wss_suspend_reason(),
+                Some(crate::network::ExternalWssSuspendReason::ConfigPersisting)
+            );
             assert!(config_activity_active_at(100));
             let snapshot = config_activity_snapshot_at(100);
             assert_eq!(snapshot.phase, ConfigActivityPhase::Persisting);
             assert_eq!(snapshot.route.as_deref(), Some("/api/config/system"));
             guard.finish_status_at(200, 105);
             assert!(!crate::network::external_wss_suspend_requested());
+            assert_eq!(crate::network::external_wss_suspend_reason(), None);
         }
 
         let snapshot = config_activity_snapshot_at(106);
@@ -418,13 +473,43 @@ mod tests {
                 200,
             );
             assert!(crate::network::external_wss_suspend_requested());
+            assert_eq!(
+                crate::network::external_wss_suspend_reason()
+                    .map(crate::network::ExternalWssSuspendReason::as_str),
+                Some("config_persisting_suspend")
+            );
         }
 
         assert!(!crate::network::external_wss_suspend_requested());
+        assert_eq!(crate::network::external_wss_suspend_reason(), None);
         let snapshot = config_activity_snapshot_at(201);
         assert!(snapshot.active);
         assert_eq!(snapshot.phase, ConfigActivityPhase::Fail);
         assert!(!snapshot.phase.blocks_new_non_voice_network_work());
+    }
+
+    #[test]
+    fn config_activity_try_enter_fails_closed_when_external_wss_drain_fails() {
+        let _state_guard = crate::state::test_state_guard();
+        reset_runtime_governance_state_for_tests();
+        crate::network::set_external_wss_managed_present(true);
+
+        let error = match ConfigActivityGuard::try_enter_at_with_suspend_wait_for_tests(
+            ConfigActivityPhase::Persisting,
+            "/api/config/system",
+            300,
+            |_route| Err(crate::Error::config("external_wss_suspend_timeout", "held")),
+        ) {
+            Ok(_) => panic!("config activity must fail closed when WSS suspend fails"),
+            Err(error) => error,
+        };
+
+        assert_eq!(error.stage(), "external_wss_suspend_timeout");
+        assert!(!crate::network::external_wss_suspend_requested());
+        let snapshot = config_activity_snapshot_at(300);
+        assert!(snapshot.active);
+        assert_eq!(snapshot.phase, ConfigActivityPhase::Fail);
+        crate::network::set_external_wss_managed_present(false);
     }
 
     #[test]

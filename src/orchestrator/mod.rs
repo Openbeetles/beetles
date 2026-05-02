@@ -27,18 +27,23 @@ pub use runtime_capability::{
     begin_runtime_capability_draining, finish_runtime_capability_unloaded,
     format_runtime_capability_baseline_line, get_runtime_capability,
     mark_runtime_capability_disabled, mark_runtime_capability_failed,
-    observe_runtime_capabilities_from_platform, observe_runtime_capability_failure,
+    observe_runtime_capabilities_from_platform,
+    observe_runtime_capabilities_from_platform_with_config, observe_runtime_capability_failure,
     observe_runtime_capability_success, runtime_capability_blocker,
     runtime_capability_drain_denied_total, runtime_capability_snapshot, runtime_capability_summary,
     try_begin_runtime_capability_call, update_runtime_capability, RuntimeCapabilityBlocker,
     RuntimeCapabilityCallGuard, RuntimeCapabilityReason, RuntimeCapabilityState,
     RuntimeCapabilityStatus, RuntimeCapabilitySummary, RuntimeCapabilityUpdate,
     RUNTIME_CAPABILITY_AUDIO_INPUT, RUNTIME_CAPABILITY_AUDIO_OUTPUT,
-    RUNTIME_CAPABILITY_NETWORK_OUTBOUND_HTTP, RUNTIME_CAPABILITY_STORAGE_STATE_FS,
+    RUNTIME_CAPABILITY_CAMERA_FRAME, RUNTIME_CAPABILITY_DISPLAY_OUTPUT,
+    RUNTIME_CAPABILITY_HARDWARE_GPIO, RUNTIME_CAPABILITY_HARDWARE_I2C,
+    RUNTIME_CAPABILITY_NETWORK_OUTBOUND_HTTP, RUNTIME_CAPABILITY_SENSOR,
+    RUNTIME_CAPABILITY_STORAGE_STATE_FS,
 };
 pub use state::{
     CrashMetadataSnapshot, ResourceAdmissionSnapshot, ResourceDiagnosticSnapshot,
-    ResourceGovernanceMetricsSnapshot, ResourceSnapshot, StorageContentionRisk,
+    ResourceGovernanceMetricsSnapshot, ResourceLightSnapshot, ResourceSnapshot,
+    StorageContentionRisk,
 };
 
 /// 全局单例 orchestrator 状态。
@@ -209,13 +214,45 @@ pub fn snapshot() -> ResourceSnapshot {
     state::ResourceSnapshot::from_state(&STATE)
 }
 
-/// Deep diagnostic resource snapshot for `/api/resource`.
+/// 返回默认资源 API 使用的轻量快照，不聚合 deep runtime 对象。
+/// Return the lightweight snapshot used by the default resource API.
+pub fn resource_light_snapshot() -> ResourceLightSnapshot {
+    state::ResourceLightSnapshot::from_state(&STATE)
+}
+
+/// 返回资源 API 暴露的治理计数器，保持为 metrics 的轻量原子快照。
+/// Return lightweight governance counters for the resource API.
+pub fn resource_governance_metrics_snapshot() -> ResourceGovernanceMetricsSnapshot {
+    let metrics = crate::metrics::snapshot();
+    state::ResourceGovernanceMetricsSnapshot::from_metrics(&metrics)
+}
+
+/// 返回最近一次缓存的内存事实；HTTP 请求路径不得为了准入而 live-sample heap。
+/// Return the last cached memory facts; HTTP request paths must not live-sample heap for admission.
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+pub(crate) fn cached_memory_snapshot() -> MemorySnapshot {
+    let snap = resource_light_snapshot();
+    MemorySnapshot {
+        heap_free_internal: snap.heap_free_internal,
+        heap_min_free_internal: snap.heap_min_free_internal,
+        heap_free_spiram: snap.heap_free_spiram,
+        heap_total_spiram: snap.heap_total_spiram,
+        heap_min_free_spiram: snap.heap_min_free_spiram,
+        heap_largest_block_spiram: snap.heap_largest_block_spiram,
+        heap_largest_block: snap.heap_largest_block_internal,
+    }
+}
+
+/// 返回内部 deep diagnostic 资源快照；默认 `/api/resource` 使用 [`resource_light_snapshot`]。
+/// Return the internal deep diagnostic resource snapshot; default `/api/resource`
+/// uses [`resource_light_snapshot`].
 pub fn resource_diagnostic_snapshot() -> ResourceDiagnosticSnapshot {
     state::ResourceDiagnosticSnapshot::from_state(&STATE)
 }
 
-/// 单行资源基线字符串，与 [`snapshot`] 及 `GET /api/resource` 字段一致，供心跳与串口对齐观测。
-/// Single-line resource baseline aligned with [`snapshot`] and `GET /api/resource` for heartbeat/serial.
+/// 单行资源基线字符串，与默认资源压力口径一致，供心跳与串口对齐观测。
+/// Single-line resource baseline aligned with the default resource-pressure
+/// view for heartbeat/serial.
 pub fn format_resource_baseline_line() -> String {
     let s = snapshot();
     #[cfg(target_os = "linux")]
@@ -289,8 +326,8 @@ pub fn begin_agent_task() -> AgentTaskGuard {
 }
 
 /// 标记一个已建立的 WSS 会话开始存活；返回 RAII guard，Drop 时自动递减。
-pub fn begin_wss_session() -> WssSessionGuard {
-    crate::network::begin_wss_session()
+pub fn begin_wss_session(profile: crate::network::TransportWssProfile) -> WssSessionGuard {
+    crate::network::begin_wss_session(profile)
 }
 
 /// 记录通道发送结果（成功/失败）。
@@ -544,6 +581,17 @@ pub fn log_startup_memory_checkpoint(stage: &'static str) {
 
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub fn log_startup_memory_checkpoint(_stage: &'static str) {}
+
+/// 打印基于缓存快照的内存观测点；用于请求触发的 lazy-start 日志，避免 live heap walk。
+/// Log a cached memory checkpoint for request-triggered lazy starts, avoiding live heap walks.
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+pub fn log_cached_memory_checkpoint(stage: &'static str) {
+    let snap = cached_memory_snapshot();
+    log::info!("{}", format_startup_memory_checkpoint_line(stage, snap));
+}
+
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+pub fn log_cached_memory_checkpoint(_stage: &'static str) {}
 
 #[cfg(test)]
 mod tests {

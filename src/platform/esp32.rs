@@ -982,6 +982,13 @@ impl Platform for Esp32Platform {
         Ok(())
     }
 
+    fn i2c_ready(&self) -> bool {
+        self.i2c_state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_some()
+    }
+
     fn i2c_read(&self, addr: u8, register: u8, len: usize) -> crate::error::Result<Vec<u8>> {
         let mut guard = self.i2c_state.lock().unwrap_or_else(|e| e.into_inner());
         match guard.as_mut() {

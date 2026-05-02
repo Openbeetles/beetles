@@ -56,7 +56,7 @@ use crate::memory::{
     render_core_revision_governance_block, render_recent_persona_evidence_block,
     run_long_term_memory_refresh, run_mental_privacy_disclosure_adjudication,
     run_mental_privacy_review, run_post_reply_memory_maintenance, run_self_runtime,
-    upsert_relationship_topology_entry, LongTermMemoryRefreshContext, LongTermMemoryRefreshOutcome,
+    LongTermMemoryRefreshContext, LongTermMemoryRefreshOutcome,
     LongTermMemoryRefreshRequestOutcome, MentalPrivacyDisclosureAdjudicationContext,
     MentalPrivacyDisclosureAdjudicationInput, MentalPrivacyReviewContext, MentalPrivacyReviewInput,
     MentalPrivacyReviewOutcome, PersonaPriorityAdjudication, PersonaPriorityAdjudicationInput,
@@ -6474,6 +6474,77 @@ mod tests {
             observed.len(),
             2,
             "second protocol violation must terminate locally instead of asking the LLM again"
+        );
+        let WorkerOutcome::Content(delivered) = executed.outcome;
+        assert_eq!(delivered, tr(UiMessage::OperationFailed, UiLocale::Zh));
+        assert_eq!(executed.telemetry.latency.react_rounds, 2);
+        assert_eq!(executed.telemetry.latency.tool_calls, 2);
+    }
+
+    #[test]
+    fn execute_turn_task_like_chinese_free_text_protocol_violation_never_executes_tool() {
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let captured_args = Arc::new(Mutex::new(Vec::new()));
+        let invalid_call = || {
+            LlmResponse {
+            content: "[tool_use]".to_string(),
+            stop_reason: StopReason::ToolUse,
+            tool_calls: Some(vec![crate::llm::ToolCall {
+                id: "call_task_like".to_string(),
+                name: "argument_capture".to_string(),
+                input: "{op: create, title: 备忘：在测试 ESP32-S3（esp32sp）, detail: 用户当前正在测试 ESP32-S3 开发板/固件，代号 esp32sp。设备运行正常，WiFi 已连接，资源充裕。, priority: low}".to_string(),
+            }]),
+        }
+        };
+        let llm = ObservedSequenceStubLlm {
+            responses: Mutex::new(vec![
+                invalid_call(),
+                invalid_call(),
+                LlmResponse {
+                    content: "should not need a third LLM round".to_string(),
+                    stop_reason: StopReason::EndTurn,
+                    tool_calls: None,
+                },
+            ]),
+            observed: Arc::clone(&observed),
+        };
+        let mut http = DummyPlatformHttp;
+        let (outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
+        let mut registry = test_registry_with_protocols(
+            &[("argument_capture", ToolLlmVisibility::user_only())],
+            &[(
+                "argument_capture",
+                ToolProtocolContract::operation_envelope_json_with_rich_blockers(),
+            )],
+        );
+        registry.register(Box::new(StubArgumentCaptureTool {
+            observed_args: Arc::clone(&captured_args),
+        }));
+        let mut config = test_agent_loop_config();
+        config.strategy = AgentRunStrategy::Embedded;
+        let msg = PcMsg::new_inbound("qq_channel", "chat-task-like-protocol", "记一下", false)
+            .expect("message");
+        let mut repeat = HashMap::new();
+
+        let executed = turn_execution::execute_turn(
+            &mut http,
+            &llm,
+            &msg,
+            &outbound_tx,
+            "req-task-like-protocol",
+            &registry,
+            &config,
+            &mut repeat,
+            UiLocale::Zh,
+        )
+        .expect("execute turn");
+
+        let observed = observed.lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(observed.len(), 2);
+        let captured_args = captured_args.lock().unwrap_or_else(|e| e.into_inner());
+        assert!(
+            captured_args.is_empty(),
+            "protocol-invalid arguments must not reach the tool"
         );
         let WorkerOutcome::Content(delivered) = executed.outcome;
         assert_eq!(delivered, tr(UiMessage::OperationFailed, UiLocale::Zh));
