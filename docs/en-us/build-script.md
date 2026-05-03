@@ -113,8 +113,9 @@ Implementation contract:
 - the script does not invent a second flash layout; it reuses `build.sh` outputs: `bootloader.bin`, `partition-table.bin`, and `beetle.bin`
 - merged images are for browser USB flashing, serial flashing, and factory reflash flows; official OTA is no longer part of the mainline release contract
 - board manifests use a single part at `offset: 0`, so browser installers can flash the merged image directly
-- Configure UI online flashing uses browser Web Serial plus `esptool-js` to connect to the ESP ROM bootloader; device identity is the detected chip description, Flash size, and PSRAM information, not the USB bridge VID/PID
-- Configure UI browser flashing requires the board-named merged `.bin` and the matching `release-catalog.json` from the same trusted bundle, verifies the bin SHA-256 against the catalog, checks bootloader / partition-table / app image offsets, and maps detected chip / Flash / PSRAM capacity to an officially supported board before writing at `0x0`
+- Configure UI online flashing uses browser Web Serial plus `esptool-js` to connect to the ESP ROM bootloader; board matching uses the detected chip description and Flash size, not the USB bridge VID/PID
+- Configure UI browser flashing does not ask users to pick `.bin` or `release-catalog.json` files; after device scan it maps detected chip / Flash capacity to an official board, reads the release catalog from same-origin `/firmware/release-catalog.json` or build-time `VITE_ESP_FIRMWARE_BASE_URL`, and verifies firmware SHA-256 plus critical offsets; PSRAM remains part of the mainline hardware contract and runtime diagnostics, but it is not a hard flashing-admission gate during the browser ROM stage
+- Configure UI browser flashing offers `Update` and `Reinstall` modes: update writes `update_parts` for bootloader, partition table, and app separately without touching the NVS range, preserving WiFi, pairing, and device configuration; reinstall writes the merged single bin at `0x0`, erases the whole flash before writing, and clears WiFi, pairing, device configuration, and history
 - the bundle is assembled under a staging directory and only replaces the final version directory after every board and metadata file succeeds
 
 Optional arguments:

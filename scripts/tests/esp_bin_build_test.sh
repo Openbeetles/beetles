@@ -239,6 +239,18 @@ assert_file_contains \
   "esp-bin-build should stage board bins before atomically publishing the final release bundle"
 assert_file_contains \
   "$ENTRYPOINT_PATH" \
+  'copy_update_part "$bootloader_bin"' \
+  "esp-bin-build should publish bootloader as an update-safe part"
+assert_file_contains \
+  "$ENTRYPOINT_PATH" \
+  'copy_update_part "$partition_table_bin"' \
+  "esp-bin-build should publish partition table as an update-safe part"
+assert_file_contains \
+  "$ENTRYPOINT_PATH" \
+  'copy_update_part "$app_bin"' \
+  "esp-bin-build should publish app as an update-safe part"
+assert_file_contains \
+  "$ENTRYPOINT_PATH" \
   'write_release_catalog "$stage_dir/release-catalog.json"' \
   "esp-bin-build should emit a machine-readable release catalog"
 assert_file_contains \
@@ -408,10 +420,31 @@ assert_file_contains \
   "$tmp_dir/dist/esp/v9.9.9/esp32-s3-8mb.manifest.json" \
   '"path": "esp32-s3-8mb.bin"' \
   "board manifest should point to the staged merged single-bin artifact"
+assert_file_exists \
+  "$tmp_dir/dist/esp/v9.9.9/esp32-s3-8mb/update/bootloader.bin" \
+  "esp-bin-build should publish bootloader for update mode"
+assert_file_exists \
+  "$tmp_dir/dist/esp/v9.9.9/esp32-s3-8mb/update/partition-table.bin" \
+  "esp-bin-build should publish partition table for update mode"
+assert_file_exists \
+  "$tmp_dir/dist/esp/v9.9.9/esp32-s3-8mb/update/app.bin" \
+  "esp-bin-build should publish app for update mode"
 assert_file_contains \
   "$tmp_dir/dist/esp/v9.9.9/release-catalog.json" \
   '"id": "esp32-s3-8mb"' \
   "release catalog should list each supported board"
+assert_file_contains \
+  "$tmp_dir/dist/esp/v9.9.9/release-catalog.json" \
+  '"update_parts": [' \
+  "release catalog should expose segmented update parts"
+assert_file_contains \
+  "$tmp_dir/dist/esp/v9.9.9/release-catalog.json" \
+  '"offset": 36864' \
+  "release catalog should expose the partition-table update offset"
+assert_file_contains \
+  "$tmp_dir/dist/esp/v9.9.9/release-catalog.json" \
+  '"offset": 196608' \
+  "release catalog should expose the app update offset"
 assert_file_contains \
   "$tmp_dir/dist/esp/v9.9.9/release-report.json" \
   '"status": "ok"' \
@@ -420,6 +453,10 @@ assert_file_contains \
   "$tmp_dir/dist/esp/v9.9.9/SHA256SUMS" \
   'esp32-s3-8mb.bin' \
   "SHA256SUMS should include the merged firmware artifact"
+assert_file_contains \
+  "$tmp_dir/dist/esp/v9.9.9/SHA256SUMS" \
+  'esp32-s3-8mb/update/app.bin' \
+  "SHA256SUMS should include update-mode app firmware"
 assert_file_contains \
   "$tmp_dir/dist/esp/v9.9.9/SHA256SUMS" \
   'release-catalog.json' \

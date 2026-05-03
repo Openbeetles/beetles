@@ -69,6 +69,12 @@ write_board_manifest() {
 EOF
 }
 
+copy_update_part() {
+  local source_file="$1"
+  local output_file="$2"
+  cp -p "$source_file" "$output_file"
+}
+
 write_release_catalog() {
   local output_file="$1"
   local records_file="$2"
@@ -84,6 +90,29 @@ boards = []
 with open(records_path, newline="", encoding="utf-8") as fh:
     reader = csv.DictReader(fh, delimiter="\t")
     for row in reader:
+        update_parts = [
+            {
+                "kind": "bootloader",
+                "file": row["update_bootloader_file"],
+                "offset": int(row["update_bootloader_offset"], 0),
+                "sha256": row["update_bootloader_sha256"],
+                "size_bytes": int(row["update_bootloader_size_bytes"]),
+            },
+            {
+                "kind": "partition-table",
+                "file": row["update_partition_table_file"],
+                "offset": int(row["update_partition_table_offset"], 0),
+                "sha256": row["update_partition_table_sha256"],
+                "size_bytes": int(row["update_partition_table_size_bytes"]),
+            },
+            {
+                "kind": "app",
+                "file": row["update_app_file"],
+                "offset": int(row["update_app_offset"], 0),
+                "sha256": row["update_app_sha256"],
+                "size_bytes": int(row["update_app_size_bytes"]),
+            },
+        ]
         boards.append(
             {
                 "id": row["board"],
@@ -97,6 +126,7 @@ with open(records_path, newline="", encoding="utf-8") as fh:
                     "sha256": row["bin_sha256"],
                     "size_bytes": int(row["bin_size_bytes"]),
                 },
+                "update_parts": update_parts,
                 "manifest": {
                     "file": row["manifest_file"],
                     "sha256": row["manifest_sha256"],
@@ -147,6 +177,29 @@ boards = []
 with open(records_path, newline="", encoding="utf-8") as fh:
     reader = csv.DictReader(fh, delimiter="\t")
     for row in reader:
+        update_parts = [
+            {
+                "kind": "bootloader",
+                "file": row["update_bootloader_file"],
+                "offset": int(row["update_bootloader_offset"], 0),
+                "sha256": row["update_bootloader_sha256"],
+                "size_bytes": int(row["update_bootloader_size_bytes"]),
+            },
+            {
+                "kind": "partition-table",
+                "file": row["update_partition_table_file"],
+                "offset": int(row["update_partition_table_offset"], 0),
+                "sha256": row["update_partition_table_sha256"],
+                "size_bytes": int(row["update_partition_table_size_bytes"]),
+            },
+            {
+                "kind": "app",
+                "file": row["update_app_file"],
+                "offset": int(row["update_app_offset"], 0),
+                "sha256": row["update_app_sha256"],
+                "size_bytes": int(row["update_app_size_bytes"]),
+            },
+        ]
         boards.append(
             {
                 "board": row["board"],
@@ -161,6 +214,7 @@ with open(records_path, newline="", encoding="utf-8") as fh:
                         "sha256": row["bin_sha256"],
                         "size_bytes": int(row["bin_size_bytes"]),
                     },
+                    "update_parts": update_parts,
                     "manifest": {
                         "file": row["manifest_file"],
                         "sha256": row["manifest_sha256"],
@@ -213,7 +267,7 @@ write_sha256sums() {
   local bundle_dir="$2"
   (
     cd "$bundle_dir"
-    find . -maxdepth 1 -type f ! -name 'SHA256SUMS' ! -name '.board-records.tsv' ! -name '.build-args.txt' \
+    find . -type f ! -name 'SHA256SUMS' ! -name '.board-records.tsv' ! -name '.build-args.txt' \
       | LC_ALL=C sort \
       | while IFS= read -r file; do
           [[ -n "$file" ]] || continue
@@ -291,7 +345,7 @@ git_ref="$(beetle_git_ref_name "$ROOT_DIR" || true)"
 git_dirty="$(beetle_git_dirty "$ROOT_DIR" || true)"
 records_file="$stage_dir/.board-records.tsv"
 build_args_file="$stage_dir/.build-args.txt"
-printf '%s\n' 'board	title	chip_family	target	flash_size	partition_table	bin_file	bin_sha256	bin_size_bytes	manifest_file	manifest_sha256	manifest_size_bytes' >"$records_file"
+printf '%s\n' 'board	title	chip_family	target	flash_size	partition_table	bin_file	bin_sha256	bin_size_bytes	update_bootloader_file	update_bootloader_offset	update_bootloader_sha256	update_bootloader_size_bytes	update_partition_table_file	update_partition_table_offset	update_partition_table_sha256	update_partition_table_size_bytes	update_app_file	update_app_offset	update_app_sha256	update_app_size_bytes	manifest_file	manifest_sha256	manifest_size_bytes' >"$records_file"
 if [[ ${#build_args[@]} -gt 0 ]]; then
   printf '%s\n' "${build_args[@]}" >"$build_args_file"
 else
@@ -375,14 +429,29 @@ for board in "${boards[@]}"; do
     "$partition_table_offset" "$partition_table_bin" \
     "$app_offset" "$app_bin"
 
+  update_dir="$stage_dir/${board}/update"
+  mkdir -p "$update_dir"
+  update_bootloader_file="${board}/update/bootloader.bin"
+  update_partition_table_file="${board}/update/partition-table.bin"
+  update_app_file="${board}/update/app.bin"
+  copy_update_part "$bootloader_bin" "$stage_dir/$update_bootloader_file"
+  copy_update_part "$partition_table_bin" "$stage_dir/$update_partition_table_file"
+  copy_update_part "$app_bin" "$stage_dir/$update_app_file"
+
   manifest_file="$stage_dir/${board}.manifest.json"
   write_board_manifest "$manifest_file" "$display_name" "$version" "$chip_family" "$board"
 
   bin_sha256="$(beetle_sha256_file "$output_file")"
+  update_bootloader_sha256="$(beetle_sha256_file "$stage_dir/$update_bootloader_file")"
+  update_partition_table_sha256="$(beetle_sha256_file "$stage_dir/$update_partition_table_file")"
+  update_app_sha256="$(beetle_sha256_file "$stage_dir/$update_app_file")"
   manifest_sha256="$(beetle_sha256_file "$manifest_file")"
   bin_size_bytes="$(beetle_file_size_bytes "$output_file")"
+  update_bootloader_size_bytes="$(beetle_file_size_bytes "$stage_dir/$update_bootloader_file")"
+  update_partition_table_size_bytes="$(beetle_file_size_bytes "$stage_dir/$update_partition_table_file")"
+  update_app_size_bytes="$(beetle_file_size_bytes "$stage_dir/$update_app_file")"
   manifest_size_bytes="$(beetle_file_size_bytes "$manifest_file")"
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
     "$board" \
     "$display_name" \
     "$chip_family" \
@@ -392,6 +461,18 @@ for board in "${boards[@]}"; do
     "${board}.bin" \
     "$bin_sha256" \
     "$bin_size_bytes" \
+    "$update_bootloader_file" \
+    "$bootloader_offset" \
+    "$update_bootloader_sha256" \
+    "$update_bootloader_size_bytes" \
+    "$update_partition_table_file" \
+    "$partition_table_offset" \
+    "$update_partition_table_sha256" \
+    "$update_partition_table_size_bytes" \
+    "$update_app_file" \
+    "$app_offset" \
+    "$update_app_sha256" \
+    "$update_app_size_bytes" \
     "${board}.manifest.json" \
     "$manifest_sha256" \
     "$manifest_size_bytes" >>"$records_file"

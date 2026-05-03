@@ -44,17 +44,8 @@ export const zhCN = {
       flashModalTitle: '在线烧录',
       flashModalClose: '关闭刷机窗口',
       flashModalDesc:
-        '选择对应机型的固件文件，通过 USB 直接在本页完成刷写。',
+        '识别设备版型后自动使用官方发布固件，通过 USB 直接在本页完成刷写。',
       flashConsoleTitle: 'USB 刷写控制台',
-      flashStepFirmware: '固件文件',
-      flashChooseFirmware: '选择 .bin 固件文件',
-      flashChooseFileButton: '选择文件',
-      flashChooseFirmwareButton: '选择固件',
-      flashChooseFirmwareInline: '点击选择固件',
-      flashFirmwareLabel: '固件',
-      flashCatalogLabel: '发布目录',
-      flashChooseCatalogInline: '点击选择 release-catalog.json',
-      flashNoFirmware: '未选择文件',
       flashSerialLabel: '设备',
       flashScanSerial: '扫描设备',
       flashSerialScanning: '扫描中…',
@@ -67,22 +58,28 @@ export const zhCN = {
       flashDeviceUnsupported: '未识别到支持的 ESP 烧录设备，请重新选择开发板对应的 USB 设备。',
       flashDeviceUnsupportedBoard:
         '识别到 {{actual}}，但不在当前支持的官方版型内。',
-      flashNeedFile: '请先选择固件文件',
-      flashNeedCatalog: '请先选择匹配的 release-catalog.json',
+      flashModeLabel: '刷写方式',
+      flashModeUpdate: '更新',
+      flashModeReinstall: '重装',
+      flashModeUpdateHint:
+        '仅重刷官方固件，尽量保留 WiFi、配对码和设备配置。',
+      flashModeReinstallHint:
+        '先整片擦除再烧录，会清空 WiFi、配对码、设备配置和历史数据。',
+      flashFirmwareSourceUnavailable: '自动固件源不可用，请确认发布固件已挂载。',
       flashFirmwareInvalid:
-        '请选择可信发布包内带官方版型标识的 Beetle ESP merged .bin。',
+        '自动固件不是有效的 Beetle ESP merged .bin。',
       flashFirmwareCatalogInvalid:
-        '请选择同一个 Beetle ESP 发布包内的 release-catalog.json。',
+        '自动发布目录无效或不包含当前设备版型。',
       flashFirmwareChecksumMismatch:
-        '所选固件与发布目录记录的 SHA-256 校验不一致。',
+        '自动固件与发布目录记录的 SHA-256 校验不一致。',
       flashFirmwareBoardMismatch:
-        '所选固件适用于 {{actual}}，但当前设备需要 {{expected}}。',
+        '自动固件适用于 {{actual}}，但当前设备需要 {{expected}}。',
       flashFirmwareTooLarge:
-        '所选固件大小为 {{actual}}，超过当前设备识别到的 {{limit}} Flash。',
+        '自动固件大小为 {{actual}}，超过当前设备识别到的 {{limit}} Flash。',
       flashSerialSupported: 'Web Serial 就绪',
       flashSerialUnsupported: '当前浏览器不支持 USB 刷机',
       flashSerialHint: '请使用 Chrome、Edge 等支持 Web Serial 的浏览器。',
-      flashModalTips: '请保持板子进入刷写模式，并从同一个可信发布包选择版型 .bin 与 release-catalog.json。',
+      flashModalTips: '请保持板子进入刷写模式，系统会根据识别到的官方版型自动选择固件。',
       flashStart: '开始刷写',
       flashRunning: '刷写中…',
       flashRunningWithProgress: '刷写中 {{progress}}%',

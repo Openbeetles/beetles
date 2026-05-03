@@ -1,4 +1,4 @@
-import { type ChangeEvent, useMemo, useRef, useState } from "react";
+import { type MouseEvent, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   ESPLoader,
@@ -18,7 +18,8 @@ import InputLabel from "@mui/material/InputLabel";
 import MenuItem from "@mui/material/MenuItem";
 import Select, { type SelectChangeEvent } from "@mui/material/Select";
 import Stack from "@mui/material/Stack";
-import TextField from "@mui/material/TextField";
+import ToggleButton from "@mui/material/ToggleButton";
+import ToggleButtonGroup from "@mui/material/ToggleButtonGroup";
 import Typography from "@mui/material/Typography";
 import { useToast } from "../hooks/useToast";
 import {
@@ -26,22 +27,23 @@ import {
   DIALOG_FORM_SUBMIT_BAR_SX,
 } from "../theme/panelStyles";
 import { FormGrid } from "./form";
-
-type FlashBoard = {
-  value: string;
-  label: string;
-  chipName: string;
-  flashSize: string;
-  minPsramSize?: string;
-};
-
-type FlashDeviceInfo = {
-  chipName: string;
-  chipDescription: string;
-  flashSize: string;
-  psramSize: string | null;
-  features: string[];
-};
+import {
+  FLASH_BOARD_OPTIONS,
+  extractMemoryFeature,
+  flashPartsTouchPreservedRanges,
+  formatFlashDeviceLabel,
+  formatMemorySize,
+  nextFlashDeviceSelectionAfterFailure,
+  normalizeMemorySize,
+  parseMemorySizeBytes,
+  resolveFlashBoard,
+  shouldCloseFirmwareFlashDialog,
+  shouldEraseBeforeFirmwareFlash,
+  type FlashBoard,
+  type FirmwareFlashCloseReason,
+  type FirmwareFlashMode,
+  type FlashDeviceInfo,
+} from "./firmwareFlashModel";
 
 type FlashDeviceEntry = {
   port: SerialPortLike;
@@ -50,10 +52,33 @@ type FlashDeviceEntry = {
 
 type FirmwareCatalogEntry = {
   boardId: string;
+  bin: FirmwareCatalogAsset;
+  flashSize: string | null;
+  updateParts: FirmwareCatalogUpdatePart[];
+};
+
+type FirmwareCatalogAsset = {
   file: string;
   sha256: string;
   sizeBytes: number | null;
-  flashSize: string | null;
+};
+
+type FirmwareCatalogUpdatePart = FirmwareCatalogAsset & {
+  kind: "bootloader" | "partition-table" | "app";
+  offset: number;
+};
+
+type FirmwareFlashFile = {
+  address: number;
+  data: Uint8Array;
+  fileName: string;
+  kind: "merged" | FirmwareCatalogUpdatePart["kind"];
+};
+
+type FirmwareFlashBundle = {
+  boardId: string;
+  files: FirmwareFlashFile[];
+  mode: FirmwareFlashMode;
 };
 
 type SerialPortInfo = {
@@ -78,42 +103,15 @@ type SerialApiLike = {
   requestPort: (options?: SerialRequestOptions) => Promise<SerialPortLike>;
 };
 
-const FLASH_BOARD_OPTIONS: FlashBoard[] = [
-  {
-    value: "esp32-s3-8mb",
-    label: "ESP32-S3 8MB",
-    chipName: "ESP32-S3",
-    flashSize: "8MB",
-    minPsramSize: "8MB",
-  },
-  {
-    value: "esp32-s3-16mb",
-    label: "ESP32-S3 16MB",
-    chipName: "ESP32-S3",
-    flashSize: "16MB",
-    minPsramSize: "8MB",
-  },
-  {
-    value: "esp32-s3-32mb",
-    label: "ESP32-S3 32MB",
-    chipName: "ESP32-S3",
-    flashSize: "32MB",
-    minPsramSize: "16MB",
-  },
-  {
-    value: "esp32-p4-nano-16mb",
-    label: "ESP32-P4 Nano 16MB",
-    chipName: "ESP32-P4",
-    flashSize: "16MB",
-  },
-];
-
 const FLASH_DIALOG_TITLE_ID = "firmware-flash-dialog-title";
 const FLASH_DEVICE_BAUD_RATE = 115_200;
 const FLASH_FIRMWARE_ADDRESS = 0x0;
+const DEFAULT_FIRMWARE_BUNDLE_BASE_URL = "/firmware";
 const ESP_IMAGE_MAGIC = 0xe9;
 const ESP_PARTITION_TABLE_OFFSET = 0x8000;
 const ESP_APP_IMAGE_OFFSET = 0x20000;
+const ESP_NVS_OFFSET = 0x9000;
+const ESP_NVS_END = 0x19000;
 const SUPPORTED_FLASH_VENDOR_IDS = new Set([
   0x303a, // Espressif native USB
   0x10c4, // Silicon Labs CP210x
@@ -148,20 +146,19 @@ function getSerialApi(): SerialApiLike | null {
   );
 }
 
-function normalizeMemorySize(size: string): string {
-  return size.replace(/\s+/g, "").toUpperCase();
+function getFirmwareBundleBaseUrl(): string {
+  const configured = import.meta.env.VITE_ESP_FIRMWARE_BASE_URL;
+  return (configured?.trim() || DEFAULT_FIRMWARE_BUNDLE_BASE_URL).replace(
+    /\/+$/u,
+    "",
+  );
 }
 
-function formatMemorySize(size: string): string {
-  return normalizeMemorySize(size).replace(/(\d+(?:\.\d+)?)(KB|MB)$/u, "$1 $2");
-}
-
-function parseMemorySizeBytes(size: string): number | null {
-  const match = normalizeMemorySize(size).match(/^(\d+(?:\.\d+)?)(KB|MB)$/u);
-  if (match?.[1] == null || match[2] == null) return null;
-  const value = Number(match[1]);
-  if (!Number.isFinite(value) || value <= 0) return null;
-  return Math.floor(value * (match[2] === "MB" ? 1024 * 1024 : 1024));
+function firmwareAssetUrl(baseUrl: string, fileName: string): string {
+  const origin =
+    typeof window === "undefined" ? "http://localhost" : window.location.origin;
+  const base = new URL(`${baseUrl}/`, origin);
+  return new URL(fileName, base).toString();
 }
 
 function normalizeSha256(value: string): string | null {
@@ -193,28 +190,6 @@ function readNumberField(
     : null;
 }
 
-function extractMemoryFeature(features: string[], kind: "Flash" | "PSRAM") {
-  const matcher = new RegExp(`${kind}\\s+(\\d+(?:\\.\\d+)?)\\s*(KB|MB)`, "iu");
-  for (const feature of features) {
-    const match = feature.match(matcher);
-    if (match?.[1] != null && match[2] != null) {
-      return `${match[1]}${match[2].toUpperCase()}`;
-    }
-  }
-  return null;
-}
-
-function formatFlashDeviceLabel(info: FlashDeviceInfo): string {
-  const parts = [
-    info.chipDescription,
-    `Flash ${formatMemorySize(info.flashSize)}`,
-  ];
-  if (info.psramSize != null) {
-    parts.push(`PSRAM ${formatMemorySize(info.psramSize)}`);
-  }
-  return parts.join(" · ");
-}
-
 function flashDeviceErrorMessage(
   error: unknown,
   t: (key: string, options?: Record<string, string>) => string,
@@ -235,36 +210,12 @@ function ensureSupportedUsbBridge(port: SerialPortLike) {
   }
 }
 
-function resolveFlashBoard(info: FlashDeviceInfo): FlashBoard | null {
-  return (
-    FLASH_BOARD_OPTIONS.find(
-      (board) =>
-        board.chipName === info.chipName &&
-        normalizeMemorySize(board.flashSize) === normalizeMemorySize(info.flashSize),
-    ) ?? null
-  );
-}
-
 function ensureSupportedFlashBoard(info: FlashDeviceInfo) {
   const board = resolveFlashBoard(info);
   if (board == null) {
     throw new FlashDeviceError("device.flashDeviceUnsupportedBoard", {
       actual: formatFlashDeviceLabel(info),
     });
-  }
-  if (board.minPsramSize != null) {
-    const detectedPsramBytes =
-      info.psramSize == null ? null : parseMemorySizeBytes(info.psramSize);
-    const requiredPsramBytes = parseMemorySizeBytes(board.minPsramSize);
-    if (
-      detectedPsramBytes == null ||
-      requiredPsramBytes == null ||
-      detectedPsramBytes < requiredPsramBytes
-    ) {
-      throw new FlashDeviceError("device.flashDeviceUnsupportedBoard", {
-        actual: formatFlashDeviceLabel(info),
-      });
-    }
   }
   return board;
 }
@@ -279,9 +230,12 @@ function inferFirmwareBoardFromName(fileName: string): FlashBoard | null {
   );
 }
 
-function hasPartitionTableMagic(data: Uint8Array): boolean {
-  const first = data[ESP_PARTITION_TABLE_OFFSET];
-  const second = data[ESP_PARTITION_TABLE_OFFSET + 1];
+function hasPartitionTableMagic(
+  data: Uint8Array,
+  offset = ESP_PARTITION_TABLE_OFFSET,
+): boolean {
+  const first = data[offset];
+  const second = data[offset + 1];
   return (
     (first === 0xaa && second === 0x50) ||
     (first === 0x50 && second === 0xaa)
@@ -328,6 +282,38 @@ function validateFirmwareFileForDevice(
   validateMergedFirmwareImage(data, deviceInfo);
 }
 
+function readCatalogAsset(value: unknown): FirmwareCatalogAsset | null {
+  if (!isRecord(value)) return null;
+  const file = readStringField(value, "file");
+  const rawSha256 = readStringField(value, "sha256");
+  const sha256 = rawSha256 == null ? null : normalizeSha256(rawSha256);
+  if (file == null || sha256 == null) return null;
+  return {
+    file,
+    sha256,
+    sizeBytes: readNumberField(value, "size_bytes"),
+  };
+}
+
+function readCatalogUpdateParts(value: unknown): FirmwareCatalogUpdatePart[] {
+  if (!Array.isArray(value)) return [];
+  const parts: FirmwareCatalogUpdatePart[] = [];
+  for (const item of value) {
+    const asset = readCatalogAsset(item);
+    if (asset == null || !isRecord(item)) continue;
+    const kind = readStringField(item, "kind");
+    const offset = readNumberField(item, "offset");
+    if (
+      offset == null ||
+      (kind !== "bootloader" && kind !== "partition-table" && kind !== "app")
+    ) {
+      continue;
+    }
+    parts.push({ ...asset, kind, offset });
+  }
+  return parts;
+}
+
 function parseFirmwareCatalog(text: string): FirmwareCatalogEntry[] {
   let parsed: unknown;
   try {
@@ -347,18 +333,13 @@ function parseFirmwareCatalog(text: string): FirmwareCatalogEntry[] {
     if (!isRecord(board)) continue;
     const boardId = readStringField(board, "id");
     const flashSize = readStringField(board, "flash_size");
-    const bin = board.bin;
-    if (boardId == null || !isRecord(bin)) continue;
-    const file = readStringField(bin, "file");
-    const rawSha256 = readStringField(bin, "sha256");
-    const sha256 = rawSha256 == null ? null : normalizeSha256(rawSha256);
-    if (file == null || sha256 == null) continue;
+    const bin = readCatalogAsset(board.bin);
+    if (boardId == null || bin == null) continue;
     entries.push({
       boardId,
-      file,
-      sha256,
-      sizeBytes: readNumberField(bin, "size_bytes"),
+      bin,
       flashSize,
+      updateParts: readCatalogUpdateParts(board.update_parts),
     });
   }
   if (entries.length === 0) {
@@ -379,28 +360,47 @@ async function sha256Hex(data: Uint8Array): Promise<string> {
   ).join("");
 }
 
-async function validateFirmwareCatalogForFile({
-  catalogText,
+async function validateFirmwareCatalogAsset({
+  asset,
   data,
-  fileName,
 }: {
-  catalogText: string;
+  asset: FirmwareCatalogAsset;
   data: Uint8Array;
-  fileName: string;
 }) {
-  const firmwareBoard = inferFirmwareBoardFromName(fileName);
-  if (firmwareBoard == null) {
-    throw new FlashDeviceError("device.flashFirmwareInvalid");
+  if (asset.sizeBytes != null && asset.sizeBytes !== data.byteLength) {
+    throw new FlashDeviceError("device.flashFirmwareChecksumMismatch");
   }
-  const catalogEntries = parseFirmwareCatalog(catalogText);
-  const entry =
-    catalogEntries.find(
-      (candidate) =>
-        candidate.boardId === firmwareBoard.value && candidate.file === fileName,
-    ) ?? null;
-  if (entry == null) {
-    throw new FlashDeviceError("device.flashFirmwareCatalogInvalid");
+  const actualSha256 = await sha256Hex(data);
+  if (actualSha256 !== asset.sha256) {
+    throw new FlashDeviceError("device.flashFirmwareChecksumMismatch");
   }
+}
+
+async function fetchFirmwareAsset(
+  bundleBaseUrl: string,
+  asset: FirmwareCatalogAsset,
+): Promise<Uint8Array> {
+  let data: Uint8Array;
+  try {
+    const firmwareResponse = await fetch(
+      firmwareAssetUrl(bundleBaseUrl, asset.file),
+      { cache: "no-store" },
+    );
+    if (!firmwareResponse.ok) {
+      throw new Error(`firmware ${firmwareResponse.status}`);
+    }
+    data = new Uint8Array(await firmwareResponse.arrayBuffer());
+  } catch {
+    throw new FlashDeviceError("device.flashFirmwareSourceUnavailable");
+  }
+  await validateFirmwareCatalogAsset({ asset, data });
+  return data;
+}
+
+function ensureCatalogEntryMatchesBoard(
+  entry: FirmwareCatalogEntry,
+  firmwareBoard: FlashBoard,
+) {
   if (
     entry.flashSize != null &&
     normalizeMemorySize(entry.flashSize) !==
@@ -408,13 +408,135 @@ async function validateFirmwareCatalogForFile({
   ) {
     throw new FlashDeviceError("device.flashFirmwareCatalogInvalid");
   }
-  if (entry.sizeBytes != null && entry.sizeBytes !== data.byteLength) {
-    throw new FlashDeviceError("device.flashFirmwareChecksumMismatch");
+}
+
+function validateFirmwareUpdateFiles(
+  files: FirmwareFlashFile[],
+  deviceInfo: FlashDeviceInfo,
+) {
+  const requiredKinds = new Set(["bootloader", "partition-table", "app"]);
+  for (const file of files) {
+    requiredKinds.delete(file.kind);
   }
-  const actualSha256 = await sha256Hex(data);
-  if (actualSha256 !== entry.sha256) {
-    throw new FlashDeviceError("device.flashFirmwareChecksumMismatch");
+  if (requiredKinds.size > 0) {
+    throw new FlashDeviceError("device.flashFirmwareCatalogInvalid");
   }
+  const flashBytes = parseMemorySizeBytes(deviceInfo.flashSize);
+  for (const file of files) {
+    if (flashBytes != null && file.address + file.data.byteLength > flashBytes) {
+      throw new FlashDeviceError("device.flashFirmwareTooLarge", {
+        actual: `${Math.ceil((file.address + file.data.byteLength) / (1024 * 1024))} MB`,
+        limit: formatMemorySize(deviceInfo.flashSize),
+      });
+    }
+  }
+  if (
+    flashPartsTouchPreservedRanges(
+      files.map((file) => ({
+        address: file.address,
+        sizeBytes: file.data.byteLength,
+      })),
+      [{ start: ESP_NVS_OFFSET, end: ESP_NVS_END }],
+    )
+  ) {
+    throw new FlashDeviceError("device.flashFirmwareInvalid");
+  }
+  const bootloader = files.find((file) => file.kind === "bootloader");
+  const partitionTable = files.find((file) => file.kind === "partition-table");
+  const app = files.find((file) => file.kind === "app");
+  if (
+    bootloader?.data[0] !== ESP_IMAGE_MAGIC ||
+    partitionTable == null ||
+    !hasPartitionTableMagic(partitionTable.data, 0) ||
+    app?.data[0] !== ESP_IMAGE_MAGIC
+  ) {
+    throw new FlashDeviceError("device.flashFirmwareInvalid");
+  }
+}
+
+function validateFirmwareBundleForDevice(
+  bundle: FirmwareFlashBundle,
+  deviceInfo: FlashDeviceInfo,
+) {
+  const deviceBoard = ensureSupportedFlashBoard(deviceInfo);
+  if (bundle.boardId !== deviceBoard.value) {
+    throw new FlashDeviceError("device.flashFirmwareBoardMismatch", {
+      expected: deviceBoard.label,
+      actual: bundle.boardId,
+    });
+  }
+  if (bundle.mode === "reinstall") {
+    const merged = bundle.files[0];
+    if (merged == null || bundle.files.length !== 1) {
+      throw new FlashDeviceError("device.flashFirmwareCatalogInvalid");
+    }
+    validateFirmwareFileForDevice(merged.fileName, merged.data, deviceInfo);
+    return;
+  }
+  validateFirmwareUpdateFiles(bundle.files, deviceInfo);
+}
+
+async function fetchOfficialFirmwareForDevice(
+  deviceInfo: FlashDeviceInfo,
+  mode: FirmwareFlashMode,
+): Promise<FirmwareFlashBundle> {
+  const board = ensureSupportedFlashBoard(deviceInfo);
+  const bundleBaseUrl = getFirmwareBundleBaseUrl();
+  const catalogUrl = firmwareAssetUrl(bundleBaseUrl, "release-catalog.json");
+
+  let catalogText = "";
+  try {
+    const catalogResponse = await fetch(catalogUrl, { cache: "no-store" });
+    if (!catalogResponse.ok) {
+      throw new Error(`catalog ${catalogResponse.status}`);
+    }
+    catalogText = await catalogResponse.text();
+  } catch {
+    throw new FlashDeviceError("device.flashFirmwareSourceUnavailable");
+  }
+
+  const catalogEntries = parseFirmwareCatalog(catalogText);
+  const entry =
+    catalogEntries.find((candidate) => candidate.boardId === board.value) ??
+    null;
+  if (entry == null) {
+    throw new FlashDeviceError("device.flashFirmwareCatalogInvalid");
+  }
+  ensureCatalogEntryMatchesBoard(entry, board);
+
+  if (mode === "reinstall") {
+    const data = await fetchFirmwareAsset(bundleBaseUrl, entry.bin);
+    const bundle = {
+      boardId: board.value,
+      files: [
+        {
+          address: FLASH_FIRMWARE_ADDRESS,
+          data,
+          fileName: entry.bin.file,
+          kind: "merged" as const,
+        },
+      ],
+      mode,
+    };
+    validateFirmwareBundleForDevice(bundle, deviceInfo);
+    return bundle;
+  }
+
+  if (entry.updateParts.length === 0) {
+    throw new FlashDeviceError("device.flashFirmwareCatalogInvalid");
+  }
+  const files: FirmwareFlashFile[] = [];
+  for (const part of entry.updateParts) {
+    files.push({
+      address: part.offset,
+      data: await fetchFirmwareAsset(bundleBaseUrl, part),
+      fileName: part.file,
+      kind: part.kind,
+    });
+  }
+  const bundle = { boardId: board.value, files, mode };
+  validateFirmwareBundleForDevice(bundle, deviceInfo);
+  return bundle;
 }
 
 function createEspLoader(port: SerialPortLike) {
@@ -472,13 +594,13 @@ async function inspectFlashDevice(port: SerialPortLike) {
 }
 
 async function flashFirmwareToDevice({
-  data,
-  fileName,
+  bundle,
+  eraseAll,
   onProgress,
   port,
 }: {
-  data: Uint8Array;
-  fileName: string;
+  bundle: FirmwareFlashBundle;
+  eraseAll: boolean;
   onProgress: (progress: number) => void;
   port: SerialPortLike;
 }) {
@@ -490,17 +612,24 @@ async function flashFirmwareToDevice({
   let deviceInfo: FlashDeviceInfo | null = null;
   try {
     deviceInfo = await readFlashDeviceInfo(loader);
-    validateFirmwareFileForDevice(fileName, data, deviceInfo);
+    validateFirmwareBundleForDevice(bundle, deviceInfo);
+    const fileCount = Math.max(bundle.files.length, 1);
     const flashOptions: FlashOptions = {
-      fileArray: [{ data, address: FLASH_FIRMWARE_ADDRESS }],
+      fileArray: bundle.files.map((file) => ({
+        data: file.data,
+        address: file.address,
+      })),
       flashMode: "keep",
       flashFreq: "keep",
       flashSize: "keep",
-      eraseAll: false,
+      eraseAll,
       compress: true,
-      reportProgress: (_fileIndex, written, total) => {
+      reportProgress: (fileIndex, written, total) => {
         if (total > 0) {
-          onProgress(Math.min(100, Math.floor((written / total) * 100)));
+          const fileProgress = Math.min(1, written / total);
+          onProgress(
+            Math.min(100, Math.floor(((fileIndex + fileProgress) / fileCount) * 100)),
+          );
         }
       },
     };
@@ -649,14 +778,9 @@ export function FirmwareFlashDialog({ open, onClose }: FirmwareFlashDialogProps)
   const [serialPortIndex, setSerialPortIndex] = useState("");
   const [serialScanning, setSerialScanning] = useState(false);
   const [serialError, setSerialError] = useState("");
-  const [firmwareFile, setFirmwareFile] = useState<File | null>(null);
-  const [firmwareName, setFirmwareName] = useState("");
-  const [catalogFile, setCatalogFile] = useState<File | null>(null);
-  const [catalogName, setCatalogName] = useState("");
+  const [flashMode, setFlashMode] = useState<FirmwareFlashMode>("update");
   const [running, setRunning] = useState(false);
   const [flashProgress, setFlashProgress] = useState<number | null>(null);
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const catalogInputRef = useRef<HTMLInputElement | null>(null);
 
   const supportsUsb = useMemo(() => {
     return getSerialApi() != null;
@@ -666,10 +790,20 @@ export function FirmwareFlashDialog({ open, onClose }: FirmwareFlashDialogProps)
     if (!running) onClose();
   };
 
+  const handleDialogClose = (
+    _event: object,
+    reason: Exclude<FirmwareFlashCloseReason, "explicit">,
+  ) => {
+    if (!shouldCloseFirmwareFlashDialog(reason)) return;
+    closeModal();
+  };
+
   const handleSerialPortChange = async (event: SelectChangeEvent<string>) => {
     const nextIndex = event.target.value;
     const nextDevice = serialDevices[Number(nextIndex)];
-    setSerialPortIndex("");
+    setSerialPortIndex((current) =>
+      nextFlashDeviceSelectionAfterFailure(current, "selectDevice"),
+    );
     setSerialError("");
     if (!nextDevice) return;
 
@@ -690,40 +824,12 @@ export function FirmwareFlashDialog({ open, onClose }: FirmwareFlashDialogProps)
     }
   };
 
-  const handleFileInput = (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.currentTarget.files?.[0] ?? null;
-    setFlashProgress(null);
-    if (file != null && inferFirmwareBoardFromName(file.name) == null) {
-      event.currentTarget.value = "";
-      setFirmwareFile(null);
-      setFirmwareName("");
-      showToast(t("device.flashFirmwareInvalid"), { variant: "error" });
-      return;
-    }
-    setFirmwareFile(file);
-    setFirmwareName(file?.name ?? "");
-  };
-
-  const handleCatalogInput = (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.currentTarget.files?.[0] ?? null;
-    setFlashProgress(null);
-    if (file != null && !file.name.trim().toLowerCase().endsWith(".json")) {
-      event.currentTarget.value = "";
-      setCatalogFile(null);
-      setCatalogName("");
-      showToast(t("device.flashFirmwareCatalogInvalid"), { variant: "error" });
-      return;
-    }
-    setCatalogFile(file);
-    setCatalogName(file?.name ?? "");
-  };
-
-  const handleChooseFirmware = () => {
-    if (!running) fileInputRef.current?.click();
-  };
-
-  const handleChooseCatalog = () => {
-    if (!running) catalogInputRef.current?.click();
+  const handleFlashModeChange = (
+    _event: MouseEvent<HTMLElement>,
+    nextMode: FirmwareFlashMode | null,
+  ) => {
+    if (nextMode == null || running) return;
+    setFlashMode(nextMode);
   };
 
   const handleScanSerial = async () => {
@@ -757,20 +863,12 @@ export function FirmwareFlashDialog({ open, onClose }: FirmwareFlashDialogProps)
       showToast(t("device.flashSerialUnsupported"), { variant: "error" });
       return;
     }
-    const serialPort =
+    const selectedDevice =
       serialPortIndex === ""
         ? null
-        : serialDevices[Number(serialPortIndex)]?.port ?? null;
-    if (serialPort == null) {
+        : serialDevices[Number(serialPortIndex)] ?? null;
+    if (selectedDevice == null) {
       showToast(t("device.flashNeedSerial"), { variant: "warning" });
-      return;
-    }
-    if (firmwareFile == null) {
-      showToast(t("device.flashNeedFile"), { variant: "warning" });
-      return;
-    }
-    if (catalogFile == null) {
-      showToast(t("device.flashNeedCatalog"), { variant: "warning" });
       return;
     }
 
@@ -778,17 +876,15 @@ export function FirmwareFlashDialog({ open, onClose }: FirmwareFlashDialogProps)
     setFlashProgress(0);
     setSerialError("");
     try {
-      const data = new Uint8Array(await firmwareFile.arrayBuffer());
-      await validateFirmwareCatalogForFile({
-        catalogText: await catalogFile.text(),
-        data,
-        fileName: firmwareFile.name,
-      });
+      const firmware = await fetchOfficialFirmwareForDevice(
+        selectedDevice.info,
+        flashMode,
+      );
       const info = await flashFirmwareToDevice({
-        data,
-        fileName: firmwareFile.name,
+        bundle: firmware,
+        eraseAll: shouldEraseBeforeFirmwareFlash(flashMode),
         onProgress: setFlashProgress,
-        port: serialPort,
+        port: selectedDevice.port,
       });
       setSerialDevices((current) =>
         current.map((item, index) =>
@@ -798,7 +894,9 @@ export function FirmwareFlashDialog({ open, onClose }: FirmwareFlashDialogProps)
       setFlashProgress(100);
       showToast(t("device.flashSucceeded"), { variant: "success" });
     } catch (error) {
-      setSerialPortIndex("");
+      setSerialPortIndex((current) =>
+        nextFlashDeviceSelectionAfterFailure(current, "submitFlash"),
+      );
       setSerialError(flashDeviceErrorMessage(error, t));
     } finally {
       setRunning(false);
@@ -808,7 +906,8 @@ export function FirmwareFlashDialog({ open, onClose }: FirmwareFlashDialogProps)
   return (
     <Dialog
       open={open}
-      onClose={closeModal}
+      onClose={handleDialogClose}
+      disableEscapeKeyDown
       maxWidth={false}
       aria-labelledby={FLASH_DIALOG_TITLE_ID}
       slotProps={{
@@ -978,70 +1077,47 @@ export function FirmwareFlashDialog({ open, onClose }: FirmwareFlashDialogProps)
                   </Button>
                 </Box>
 
-                <Button
-                  component="div"
-                  disabled={running}
-                  onClick={handleChooseFirmware}
-                  sx={{ p: 0, textAlign: "left", textTransform: "none" }}
-                >
-                  <TextField
-                    fullWidth
-                    label={t("device.flashFirmwareLabel")}
-                    value={
-                      firmwareName || t("device.flashChooseFirmwareInline")
-                    }
-                    slotProps={{
-                      input: { readOnly: true },
-                      htmlInput: {
-                        tabIndex: -1,
-                        style: { cursor: running ? "default" : "pointer" },
-                      },
-                    }}
+                <Box>
+                  <Typography
                     sx={{
-                      pointerEvents: "none",
-                      cursor: running ? "default" : "pointer",
+                      mb: 1,
+                      color: "var(--text-secondary)",
+                      fontSize: "var(--font-size-caption)",
+                      fontWeight: 700,
                     }}
-                  />
-                </Button>
-                <Box
-                  ref={fileInputRef}
-                  component="input"
-                  type="file"
-                  accept=".bin"
-                  hidden
-                  onChange={handleFileInput}
-                />
-                <Button
-                  component="div"
-                  disabled={running}
-                  onClick={handleChooseCatalog}
-                  sx={{ p: 0, textAlign: "left", textTransform: "none" }}
-                >
-                  <TextField
+                  >
+                    {t("device.flashModeLabel")}
+                  </Typography>
+                  <ToggleButtonGroup
+                    exclusive
                     fullWidth
-                    label={t("device.flashCatalogLabel")}
-                    value={catalogName || t("device.flashChooseCatalogInline")}
-                    slotProps={{
-                      input: { readOnly: true },
-                      htmlInput: {
-                        tabIndex: -1,
-                        style: { cursor: running ? "default" : "pointer" },
-                      },
-                    }}
+                    value={flashMode}
+                    onChange={handleFlashModeChange}
+                    disabled={running}
+                    aria-label={t("device.flashModeLabel")}
+                  >
+                    <ToggleButton value="update">
+                      {t("device.flashModeUpdate")}
+                    </ToggleButton>
+                    <ToggleButton value="reinstall">
+                      {t("device.flashModeReinstall")}
+                    </ToggleButton>
+                  </ToggleButtonGroup>
+                  <FormHelperText
                     sx={{
-                      pointerEvents: "none",
-                      cursor: running ? "default" : "pointer",
+                      mx: 0,
+                      mt: 1,
+                      color:
+                        flashMode === "reinstall"
+                          ? "var(--semantic-danger)"
+                          : "var(--text-secondary)",
                     }}
-                  />
-                </Button>
-                <Box
-                  ref={catalogInputRef}
-                  component="input"
-                  type="file"
-                  accept=".json"
-                  hidden
-                  onChange={handleCatalogInput}
-                />
+                  >
+                    {flashMode === "reinstall"
+                      ? t("device.flashModeReinstallHint")
+                      : t("device.flashModeUpdateHint")}
+                  </FormHelperText>
+                </Box>
               </FormGrid>
             </Stack>
 
@@ -1064,8 +1140,6 @@ export function FirmwareFlashDialog({ open, onClose }: FirmwareFlashDialogProps)
                   running ||
                   serialScanning ||
                   serialPortIndex === "" ||
-                  firmwareFile == null ||
-                  catalogFile == null ||
                   Boolean(serialError)
                 }
               >

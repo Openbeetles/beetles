@@ -113,8 +113,9 @@ dist/esp/v0.1.0/SHA256SUMS
 - 新脚本不是重新发明刷写布局；它复用 `build.sh` 产出的 `bootloader.bin`、`partition-table.bin`、`beetle.bin`
 - 合并产物服务浏览器 USB 烧录、串口烧录和工厂重刷，不再把官方 OTA 当主线发布合同
 - 版型浏览器烧录 manifest 走单 part + `offset: 0`，让安装器直接刷对应的单 bin
-- Configure UI 的在线烧录通过浏览器 Web Serial + `esptool-js` 连接 ESP ROM bootloader；扫描设备时以芯片描述、Flash 容量和 PSRAM 信息作为设备身份，不把 USB 桥 VID/PID 当作开发板信息
-- Configure UI 浏览器烧录必须同时选择同一可信发布包内的版型 merged `.bin` 与 `release-catalog.json`，先用 catalog 校验 bin 的 SHA-256，再校验 bootloader / partition-table / app image 关键偏移，并按识别到的芯片 / Flash / PSRAM 容量映射官方支持版型，映射不到或固件版型不匹配则拒绝写入 `0x0`
+- Configure UI 的在线烧录通过浏览器 Web Serial + `esptool-js` 连接 ESP ROM bootloader；扫描设备时以芯片描述和 Flash 容量作为版型匹配依据，不把 USB 桥 VID/PID 当作开发板信息
+- Configure UI 浏览器烧录不让用户手动选择 `.bin` 或 `release-catalog.json`；设备扫描后按识别到的芯片 / Flash 容量映射官方支持版型，再从同源 `/firmware/release-catalog.json`（或构建时配置的 `VITE_ESP_FIRMWARE_BASE_URL`）读取发布目录，校验固件 SHA-256 与关键 offset；PSRAM 是主线硬件合同与运行态诊断事实，不作为浏览器 ROM 阶段的刷写准入硬门槛
+- Configure UI 浏览器烧录提供「更新 / 重装」二选一模式：更新使用 `update_parts` 分别写 bootloader、partition-table、app，不写 NVS 区间以保留 WiFi、配对码与设备配置；重装使用 merged single bin 写入 `0x0`，并会先整片擦除再烧录，清空 WiFi、配对码、设备配置和历史数据
 - 发布目录先在临时 stage 下构建，全部成功后再整体替换最终版本目录，避免残留半成品产物
 
 可选参数：

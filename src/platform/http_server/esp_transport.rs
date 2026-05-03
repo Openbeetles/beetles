@@ -15,9 +15,10 @@ use crate::platform::http_server::route_worker_control::{
 use crate::platform::http_server::router::{
     self,
     catalog::{
-        HttpRouteSpec, RouteBodyMode, RouteExecutionClass, RouteMethod, RouteRuntimeAdmission,
-        RouteWorkerContract, RouteWorkerLane, ACTION_ROUTE_SPECS, MEMORY_AND_SKILL_ROUTE_SPECS,
-        OBSERVABILITY_ROUTE_SPECS, PAIRING_AND_CONFIG_ROUTE_SPECS, ROOT_ROUTE_SPECS,
+        self, HttpRouteSpec, RouteBodyMode, RouteExecutionClass, RouteMethod,
+        RouteRuntimeAdmission, RouteWorkerContract, RouteWorkerLane, ACTION_ROUTE_SPECS,
+        MEMORY_AND_SKILL_ROUTE_SPECS, OBSERVABILITY_ROUTE_SPECS, PAIRING_AND_CONFIG_ROUTE_SPECS,
+        ROOT_ROUTE_SPECS,
     },
     IncomingBody, IncomingRequest, OutgoingResponse, RestartAction, RouterEnv,
 };

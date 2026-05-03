@@ -1,0 +1,15 @@
+{
+  "name": "Beetle ESP32-P4 (16MB)",
+  "version": "v0.1.0",
+  "builds": [
+    {
+      "chipFamily": "ESP32-P4",
+      "parts": [
+        {
+          "path": "esp32-p4-nano-16mb.bin",
+          "offset": 0
+        }
+      ]
+    }
+  ]
+}

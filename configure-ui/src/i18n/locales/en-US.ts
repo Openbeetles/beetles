@@ -44,16 +44,8 @@ export const enUS = {
       flashModalTitle: 'Online flashing',
       flashModalClose: 'Close firmware flash window',
       flashModalDesc:
-        'Load the matching firmware file and flash it directly from this browser over USB.',
+        'Detect the board and flash the matching official firmware from this browser over USB.',
       flashConsoleTitle: 'USB flash console',
-      flashStepFirmware: 'Firmware file',
-      flashChooseFirmware: 'Choose firmware (.bin)',
-      flashChooseFirmwareButton: 'Choose firmware',
-      flashChooseFirmwareInline: 'Click to choose firmware',
-      flashFirmwareLabel: 'Firmware',
-      flashCatalogLabel: 'Release catalog',
-      flashChooseCatalogInline: 'Click to choose release-catalog.json',
-      flashNoFirmware: 'No file selected',
       flashSerialLabel: 'Device',
       flashScanSerial: 'Scan device',
       flashSerialScanning: 'Scanning…',
@@ -66,23 +58,29 @@ export const enUS = {
       flashDeviceUnsupported: 'No supported ESP flashing device was detected. Select the USB device for the target board.',
       flashDeviceUnsupportedBoard:
         'Detected {{actual}}, but it is not in the currently supported official board list.',
-      flashNeedFile: 'Please select a firmware file',
-      flashNeedCatalog: 'Please select the matching release-catalog.json',
+      flashModeLabel: 'Flash mode',
+      flashModeUpdate: 'Update',
+      flashModeReinstall: 'Reinstall',
+      flashModeUpdateHint:
+        'Flash official firmware in place and keep WiFi, pairing, and device configuration where possible.',
+      flashModeReinstallHint:
+        'Erase the entire flash before writing. This clears WiFi, pairing, device configuration, and history.',
+      flashFirmwareSourceUnavailable: 'Automatic firmware source is unavailable. Confirm the release firmware is mounted.',
       flashFirmwareInvalid:
-        'Choose a board-named merged Beetle ESP release .bin from a trusted release bundle.',
+        'The automatic firmware is not a valid Beetle ESP merged .bin.',
       flashFirmwareCatalogInvalid:
-        'Choose the release-catalog.json from the same Beetle ESP release bundle.',
+        'The automatic release catalog is invalid or does not contain this board.',
       flashFirmwareChecksumMismatch:
-        'Selected firmware does not match the release catalog checksum.',
+        'The automatic firmware does not match the release catalog checksum.',
       flashFirmwareBoardMismatch:
-        'Selected firmware is for {{actual}}, but the connected device expects {{expected}}.',
+        'The automatic firmware is for {{actual}}, but the connected device expects {{expected}}.',
       flashFirmwareTooLarge:
-        'Selected firmware is {{actual}}, larger than the detected {{limit}} flash.',
+        'The automatic firmware is {{actual}}, larger than the detected {{limit}} flash.',
       flashSerialSupported: 'Web Serial ready',
       flashSerialUnsupported: 'This browser does not support USB flashing',
       flashSerialHint: 'Use Chrome / Edge or other browsers that support Web Serial API.',
       flashModalTips:
-        'Make sure your board is in flashing mode, then select both the board .bin and release-catalog.json from the same trusted bundle.',
+        'Keep the board in flashing mode. The system chooses firmware from the detected official board.',
       flashStart: 'Flash now',
       flashRunning: 'Flashing…',
       flashRunningWithProgress: 'Flashing {{progress}}%',

@@ -1,0 +1,15 @@
+{
+  "name": "Beetle ESP32-S3 (16MB)",
+  "version": "v0.1.0",
+  "builds": [
+    {
+      "chipFamily": "ESP32-S3",
+      "parts": [
+        {
+          "path": "esp32-s3-16mb.bin",
+          "offset": 0
+        }
+      ]
+    }
+  ]
+}
