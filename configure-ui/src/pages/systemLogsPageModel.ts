@@ -12,7 +12,7 @@ const SYSTEM_LOG_METRIC_FIELDS: ReadonlyArray<{
   id: MetricFieldId;
   labelKey: string;
 }> = [
-  { id: "messages_in", labelKey: "device.systemStatusMessagesIn" },
+  { id: "messages_in", labelKey: "device.systemStatusTotalMessagesIn" },
   { id: "user_messages_in", labelKey: "device.systemStatusMessagesIn" },
   { id: "agent_messages_in", labelKey: "device.systemStatusAgentMessagesIn" },
   { id: "system_messages_in", labelKey: "device.systemStatusSystemMessagesIn" },

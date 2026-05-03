@@ -54,6 +54,7 @@ import {
 import { LAYOUT_TOKENS } from "../config/themeTokens";
 import { createAsyncState } from "../types/asyncState";
 import {
+  apiResultIndicatesUnsupportedEndpoint,
   endpointSupportedByInventory,
   parseRootInventory,
 } from "../api/rootInventory";
@@ -170,11 +171,13 @@ export function SkillsPage() {
   const [editBodyLoading, setEditBodyLoading] = useState(false);
   const editLoadGuardRef = useRef(createLatestRequestGuard());
 
-  const loadList = useCallback(async () => {
+  const loadList = useCallback(async (openOperatorWindow = false) => {
     if (!ready) return;
     setListState((prev) => ({ ...prev, loading: true, error: "" }));
     setUnsupportedEndpoint(false);
-    const res = await api.skills.list();
+    const res = await api.skills.list({
+      operatorWindowPolicy: openOperatorWindow ? "auto" : "manual",
+    });
     if (res.ok && res.data) {
       setUnsupportedEndpoint(false);
       setListState({
@@ -185,10 +188,17 @@ export function SkillsPage() {
     } else {
       let nextError = res.error ?? "";
       let nextUnsupported = false;
-      if (res.errorKey === "common.not_found" || res.status === 404) {
+      if (
+        apiResultIndicatesUnsupportedEndpoint(res) ||
+        res.errorKey === "common.not_found" ||
+        res.status === 404
+      ) {
         const probe = await api.device.probe();
         const inventory = probe.ok ? parseRootInventory(probe.data) : null;
-        if (!endpointSupportedByInventory(inventory, "GET /api/skills")) {
+        if (
+          apiResultIndicatesUnsupportedEndpoint(res) ||
+          !endpointSupportedByInventory(inventory, "GET /api/skills")
+        ) {
           nextUnsupported = true;
           nextError = "";
         }
@@ -290,7 +300,7 @@ export function SkillsPage() {
     setDeleteTargetName(null);
     if (res.ok) {
       showToast(t("skills.deleteOk"), { variant: "success" });
-      loadList();
+      loadList(true);
     } else {
       showToast(translateApiError(t, res.error, "common.error"), { variant: "error" });
     }
@@ -362,7 +372,7 @@ export function SkillsPage() {
     if (res.ok) {
       closeImportDialogFully();
       showToast(t("skills.importOk"), { variant: "success" });
-      loadList();
+      loadList(true);
     } else {
       const message = translateApiError(t, res.error, "common.error");
       setImportError(message);
@@ -388,7 +398,7 @@ export function SkillsPage() {
 
   return (
     <Box sx={PAGE_STACK_OUTER_SX}>
-      <InlineAlert message={listErrorState.inlineError} onRetry={loadList} />
+      <InlineAlert message={listErrorState.inlineError} onRetry={() => loadList(true)} />
       <SettingsSection
         pinHeader
         surfaceTone={listState.loading ? "loading" : "default"}
@@ -453,7 +463,7 @@ export function SkillsPage() {
         ) : listErrorState.blockingError ? (
           <PageLoadErrorState
             message={listErrorState.blockingError}
-            onRetry={loadList}
+            onRetry={() => loadList(true)}
           />
         ) : listToShow.length === 0 ? (
           <PanelStateBlock

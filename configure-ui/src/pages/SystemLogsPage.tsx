@@ -37,14 +37,24 @@ function kvEntries(obj: object | null | undefined) {
   );
 }
 
-function KvList({ items }: { items: Array<[string, unknown]> }) {
+interface KvListItem {
+  id: string;
+  label: string;
+  value: unknown;
+}
+
+function kvItem(id: string, label: string, value: unknown): KvListItem {
+  return { id, label, value };
+}
+
+function KvList({ items }: { items: KvListItem[] }) {
   if (!items.length) return null;
   return (
     <List dense disablePadding>
-      {items.map(([key, value]) => (
-        <ListItem key={key} sx={{ py: 0.5, px: 0 }}>
+      {items.map((item) => (
+        <ListItem key={item.id} sx={{ py: 0.5, px: 0 }}>
           <ListItemText
-            primary={`${key}: ${String(value)}`}
+            primary={`${item.label}: ${String(item.value)}`}
             slotProps={{
               primary: {
                 variant: "body2",
@@ -142,7 +152,7 @@ export function SystemLogsPage() {
 
   return (
     <Box sx={PAGE_STACK_OUTER_SX}>
-      <InlineAlert message={logsErrorState.inlineError} onRetry={loadLogs} />
+      <InlineAlert message={logsErrorState.inlineError} onRetry={() => loadLogs(false)} />
       <SettingsSection
         pinHeader
         surfaceTone={logsState.loading ? "loading" : "default"}
@@ -168,7 +178,7 @@ export function SystemLogsPage() {
         ) : logsErrorState.blockingError ? (
           <PageLoadErrorState
             message={logsErrorState.blockingError}
-            onRetry={loadLogs}
+            onRetry={() => loadLogs(false)}
           />
         ) : (
           <Box
@@ -192,15 +202,23 @@ export function SystemLogsPage() {
                   </Typography>
                   <KvList
                     items={kvEntries({
-                      [t("systemLogs.healthWifi")]:
+                      wifi:
                         logsState.data.health.network_status?.sta_connected === true
                           ? t("device.wifiStaConnected")
                           : logsState.data.health.network_status?.sta_connected === false
                             ? t("device.wifiStaDisconnected")
                             : t("common.na"),
-                      [t("systemLogs.healthLastError")]:
+                      last_error:
                         logsState.data.health.last_error ?? t("common.na"),
-                    })}
+                    }).map(([id, value]) =>
+                      kvItem(
+                        id,
+                        id === "wifi"
+                          ? t("systemLogs.healthWifi")
+                          : t("systemLogs.healthLastError"),
+                        value,
+                      ),
+                    )}
                   />
                 </Box>
                 <Box sx={{ mt: 0.75 }}>
@@ -208,10 +226,9 @@ export function SystemLogsPage() {
                     {t("systemLogs.snapshotMetrics")}
                   </Typography>
                   <KvList
-                    items={metricItems.map((item) => [
-                      t(item.labelKey),
-                      item.value,
-                    ])}
+                    items={metricItems.map((item) =>
+                      kvItem(item.id, t(item.labelKey), item.value),
+                    )}
                   />
                 </Box>
               </Box>

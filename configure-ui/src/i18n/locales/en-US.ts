@@ -198,6 +198,7 @@ export const enUS = {
       systemStatusDisplayAvailable: 'Display available',
       systemStatusSessionCount: 'Sessions',
       systemStatusStorage: 'Storage use',
+      systemStatusTotalMessagesIn: 'Messages in',
       systemStatusMessagesIn: 'User messages in',
       systemStatusAgentMessagesIn: 'Agent messages in',
       systemStatusSystemMessagesIn: 'System messages in',

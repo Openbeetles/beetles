@@ -33,8 +33,6 @@ const HEARTBEAT_INTERVAL_SECS: u64 = 30;
 const BACKOFF_MAX_SECS: u64 = 120;
 const ROUTE_STORE_MAX_ENTRIES: usize = 256;
 const ROUTE_TTL_SECS: u64 = 24 * 60 * 60;
-#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-const WIFI_OUTBOUND_SETTLE_SECS: u64 = 3;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WecomAibotRoute {
@@ -451,7 +449,7 @@ fn external_wss_suspend_lifecycle_reason() -> &'static str {
 fn esp_network_suspend_reason() -> Option<&'static str> {
     let snapshot = crate::state::network_runtime_snapshot(
         crate::platform::time::wall_clock_is_trustworthy(),
-        WIFI_OUTBOUND_SETTLE_SECS,
+        crate::network::EXTERNAL_WSS_OUTBOUND_SETTLE_SECS,
     );
     crate::network::external_wss_network_suspend_reason(&snapshot)
 }

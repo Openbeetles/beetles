@@ -7,6 +7,8 @@ pub(crate) mod router;
 mod esp_transport;
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
 mod lazy_executor;
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
+mod route_worker_control;
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 use crate::error::Error;

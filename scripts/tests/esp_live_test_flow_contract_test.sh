@@ -39,5 +39,11 @@ assert_contains "$FLOW" 'dispatch_fail=[1-9][0-9]*|err_dispatch=[1-9][0-9]*' \
   "live flow must fail when dispatch error metrics increase"
 assert_contains "$FLOW" 'tool_err=[1-9][0-9]*|tool_protocol_violation=[1-9][0-9]*' \
   "live flow must fail when tool execution/protocol metrics increase"
+assert_contains "$FLOW" '\[thread\] started name=write_back' \
+  "live flow must fail if ESP restores a dedicated write-back worker thread"
+assert_contains "$FLOW" 'fail_if_analyzer_blockers "$latest_regressions"' \
+  "live flow must fail when analyzer reports blocker regressions"
+assert_contains "$FLOW" 'severity == "blocker"' \
+  "live flow must fail every analyzer blocker instead of allowlisting selected checks"
 
 echo "esp_live_test_flow_contract_test: ok"

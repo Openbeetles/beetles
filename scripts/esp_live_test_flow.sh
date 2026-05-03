@@ -262,6 +262,31 @@ require_matches() {
   fi
 }
 
+fail_if_analyzer_blockers() {
+  local regressions_file="$1"
+  [[ -f "$regressions_file" ]] || {
+    echo "Gate failed: analyzer regressions file not found: $regressions_file" >&2
+    exit 1
+  }
+  if awk -F, '
+    NR > 1 {
+      severity = $3
+      gsub(/^"|"$/, "", severity)
+      if (severity == "blocker") {
+        print
+        found = 1
+      }
+    }
+    END { exit found ? 0 : 1 }
+  ' "$regressions_file" >/tmp/beetle-esp-live-regressions.$$; then
+    echo "Gate failed: analyzer reported blocker regressions" >&2
+    cat /tmp/beetle-esp-live-regressions.$$ >&2
+    rm -f /tmp/beetle-esp-live-regressions.$$
+    exit 1
+  fi
+  rm -f /tmp/beetle-esp-live-regressions.$$
+}
+
 run_gates() {
   local log_file="$1"
 
@@ -273,6 +298,8 @@ run_gates() {
 
   fail_if_matches 'Guru Meditation|Task watchdog|TWDT|panic|abort|stack canary|Failed to create task|RTC_SW_CPU_RST' \
     "$log_file" "fatal runtime/reset pattern found"
+  fail_if_matches '\[thread\] started name=write_back' \
+    "$log_file" "dedicated write-back worker thread started on ESP"
   fail_if_matches 'wifi:state: run -> init|wifi_reconn=[1-9][0-9]*|wifi_ap_restart=[1-9][0-9]*' \
     "$log_file" "WiFi disconnect/restart pattern found"
   fail_if_matches 'missing msg_id for QQ v2 passive reply|message dropped after send attempts|defer limit reached.*dropping message' \
@@ -363,6 +390,8 @@ fi
 echo
 echo "Step 5/5: analyzing and gating serial log."
 bash "$SCRIPT_DIR/esp_soak_analyze.sh" --output-dir "$run_dir/analysis" "$log_file"
+latest_regressions="$(find "$run_dir/analysis" -name regressions.csv -type f -print | sort | tail -n 1)"
+fail_if_analyzer_blockers "$latest_regressions"
 run_gates "$log_file"
 
 echo "ESP live flow passed:"

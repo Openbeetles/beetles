@@ -867,7 +867,7 @@ pub(crate) const OBSERVABILITY_ROUTE_SPECS: &[HttpRouteSpec] = &[
         ROUTE_OPERATOR_STATUS,
         RouteMethod::Get,
         RouteBodyMode::None,
-        OperatorRouteAccess::AlwaysOn,
+        OperatorRouteAccess::Windowed,
     ),
     HttpRouteSpec::immediate(
         ROUTE_OPERATOR_STATUS,
@@ -911,7 +911,7 @@ pub(crate) const OBSERVABILITY_ROUTE_SPECS: &[HttpRouteSpec] = &[
         ROUTE_DIAGNOSE,
         RouteMethod::Get,
         RouteBodyMode::None,
-        OperatorRouteAccess::AlwaysOn,
+        OperatorRouteAccess::Windowed,
     ),
     HttpRouteSpec::immediate(ROUTE_DIAGNOSE, RouteMethod::Options, RouteBodyMode::None),
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
@@ -1018,7 +1018,7 @@ pub(crate) const MEMORY_AND_SKILL_ROUTE_SPECS: &[HttpRouteSpec] = &[
         ROUTE_SKILLS,
         RouteMethod::Get,
         RouteBodyMode::None,
-        OperatorRouteAccess::AlwaysOn,
+        OperatorRouteAccess::Windowed,
     ),
     #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32", test)))]
     HttpRouteSpec::slow_diagnostic_operator(
@@ -1151,10 +1151,10 @@ mod tests {
     }
 
     #[test]
-    fn skills_inventory_get_is_lightweight_for_embedded_catalog() {
+    fn skills_inventory_get_requires_operator_window_on_embedded_catalog() {
         let get = route_spec_for("GET", ROUTE_SKILLS).expect("skills get");
         assert_eq!(get.execution_class, RouteExecutionClass::SnapshotRoute);
-        assert_eq!(get.operator_access, OperatorRouteAccess::AlwaysOn);
+        assert_eq!(get.operator_access, OperatorRouteAccess::Windowed);
 
         let post = route_spec_for("POST", ROUTE_SKILLS).expect("skills post");
         assert_eq!(
@@ -1718,7 +1718,7 @@ mod tests {
         );
         assert_eq!(
             operator_status.operator_access,
-            OperatorRouteAccess::AlwaysOn
+            OperatorRouteAccess::Windowed
         );
 
         let diagnose = route_spec_for("GET", ROUTE_DIAGNOSE).expect("diagnose route");
@@ -1726,7 +1726,7 @@ mod tests {
             diagnose.execution_class,
             RouteExecutionClass::SlowDiagnosticRoute
         );
-        assert_eq!(diagnose.operator_access, OperatorRouteAccess::AlwaysOn);
+        assert_eq!(diagnose.operator_access, OperatorRouteAccess::Windowed);
 
         let metrics = route_spec_for("GET", ROUTE_METRICS).expect("metrics route");
         #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]

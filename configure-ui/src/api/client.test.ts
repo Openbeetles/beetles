@@ -181,6 +181,44 @@ test('request opens operator window and retries the original request once', asyn
   }
 })
 
+test('request can leave operator window opening to an explicit user action', async () => {
+  clearCsrfToken()
+
+  const calls: Array<{ url: string; method: string }> = []
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input)
+    const method = init?.method ?? 'GET'
+    calls.push({ url, method })
+    if (url.endsWith('/api/skills') && method === 'GET') {
+      return jsonResponse({
+        status: 403,
+        statusText: 'Forbidden',
+        body: {
+          error_key: 'system.operator_window_required',
+          open_endpoint: 'POST /api/operator/window',
+        },
+      })
+    }
+    throw new Error(`unexpected fetch ${method} ${url}`)
+  }) as typeof fetch
+
+  try {
+    const result = await request('http://device', '/api/skills', {
+      pairingCode: '123456',
+      operatorWindowPolicy: 'manual',
+    })
+
+    assert.equal(result.ok, false)
+    assert.equal(result.status, 403)
+    assert.equal(result.errorKey, 'system.operator_window_required')
+    assert.deepEqual(calls, [{ url: 'http://device/api/skills', method: 'GET' }])
+  } finally {
+    globalThis.fetch = originalFetch
+    clearCsrfToken()
+  }
+})
+
 test('request surfaces error_key and upstream_error without falling back to raw status text', async () => {
   clearCsrfToken()
 

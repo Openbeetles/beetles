@@ -1,6 +1,6 @@
 //! Debounced write-back wrappers for hot runtime stores.
 //! 将热路径上的小型持久化写入从用户/语音临界区中移出，复用现有 delayed task，
-//! 并由独立 write-back 执行面承接 SPIFFS/serde/session flush 重活。
+//! 并由受治理的后台存储执行面承接 SPIFFS/serde/session flush 重活。
 
 use crate::agent::{ActiveWorkRecord, ActiveWorkStore, DetachedWorkStore};
 use crate::bus::SystemInboundTx;
@@ -48,6 +48,7 @@ struct WriteBackQueueState {
     next_attempt_at: Option<Instant>,
     quiet_started_at: Option<Instant>,
     retry_scheduled: bool,
+    retry_due_at: Option<Instant>,
 }
 
 struct WriteBackScheduler {
@@ -161,6 +162,8 @@ static WRITE_BACK_TEST_AUTO_SERVICE: AtomicBool = AtomicBool::new(false);
 static WRITE_BACK_TEST_ADMISSION_OVERRIDE: AtomicU8 = AtomicU8::new(0);
 #[cfg(test)]
 static PERIODIC_STORAGE_MAINTENANCE_TEST_ADMISSION_OVERRIDE: AtomicU8 = AtomicU8::new(0);
+#[cfg(test)]
+static WRITE_BACK_TEST_SCHEDULER_PLANE: AtomicBool = AtomicBool::new(false);
 
 #[derive(Clone, Copy, Debug, serde::Serialize, PartialEq, Eq)]
 pub struct WriteBackSnapshot {
@@ -224,6 +227,7 @@ fn write_back_scheduler() -> &'static WriteBackScheduler {
             next_attempt_at: None,
             quiet_started_at: None,
             retry_scheduled: false,
+            retry_due_at: None,
         }),
     })
 }
@@ -236,6 +240,55 @@ fn should_auto_service_write_back_tasks() -> bool {
     #[cfg(not(test))]
     {
         true
+    }
+}
+
+fn should_run_write_back_on_scheduler_plane() -> bool {
+    #[cfg(test)]
+    {
+        WRITE_BACK_TEST_SCHEDULER_PLANE.load(Ordering::Acquire)
+    }
+    #[cfg(all(not(test), any(target_arch = "xtensa", target_arch = "riscv32")))]
+    {
+        true
+    }
+    #[cfg(all(not(test), not(any(target_arch = "xtensa", target_arch = "riscv32"))))]
+    {
+        false
+    }
+}
+
+fn write_back_min_internal_free_bytes() -> usize {
+    if should_run_write_back_on_scheduler_plane() {
+        crate::constants::TLS_ADMISSION_MIN_INTERNAL_BYTES + 8 * 1024
+    } else {
+        WRITE_BACK_MIN_INTERNAL_FREE_BYTES
+    }
+}
+
+fn write_back_min_largest_block_bytes() -> usize {
+    if should_run_write_back_on_scheduler_plane() {
+        crate::constants::TLS_ADMISSION_MIN_LARGEST_BLOCK_BYTES
+            + WRITE_BACK_LARGEST_BLOCK_MARGIN_BYTES
+    } else {
+        WRITE_BACK_MIN_LARGEST_BLOCK_BYTES
+    }
+}
+
+fn periodic_storage_maintenance_min_internal_bytes() -> usize {
+    if should_run_write_back_on_scheduler_plane() {
+        crate::constants::TLS_ADMISSION_MIN_INTERNAL_BYTES + 8 * 1024
+    } else {
+        PERIODIC_STORAGE_MAINTENANCE_MIN_INTERNAL_BYTES
+    }
+}
+
+fn periodic_storage_maintenance_min_largest_block_bytes() -> usize {
+    if should_run_write_back_on_scheduler_plane() {
+        crate::constants::TLS_ADMISSION_MIN_LARGEST_BLOCK_BYTES
+            + WRITE_BACK_LARGEST_BLOCK_MARGIN_BYTES
+    } else {
+        PERIODIC_STORAGE_MAINTENANCE_MIN_LARGEST_BLOCK_BYTES
     }
 }
 
@@ -303,23 +356,34 @@ fn schedule_write_back_retry(delay: Duration) {
     let due_at = Instant::now() + delay;
     {
         let mut state = scheduler.state.lock().unwrap_or_else(|e| e.into_inner());
-        if state.retry_scheduled {
+        if state
+            .retry_due_at
+            .is_some_and(|existing| state.retry_scheduled && existing <= due_at)
+        {
             return;
         }
         state.retry_scheduled = true;
+        state.retry_due_at = Some(due_at);
         state.next_attempt_at = Some(due_at);
     }
-    let task = Box::new(|| {
+    let task = Box::new(move || {
         {
             let scheduler = write_back_scheduler();
             let mut state = scheduler.state.lock().unwrap_or_else(|e| e.into_inner());
+            if state.retry_due_at != Some(due_at) {
+                return;
+            }
             state.retry_scheduled = false;
+            state.retry_due_at = None;
         }
-        service_write_back_tasks();
+        service_write_back_tasks_from_scheduled_wake();
     });
     if crate::runtime::schedule_critical_delayed_task(due_at, task).is_err() {
         let mut state = scheduler.state.lock().unwrap_or_else(|e| e.into_inner());
-        state.retry_scheduled = false;
+        if state.retry_due_at == Some(due_at) {
+            state.retry_scheduled = false;
+            state.retry_due_at = None;
+        }
         log::warn!("[write_back] failed to schedule quiet drain retry");
     }
 }
@@ -371,6 +435,10 @@ fn schedule_write_back_task(label: &'static str, due_at: Instant, task: WriteBac
             }
             return true;
         }
+        if should_run_write_back_on_scheduler_plane() {
+            schedule_write_back_retry(Duration::ZERO);
+            return true;
+        }
         if let Some(wait) = write_back_admission_delay() {
             if wait.record_defer {
                 record_write_back_deferred(1);
@@ -395,7 +463,9 @@ fn schedule_write_back_task(label: &'static str, due_at: Instant, task: WriteBac
 ///
 /// Callers must keep the closure scoped to storage mutation or storage-backed
 /// due-item claiming. The caller thread only queues the task; serde/SPIFFS work
-/// runs under the write-back worker's storage lease and admission policy.
+/// runs under the governed storage lease and admission policy. ESP executes it
+/// on the existing background scheduler plane; host/Linux keeps the dedicated
+/// write-back worker.
 pub(crate) fn schedule_storage_maintenance_task(
     kind: StorageMaintenanceTaskKind,
     task: impl FnOnce() + Send + 'static,
@@ -555,6 +625,94 @@ fn ensure_write_back_worker_started_inner(require_pending_job: bool) -> bool {
     }
 }
 
+fn run_due_write_back_batch_on_scheduler_plane() {
+    let scheduler = write_back_scheduler();
+    {
+        let mut state = scheduler.state.lock().unwrap_or_else(|e| e.into_inner());
+        if state.worker_started {
+            return;
+        }
+        state.worker_started = true;
+    }
+    mark_write_back_lifecycle(
+        crate::runtime::PlaneLifecycleState::Starting,
+        "scheduler_wake",
+    );
+
+    let due = {
+        let mut state = scheduler.state.lock().unwrap_or_else(|e| e.into_inner());
+        take_due_write_back_jobs(&mut state, Instant::now())
+    };
+
+    if due.is_empty() {
+        release_scheduler_plane_after_write_back("idle");
+        schedule_next_write_back_wake_if_needed();
+        return;
+    }
+
+    if let Some(wait) = write_back_admission_delay() {
+        mark_write_back_lifecycle(
+            crate::runtime::PlaneLifecycleState::Draining,
+            "pressure_defer",
+        );
+        defer_write_back_jobs_and_stop_worker(due, wait.delay);
+        mark_write_back_lifecycle(
+            crate::runtime::PlaneLifecycleState::Unloaded,
+            "pressure_defer",
+        );
+        return;
+    }
+
+    let Some(_lease) = try_acquire_write_back_lease() else {
+        mark_write_back_lifecycle(
+            crate::runtime::PlaneLifecycleState::Draining,
+            "lease_denied_defer",
+        );
+        defer_write_back_jobs_and_stop_worker(
+            due,
+            Duration::from_millis(WRITE_BACK_RETRY_BACKOFF_MS),
+        );
+        mark_write_back_lifecycle(
+            crate::runtime::PlaneLifecycleState::Unloaded,
+            "lease_denied_defer",
+        );
+        return;
+    };
+
+    mark_write_back_lifecycle(crate::runtime::PlaneLifecycleState::Active, "run_due_jobs");
+    for mut job in due {
+        if let Some(task) = job.task.take() {
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(task));
+            if result.is_err() {
+                log::error!("[write_back] write-back task panicked");
+            }
+        }
+    }
+    release_scheduler_plane_after_write_back("idle");
+    schedule_next_write_back_wake_if_needed();
+}
+
+fn release_scheduler_plane_after_write_back(reason: &'static str) {
+    let scheduler = write_back_scheduler();
+    {
+        let mut state = scheduler.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.worker_started = false;
+    }
+    mark_write_back_lifecycle(crate::runtime::PlaneLifecycleState::Unloaded, reason);
+}
+
+fn schedule_next_write_back_wake_if_needed() {
+    if !should_auto_service_write_back_tasks() {
+        return;
+    }
+    let now = Instant::now();
+    if due_write_back_jobs_pending(now) {
+        schedule_write_back_retry(Duration::from_millis(WRITE_BACK_DRAIN_YIELD_MS));
+    } else if let Some(delay) = next_pending_write_back_wait(now) {
+        schedule_write_back_retry(delay);
+    }
+}
+
 fn take_due_write_back_jobs(state: &mut WriteBackQueueState, now: Instant) -> Vec<WriteBackJob> {
     let mut due = Vec::new();
     let mut index = 0usize;
@@ -594,7 +752,6 @@ fn defer_write_back_jobs_and_stop_worker(mut jobs: Vec<WriteBackJob>, delay: Dur
     state.jobs.extend(jobs);
     state.worker_started = false;
     state.next_attempt_at = Some(due_at);
-    state.quiet_started_at = None;
     drop(state);
     if should_auto_service_write_back_tasks() {
         schedule_write_back_retry(delay);
@@ -612,6 +769,8 @@ fn write_back_admission_delay() -> Option<WriteBackAdmissionWait> {
         2 => return None,
         _ => {}
     }
+    #[cfg(not(test))]
+    crate::orchestrator::update_heap_state();
     let resource = crate::orchestrator::snapshot();
     write_back_admission_delay_for_resource_now(&resource, crate::runtime::config_activity_active())
 }
@@ -713,10 +872,10 @@ impl<'a> StorageAdmissionEvaluator<'a> {
         if self.resource.pressure == crate::orchestrator::PressureLevel::Critical {
             return self.durable_delay();
         }
-        if self.internal_heap_low(WRITE_BACK_MIN_INTERNAL_FREE_BYTES) {
+        if self.internal_heap_low(write_back_min_internal_free_bytes()) {
             return self.durable_delay();
         }
-        if self.largest_block_low(WRITE_BACK_MIN_LARGEST_BLOCK_BYTES) {
+        if self.largest_block_low(write_back_min_largest_block_bytes()) {
             return self.durable_delay();
         }
         if self.resource.storage_contention_risk
@@ -742,10 +901,10 @@ impl<'a> StorageAdmissionEvaluator<'a> {
         if self.foreground_activity_active() {
             return PeriodicStorageMaintenanceAdmission::Deferred("foreground_activity");
         }
-        if self.internal_heap_low(PERIODIC_STORAGE_MAINTENANCE_MIN_INTERNAL_BYTES) {
+        if self.internal_heap_low(periodic_storage_maintenance_min_internal_bytes()) {
             return PeriodicStorageMaintenanceAdmission::Deferred("internal_heap_headroom");
         }
-        if self.largest_block_low(PERIODIC_STORAGE_MAINTENANCE_MIN_LARGEST_BLOCK_BYTES) {
+        if self.largest_block_low(periodic_storage_maintenance_min_largest_block_bytes()) {
             return PeriodicStorageMaintenanceAdmission::Deferred("largest_block_headroom");
         }
         if self.durable_write_back_delay().is_some() {
@@ -784,6 +943,8 @@ fn current_periodic_storage_maintenance_admission() -> PeriodicStorageMaintenanc
         2 => return PeriodicStorageMaintenanceAdmission::Admitted,
         _ => {}
     }
+    #[cfg(not(test))]
+    crate::orchestrator::update_heap_state();
     let resource = crate::orchestrator::snapshot();
     periodic_storage_maintenance_admission_for_resource(
         &resource,
@@ -944,8 +1105,26 @@ fn next_write_back_worker_step(idle_started: &mut Instant) -> WriteBackWorkerSte
 /// Wake the background write-back execution plane.
 ///
 /// This function is intentionally light enough for `agent_loop`: heavy
-/// SPIFFS/serde/session flush closures run only on the write-back worker stack.
+/// SPIFFS/serde/session flush closures run only on the governed background
+/// storage plane.
 pub fn service_write_back_tasks() {
+    if should_run_write_back_on_scheduler_plane() {
+        let now = Instant::now();
+        if due_write_back_jobs_pending(now) {
+            schedule_write_back_retry(Duration::ZERO);
+        } else if let Some(delay) = next_pending_write_back_wait(now) {
+            schedule_write_back_retry(delay);
+        }
+        return;
+    }
+    service_write_back_tasks_from_scheduled_wake();
+}
+
+fn service_write_back_tasks_from_scheduled_wake() {
+    if should_run_write_back_on_scheduler_plane() {
+        run_due_write_back_batch_on_scheduler_plane();
+        return;
+    }
     let now = Instant::now();
     if !due_write_back_jobs_pending(now) {
         if should_auto_service_write_back_tasks() {
@@ -1008,7 +1187,9 @@ fn reset_write_back_queue_for_tests() {
         state.next_attempt_at = None;
         state.quiet_started_at = None;
         state.retry_scheduled = false;
+        state.retry_due_at = None;
     }
+    WRITE_BACK_TEST_SCHEDULER_PLANE.store(false, Ordering::Release);
     let deadline = Instant::now() + Duration::from_millis(1_000);
     while Instant::now() < deadline {
         let worker_started = scheduler
@@ -2532,6 +2713,114 @@ mod tests {
     }
 
     #[test]
+    fn scheduler_plane_write_back_uses_bg_timer_wake_without_worker_spawn() {
+        let _write_back_guard = write_back_test_guard();
+        let _write_back_admission = write_back_admission_override_for_tests(true);
+        let (_state_guard, _delayed_guard) =
+            crate::runtime::delayed_task::delayed_task_test_scope();
+        reset_write_back_queue_for_tests();
+        WRITE_BACK_TEST_AUTO_SERVICE.store(true, Ordering::Release);
+        WRITE_BACK_TEST_SCHEDULER_PLANE.store(true, Ordering::Release);
+        let scheduler_thread = std::thread::current().id();
+        let starts_before = snapshot().worker_starts_total;
+        let (tx, rx) = std::sync::mpsc::channel();
+
+        assert!(schedule_write_back_task(
+            "scheduler_plane_test",
+            Instant::now(),
+            Box::new(move || {
+                tx.send(std::thread::current().id()).unwrap();
+            }),
+        ));
+
+        assert!(
+            rx.try_recv().is_err(),
+            "scheduler-plane write-back must be woken by bg_timer, not run inline in the producer"
+        );
+        crate::runtime::service_delayed_tasks();
+        let run_thread = rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("scheduled bg_timer wake should drain due write-back work");
+
+        assert_eq!(
+            run_thread, scheduler_thread,
+            "host test simulates the existing bg_timer delayed-task owner"
+        );
+        assert_eq!(
+            snapshot().worker_starts_total,
+            starts_before,
+            "ESP scheduler-plane write-back must not spawn the extra 24KB write_back worker"
+        );
+        assert!(!snapshot().worker_started);
+
+        WRITE_BACK_TEST_AUTO_SERVICE.store(false, Ordering::Release);
+        WRITE_BACK_TEST_SCHEDULER_PLANE.store(false, Ordering::Release);
+        reset_write_back_queue_for_tests();
+    }
+
+    #[test]
+    fn scheduler_plane_retry_rearms_when_earlier_due_work_arrives() {
+        let _write_back_guard = write_back_test_guard();
+        let _write_back_admission = write_back_admission_override_for_tests(true);
+        let (_state_guard, _delayed_guard) =
+            crate::runtime::delayed_task::delayed_task_test_scope();
+        reset_write_back_queue_for_tests();
+        WRITE_BACK_TEST_AUTO_SERVICE.store(true, Ordering::Release);
+        WRITE_BACK_TEST_SCHEDULER_PLANE.store(true, Ordering::Release);
+        let (tx, rx) = std::sync::mpsc::channel();
+
+        assert!(schedule_write_back_task(
+            "scheduler_plane_late_test",
+            Instant::now() + Duration::from_millis(500),
+            Box::new({
+                let tx = tx.clone();
+                move || {
+                    tx.send("late").unwrap();
+                }
+            }),
+        ));
+        let first_retry = write_back_scheduler()
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retry_due_at
+            .expect("future write-back should schedule a retry");
+
+        assert!(schedule_write_back_task(
+            "scheduler_plane_now_test",
+            Instant::now(),
+            Box::new(move || {
+                tx.send("now").unwrap();
+            }),
+        ));
+        let earlier_retry = write_back_scheduler()
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retry_due_at
+            .expect("immediate write-back should keep a retry scheduled");
+        assert!(
+            earlier_retry < first_retry,
+            "scheduler-plane retry must re-arm when earlier due work arrives"
+        );
+
+        crate::runtime::service_delayed_tasks();
+        assert_eq!(
+            rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+            "now",
+            "earlier due write-back work must not wait behind an older delayed wake"
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "future write-back work must remain queued until its own due time"
+        );
+
+        WRITE_BACK_TEST_AUTO_SERVICE.store(false, Ordering::Release);
+        WRITE_BACK_TEST_SCHEDULER_PLANE.store(false, Ordering::Release);
+        reset_write_back_queue_for_tests();
+    }
+
+    #[test]
     fn schedule_session_gc_runs_on_write_back_worker() {
         let _write_back_guard = write_back_test_guard();
         let _write_back_admission = write_back_admission_override_for_tests(true);
@@ -3017,6 +3306,85 @@ mod tests {
             PeriodicStorageMaintenanceAdmission::Deferred("largest_block_headroom"),
             "optional periodic maintenance keeps the stricter TLS+worker contiguous-block gate"
         );
+    }
+
+    #[test]
+    fn scheduler_plane_admission_does_not_reserve_a_second_worker_stack() {
+        let _write_back_guard = write_back_test_guard();
+        reset_write_back_queue_for_tests();
+        WRITE_BACK_TEST_SCHEDULER_PLANE.store(true, Ordering::Release);
+        let mut resource = write_back_resource_for_tests(
+            crate::orchestrator::PressureLevel::Normal,
+            crate::orchestrator::StorageContentionRisk::Healthy,
+        );
+        resource.heap_free_internal =
+            (crate::constants::TLS_ADMISSION_MIN_INTERNAL_BYTES as u32) + 10 * 1024;
+        resource.heap_largest_block_internal =
+            (crate::constants::TLS_ADMISSION_MIN_LARGEST_BLOCK_BYTES as u32) + 6 * 1024;
+        resource.active_wss_count = 1;
+
+        assert_eq!(
+            write_back_admission_delay_for_resource(&resource, false),
+            None,
+            "ESP scheduler-plane write-back reuses bg_timer stack and must not reserve another 24KB worker stack"
+        );
+        assert_eq!(
+            periodic_storage_maintenance_admission_for_resource(&resource, false),
+            PeriodicStorageMaintenanceAdmission::Admitted,
+            "scheduler-plane maintenance must use the same no-extra-worker-stack memory floor"
+        );
+
+        WRITE_BACK_TEST_SCHEDULER_PLANE.store(false, Ordering::Release);
+        reset_write_back_queue_for_tests();
+    }
+
+    #[test]
+    fn defer_requeue_preserves_quiet_window_progress() {
+        let _write_back_guard = write_back_test_guard();
+        let (_state_guard, _delayed_guard) =
+            crate::runtime::delayed_task::delayed_task_test_scope();
+        reset_write_back_queue_for_tests();
+        let mut resource = write_back_resource_for_tests(
+            crate::orchestrator::PressureLevel::Normal,
+            crate::orchestrator::StorageContentionRisk::Healthy,
+        );
+        resource.heap_free_internal = (WRITE_BACK_MIN_INTERNAL_FREE_BYTES + 10 * 1024) as u32;
+        resource.heap_largest_block_internal =
+            (WRITE_BACK_MIN_LARGEST_BLOCK_BYTES + 6 * 1024) as u32;
+        resource.active_wss_count = 1;
+
+        let first_wait = write_back_admission_delay_for_resource_now(&resource, false)
+            .expect("first admitted sample should wait for the quiet window");
+        assert!(
+            first_wait.record_defer,
+            "initial quiet-window wait must be recorded as a real defer"
+        );
+        defer_write_back_jobs_and_stop_worker(
+            vec![WriteBackJob {
+                label: "test_scheduler_quiet_window",
+                due_at: Instant::now(),
+                task: None,
+            }],
+            first_wait.delay,
+        );
+        assert!(
+            write_back_scheduler()
+                .state
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .quiet_started_at
+                .is_some(),
+            "requeueing due work must not restart an already healthy quiet window"
+        );
+
+        std::thread::sleep(first_wait.delay + Duration::from_millis(5));
+        assert_eq!(
+            write_back_admission_delay_for_resource_now(&resource, false),
+            None,
+            "healthy write-back must drain after one quiet window"
+        );
+
+        reset_write_back_queue_for_tests();
     }
 
     #[test]

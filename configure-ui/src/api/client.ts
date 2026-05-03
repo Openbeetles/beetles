@@ -118,6 +118,7 @@ export interface ApiRequestOptions {
   body?: string | object
   pairingCode?: string
   authPolicy?: 'none' | 'validate'
+  operatorWindowPolicy?: 'auto' | 'manual'
 }
 
 export interface ApiResult<T = unknown> {
@@ -153,7 +154,13 @@ async function requestInternal<T = unknown>(
   csrfRetryCount: number,
   operatorWindowRetryCount = 0,
 ): Promise<ApiResult<T>> {
-  const { method = 'GET', body, pairingCode, authPolicy = 'none' } = options
+  const {
+    method = 'GET',
+    body,
+    pairingCode,
+    authPolicy = 'none',
+    operatorWindowPolicy = 'auto',
+  } = options
   const url = buildUrl(baseUrl, path)
   const headers: Record<string, string> = {
     Accept: 'application/json',
@@ -216,6 +223,7 @@ async function requestInternal<T = unknown>(
         }
         if (
           errorKey === 'system.operator_window_required' &&
+          operatorWindowPolicy === 'auto' &&
           pairingCode?.trim() &&
           path !== '/api/operator/window' &&
           operatorWindowRetryCount < 1

@@ -1,5 +1,5 @@
 import { requestProtected, API_ERROR } from '../client.ts'
-import type { ApiResult } from '../client.ts'
+import type { ApiRequestOptions, ApiResult } from '../client.ts'
 
 export interface SkillItem {
   name: string
@@ -9,6 +9,10 @@ export interface SkillItem {
 export interface SkillsListResponse {
   skills: SkillItem[]
   order?: string[]
+}
+
+export interface SkillsListOptions {
+  operatorWindowPolicy?: ApiRequestOptions['operatorWindowPolicy']
 }
 
 function objectRecord(value: unknown): Record<string, unknown> {
@@ -43,10 +47,12 @@ function normalizeSkillsListResponse(data: unknown): SkillsListResponse {
 export async function listSkills(
   baseUrl: string,
   pairingCode?: string,
+  options: SkillsListOptions = {},
 ): Promise<ApiResult<SkillsListResponse>> {
   if (!baseUrl?.trim()) return { ok: false, error: API_ERROR.NO_BASE_URL }
   const res = await requestProtected<unknown>(baseUrl, '/api/skills', {
     pairingCode: pairingCode?.trim() || undefined,
+    operatorWindowPolicy: options.operatorWindowPolicy,
   })
   if (res.ok) {
     return { ...res, data: normalizeSkillsListResponse(res.data) }

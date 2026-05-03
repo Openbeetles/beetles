@@ -107,7 +107,8 @@ export function useDeviceApi() {
         list: () => toolsApi.listTools(baseUrl ?? ''),
       },
       skills: {
-        list: () => skillsApi.listSkills(baseUrl ?? '', pairingCode ?? undefined),
+        list: (options?: skillsApi.SkillsListOptions) =>
+          skillsApi.listSkills(baseUrl ?? '', pairingCode ?? undefined, options),
         getContent: (name: string) => skillsApi.getSkillContent(baseUrl ?? '', name, pairingCode ?? undefined),
         post: (body: { name: string; enabled?: boolean; content?: string }) =>
           skillsApi.postSkill(baseUrl ?? '', (pairingCode ?? '').trim(), body),

@@ -1,3 +1,5 @@
+import type { ApiResult } from './client'
+
 export interface RootInventory {
   endpoints: string[]
   windowed_endpoints: string[]
@@ -25,4 +27,10 @@ export function endpointSupportedByInventory(
   return (
     inventory.endpoints.includes(endpoint) || inventory.windowed_endpoints.includes(endpoint)
   )
+}
+
+export function apiResultIndicatesUnsupportedEndpoint(
+  result: Pick<ApiResult<unknown>, 'status' | 'errorKey'>,
+): boolean {
+  return result.status === 501 || result.errorKey === 'capability.unsupported'
 }

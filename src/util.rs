@@ -941,8 +941,8 @@ pub fn is_private_url(url: &str) -> bool {
 // | http_config_exec                       | STACK_HTTP_CONFIG_WORKER | 28 KB | 32 KB | ← config writes must fit normal post-startup largest-block budget
 // | http_diag_exec                         | STACK_HTTP_DIAG_WORKER   | 28 KB | 32 KB | ← scan/diagnostic lane after first-screen fan-out was moved off this worker
 // | dispatch                              | STACK_DISPATCH         | 6 KB  | 6 KB  | ← 常驻逻辑只做 admission/retry/cooldown，不承接重执行链
-// | bg_timer                              | STACK_BG_TIMER         | 24 KB | 96 KB | ← heartbeat + cron + delayed-task wake; write-back flushes moved to `write_back`
-// | write_back                            | runtime local          | 24 KB | 24 KB | ← SPIFFS/serde flush worker, lazy-started, idle-stopped, separate from agent_loop
+// | bg_timer                              | STACK_BG_TIMER         | 24 KB | 96 KB | ← heartbeat + cron + delayed-task wake; ESP write-back flushes reuse this scheduler plane
+// | write_back                            | runtime local          | n/a   | 24 KB | ← host/Linux SPIFFS/serde flush worker; ESP must not spawn a second 24 KB write-back thread
 // | sntp                                  | STACK_SNTP_WORKER      | 8 KB  | 96 KB | ← default guarded worker, no direct TLS call
 // | cli_repl                              | STACK_CLI_REPL         | 8 KB  | 8 KB  | ← no TLS
 // | voice_session                         | STACK_VOICE_CONTROL    | 8 KB  | 8 KB  | ← scheduler only; realtime WSS moved off this always-on thread

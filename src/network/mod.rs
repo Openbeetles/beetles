@@ -43,6 +43,13 @@ const STREAM_HTTP_STATS_LOG_EVERY: u32 = 50;
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 const ROLE_SLOTS_MAX: usize = 16;
 
+/// ESP external gateway WSS waits longer than generic HTTP after STA gets IP.
+/// 2026-05-02 S3 boot-idle logs showed QQ token HTTP could still hit
+/// `No buffer space available` about 9s after DHCP, while retrying around 15s
+/// succeeded. External WSS is steady-state channel capacity, so this startup
+/// settle window is preferable to consuming a failed TLS/HTTP attempt.
+pub const EXTERNAL_WSS_OUTBOUND_SETTLE_SECS: u64 = 15;
+
 static ACTIVE_HTTP_COUNT: AtomicU32 = AtomicU32::new(0);
 static ACTIVE_WSS_COUNT: AtomicU32 = AtomicU32::new(0);
 static ACTIVE_EXTERNAL_WSS_COUNT: AtomicU32 = AtomicU32::new(0);
@@ -1244,7 +1251,6 @@ fn wait_for_realtime_admission_window(_platform: &dyn Platform) {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Mutex, OnceLock};
 
     struct FakeWssConnection;
 
@@ -1261,14 +1267,9 @@ mod tests {
         }
     }
 
-    fn test_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-    }
-
     #[test]
     fn external_wss_runtime_round_trips() {
-        let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = crate::state::test_state_guard();
         set_external_wss_managed_present(true);
         {
             let _connect = begin_external_wss_connect_attempt();
@@ -1293,7 +1294,7 @@ mod tests {
 
     #[test]
     fn wss_session_counts_external_and_realtime_profiles_separately() {
-        let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = crate::state::test_state_guard();
         assert_eq!(active_wss_count(), 0);
         assert_eq!(active_external_wss_count(), 0);
         assert_eq!(active_realtime_wss_count(), 0);
@@ -1321,7 +1322,7 @@ mod tests {
 
     #[test]
     fn external_wss_suspend_reason_round_trips() {
-        let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = crate::state::test_state_guard();
         set_external_wss_managed_present(false);
         let guard = begin_external_wss_suspend_request(ExternalWssSuspendReason::ConfigPersisting);
         assert_eq!(
@@ -1334,7 +1335,7 @@ mod tests {
 
     #[test]
     fn external_wss_suspend_reason_tracks_concurrent_owners() {
-        let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = crate::state::test_state_guard();
         set_external_wss_managed_present(false);
         let config = begin_external_wss_suspend_request(ExternalWssSuspendReason::ConfigPersisting);
         assert_eq!(
@@ -1362,7 +1363,7 @@ mod tests {
 
     #[test]
     fn external_wss_lease_blocks_other_channel_until_drop() {
-        let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = crate::state::test_state_guard();
         let _lease_guard = crate::runtime::lease::lease_test_guard();
 
         let qq = acquire_external_wss_lease_at("qq_ws", 100).expect("qq external wss lease");
@@ -1382,7 +1383,7 @@ mod tests {
 
     #[test]
     fn external_wss_connect_wrapper_holds_session_lease_and_releases_handshake() {
-        let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = crate::state::test_state_guard();
         let _lease_guard = crate::runtime::lease::lease_test_guard();
         set_external_wss_managed_present(true);
 
@@ -1418,7 +1419,7 @@ mod tests {
 
     #[test]
     fn external_wss_connect_failure_releases_session_and_handshake_leases() {
-        let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = crate::state::test_state_guard();
         let _lease_guard = crate::runtime::lease::lease_test_guard();
         set_external_wss_managed_present(true);
 
@@ -1444,7 +1445,7 @@ mod tests {
 
     #[test]
     fn http_client_tls_handshake_lease_releases_on_drop() {
-        let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = crate::state::test_state_guard();
         let _lease_guard = crate::runtime::lease::lease_test_guard();
 
         let lease = acquire_http_client_tls_handshake_lease(
@@ -1469,7 +1470,7 @@ mod tests {
 
     #[test]
     fn external_wss_suspend_timeout_records_drain_failure() {
-        let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = crate::state::test_state_guard();
         let _lease_guard = crate::runtime::lease::lease_test_guard();
         set_external_wss_managed_present(true);
         request_external_wss_suspend();

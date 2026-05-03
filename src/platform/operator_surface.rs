@@ -242,6 +242,22 @@ mod tests {
             .windowed_endpoints
             .iter()
             .any(|item| item == "GET /api/tools"));
+        assert!(!inventory
+            .endpoints
+            .iter()
+            .any(|item| item == "GET /api/diagnose"));
+        assert!(inventory
+            .windowed_endpoints
+            .iter()
+            .any(|item| item == "GET /api/diagnose"));
+        assert!(!inventory
+            .endpoints
+            .iter()
+            .any(|item| item == "GET /api/skills"));
+        assert!(inventory
+            .windowed_endpoints
+            .iter()
+            .any(|item| item == "GET /api/skills"));
     }
 
     #[test]

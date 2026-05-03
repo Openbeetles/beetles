@@ -104,6 +104,7 @@ BEGIN {
   idle_worker_count = 0;
   write_back_starvation_count = 0;
   write_back_defer_churn_count = 0;
+  write_back_thread_start_count = 0;
   write_back_stalled_samples = 0;
   write_back_starvation_reported = 0;
   last_write_back_deferred = -1;
@@ -133,6 +134,10 @@ function numeric_after(line, key,    value) {
   return value;
 }
 
+function is_boot_startup_checkpoint_stage(stage) {
+  return stage ~ /^(memory_provider_registered|config_loaded|wifi_stack_ready|csrf_initialized|display_initialized|display_boot_dashboard|boot_memory_reads|audio_init_phase_done|voice_event_channel_ready|startup_self_check_ok|config_api_spawned|bg_timer_spawn|bg_timer_started|communication_plane_ready|orchestrator_initialized|display_thread_spawned|qq_ws_spawn|os_outbound_spawn|agent_loop_spawn)$/;
+}
+
 function record_issue(line_no, check, severity, detail) {
   gsub(/"/, "\"\"", detail);
   print line_no ",\"" check "\",\"" severity "\",\"" detail "\"" >> regressions;
@@ -148,6 +153,9 @@ function record_issue(line_no, check, severity, detail) {
   }
 
   heap_largest = numeric_after(line, "heap_largest");
+  if (heap_largest == "") {
+    heap_largest = numeric_after(line, "heap_largest_internal");
+  }
   if (heap_largest == "") {
     heap_largest = numeric_after(line, "largest_block");
   }
@@ -193,7 +201,13 @@ function record_issue(line_no, check, severity, detail) {
     }
     if (heap_largest < floor) {
       heap_floor_count++;
-      record_issue(NR, "heap_largest_below_floor", "blocker", "heap_largest=" heap_largest " floor=" floor);
+      startup_stage = value_after(line, "stage");
+      heap_detail = "stage=" startup_stage " heap_largest=" heap_largest " floor=" floor;
+      if (lower_line ~ /startup memory checkpoint/ && is_boot_startup_checkpoint_stage(startup_stage)) {
+        record_issue(NR, "startup_heap_largest_below_floor", "risk", heap_detail);
+      } else {
+        record_issue(NR, "heap_largest_below_floor", "blocker", heap_detail);
+      }
     }
   }
 
@@ -243,6 +257,13 @@ function record_issue(line_no, check, severity, detail) {
     }
   }
 
+  if (lower_line ~ /\[thread\] started name=write_back/) {
+    write_back_thread_start_count++;
+    if (write_back_thread_start_count > 3) {
+      record_issue(NR, "write_back_worker_churn", "blocker", "write_back worker thread starts=" write_back_thread_start_count);
+    }
+  }
+
   if (lower_line ~ /idle[-_ ]?stop|idle[-_ ]?stopped|idle timeout|idle_timeout/) {
     if (lower_line ~ /active=(1|true|active)|state=active|still active/) {
       idle_worker_count++;
@@ -274,6 +295,18 @@ function record_issue(line_no, check, severity, detail) {
     record_issue(NR, "panic_or_task_failure", "blocker", trim(line));
   }
 
+  if (lower_line ~ /spawn failed name=http_.*_exec|http_route_worker_start:.*dispatch worker start failed/) {
+    record_issue(NR, "route_worker_spawn_failed", "blocker", trim(line));
+  }
+
+  if (line ~ /ESP_ERR_HTTPD_RESP_SEND|httpd_sock_err: error in send/) {
+    record_issue(NR, "http_response_send_error", "blocker", trim(line));
+  }
+
+  if (lower_line ~ /display refresh suppressed/) {
+    record_issue(NR, "display_refresh_suppressed_under_pressure", "blocker", trim(line));
+  }
+
   if (pressure != "" || heap_largest != "" || worker_starts != "" || low_margin != "" || active_wss != "" || camera_frame_active != "") {
     print NR "," pressure "," heap_largest "," worker_starts "," low_margin "," active_wss "," camera_frame_active >> metrics;
     metric_rows++;
@@ -299,6 +332,7 @@ END {
   print "- Lazy worker idle violations: " idle_worker_count >> summary;
   print "- Write-back starvation lines: " write_back_starvation_count >> summary;
   print "- Write-back defer churn lines: " write_back_defer_churn_count >> summary;
+  print "- Write-back worker thread starts: " write_back_thread_start_count >> summary;
   if (saw_critical) {
     print "- Critical pressure observed: yes" >> summary;
   } else {

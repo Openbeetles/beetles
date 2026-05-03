@@ -13,8 +13,6 @@ const GATEWAY_OPEN_URL: &str = "https://api.dingtalk.com/v1.0/gateway/connection
 const BOT_MESSAGE_TOPIC: &str = "/v1.0/im/bot/messages/get";
 const BACKOFF_MAX_SECS: u64 = 120;
 const RECV_TIMEOUT_SECS: u64 = 25;
-#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-const WIFI_OUTBOUND_SETTLE_SECS: u64 = 3;
 
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct DingtalkStreamFrameOutcome {
@@ -93,7 +91,7 @@ fn external_wss_suspend_lifecycle_reason() -> &'static str {
 fn esp_network_suspend_reason() -> Option<&'static str> {
     let snapshot = crate::state::network_runtime_snapshot(
         crate::platform::time::wall_clock_is_trustworthy(),
-        WIFI_OUTBOUND_SETTLE_SECS,
+        crate::network::EXTERNAL_WSS_OUTBOUND_SETTLE_SECS,
     );
     crate::network::external_wss_network_suspend_reason(&snapshot)
 }

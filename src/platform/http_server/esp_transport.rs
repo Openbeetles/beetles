@@ -9,13 +9,15 @@ use crate::platform::http_server::common::{
 };
 use crate::platform::http_server::handlers::HandlerContext;
 use crate::platform::http_server::lazy_executor::LazyExecutor;
+use crate::platform::http_server::route_worker_control::{
+    effective_route_worker_memory_requirements, route_worker_spawn_contract, RouteStartCooldown,
+};
 use crate::platform::http_server::router::{
     self,
     catalog::{
-        self, route_worker_memory_requirements, HttpRouteSpec, RouteBodyMode, RouteExecutionClass,
-        RouteMethod, RouteRuntimeAdmission, RouteWorkerContract, RouteWorkerLane,
-        ACTION_ROUTE_SPECS, MEMORY_AND_SKILL_ROUTE_SPECS, OBSERVABILITY_ROUTE_SPECS,
-        PAIRING_AND_CONFIG_ROUTE_SPECS, ROOT_ROUTE_SPECS,
+        HttpRouteSpec, RouteBodyMode, RouteExecutionClass, RouteMethod, RouteRuntimeAdmission,
+        RouteWorkerContract, RouteWorkerLane, ACTION_ROUTE_SPECS, MEMORY_AND_SKILL_ROUTE_SPECS,
+        OBSERVABILITY_ROUTE_SPECS, PAIRING_AND_CONFIG_ROUTE_SPECS, ROOT_ROUTE_SPECS,
     },
     IncomingBody, IncomingRequest, OutgoingResponse, RestartAction, RouterEnv,
 };
@@ -67,6 +69,7 @@ impl RouteSubmitGate {
 struct EspRouteExecutor {
     lane: RouteWorkerLane,
     inner: LazyExecutor<EspRouteExecutorInner, std::io::Error>,
+    start_cooldown: RouteStartCooldown,
 }
 
 impl EspRouteExecutor {
@@ -81,6 +84,8 @@ impl EspRouteExecutor {
             crate::runtime::PlaneLifecycleState::Registered,
             "registered",
         );
+        let start_cooldown = RouteStartCooldown::new();
+        let init_start_cooldown = start_cooldown.clone();
         let ctx = Arc::clone(ctx);
         let store = Arc::clone(config_store);
         Self {
@@ -100,6 +105,7 @@ impl EspRouteExecutor {
                 let route_worker_lease = match acquire_route_worker_lease(spawn_contract) {
                     Ok(lease) => lease,
                     Err(error) => {
+                        init_start_cooldown.record_failure();
                         mark_route_worker_lifecycle(
                             lane,
                             crate::runtime::PlaneLifecycleState::Failed,
@@ -126,6 +132,7 @@ impl EspRouteExecutor {
                 let _task = match spawn_result {
                     Ok(task) => task,
                     Err(err) => {
+                        init_start_cooldown.record_failure();
                         mark_route_worker_lifecycle(
                             lane,
                             crate::runtime::PlaneLifecycleState::Failed,
@@ -134,6 +141,7 @@ impl EspRouteExecutor {
                         return Err(err);
                     }
                 };
+                init_start_cooldown.clear();
                 mark_route_worker_lifecycle(
                     lane,
                     crate::runtime::PlaneLifecycleState::Active,
@@ -157,6 +165,7 @@ impl EspRouteExecutor {
                     submit_gate,
                 })
             }),
+            start_cooldown,
         }
     }
 
@@ -194,6 +203,17 @@ impl EspRouteExecutor {
             finish_config_activity_guard(&mut config_activity_guard, out.status);
             return out;
         }
+        if let Some(detail) = self.start_cooldown.reject_detail(self.lane) {
+            let out = route_worker_reject_response(
+                store,
+                job_contract,
+                spec.path,
+                "http_route_worker_start_cooldown",
+                detail,
+            );
+            finish_config_activity_guard(&mut config_activity_guard, out.status);
+            return out;
+        }
         let (reply_tx, reply_rx) = sync_channel(1);
         let mut pending_job = Some(EspRouteJob {
             contract: job_contract,
@@ -206,6 +226,7 @@ impl EspRouteExecutor {
             let inner = match self.inner.get() {
                 Ok(inner) => inner,
                 Err(err) => {
+                    self.start_cooldown.record_failure();
                     let mut job = pending_job.take();
                     let out = route_worker_reject_response(
                         store,
@@ -356,7 +377,7 @@ fn route_worker_admission_reject(
             detail,
         });
     }
-    let requirements = route_worker_memory_requirements(contract);
+    let requirements = effective_route_worker_memory_requirements(contract);
     if (snap.heap_largest_block as usize) >= requirements.required_largest
         && (snap.heap_free_internal as usize) >= requirements.required_internal
     {
@@ -400,16 +421,6 @@ impl EspRouteExecutors {
             RouteWorkerLane::Diagnostic => Some(&self.diagnostic),
         }
     }
-}
-
-fn route_worker_spawn_contract(lane: RouteWorkerLane) -> RouteWorkerContract {
-    match lane {
-        RouteWorkerLane::Snapshot => RouteExecutionClass::SnapshotRoute,
-        RouteWorkerLane::Config => RouteExecutionClass::AsyncConfigRoute,
-        RouteWorkerLane::Diagnostic => RouteExecutionClass::SlowDiagnosticRoute,
-    }
-    .worker_contract()
-    .expect("route worker lane must have a spawn contract")
 }
 
 fn route_worker_thread_name(lane: RouteWorkerLane) -> &'static str {

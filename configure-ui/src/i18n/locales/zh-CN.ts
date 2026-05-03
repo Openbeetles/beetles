@@ -198,6 +198,7 @@ export const zhCN = {
       systemStatusDisplayAvailable: '显示屏可用',
       systemStatusSessionCount: '会话数',
       systemStatusStorage: '存储占用',
+      systemStatusTotalMessagesIn: '消息入',
       systemStatusMessagesIn: '用户消息入',
       systemStatusAgentMessagesIn: 'Agent 消息入',
       systemStatusSystemMessagesIn: '系统消息入',

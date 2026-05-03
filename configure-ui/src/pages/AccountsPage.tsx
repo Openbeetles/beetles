@@ -21,6 +21,7 @@ import {
 import { Os3dIcon } from "../components/Os3dIcon";
 import { SettingsSection } from "../components/SettingsSection";
 import {
+  apiResultIndicatesUnsupportedEndpoint,
   endpointSupportedByInventory,
   parseRootInventory,
 } from "../api/rootInventory";
@@ -175,7 +176,7 @@ export function AccountsPage() {
   const { api, ready, canAccessProtectedApis } = useDeviceApi();
   const [capFilter, setCapFilter] = useState<CapabilityFilter>("all");
   const [items, setItems] = useState<AccountSummary[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [unsupportedEndpoint, setUnsupportedEndpoint] = useState(false);
   const [dialog, setDialog] = useState<AccountsDialogState>({ kind: "closed" });
@@ -188,6 +189,13 @@ export function AccountsPage() {
 
   const load = useCallback(async () => {
     if (!ready) return;
+    if (!canAccessProtectedApis) {
+      setItems([]);
+      setUnsupportedEndpoint(false);
+      setError("");
+      setLoading(false);
+      return;
+    }
     const requestId = loadGuardRef.current.next();
     setLoading(true);
     setError("");
@@ -208,11 +216,18 @@ export function AccountsPage() {
     } else {
       let nextError = res.error ?? t("accounts.loadFailed");
       let nextUnsupported = false;
-      if (res.errorKey === "common.not_found" || res.status === 404) {
+      if (
+        apiResultIndicatesUnsupportedEndpoint(res) ||
+        res.errorKey === "common.not_found" ||
+        res.status === 404
+      ) {
         const probe = await api.device.probe();
         if (!loadGuardRef.current.isCurrent(requestId)) return;
         const inventory = probe.ok ? parseRootInventory(probe.data) : null;
-        if (!endpointSupportedByInventory(inventory, "GET /api/config/accounts")) {
+        if (
+          apiResultIndicatesUnsupportedEndpoint(res) ||
+          !endpointSupportedByInventory(inventory, "GET /api/config/accounts")
+        ) {
           nextUnsupported = true;
           nextError = "";
         }
@@ -222,10 +237,10 @@ export function AccountsPage() {
       setItems([]);
     }
     setLoading(false);
-  }, [api.config.accounts, api.device, filters, ready, t]);
+  }, [api.config.accounts, api.device, canAccessProtectedApis, filters, ready, t]);
 
   useEffect(() => {
-    if (!ready) return;
+    if (!ready || !canAccessProtectedApis) return;
     const loadGuard = loadGuardRef.current;
     const id = window.setTimeout(() => {
       void load();
@@ -234,7 +249,18 @@ export function AccountsPage() {
       window.clearTimeout(id);
       loadGuard.invalidate();
     };
-  }, [ready, load]);
+  }, [canAccessProtectedApis, ready, load]);
+
+  useEffect(() => {
+    if (!ready || canAccessProtectedApis) return;
+    loadGuardRef.current.invalidate();
+    queueMicrotask(() => {
+      setItems([]);
+      setUnsupportedEndpoint(false);
+      setError("");
+      setLoading(false);
+    });
+  }, [canAccessProtectedApis, ready]);
 
   const showConnectHint = ready && !canAccessProtectedApis;
   const listErrorState = splitPageErrorState({
@@ -261,7 +287,7 @@ export function AccountsPage() {
       <InlineAlert message={listErrorState.inlineError} onRetry={load} />
       <SettingsSection
         pinHeader
-        surfaceTone={loading ? "loading" : "default"}
+        surfaceTone={loading && !showConnectHint ? "loading" : "default"}
         sx={{ flex: 1, minHeight: 0 }}
         icon={<Os3dIcon src={OS_ICON_NAV["/accounts"]} />}
         label={t("accounts.sectionTitle")}
@@ -286,8 +312,7 @@ export function AccountsPage() {
             description={t("accounts.needPairingDesc")}
             size="compact"
           />
-        ) : null}
-        {loading ? (
+        ) : loading ? (
           <PanelStateLoading>
             <SectionLoadingSkeleton />
           </PanelStateLoading>

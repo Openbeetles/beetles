@@ -117,6 +117,11 @@ const MODES_VOICE: &[RuntimeMode] = &[RuntimeMode::Normal, RuntimeMode::VoiceExc
 
 const MODES_BOOT_ONLY: &[RuntimeMode] = &[RuntimeMode::Booting];
 
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+const STORAGE_WRITE_BACK_THREAD_NAMES: &[&str] = &[];
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+const STORAGE_WRITE_BACK_THREAD_NAMES: &[&str] = &["write_back"];
+
 const MODES_RECOVERY: &[RuntimeMode] = &[
     RuntimeMode::Booting,
     RuntimeMode::Pairing,
@@ -400,7 +405,7 @@ const PLANE_PROFILES: &[PlaneProfile] = &[
         residency: PlaneResidency::Lazy,
         allowed_modes: MODES_NORMAL_AND_MAINTENANCE,
         required_leases: &[LeaseKind::StorageSessionWrite],
-        thread_names: &["write_back"],
+        thread_names: STORAGE_WRITE_BACK_THREAD_NAMES,
         queue_budget: Some(PlaneQueueBudget {
             name: "write_back",
             capacity: crate::runtime::write_back::WRITE_BACK_QUEUE_MAX,

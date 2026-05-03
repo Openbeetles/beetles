@@ -21,6 +21,7 @@ import type { ToolInfo } from "../api/endpoints/tools";
 import { useDeviceApi } from "../hooks/useDeviceApi";
 import { createAsyncState } from "../types/asyncState";
 import {
+  apiResultIndicatesUnsupportedEndpoint,
   endpointSupportedByInventory,
   parseRootInventory,
 } from "../api/rootInventory";
@@ -48,10 +49,17 @@ export function ToolsPage() {
     } else {
       let nextError = res.error ?? "";
       let nextUnsupported = false;
-      if (res.errorKey === "common.not_found" || res.status === 404) {
+      if (
+        apiResultIndicatesUnsupportedEndpoint(res) ||
+        res.errorKey === "common.not_found" ||
+        res.status === 404
+      ) {
         const probe = await api.device.probe();
         const inventory = probe.ok ? parseRootInventory(probe.data) : null;
-        if (!endpointSupportedByInventory(inventory, "GET /api/tools")) {
+        if (
+          apiResultIndicatesUnsupportedEndpoint(res) ||
+          !endpointSupportedByInventory(inventory, "GET /api/tools")
+        ) {
           nextUnsupported = true;
           nextError = "";
         }

@@ -25,3 +25,20 @@ test("buildSystemLogMetricItems keeps a bounded operator-facing metric set", () 
     false,
   );
 });
+
+test("buildSystemLogMetricItems keeps total and user inbound metrics distinct", () => {
+  const metrics: MetricsSnapshotData = {
+    messages_in: 10,
+    user_messages_in: 4,
+  };
+
+  const items = buildSystemLogMetricItems(metrics);
+
+  assert.deepEqual(
+    items.map((item) => [item.id, item.labelKey]),
+    [
+      ["messages_in", "device.systemStatusTotalMessagesIn"],
+      ["user_messages_in", "device.systemStatusMessagesIn"],
+    ],
+  );
+});
