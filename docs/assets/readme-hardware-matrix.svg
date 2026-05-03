@@ -1,0 +1,80 @@
+<svg width="1200" height="300" viewBox="0 0 1200 300" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">Beetles OS hardware matrix</title>
+  <desc id="desc">A minimal diagram showing Beetles OS connecting Linux, ESP32, language models, channels, and tools.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1200" y2="300" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F2FFFB"/>
+      <stop offset=".55" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#EEF7FF"/>
+    </linearGradient>
+    <linearGradient id="hub" x1="430" y1="96" x2="770" y2="208" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#13AA98"/>
+      <stop offset="1" stop-color="#0A6076"/>
+    </linearGradient>
+    <filter id="shadow" x="-12%" y="-24%" width="124%" height="148%" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="14" stdDeviation="16" flood-color="#0B5F76" flood-opacity=".13"/>
+    </filter>
+    <style>
+      .hub { font: 800 40px ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #fff; letter-spacing: -.02em; }
+      .hubMeta { font: 650 18px ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #DDFCF6; }
+      .node { font: 750 24px ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #183B38; }
+      .meta { font: 600 14px ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #6B817E; }
+      .line { stroke: #10A695; stroke-width: 3; stroke-linecap: round; }
+    </style>
+  </defs>
+
+  <rect x="1" y="1" width="1198" height="298" rx="34" fill="url(#bg)" stroke="#D8F0EA" stroke-width="2"/>
+  <circle cx="1040" cy="36" r="120" fill="#D8F6EF" opacity=".42"/>
+  <circle cx="156" cy="286" r="132" fill="#DDEFFF" opacity=".38"/>
+
+  <path class="line" d="M352 106H430"/>
+  <path class="line" d="M770 106H848"/>
+  <path class="line" d="M352 194H430"/>
+  <path class="line" d="M770 194H848"/>
+  <path class="line" d="M546 220V248"/>
+  <path class="line" d="M654 220V248"/>
+
+  <g filter="url(#shadow)">
+    <rect x="430" y="82" width="340" height="136" rx="36" fill="url(#hub)"/>
+    <text x="506" y="142" class="hub">Beetles OS</text>
+    <text x="510" y="178" class="hubMeta">Memory · Tools · Policy</text>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="120" y="68" width="232" height="76" rx="24" fill="#FFFFFF" stroke="#C7EAE4" stroke-width="2"/>
+    <text x="176" y="108" class="node">Linux</text>
+    <text x="176" y="130" class="meta">长任务 / 本地工具</text>
+    <circle cx="148" cy="106" r="17" fill="#0EA5E9"/>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="120" y="156" width="232" height="76" rx="24" fill="#FFFFFF" stroke="#C7EAE4" stroke-width="2"/>
+    <text x="176" y="196" class="node">ESP32</text>
+    <text x="176" y="218" class="meta">现场控制 / 外设</text>
+    <circle cx="148" cy="194" r="17" fill="#10B981"/>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="848" y="68" width="232" height="76" rx="24" fill="#FFFFFF" stroke="#C7EAE4" stroke-width="2"/>
+    <text x="904" y="108" class="node">LLM</text>
+    <text x="904" y="130" class="meta">云端 / 本地模型</text>
+    <circle cx="876" cy="106" r="17" fill="#6366F1"/>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="848" y="156" width="232" height="76" rx="24" fill="#FFFFFF" stroke="#C7EAE4" stroke-width="2"/>
+    <text x="904" y="196" class="node">Channels</text>
+    <text x="904" y="218" class="meta">企业 IM / Webhook</text>
+    <circle cx="876" cy="194" r="17" fill="#38BDF8"/>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="422" y="248" width="248" height="36" rx="18" fill="#FFFFFF" stroke="#C7EAE4" stroke-width="2"/>
+    <text x="492" y="272" class="meta">状态同步</text>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="704" y="248" width="248" height="36" rx="18" fill="#FFFFFF" stroke="#C7EAE4" stroke-width="2"/>
+    <text x="774" y="272" class="meta">工具调用</text>
+  </g>
+</svg>
