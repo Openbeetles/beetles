@@ -13,6 +13,9 @@ Outputs:
 
 This is an evidence parser only. It does not require network access and does not
 decide release eligibility by itself.
+The heap largest floor is an observation floor: Normal+Healthy runtime samples
+below it are recorded as risks, while non-Healthy, spawn, route, stack, panic,
+or write-back regressions remain blockers.
 EOF
 }
 
@@ -86,7 +89,7 @@ awk -v floor="$heap_largest_floor" \
     -v summary="$summary_md" \
     -v log_file="$log_file" '
 BEGIN {
-  print "line,pressure,heap_largest,worker_starts_total,stack_low_margin,active_wss,camera_frame_active" > metrics;
+  print "line,pressure,tls_fragmentation,heap_largest,worker_starts_total,stack_low_margin,active_wss,camera_frame_active" > metrics;
   print "line,check,severity,detail" > regressions;
   first_largest = -1;
   min_largest = -1;
@@ -97,8 +100,10 @@ BEGIN {
   saw_critical = 0;
   panic_count = 0;
   issue_count = 0;
+  blocker_count = 0;
   stack_low_margin_count = 0;
   heap_floor_count = 0;
+  heap_floor_risk_count = 0;
   voice_wss_count = 0;
   frame_lease_count = 0;
   idle_worker_count = 0;
@@ -125,7 +130,7 @@ function value_after(line, key,    pattern, start, rest) {
   rest = substr(line, start + length(pattern));
   sub(/[ ,;|)}\]]+.*/, "", rest);
   gsub(/^["'\''"]|["'\''"]$/, "", rest);
-  return rest;
+  return trim(rest);
 }
 
 function numeric_after(line, key,    value) {
@@ -142,6 +147,9 @@ function record_issue(line_no, check, severity, detail) {
   gsub(/"/, "\"\"", detail);
   print line_no ",\"" check "\",\"" severity "\",\"" detail "\"" >> regressions;
   issue_count++;
+  if (severity == "blocker") {
+    blocker_count++;
+  }
 }
 
 {
@@ -151,6 +159,7 @@ function record_issue(line_no, check, severity, detail) {
   if (pressure == "") {
     pressure = value_after(line, "resource_pressure");
   }
+  tls_fragmentation = value_after(line, "tls_fragmentation");
 
   heap_largest = numeric_after(line, "heap_largest");
   if (heap_largest == "") {
@@ -202,9 +211,13 @@ function record_issue(line_no, check, severity, detail) {
     if (heap_largest < floor) {
       heap_floor_count++;
       startup_stage = value_after(line, "stage");
-      heap_detail = "stage=" startup_stage " heap_largest=" heap_largest " floor=" floor;
+      heap_detail = "stage=" startup_stage " heap_largest=" heap_largest " floor=" floor " pressure=" pressure " tls_fragmentation=" tls_fragmentation;
       if (lower_line ~ /startup memory checkpoint/ && is_boot_startup_checkpoint_stage(startup_stage)) {
         record_issue(NR, "startup_heap_largest_below_floor", "risk", heap_detail);
+        heap_floor_risk_count++;
+      } else if (pressure == "Normal" && tls_fragmentation == "Healthy") {
+        record_issue(NR, "heap_largest_below_observation_floor", "risk", heap_detail);
+        heap_floor_risk_count++;
       } else {
         record_issue(NR, "heap_largest_below_floor", "blocker", heap_detail);
       }
@@ -307,8 +320,8 @@ function record_issue(line_no, check, severity, detail) {
     record_issue(NR, "display_refresh_suppressed_under_pressure", "blocker", trim(line));
   }
 
-  if (pressure != "" || heap_largest != "" || worker_starts != "" || low_margin != "" || active_wss != "" || camera_frame_active != "") {
-    print NR "," pressure "," heap_largest "," worker_starts "," low_margin "," active_wss "," camera_frame_active >> metrics;
+  if (pressure != "" || tls_fragmentation != "" || heap_largest != "" || worker_starts != "" || low_margin != "" || active_wss != "" || camera_frame_active != "") {
+    print NR "," pressure "," tls_fragmentation "," heap_largest "," worker_starts "," low_margin "," active_wss "," camera_frame_active >> metrics;
     metric_rows++;
   }
 }
@@ -324,9 +337,11 @@ END {
   print "- Parsed metric rows: " metric_rows >> summary;
   print "- Heap largest floor: " floor " bytes" >> summary;
   print "- Issues detected: " issue_count >> summary;
+  print "- Blocker issues detected: " blocker_count >> summary;
   print "- Panic/task failure lines: " panic_count >> summary;
   print "- Stack low-margin lines: " stack_low_margin_count >> summary;
   print "- Heap largest below floor lines: " heap_floor_count >> summary;
+  print "- Heap largest below floor risk lines: " heap_floor_risk_count >> summary;
   print "- VoiceExclusive + external WSS violations: " voice_wss_count >> summary;
   print "- Camera frame lease active lines: " frame_lease_count >> summary;
   print "- Lazy worker idle violations: " idle_worker_count >> summary;

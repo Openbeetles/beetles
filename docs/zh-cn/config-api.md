@@ -1378,7 +1378,7 @@ ESP 嵌入式说明：`/api/tools` 在激活后保持可用。它仍要求设备
 
 **GET /api/channel_connectivity**
 
-用途：检查当前通道连接状态。
+用途：读取当前通道连接状态。ESP 默认返回被动快照，不做外部 live probe；显式刷新由 `POST /api/channel_connectivity/refresh` 执行。
 
 鉴权：`已激活`
 
@@ -1387,6 +1387,19 @@ ESP 嵌入式说明：`/api/tools` 在激活后保持可用。它仍要求设备
 返回体顶层字段：
 
 - `channels`
+- `checked_at_unix_secs`
+- `stale`
+
+`channels` 项字段：
+
+- `id`：通道 ID。
+- `configured`：是否已经配置。
+- `ok`：最近一次显式连通性探测是否成功。
+- `message_key`：前端可翻译的状态或错误键。
+- `runtime_status`：运行态状态，例如 `connected`、`connecting`、`waiting_network`、`disabled`。
+- `runtime_reason`：运行态原因键，可为空。
+
+展示建议：若 `runtime_status=connected`，可把常驻 WSS/消息通道显示为在线；`stale=true` 或 `message_key=network.channel_connectivity_unavailable` 只表示当前被动快照没有 live probe 结果，不应直接覆盖已在线的运行态。
 
 **POST /api/operator/window**
 

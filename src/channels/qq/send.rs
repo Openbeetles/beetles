@@ -957,6 +957,7 @@ pub(crate) struct QqOutboundDriver {
     secret: String,
     cache: QqMsgIdCache,
     shared_token_cache: SharedQqTokenCache,
+    /// Kept only within one send attempt on ESP; steady-state TLS buffers must be released.
     http: Option<Box<dyn PlatformHttpClient>>,
     token_cache: Option<CachedQqToken>,
     turn_tracker: QqTurnReservationTracker,
@@ -998,19 +999,23 @@ impl ActiveChannelSender for QqOutboundDriver {
     ) -> crate::error::Result<()> {
         let create_http = Arc::clone(&self.create_http);
         let mut create = || create_http();
-        let mut runtime = QqSendRuntime {
-            app_id: &self.app_id,
-            secret: &self.secret,
-            cache: &self.cache,
-            shared_token_cache: &self.shared_token_cache,
-            http: &mut self.http,
-            token_cache: &mut self.token_cache,
-            turn_tracker: &mut self.turn_tracker,
-            active_reservation: &mut self.active_reservation,
-            create_http: &mut create,
-            record_channel_health: false,
+        let result = {
+            let mut runtime = QqSendRuntime {
+                app_id: &self.app_id,
+                secret: &self.secret,
+                cache: &self.cache,
+                shared_token_cache: &self.shared_token_cache,
+                http: &mut self.http,
+                token_cache: &mut self.token_cache,
+                turn_tracker: &mut self.turn_tracker,
+                active_reservation: &mut self.active_reservation,
+                create_http: &mut create,
+                record_channel_health: false,
+            };
+            send_queued_qq_message(message, attempt, &mut runtime)
         };
-        send_queued_qq_message(message, attempt, &mut runtime)
+        self.http = None;
+        result
     }
 }
 

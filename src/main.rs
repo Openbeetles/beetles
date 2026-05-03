@@ -1299,8 +1299,12 @@ mod tests {
         #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
         {
             assert!(
-                beetle::util::STACK_CHANNEL_WS == 12 * 1024,
-                "ESP WSS stack budget should stay at the validated 12KB shared budget"
+                beetle::util::STACK_CHANNEL_WS == 9 * 1024,
+                "ESP external WSS stack budget should stay at the validated 9KB steady-channel budget"
+            );
+            assert!(
+                beetle::util::STACK_VOICE_REALTIME_CONNECT == 12 * 1024,
+                "ESP realtime voice WSS connect keeps a separate transient 12KB budget"
             );
         }
 
@@ -4148,16 +4152,6 @@ fn start_runtime_planes(
         return None;
     }
 
-    if let Err(error) = start_communication_planes(&mut assembly) {
-        log::error!("[{}] communication plane startup failed: {}", TAG, error);
-        app_runtime_support::record_startup_failure_and_request_restart(
-            &assembly.runtime.platform,
-            &error,
-            "communication_plane_startup_failed",
-        );
-        return None;
-    }
-
     let agent_handle = match start_agent_plane(&mut assembly) {
         Ok(handle) => handle,
         Err(error) => {
@@ -4170,6 +4164,16 @@ fn start_runtime_planes(
             return None;
         }
     };
+
+    if let Err(error) = start_communication_planes(&mut assembly) {
+        log::error!("[{}] communication plane startup failed: {}", TAG, error);
+        app_runtime_support::record_startup_failure_and_request_restart(
+            &assembly.runtime.platform,
+            &error,
+            "communication_plane_startup_failed",
+        );
+        return None;
+    }
     beetle::state::set_boot_phase_active(false);
     Some(agent_handle)
 }

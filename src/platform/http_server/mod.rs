@@ -32,8 +32,11 @@ const CONFIG_PLANE_POLL_MS: u64 = 500;
 /// ESP-IDF HTTPD callback task stack.
 ///
 /// Even immediate routes pass through the shared Rust route dispatch frame before
-/// returning a small response. Keep enough internal-stack headroom for that
-/// callback path; heavier route bodies still move to explicit route workers.
+/// returning a small response. Heavier route bodies move to explicit route
+/// workers, but the IDF response-write path still calls into lwIP / pthread TLS.
+/// 2026-05-03 S3 28KB retest crashed in
+/// `httpd_resp_send_chunk -> lwip_send -> pthread_getspecific`, so this callback
+/// task must keep 32KB until the response-write path is redesigned.
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
 const ESP_HTTPD_CALLBACK_STACK: usize = 32 * 1024;
 

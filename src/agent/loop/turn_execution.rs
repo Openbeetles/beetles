@@ -584,6 +584,7 @@ pub(super) fn execute_turn_boxed(
                 first_token_marked = true;
             }
         };
+        super::log_user_turn_memory_checkpoint("agent_llm_before_request", msg);
         let response = worker_llm.chat_with_progress(
             &mut tool_ctx,
             &system,
@@ -592,6 +593,7 @@ pub(super) fn execute_turn_boxed(
             request_plan.tool_choice(round, any_tool_used),
             &mut progress_cb,
         );
+        super::log_user_turn_memory_checkpoint("agent_llm_after_response", msg);
         let response = match response {
             Ok(r) => {
                 metrics::record_llm_call_end(t0);

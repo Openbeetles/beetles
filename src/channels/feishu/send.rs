@@ -511,6 +511,7 @@ pub fn run_feishu_sender_loop<H, F>(
 pub(crate) struct FeishuOutboundDriver {
     app_id: String,
     app_secret: String,
+    /// Kept only within one send attempt on ESP; steady-state TLS buffers must be released.
     http: Option<Box<dyn PlatformHttpClient>>,
     token_cache: FeishuTokenCache,
     create_http: Arc<dyn Fn() -> crate::Result<Box<dyn PlatformHttpClient>> + Send + Sync>,
@@ -565,6 +566,7 @@ impl ActiveChannelSender for FeishuOutboundDriver {
         match send_feishu_message(h, token.as_str(), message) {
             Ok(()) => {
                 record_outbound_http_success();
+                self.http = None;
                 Ok(())
             }
             Err(error) => {

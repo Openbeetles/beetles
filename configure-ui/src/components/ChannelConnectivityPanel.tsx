@@ -13,6 +13,10 @@ import { translateApiError } from "../i18n/apiErrors";
 import { PanelStateBlock } from "./PanelStateBlock";
 import { SectionLoadProgress } from "./SectionLoadProgress";
 import { DASHBOARD_INSET_WELL_BG } from "../theme/panelStyles";
+import {
+  channelConnectivityMessageKey,
+  isChannelOperational,
+} from "./channelConnectivityStatus";
 
 /** 与 SystemStatusPanel 小节面板一致：中性底，不用 --surface 色块 */
 const SECTION_PANEL_SX = {
@@ -335,8 +339,10 @@ export function ChannelConnectivityPanel({
   const showStaleHint = Boolean(error?.trim() && hasList && !loading);
 
   const configuredCount = channels.filter((c) => c.configured).length;
-  const okCount = channels.filter((c) => c.configured && c.ok).length;
-  const issueCount = channels.filter((c) => c.configured && !c.ok).length;
+  const okCount = channels.filter(isChannelOperational).length;
+  const issueCount = channels.filter(
+    (c) => c.configured && !isChannelOperational(c),
+  ).length;
 
   const errorDisplay = error.trim()
     ? resolveChannelConnectivityError(error, t)
@@ -435,8 +441,8 @@ export function ChannelConnectivityPanel({
                 key={ch.id}
                 label={channelLabel(ch.id)}
                 configured={ch.configured}
-                ok={ch.ok}
-                messageKey={ch.message_key}
+                ok={isChannelOperational(ch)}
+                messageKey={channelConnectivityMessageKey(ch)}
                 t={t}
                 isLast={i === channels.length - 1}
               />

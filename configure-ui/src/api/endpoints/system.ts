@@ -203,6 +203,18 @@ export interface ChannelConnectivityItem {
   configured: boolean
   ok: boolean
   message_key: string | null
+  runtime_status?:
+    | 'disabled'
+    | 'configured'
+    | 'worker_started'
+    | 'waiting_network'
+    | 'waiting_wall_clock'
+    | 'suspended_by_mode'
+    | 'connecting'
+    | 'connected'
+    | 'cooling_down'
+    | 'failed'
+  runtime_reason?: string | null
 }
 
 /** GET /api/channel_connectivity 响应 */

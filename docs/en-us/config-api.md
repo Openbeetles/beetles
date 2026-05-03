@@ -1378,7 +1378,7 @@ Common fields:
 
 **GET /api/channel_connectivity**
 
-Purpose: check current channel connectivity.
+Purpose: read current channel connectivity. On ESP, the default response is a passive snapshot and does not run an external live probe; explicit refresh is handled by `POST /api/channel_connectivity/refresh`.
 
 Auth: `Activated`
 
@@ -1387,6 +1387,19 @@ Success response: `200 application/json`
 Top-level field:
 
 - `channels`
+- `checked_at_unix_secs`
+- `stale`
+
+`channels` item fields:
+
+- `id`: channel ID.
+- `configured`: whether the channel is configured.
+- `ok`: whether the latest explicit connectivity probe succeeded.
+- `message_key`: frontend-translatable status or error key.
+- `runtime_status`: runtime status, for example `connected`, `connecting`, `waiting_network`, or `disabled`.
+- `runtime_reason`: runtime reason key, nullable.
+
+Display guidance: when `runtime_status=connected`, a persistent WSS/message channel can be shown as online. `stale=true` or `message_key=network.channel_connectivity_unavailable` only means the passive snapshot has no live probe result and should not override a connected runtime state.
 
 **POST /api/operator/window**
 

@@ -108,7 +108,7 @@ Beetles OS 的记忆不只是保存聊天记录。它用于保存设备身份、
 
 ## 支持大语言模型
 
-Beetles OS 不绑定单一模型厂商。只要服务兼容 OpenAI API，或走 Anthropic 接口，就可以接入。
+Beetles OS 不绑定单一模型厂商。当前可配置 OpenAI、OpenAI-compatible、Anthropic、Gemini、GLM、通义千问、DeepSeek、Moonshot 和 Ollama 等模型服务。
 
 <p align="center">
   <img src="docs/assets/readme-llm-support.svg" alt="Beetles OS large language model support" width="920" style="max-width: 100%; height: auto;" />
@@ -116,8 +116,7 @@ Beetles OS 不绑定单一模型厂商。只要服务兼容 OpenAI API，或走 
 
 | 能力 | 说明 |
 |------|------|
-| OpenAI-compatible | 可接入 OpenAI、DeepSeek、通义千问、智谱、Moonshot、Ollama 等兼容服务 |
-| Anthropic | 可配置 Claude 相关模型服务 |
+| 多模型服务商 | 支持 OpenAI、OpenAI-compatible、Anthropic、Gemini、GLM、通义千问、DeepSeek、Moonshot、Ollama 等 |
 | 主备模型 | 可配置主模型和备用模型，提升可用性 |
 | 边缘友好 | 模型在云端或本地服务中运行，设备侧负责上下文、工具、安全边界和执行 |
 | 可配置 | API Key、Base URL、模型名、代理和搜索服务都可以在配置页设置 |

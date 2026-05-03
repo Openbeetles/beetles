@@ -5,11 +5,13 @@ use crate::bus::IngressKind;
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 use crate::constants::OUTBOUND_DEFER_DELAY_MS_CAUTIOUS;
 use crate::constants::TLS_ADMISSION_MIN_INTERNAL_BYTES;
-#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-use crate::constants::TLS_ADMISSION_MIN_LARGEST_BLOCK_BYTES;
 use crate::constants::{
     LLM_RETRY_LATER_DELAY_MS, LOW_MEM_DEFER_SLEEP_MS, OUTBOUND_DEFER_DELAY_MS,
     PRESSURE_QUEUE_CONGESTION_THRESHOLD,
+};
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+use crate::constants::{
+    TLS_ADMISSION_MIN_LARGEST_BLOCK_BYTES, TLS_FRAGMENTATION_CAUTION_HEADROOM_BYTES,
 };
 use crate::runtime::system_work::{classify_system_work, SystemWorkClass};
 use std::sync::atomic::Ordering;
@@ -126,9 +128,16 @@ fn non_voice_outbound_reason(mode: crate::runtime::RuntimeMode) -> &'static str 
 #[inline]
 fn cautious_llm_retry_delay_ms(state: &OrchestratorState) -> u64 {
     let largest = state.heap_largest_block.load(Ordering::Relaxed) as u64;
-    let need = TLS_ADMISSION_MIN_LARGEST_BLOCK_BYTES as u64;
+    let need = esp_llm_cautious_min_largest_block_bytes() as u64;
     let deficit = need.saturating_sub(largest);
     cautious_llm_retry_delay_scaled(deficit, need)
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+#[inline]
+fn esp_llm_cautious_min_largest_block_bytes() -> u32 {
+    TLS_ADMISSION_MIN_LARGEST_BLOCK_BYTES.saturating_add(TLS_FRAGMENTATION_CAUTION_HEADROOM_BYTES)
+        as u32
 }
 
 /// Linux/host：`heap_largest_block` 为 N/A，按 `MemAvailable` 映射的 internal 相对 `TLS_ADMISSION_MIN_INTERNAL_BYTES` 缩放退避。
@@ -262,7 +271,7 @@ pub(crate) fn can_call_llm_for_channel_with_mode(
             #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
             {
                 let largest_block = state.heap_largest_block.load(Ordering::Relaxed);
-                if largest_block < TLS_ADMISSION_MIN_LARGEST_BLOCK_BYTES as u32 {
+                if largest_block < esp_llm_cautious_min_largest_block_bytes() {
                     LlmDecision::RetryLater {
                         delay_ms: cautious_llm_retry_delay_ms(state),
                     }
@@ -483,19 +492,32 @@ mod tests {
     }
 
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-    use crate::constants::TLS_ADMISSION_MIN_LARGEST_BLOCK_BYTES;
+    use crate::constants::{
+        TLS_ADMISSION_MIN_LARGEST_BLOCK_BYTES, TLS_FRAGMENTATION_CAUTION_HEADROOM_BYTES,
+    };
 
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
     #[test]
     fn esp_cautious_llm_proceeds_when_largest_block_ok() {
         let s = state_with_heap(
             200_000,
-            TLS_ADMISSION_MIN_LARGEST_BLOCK_BYTES as u32 + 1024,
+            (TLS_ADMISSION_MIN_LARGEST_BLOCK_BYTES + TLS_FRAGMENTATION_CAUTION_HEADROOM_BYTES)
+                as u32,
             PressureLevel::Cautious,
         );
         assert!(matches!(
             can_call_llm_for_channel_with_mode(&s, "qq_channel", normal_mode()),
             LlmDecision::Proceed
+        ));
+    }
+
+    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+    #[test]
+    fn esp_cautious_llm_retries_post_reply_fragmentation_window() {
+        let s = state_with_heap(61_535, 26_112, PressureLevel::Cautious);
+        assert!(matches!(
+            can_call_llm_for_channel_with_mode(&s, "qq_channel", normal_mode()),
+            LlmDecision::RetryLater { .. }
         ));
     }
 

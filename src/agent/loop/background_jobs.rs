@@ -1798,6 +1798,36 @@ pub(super) fn run_background_job_with_accounting(
 
 #[cold]
 #[inline(never)]
+fn schedule_user_inbound_retry(
+    user_inbound_tx: UserInboundTx,
+    msg: &PcMsg,
+    delay_ms: u64,
+    label: &'static str,
+) -> bool {
+    let mut retry_msg = msg.clone();
+    let due_at = Instant::now() + Duration::from_millis(delay_ms);
+    let task = Box::new(move || {
+        retry_msg.enqueue_ts_ms = super::now_unix_ms();
+        match user_inbound_tx.try_send(retry_msg) {
+            Ok(()) => {}
+            Err(std::sync::mpsc::TrySendError::Full(msg)) => {
+                log::warn!(
+                    "[delayed_task:{}] user queue full, retrying after {}ms",
+                    label,
+                    delay_ms
+                );
+                let _ = schedule_user_inbound_retry(user_inbound_tx, &msg, delay_ms, label);
+            }
+            Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+                log::warn!("[delayed_task:{}] user queue disconnected", label);
+            }
+        }
+    });
+    crate::runtime::schedule_critical_delayed_task(due_at, task).is_ok()
+}
+
+#[cold]
+#[inline(never)]
 pub(super) fn handle_admission_defer(
     delay_ms: u64,
     mut msg: PcMsg,
@@ -1838,6 +1868,36 @@ pub(super) fn handle_admission_defer(
         return;
     }
 
+    if defer_count >= MAX_DEFER_RETRIES && msg.ingress == IngressKind::User {
+        let chat_id = msg.chat_id.clone();
+        log::warn!(
+            "[agent] defer limit reached ({}) for chat_id={}, parking primary turn for delayed replay",
+            MAX_DEFER_RETRIES,
+            chat_id
+        );
+        let retry_delay_ms =
+            delay_ms.max(crate::constants::LOW_MEM_DEFER_SLEEP_MS.saturating_mul(3));
+        if !schedule_user_inbound_retry(
+            ctx.user_inbound_tx.clone(),
+            &msg,
+            retry_delay_ms,
+            "primary_user_admission_defer",
+        ) {
+            log::warn!(
+                "[agent] delayed replay queue full for chat_id={}, saving pending_retry",
+                chat_id
+            );
+            let _ = ctx
+                .config
+                .runtime
+                .pending_retry_store
+                .save_pending_retry(&msg);
+        }
+        std::thread::sleep(Duration::from_millis(delay_ms));
+        crate::platform::task_wdt::feed_current_task();
+        return;
+    }
+
     if msg.ingress == IngressKind::User && defer_count < MAX_DEFER_RETRIES {
         match PcMsg::new_outbound_reply_to(&msg, tr(UiMessage::LowMemoryUserDefer, ctx.loc)) {
             Ok(defer_out) => {
@@ -1853,12 +1913,6 @@ pub(super) fn handle_admission_defer(
                 );
             }
         }
-    } else if msg.ingress == IngressKind::User {
-        log::warn!(
-            "[agent] defer limit reached ({}) for chat_id={}, keeping primary turn replayable",
-            MAX_DEFER_RETRIES,
-            msg.chat_id
-        );
     }
     let chat_id = msg.chat_id.clone();
     msg.enqueue_ts_ms = super::now_unix_ms();
@@ -1875,7 +1929,7 @@ pub(super) fn handle_admission_defer(
                 })
                 .unwrap_or(true);
             if should_log {
-                log::warn!("[agent] admission defer chat_id={}", chat_id);
+                log::warn!("[agent] {} defer chat_id={}", ctx.source, chat_id);
                 *ctx.low_mem_defer_log = Some((chat_id.clone(), now));
             }
         }
@@ -1928,6 +1982,24 @@ mod tests {
     use crate::runtime::system_work::{CHANNEL_POST_REPLY_MAINTENANCE, CHANNEL_SELF_RUNTIME};
     use std::collections::HashMap;
     use std::sync::Mutex;
+
+    fn test_agent_loop_config() -> AgentLoopConfig {
+        let platform: Arc<dyn crate::Platform> = Arc::new(crate::platform::LinuxPlatform::new());
+        AgentLoopConfig {
+            runtime: crate::RuntimeServices::from_platform(platform),
+            get_skill_descriptions: Arc::new(String::new),
+            get_capability_package_text: Arc::new(|_, _| None),
+            tg_group_activation: Arc::from(""),
+            channel_capability_registry: Arc::new(crate::build_channel_capability_registry(
+                &crate::AppConfig::load_from_env(),
+                false,
+            )),
+            strategy: AgentRunStrategy::Embedded,
+            stream_editor: None,
+            stream_editor_channel: None,
+            resolve_locale: Arc::new(|| UiLocale::Zh),
+        }
+    }
 
     #[derive(Default)]
     struct StubDetachedWorkStore {
@@ -2197,30 +2269,64 @@ mod tests {
     }
 
     #[test]
-    fn primary_user_turn_is_not_dropped_after_defer_limit() {
+    fn admission_defer_sends_low_memory_notice_and_replays_primary_before_limit() {
+        let (user_inbound_tx, user_inbound_rx, _user_depth) = crate::bus::new_inbound_channel(8);
+        let (system_inbound_tx, _system_inbound_rx, _system_depth) =
+            crate::bus::new_inbound_channel(8);
+        let (outbound_tx, outbound_rx, _outbound_depth) = crate::bus::new_inbound_channel(8);
+        let config = test_agent_loop_config();
+        let msg =
+            PcMsg::new_inbound("qq_channel", "chat-retry-later", "继续", false).expect("message");
+        let mut hasher = DefaultHasher::new();
+        msg.channel.hash(&mut hasher);
+        msg.chat_id.hash(&mut hasher);
+        msg.content.hash(&mut hasher);
+        let msg_key = hasher.finish();
+        let mut defer_tracker = HashMap::new();
+        let mut low_mem_defer_log = None;
+
+        handle_admission_defer(
+            0,
+            msg,
+            msg_key,
+            AdmissionDeferContext {
+                source: "llm-retry-later-test",
+                loc: UiLocale::Zh,
+                user_inbound_tx: &user_inbound_tx,
+                system_inbound_tx: &system_inbound_tx,
+                outbound_tx: &outbound_tx,
+                config: &config,
+                defer_tracker: &mut defer_tracker,
+                low_mem_defer_log: &mut low_mem_defer_log,
+            },
+        );
+
+        let notice = outbound_rx
+            .try_recv()
+            .expect("pre-limit defer should send user-visible low-memory notice");
+        assert_eq!(
+            notice.content,
+            tr(UiMessage::LowMemoryUserDefer, UiLocale::Zh)
+        );
+        let replay = user_inbound_rx
+            .try_recv()
+            .expect("primary user turn must stay replayable before defer limit");
+        assert_eq!(replay.content, "继续");
+    }
+
+    #[test]
+    fn primary_user_turn_parks_after_defer_limit_without_hot_requeue() {
+        let (_state_guard, _delayed_guard) =
+            crate::runtime::delayed_task::delayed_task_test_scope();
         let (user_inbound_tx, user_inbound_rx, _user_depth) = crate::bus::new_inbound_channel(8);
         let (system_inbound_tx, _system_inbound_rx, _system_depth) =
             crate::bus::new_inbound_channel(8);
         let (outbound_tx, _outbound_rx, _outbound_depth) = crate::bus::new_inbound_channel(8);
-        let platform: Arc<dyn crate::Platform> = Arc::new(crate::platform::LinuxPlatform::new());
-        let config = AgentLoopConfig {
-            runtime: crate::RuntimeServices::from_platform(platform),
-            get_skill_descriptions: Arc::new(String::new),
-            get_capability_package_text: Arc::new(|_, _| None),
-            tg_group_activation: Arc::from(""),
-            channel_capability_registry: Arc::new(crate::build_channel_capability_registry(
-                &crate::AppConfig::load_from_env(),
-                false,
-            )),
-            strategy: AgentRunStrategy::Embedded,
-            stream_editor: None,
-            stream_editor_channel: None,
-            resolve_locale: Arc::new(|| UiLocale::Zh),
-        };
+        let config = test_agent_loop_config();
         let mut defer_tracker = HashMap::new();
         let mut low_mem_defer_log = None;
 
-        for _ in 0..MAX_DEFER_RETRIES {
+        for attempt in 0..MAX_DEFER_RETRIES {
             let msg =
                 PcMsg::new_inbound("qq_channel", "chat-1", "primary", false).expect("message");
             let mut hasher = DefaultHasher::new();
@@ -2233,6 +2339,7 @@ mod tests {
                 msg,
                 msg_key,
                 AdmissionDeferContext {
+                    source: "admission-test",
                     loc: UiLocale::Zh,
                     user_inbound_tx: &user_inbound_tx,
                     system_inbound_tx: &system_inbound_tx,
@@ -2242,6 +2349,12 @@ mod tests {
                     low_mem_defer_log: &mut low_mem_defer_log,
                 },
             );
+            if attempt + 1 < MAX_DEFER_RETRIES {
+                let replay = user_inbound_rx
+                    .try_recv()
+                    .expect("pre-limit defer should hot replay after user notice");
+                assert_eq!(replay.content, "primary");
+            }
         }
 
         assert!(
@@ -2249,9 +2362,30 @@ mod tests {
             "primary user turn must remain replayable after the defer limit"
         );
         assert!(
-            user_inbound_rx.try_recv().is_ok(),
-            "primary user turn should be replayed or parked, not dropped"
+            user_inbound_rx.try_recv().is_err(),
+            "primary user turn must leave the hot queue after the defer limit"
         );
+    }
+
+    #[test]
+    fn delayed_user_inbound_retry_replays_primary_turn() {
+        let (_state_guard, _delayed_guard) =
+            crate::runtime::delayed_task::delayed_task_test_scope();
+        let (user_inbound_tx, user_inbound_rx, _user_depth) = crate::bus::new_inbound_channel(8);
+        let msg = PcMsg::new_inbound("qq_channel", "chat-1", "primary", false).expect("message");
+
+        assert!(schedule_user_inbound_retry(
+            user_inbound_tx,
+            &msg,
+            0,
+            "test_user_retry"
+        ));
+        crate::runtime::delayed_task::service_critical_delayed_tasks();
+
+        let replay = user_inbound_rx
+            .try_recv()
+            .expect("delayed retry should requeue user turn");
+        assert_eq!(replay.content, "primary");
     }
 
     #[test]

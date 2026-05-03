@@ -51,6 +51,7 @@ pub(super) fn admit_turn(
                 msg,
                 msg_key,
                 AdmissionDeferContext {
+                    source: "inbound-admission",
                     loc,
                     user_inbound_tx,
                     system_inbound_tx,
@@ -72,10 +73,13 @@ pub(super) fn admit_turn(
     let msg = match super::handle_llm_gate(
         msg,
         loc,
+        msg_key,
         user_inbound_tx,
         system_inbound_tx,
         outbound_tx,
         config,
+        defer_tracker,
+        low_mem_defer_log,
     ) {
         GateResult::Proceed(msg) => *msg,
         GateResult::Skipped => return None,
@@ -97,6 +101,7 @@ pub(super) fn admit_turn(
                     msg,
                     msg_key,
                     AdmissionDeferContext {
+                        source: "foreground-turn-lease",
                         loc,
                         user_inbound_tx,
                         system_inbound_tx,

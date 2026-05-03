@@ -35,6 +35,10 @@ CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=4096
 # P3: 在保持 16K/4K 片长口径不变的前提下，启用动态 TX/RX buffer，
 # 让 TLS 连接空闲时及时归还大块 internal/external heap。
 CONFIG_MBEDTLS_DYNAMIC_BUFFER=y
+# Free mbedTLS handshake config/cert data after each esp-tls handshake. This matches
+# ESP-IDF dynamic-buffer examples and prevents repeated HTTPS turns from stranding
+# internal largest-block below the next outbound TLS floor.
+CONFIG_MBEDTLS_DYNAMIC_FREE_CONFIG_DATA=y
 
 # 证书包：包含常见根证书，支持百度等 API 的 TLS 验证
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y

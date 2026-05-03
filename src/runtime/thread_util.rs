@@ -68,7 +68,7 @@ pub fn stack_budget_for_thread(name: &str) -> Option<usize> {
         "voice_session" => Some(crate::util::STACK_VOICE_CONTROL),
         "voice_session_worker" => Some(crate::util::STACK_VOICE_SESSION),
         "voice_realtime" => Some(crate::util::STACK_VOICE_REALTIME),
-        "voice_realtime_connect" => Some(crate::util::STACK_CHANNEL_WS),
+        "voice_realtime_connect" => Some(crate::util::STACK_VOICE_REALTIME_CONNECT),
         "write_back" => Some(crate::runtime::write_back::WRITE_BACK_WORKER_STACK),
         "wifi_worker" => Some(crate::util::STACK_WIFI_WORKER),
         "audio_io_worker" => Some(crate::util::STACK_AUDIO_IO_STD_COMPAT),

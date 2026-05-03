@@ -22,8 +22,8 @@ use crate::constants::{AUDIO_CAPTURE_MAX_MS, VOICE_CHANNEL_NAME, VOICE_DEVICE_CH
 use crate::network::{HttpClientClass, NetworkGovernor, VoiceExclusiveTransportGuard};
 use crate::platform::PlatformHttpClient;
 use crate::util::{
-    spawn_guarded_with_profile_handle, HttpThreadRole, SpawnCore, TaskHandle, STACK_CHANNEL_WS,
-    STACK_VOICE_REALTIME, STACK_VOICE_SESSION,
+    spawn_guarded_with_profile_handle, HttpThreadRole, SpawnCore, TaskHandle, STACK_VOICE_REALTIME,
+    STACK_VOICE_REALTIME_CONNECT, STACK_VOICE_SESSION,
 };
 use crate::Platform;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
@@ -218,7 +218,7 @@ fn connect_realtime_session_via_worker(
     let audio_cfg = cfg.audio_cfg.clone();
     let handle = spawn_guarded_with_profile_handle(
         "voice_realtime_connect",
-        STACK_CHANNEL_WS,
+        STACK_VOICE_REALTIME_CONNECT,
         Some(SpawnCore::Core1),
         HttpThreadRole::Background,
         move || {

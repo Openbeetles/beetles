@@ -262,6 +262,10 @@ assert_file_contains \
   'write_sha256sums "$stage_dir/SHA256SUMS"' \
   "esp-bin-build should generate bundle-local SHA256SUMS"
 assert_file_contains \
+  "$ENTRYPOINT_PATH" \
+  'sync_configure_ui_firmware_assets "$output_dir" "$CONFIGURE_UI_FIRMWARE_DIR"' \
+  "esp-bin-build should mirror the published release bundle into Configure UI firmware assets"
+assert_file_contains \
   "$PACKAGE_SCRIPT_PATH" \
   'beetle-${version}-esp-release-bundle.tar.gz' \
   "ESP release packaging should archive the full versioned bundle for GitHub releases"
@@ -357,6 +361,9 @@ sed -i.bak "s|__REAL_PYTHON3__|$REAL_PYTHON3|g" "$tmp_dir/bin/python3"
 rm -f "$tmp_dir/bin/python3.bak"
 chmod +x "$tmp_dir/bin/python3"
 
+mkdir -p "$tmp_dir/configure-ui/public/firmware"
+printf 'stale' > "$tmp_dir/configure-ui/public/firmware/stale.bin"
+
 (
   cd "$tmp_dir"
   PATH="$tmp_dir/bin:$PATH" ./esp-bin-build.sh >/dev/null
@@ -412,6 +419,21 @@ assert_file_not_contains \
   "$legacy_ota_init_bin" \
   "merged images should not depend on ota_data_initial.bin"
 
+assert_file_exists \
+  "$tmp_dir/configure-ui/public/firmware/esp32-s3-8mb.bin" \
+  "esp-bin-build should copy the published merged firmware into Configure UI firmware assets"
+assert_file_exists \
+  "$tmp_dir/configure-ui/public/firmware/esp32-s3-8mb/update/app.bin" \
+  "esp-bin-build should copy update-mode firmware parts into Configure UI firmware assets"
+assert_file_exists \
+  "$tmp_dir/configure-ui/public/firmware/release-catalog.json" \
+  "esp-bin-build should copy the release catalog into Configure UI firmware assets"
+assert_file_exists \
+  "$tmp_dir/configure-ui/public/firmware/SHA256SUMS" \
+  "esp-bin-build should copy bundle checksums into Configure UI firmware assets"
+assert_file_not_exists \
+  "$tmp_dir/configure-ui/public/firmware/stale.bin" \
+  "esp-bin-build should replace stale Configure UI firmware assets atomically"
 assert_file_contains \
   "$tmp_dir/dist/esp/v9.9.9/esp32-s3-8mb.manifest.json" \
   '"chipFamily": "ESP32-S3"' \
@@ -461,6 +483,18 @@ assert_file_contains \
   "$tmp_dir/dist/esp/v9.9.9/SHA256SUMS" \
   'release-catalog.json' \
   "SHA256SUMS should include release metadata"
+
+if (
+  cd "$tmp_dir"
+  PATH="$tmp_dir/bin:$PATH" ./esp-bin-build.sh --output-dir "$tmp_dir/configure-ui/public/firmware/custom" >/dev/null 2>"$tmp_dir/overlap.stderr"
+); then
+  echo "FAIL: esp-bin-build should reject output directories inside Configure UI firmware assets" >&2
+  exit 1
+fi
+assert_file_contains \
+  "$tmp_dir/overlap.stderr" \
+  "must not overlap" \
+  "esp-bin-build should keep the release output directory separate from the Configure UI firmware mirror"
 
 mkdir -p "$tmp_dir/release-assets"
 (

@@ -1536,47 +1536,84 @@ enum GateResult {
     Skipped,
 }
 
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+pub(super) fn log_user_turn_memory_checkpoint(stage: &'static str, msg: &PcMsg) {
+    log_user_turn_memory_checkpoint_parts(stage, msg.ingress, &msg.channel, &msg.chat_id);
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+pub(super) fn log_user_turn_memory_checkpoint_parts(
+    stage: &'static str,
+    ingress: IngressKind,
+    channel: &str,
+    chat_id: &str,
+) {
+    if ingress != IngressKind::User {
+        return;
+    }
+    let snap = crate::orchestrator::memory_snapshot_live();
+    crate::orchestrator::apply_memory_snapshot(snap);
+    let pressure = crate::orchestrator::current_pressure();
+    let tls_fragmentation = crate::orchestrator::current_tls_fragmentation_risk();
+    log::info!(
+        "[agent] turn memory checkpoint stage={} channel={} chat_id={} internal_free={} internal_min={} largest_block={} spiram_free={} spiram_min={} spiram_largest={} pressure={:?} tls_fragmentation={:?}",
+        stage,
+        channel,
+        chat_id,
+        snap.heap_free_internal,
+        snap.heap_min_free_internal,
+        snap.heap_largest_block,
+        snap.heap_free_spiram,
+        snap.heap_min_free_spiram,
+        snap.heap_largest_block_spiram,
+        pressure,
+        tls_fragmentation
+    );
+}
+
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+pub(super) fn log_user_turn_memory_checkpoint(_stage: &'static str, _msg: &PcMsg) {}
+
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+pub(super) fn log_user_turn_memory_checkpoint_parts(
+    _stage: &'static str,
+    _ingress: IngressKind,
+    _channel: &str,
+    _chat_id: &str,
+) {
+}
+
 #[allow(clippy::too_many_arguments)]
 fn handle_llm_gate(
     mut msg: PcMsg,
     loc: UiLocale,
+    msg_key: u64,
     user_inbound_tx: &UserInboundTx,
     system_inbound_tx: &SystemInboundTx,
     outbound_tx: &OutboundTx,
     config: &AgentLoopConfig,
+    defer_tracker: &mut HashMap<u64, (u8, Instant)>,
+    low_mem_defer_log: &mut Option<(Arc<str>, Instant)>,
 ) -> GateResult {
     crate::orchestrator::refresh_heap_if_stale();
     match crate::orchestrator::can_call_llm_for_channel_pub(&msg.channel) {
         LlmDecision::Proceed => GateResult::Proceed(Box::new(msg)),
         LlmDecision::RetryLater { delay_ms } => {
-            let is_system = msg.ingress == IngressKind::System;
-            msg.enqueue_ts_ms = now_unix_ms();
-            let inbound_tx = choose_inbound_tx(msg.ingress, user_inbound_tx, system_inbound_tx);
-            match inbound_tx.try_send(msg) {
-                Ok(()) => {}
-                Err(std::sync::mpsc::TrySendError::Full(m)) => {
-                    let _ = config.runtime.pending_retry_store.save_pending_retry(&m);
-                    let suffix = if m.ingress == IngressKind::System {
-                        "(system)"
-                    } else {
-                        ""
-                    };
-                    log::warn!(
-                        "[agent] llm retry-later{}: inbound full, pending_retry saved chat_id={}",
-                        suffix,
-                        m.chat_id
-                    );
-                }
-                Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
-                    let suffix = if is_system { "(system)" } else { "" };
-                    log::error!(
-                        "[agent] inbound_tx disconnected during retry-later{}",
-                        suffix
-                    );
-                }
-            }
-            std::thread::sleep(Duration::from_millis(delay_ms));
-            crate::platform::task_wdt::feed_current_task();
+            background_jobs::handle_admission_defer(
+                delay_ms,
+                msg,
+                msg_key,
+                AdmissionDeferContext {
+                    source: "llm-retry-later",
+                    loc,
+                    user_inbound_tx,
+                    system_inbound_tx,
+                    outbound_tx,
+                    config,
+                    defer_tracker,
+                    low_mem_defer_log,
+                },
+            );
             GateResult::Skipped
         }
         LlmDecision::Degrade { reason } => {
@@ -1702,6 +1739,7 @@ struct LaneTurnFinalizeContext<'a> {
 }
 
 struct AdmissionDeferContext<'a> {
+    source: &'static str,
     loc: UiLocale,
     user_inbound_tx: &'a UserInboundTx,
     system_inbound_tx: &'a SystemInboundTx,
@@ -1967,6 +2005,7 @@ fn run_agent_loop_main(
             admission_ms,
             _agent_task_guard,
         } = admitted;
+        log_user_turn_memory_checkpoint("agent_turn_admitted", &msg);
         let turn_started_at_ms = now_unix_ms();
         let mut turn_ledger = build_turn_ledger_start(&msg, turn_started_at_ms);
         persist_turn_ledger(
@@ -2002,6 +2041,7 @@ fn run_agent_loop_main(
             &mut tool_call_repeat_buf,
             loc,
         );
+        log_user_turn_memory_checkpoint("agent_turn_after_execute", &msg);
 
         let executed = match executed {
             Ok(ok) => ok,
@@ -2050,7 +2090,11 @@ fn run_agent_loop_main(
                     continue;
                 }
             };
+        log_user_turn_memory_checkpoint("agent_turn_after_finalize", &msg);
         let handoff = deliver_turn(&outbound_tx, &msg, finalized.as_ref());
+        let checkpoint_ingress = msg.ingress;
+        let checkpoint_channel = Arc::clone(&msg.channel);
+        let checkpoint_chat_id = Arc::clone(&msg.chat_id);
         complete_turn_boxed(
             Box::new(LaneTurnFinalizeContext {
                 worker_lane_tag: AGENT_LOOP_TAG,
@@ -2069,6 +2113,12 @@ fn run_agent_loop_main(
             &mut defer_tracker,
             finalized,
             handoff,
+        );
+        log_user_turn_memory_checkpoint_parts(
+            "agent_turn_after_complete",
+            checkpoint_ingress,
+            checkpoint_channel.as_ref(),
+            checkpoint_chat_id.as_ref(),
         );
     }
     Ok(())

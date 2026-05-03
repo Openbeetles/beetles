@@ -94,6 +94,7 @@ ESPFLASH_PORT=/dev/ttyUSB0 ./build.sh --flash
 - 每个版型生成一个 `dist/esp/v<version>/<board>.bin`
 - 每个版型同时生成一个 `dist/esp/v<version>/<board>.manifest.json`
 - 同目录生成 `release-catalog.json`、`release-report.json` 和 `SHA256SUMS`
+- 构建成功后自动把同一发布包同步到 `configure-ui/public/firmware/`，供 Configure UI 的同源 `/firmware/release-catalog.json` 直接读取
 
 当前输出示例：
 
@@ -117,6 +118,7 @@ dist/esp/v0.1.0/SHA256SUMS
 - Configure UI 浏览器烧录不让用户手动选择 `.bin` 或 `release-catalog.json`；设备扫描后按识别到的芯片 / Flash 容量映射官方支持版型，再从同源 `/firmware/release-catalog.json`（或构建时配置的 `VITE_ESP_FIRMWARE_BASE_URL`）读取发布目录，校验固件 SHA-256 与关键 offset；PSRAM 是主线硬件合同与运行态诊断事实，不作为浏览器 ROM 阶段的刷写准入硬门槛
 - Configure UI 浏览器烧录提供「更新 / 重装」二选一模式：更新使用 `update_parts` 分别写 bootloader、partition-table、app，不写 NVS 区间以保留 WiFi、配对码与设备配置；重装使用 merged single bin 写入 `0x0`，并会先整片擦除再烧录，清空 WiFi、配对码、设备配置和历史数据
 - 发布目录先在临时 stage 下构建，全部成功后再整体替换最终版本目录，避免残留半成品产物
+- `dist/esp/v<version>/` 是发布包真源；`configure-ui/public/firmware/` 是浏览器烧录协议目录，由脚本在发布成功后整体替换，避免残留旧固件或旧 catalog
 
 可选参数：
 

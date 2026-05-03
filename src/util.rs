@@ -926,28 +926,28 @@ pub fn is_private_url(url: &str) -> bool {
 // | Thread(s)                             | Constant               | ESP   | Linux |
 // |---------------------------------------|------------------------|-------|-------|
 // | http_config_worker_*                  | DEFAULT_GUARD_STACK_SIZE (spawn_guarded) | 8 KB | 96 KB |
-// | qq_ws, feishu_ws                      | STACK_CHANNEL_WS       | 12 KB | 96 KB |
-// | agent_loop                            | STACK_AGENT_LOOP       | 64 KB | 96 KB |
-// | os_outbound                           | STACK_OS_OUTBOUND      | 16 KB | 96 KB |
+// | qq_ws, feishu_ws                      | STACK_CHANNEL_WS       | 9 KB  | 96 KB |
+// | agent_loop                            | STACK_AGENT_LOOP       | 48 KB | 96 KB |
+// | os_outbound                           | STACK_OS_OUTBOUND      | 20 KB | 96 KB |
 // | tg_sender, qq_sender, fs/dt/wc_sender | STACK_CHANNEL_SENDER   | 8 KB  | 96 KB |
 // | tg_poll                               | STACK_CHANNEL_SENDER   | 8 KB  | 96 KB |
 // | runtime_bootstrap                     | STACK_ESP_RUNTIME_BOOT | 32 KB | n/a   | ← ESP-only: moves Rust-heavy SPIFFS/registry/audio startup off IDF main_task
 // | agent guard (bg_timer)                | n/a                    | 0 KB  | n/a   | ← ESP-only: supervised by bg_timer, no dedicated long-lived stack
 // | display                               | STACK_DISPLAY          | 8 KB  | 8 KB  | ← no TLS; recover 4KB internal SRAM while keeping a safer floor above the old 6 KB budget
 // | audio_io_worker                       | STACK_AUDIO_IO_STD_COMPAT | 8 KB  | 8 KB  | ← no TLS, I2S + acoustic wake state; std-compatible surface
-// | config_plane_watch                    | STACK_CONFIG_PLANE_WATCH | 6 KB | 6 KB  | ← wrapper thread owns config-plane lifecycle; keep pre-regression headroom
+// | config_plane_watch                    | STACK_CONFIG_PLANE_WATCH | 6 KB | 6 KB  | ← wrapper thread owns config-plane lifecycle; 4KB S3 test hit low-margin
 // | wifi_worker                           | STACK_WIFI_WORKER      | 8 KB  | n/a   | ← ESP WiFi driver + scan + STA keepalive owner
 // | http_snapshot_exec                     | STACK_HTTP_SNAPSHOT_WORKER | 24 KB | 24 KB | ← local read-only snapshots; P4 smoke exposed >20 KB use, S3 soak remains the ESP baseline gate
 // | http_config_exec                       | STACK_HTTP_CONFIG_WORKER | 28 KB | 32 KB | ← config writes must fit normal post-startup largest-block budget
 // | http_diag_exec                         | STACK_HTTP_DIAG_WORKER   | 28 KB | 32 KB | ← scan/diagnostic lane after first-screen fan-out was moved off this worker
 // | dispatch                              | STACK_DISPATCH         | 6 KB  | 6 KB  | ← 常驻逻辑只做 admission/retry/cooldown，不承接重执行链
-// | bg_timer                              | STACK_BG_TIMER         | 24 KB | 96 KB | ← heartbeat + cron + delayed-task wake; ESP write-back flushes reuse this scheduler plane
-// | write_back                            | runtime local          | n/a   | 24 KB | ← host/Linux SPIFFS/serde flush worker; ESP must not spawn a second 24 KB write-back thread
+// | bg_timer                              | STACK_BG_TIMER         | 16 KB | 96 KB | ← heartbeat + cron + delayed-task wake; no SPIFFS/serde flush closures execute on this plane
+// | write_back                            | runtime local          | 24 KB | 24 KB | ← governed lazy SPIFFS/serde flush worker; separate from bg_timer
 // | sntp                                  | STACK_SNTP_WORKER      | 8 KB  | 96 KB | ← default guarded worker, no direct TLS call
 // | cli_repl                              | STACK_CLI_REPL         | 8 KB  | 8 KB  | ← no TLS
 // | voice_session                         | STACK_VOICE_CONTROL    | 8 KB  | 8 KB  | ← scheduler only; realtime WSS moved off this always-on thread
 // | voice_session_worker                  | STACK_VOICE_SESSION    | 16 KB | 96 KB | ← STT + TTS HTTPS
-// | voice_realtime_connect                | STACK_CHANNEL_WS       | 12 KB | 96 KB | ← shared WSS/TLS connect budget
+// | voice_realtime_connect                | STACK_VOICE_REALTIME_CONNECT | 12 KB | 96 KB | ← transient realtime WSS/TLS connect budget
 // | voice_realtime                        | STACK_VOICE_REALTIME   | 16 KB | 96 KB | ← steady-state realtime session owner after connect handoff
 // ---------------------------------------------------------------------------
 
@@ -970,25 +970,37 @@ pub const STACK_ESP_RUNTIME_BOOT: usize = 32 * 1024;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub const STACK_ESP_RUNTIME_BOOT: usize = 32 * 1024;
 
-/// `qq_ws` / `feishu_ws`：WSS 握手 + 帧处理。
-/// 2026-04-11 实机日志显示 `qq_ws` 在 16KB 预算下仍保留 ~11KB 余量，
-/// 而 `voice_realtime` 创建失败时 `heap_largest` 只有 31744 字节，刚好卡在 32KB 之下。
-/// 这里继续保持“同类通道共用一个预算栈”，但把 ESP 共享预算收紧到 12KB，
-/// 优先回收常驻 internal SRAM，帮助 transient realtime worker 拿到足够连续块。
+/// `qq_ws` / `feishu_ws`：外部消息通道的常驻 WSS 握手 + 帧处理。
+/// 2026-05-03 S3 QQ 发布前复测显示，10KB 预算下 `qq_ws` high-water 仍保留
+/// 约 4.0KB，而单轮 QQ 回复 + write-back drain 后 `heap_largest_internal=27648`，
+/// 距离 TLS fragmentation Healthy headroom 只差 1KB。这里继续只收常驻
+/// channel WSS 到 9KB，保留约 3KB WSS 余量，同时把最后 1KB continuous
+/// internal block 还给低内存交互提示与下一轮 outbound TLS。
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-pub const STACK_CHANNEL_WS: usize = 12 * 1024;
+pub const STACK_CHANNEL_WS: usize = 9 * 1024;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub const STACK_CHANNEL_WS: usize = LINUX_RUSTLS_THREAD_STACK;
+
+/// 语音 realtime 建连是瞬时 TLS/WSS 连接面，不跟外部长连常驻 WSS 一起压栈。
+/// 这保留实时语音能力的连接峰值余量，同时让常驻消息通道按自己的 high-water
+/// 证据收窄。
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+pub const STACK_VOICE_REALTIME_CONNECT: usize = 12 * 1024;
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+pub const STACK_VOICE_REALTIME_CONNECT: usize = LINUX_RUSTLS_THREAD_STACK;
 
 /// ESP `agent_loop` 栈预算。
 ///
 /// 2026-04-24 实机符号化显示，QQ 入站首条真实消息在
 /// `execute_turn -> prompt_context -> turn-ledger SPIFFS read` 路径上已把
 /// 40KB 预算推到危险边缘；2026-04-25 首条 QQ 回复完成后又触发 pthread
-/// stack overflow，说明回复收尾/ledger 结算峰值不能继续压在 48KB 内。
-/// 当前生产路径把 heavy turn state 改为 boxed handoff，64KB 是配套后的
-/// ESP steady-state 预算；仍不直接照搬 96KB Linux 档，以免反向压垮常驻 SRAM。
-pub const ESP_AGENT_LOOP_STACK_BUDGET: usize = 64 * 1024;
+/// stack overflow，说明未 boxed 的回复收尾/ledger 结算峰值不能压在 48KB 内。
+/// 当前生产路径已把 heavy turn state 改为 boxed handoff；2026-05-03 S3
+/// QQ 实机完整首轮消息后 `agent_loop` high-water 仍保留约 32KB，实际栈使用
+/// 约 32KB。48KB 给当前路径保留约 16KB 余量，同时释放 16KB 常驻 internal SRAM
+/// 给下一轮 LLM/QQ 出站 TLS。若实机 high-water 低于 8KB，必须回到拆分
+/// agent hot path，而不是再盲目抬常驻栈。
+pub const ESP_AGENT_LOOP_STACK_BUDGET: usize = 48 * 1024;
 
 /// `agent_loop`：统一 agent 主执行面，承接用户消息与自治/system 作业。
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
@@ -1007,10 +1019,16 @@ pub const STACK_CHANNEL_SENDER: usize = LINUX_RUSTLS_THREAD_STACK;
 ///
 /// 该 worker 少掉的是常驻线程数与二级队列边界，不是 sender 深调用栈本身。
 /// QQ/Feishu/Telegram active driver 会在同一栈上执行 admission、capability projection、
-/// token/cache、payload render 与 HTTP POST；2026-04-24 真机日志显示 12KB 在首条
-/// QQ 回复发送后触发 FreeRTOS stack overflow，因此 ESP 预算按真实发送路径抬到 16KB。
+/// token/cache、payload render 与 HTTP POST。2026-05-03 S3 发布前实机复测显示，
+/// 16KB 在首条 QQ 私聊真实回复入站后仍触发 FreeRTOS `pthread` stack overflow；
+/// 但完成 active HTTP release、LLM admission 与 write-back 收口后，QQ39 的
+/// thread high-water 摘要中 `os_outbound` 已不在 High/Critical 前三，说明
+/// 24KB 预算下的余量高于 `wifi_worker` 约 56% 的 free margin。当前收为
+/// 20KB，仍明显高于旧 16KB failure point，同时返还 4KB steady internal
+/// SRAM，继续保留单 active-channel 出站面，不恢复 ESP 常驻
+/// `dispatch + *_sender` 双线程组合。
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-pub const STACK_OS_OUTBOUND: usize = 16 * 1024;
+pub const STACK_OS_OUTBOUND: usize = 20 * 1024;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub const STACK_OS_OUTBOUND: usize = LINUX_RUSTLS_THREAD_STACK;
 
@@ -1043,7 +1061,7 @@ pub const STACK_VOICE_SESSION: usize = 16 * 1024;
 pub const STACK_VOICE_SESSION: usize = LINUX_RUSTLS_THREAD_STACK;
 
 /// `voice_realtime`：transient realtime voice worker，承接 voice-exclusive 模式与 steady-state session loop。
-/// realtime WSS/TLS connect 峰值改由 `voice_realtime_connect` 复用共享 `STACK_CHANNEL_WS` 预算承接，
+/// realtime WSS/TLS connect 峰值改由 `voice_realtime_connect` 复用独立 `STACK_VOICE_REALTIME_CONNECT` 预算承接，
 /// 避免把 connect 峰值和整段 session loop 永久绑在同一栈预算上。
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 pub const STACK_VOICE_REALTIME: usize = 16 * 1024;
@@ -1073,13 +1091,20 @@ pub const STACK_HTTP_DIAG_WORKER: usize = 28 * 1024;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32", test)))]
 pub const STACK_HTTP_DIAG_WORKER: usize = 32 * 1024;
 
+/// ESP `bg_timer` stack budget.
+///
+/// `bg_timer` is the scheduler/heartbeat owner. It may enqueue or wake the
+/// governed write-back plane, but must not execute SPIFFS/session/serde flush
+/// closures inline. Keeping the old 24KB storage-worker budget here permanently
+/// consumes internal SRAM and makes post-write-back heartbeat sampling too thin.
+pub const ESP_BG_TIMER_STACK_BUDGET: usize = 16 * 1024;
+
 /// `bg_timer`：heartbeat + cron + remind/task + self-runtime 聚合线程。
-/// ESP 侧仍需抠 internal SRAM，但它直接承接 delayed-task / write-back，
-/// 不能继续按纯 timer 的 16KB 预算运行；非 ESP 目标虽然不走 TLS，
-/// 但现在已直接承接 delayed-task / write-back / cron 自治链，Linux/host
-/// 不能继续沿用旧的 16KB 预算。
+/// ESP 侧只承接调度、heartbeat 与 delayed wake；真实 SPIFFS/session/serde flush
+/// 必须继续由独立 lazy `write_back` worker 执行。非 ESP 目标保留 Linux TLS
+/// 统一栈预算，避免 host / Linux embedded 路径回到 16KB 旧风险。
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-pub const STACK_BG_TIMER: usize = 24 * 1024;
+pub const STACK_BG_TIMER: usize = ESP_BG_TIMER_STACK_BUDGET;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub const STACK_BG_TIMER: usize = LINUX_RUSTLS_THREAD_STACK;
 
@@ -1093,8 +1118,12 @@ pub const STACK_SNTP_WORKER: usize = DEFAULT_GUARD_STACK_SIZE;
 /// `cli_repl`：host 交互入口，不承接 TLS/HTTP deep path。
 pub const STACK_CLI_REPL: usize = 8 * 1024;
 
-/// `config_plane_watch`：HTTP 配置/恢复面的外层生命周期 wrapper。
-/// 该线程只注册和监管配置面，不承接 deep route worker。
+/// `config_plane_watch`：HTTP 配置/恢复面的外层 lifecycle wrapper。
+///
+/// 该线程启动并守住 config HTTPD lifecycle；真实 HTTPD callback 栈由
+/// `ESP_HTTPD_CALLBACK_STACK` 管，deep route worker 由 route catalog 管。
+/// 2026-05-03 S3 4KB 实机启动能进入 QQ WSS，但第一个 heartbeat 已出现
+/// `low_margin=1`，因此 wrapper 不能继续低于 6KB。
 pub const STACK_CONFIG_PLANE_WATCH: usize = 6 * 1024;
 
 /// `wifi_worker`：ESP WiFi driver + scan + STA keepalive owner。
@@ -1395,6 +1424,7 @@ mod thread_stack_budget_tests {
         assert_eq!(STACK_BG_TIMER, LINUX_RUSTLS_THREAD_STACK);
         assert_eq!(STACK_AGENT_LOOP, LINUX_RUSTLS_THREAD_STACK);
         assert_eq!(STACK_CHANNEL_WS, LINUX_RUSTLS_THREAD_STACK);
+        assert_eq!(STACK_VOICE_REALTIME_CONNECT, LINUX_RUSTLS_THREAD_STACK);
         assert_eq!(STACK_CHANNEL_SENDER, LINUX_RUSTLS_THREAD_STACK);
         assert_eq!(STACK_VOICE_SESSION, LINUX_RUSTLS_THREAD_STACK);
         assert_eq!(STACK_VOICE_REALTIME, LINUX_RUSTLS_THREAD_STACK);
@@ -1406,7 +1436,7 @@ mod thread_stack_budget_tests {
     fn esp_agent_loop_stack_keeps_prompt_spiffs_headroom() {
         const {
             assert!(
-                ESP_AGENT_LOOP_STACK_BUDGET >= 64 * 1024,
+                ESP_AGENT_LOOP_STACK_BUDGET >= 48 * 1024,
                 "ESP agent_loop needs headroom for first real inbound prompt and reply settlement"
             );
             assert!(
@@ -1416,12 +1446,32 @@ mod thread_stack_budget_tests {
         }
     }
 
+    #[test]
+    fn esp_bg_timer_stack_is_scheduler_only_budget() {
+        const {
+            assert!(
+                ESP_BG_TIMER_STACK_BUDGET == 16 * 1024,
+                "bg_timer must not keep the old write-back worker stack budget"
+            );
+        }
+    }
+
+    #[test]
+    fn config_plane_watch_keeps_recovery_wrapper_margin() {
+        const {
+            assert!(
+                STACK_CONFIG_PLANE_WATCH == 6 * 1024,
+                "config_plane_watch must keep the S3-proven 6KB recovery wrapper margin"
+            );
+        }
+    }
+
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
     #[test]
     fn esp_agent_guard_does_not_allocate_a_dedicated_stack_after_bootstrap() {
         const {
             assert!(
-                STACK_BG_TIMER <= 24 * 1024,
+                STACK_BG_TIMER <= ESP_BG_TIMER_STACK_BUDGET,
                 "agent guard is serviced by bg_timer and must not restore a dedicated ESP stack"
             );
         }
@@ -1431,8 +1481,8 @@ mod thread_stack_budget_tests {
     fn os_outbound_stack_accounts_for_active_sender_call_depth_without_linux_budget() {
         const {
             assert!(
-                STACK_OS_OUTBOUND >= 16 * 1024,
-                "os_outbound runs dispatch admission plus active channel HTTP send on one stack"
+                STACK_OS_OUTBOUND >= 20 * 1024,
+                "os_outbound runs dispatch admission plus measured active channel HTTP send depth on one stack"
             );
         }
         #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
@@ -1443,8 +1493,8 @@ mod thread_stack_budget_tests {
                     "merged ESP os_outbound must budget for the deepest legacy dispatch+sender call path"
                 );
                 assert!(
-                    STACK_OS_OUTBOUND <= 20 * 1024,
-                    "ESP os_outbound should stay a sender-class worker, not drift into route/agent budgets"
+                    STACK_OS_OUTBOUND <= 24 * 1024,
+                    "ESP os_outbound should stay below route/agent budgets while covering measured active-channel sender depth"
                 );
             }
         }

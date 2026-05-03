@@ -94,6 +94,7 @@ Default behavior:
 - emit one merged file per board as `dist/esp/v<version>/<board>.bin`
 - emit one ESP Web Tools manifest per board as `dist/esp/v<version>/<board>.manifest.json`
 - emit `release-catalog.json`, `release-report.json`, and `SHA256SUMS` in the same bundle directory
+- after a successful build, mirror the same release bundle into `configure-ui/public/firmware/` so Configure UI can read same-origin `/firmware/release-catalog.json` directly
 
 Current output shape:
 
@@ -117,6 +118,7 @@ Implementation contract:
 - Configure UI browser flashing does not ask users to pick `.bin` or `release-catalog.json` files; after device scan it maps detected chip / Flash capacity to an official board, reads the release catalog from same-origin `/firmware/release-catalog.json` or build-time `VITE_ESP_FIRMWARE_BASE_URL`, and verifies firmware SHA-256 plus critical offsets; PSRAM remains part of the mainline hardware contract and runtime diagnostics, but it is not a hard flashing-admission gate during the browser ROM stage
 - Configure UI browser flashing offers `Update` and `Reinstall` modes: update writes `update_parts` for bootloader, partition table, and app separately without touching the NVS range, preserving WiFi, pairing, and device configuration; reinstall writes the merged single bin at `0x0`, erases the whole flash before writing, and clears WiFi, pairing, device configuration, and history
 - the bundle is assembled under a staging directory and only replaces the final version directory after every board and metadata file succeeds
+- `dist/esp/v<version>/` remains the release-bundle source of truth; `configure-ui/public/firmware/` is the browser flashing protocol directory and is replaced as a whole after publication so stale firmware or catalog files cannot remain
 
 Optional arguments:
 

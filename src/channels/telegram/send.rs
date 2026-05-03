@@ -385,6 +385,7 @@ pub fn run_telegram_sender_loop<H, F>(
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 pub(crate) struct TelegramOutboundDriver {
     token: String,
+    /// Kept only within one send attempt on ESP; steady-state TLS buffers must be released.
     http: Option<Box<dyn PlatformHttpClient>>,
     create_http: Arc<dyn Fn() -> crate::Result<Box<dyn PlatformHttpClient>> + Send + Sync>,
 }
@@ -424,6 +425,7 @@ impl ActiveChannelSender for TelegramOutboundDriver {
         match send_media_message(h, &self.token, message) {
             Ok(()) => {
                 record_outbound_http_success();
+                self.http = None;
                 Ok(())
             }
             Err(error) => {

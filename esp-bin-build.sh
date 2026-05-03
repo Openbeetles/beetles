@@ -5,6 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$SCRIPT_DIR"
 PRESETS_FILE="$ROOT_DIR/board_presets.toml"
 CARGO_TOML="$ROOT_DIR/Cargo.toml"
+CONFIGURE_UI_FIRMWARE_DIR="$ROOT_DIR/configure-ui/public/firmware"
 
 # shellcheck source=scripts/esp_bin_build_lib.sh
 source "$ROOT_DIR/scripts/esp_bin_build_lib.sh"
@@ -277,6 +278,43 @@ write_sha256sums() {
   ) >"$output_file"
 }
 
+sync_configure_ui_firmware_assets() {
+  local source_dir="$1"
+  local target_dir="$2"
+  local target_parent
+  local source_real
+  local target_real=""
+  local mirror_stage=""
+
+  [[ -d "$source_dir" ]] || {
+    echo "Error: missing ESP release bundle for Configure UI sync: $source_dir" >&2
+    exit 1
+  }
+
+  target_parent="$(dirname "$target_dir")"
+  mkdir -p "$target_parent"
+  source_real="$(cd "$source_dir" && pwd -P)"
+  if [[ -d "$target_dir" ]]; then
+    target_real="$(cd "$target_dir" && pwd -P)"
+    if [[ "$source_real" == "$target_real" ||
+      "$source_real" == "$target_real"/* ||
+      "$target_real" == "$source_real"/* ]]; then
+      echo "Error: Configure UI firmware directory and release output directory must not overlap: $target_dir" >&2
+      exit 1
+    fi
+  fi
+
+  mirror_stage="$(mktemp -d "$target_parent/.firmware-sync-stage.XXXXXX")"
+  if ! cp -pR "$source_dir"/. "$mirror_stage"/; then
+    rm -rf "$mirror_stage"
+    echo "Error: failed to copy ESP release bundle into Configure UI firmware staging directory." >&2
+    exit 1
+  fi
+  rm -rf "$target_dir"
+  mv "$mirror_stage" "$target_dir"
+  echo "Configure UI firmware assets synced to: $target_dir"
+}
+
 version=""
 output_dir=""
 build_args=()
@@ -486,6 +524,7 @@ rm -f "$records_file" "$build_args_file"
 rm -rf "$output_dir"
 mv "$stage_dir" "$output_dir"
 stage_dir=""
+sync_configure_ui_firmware_assets "$output_dir" "$CONFIGURE_UI_FIRMWARE_DIR"
 
 echo ""
 echo "ESP release bundle written to: $output_dir"
