@@ -7,6 +7,7 @@ use crate::bus::{
 use crate::error::Result;
 use serde_json::Value;
 
+mod markdown;
 mod msg_id;
 mod send;
 mod status;

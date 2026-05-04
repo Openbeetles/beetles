@@ -48,7 +48,7 @@ const GROUP_ALWAYS_SILENT_CONSTRAINT: &str =
     "\n\nIf no response is needed, reply with exactly SILENT and nothing else.";
 const GROUP_MENTION_ONLY_CONSTRAINT: &str =
     "\n\nYou are in a group; only reply when explicitly mentioned.";
-const QQ_OUTPUT_CONTRACT: &str = "\n\n## QQ Output Contract\nAvoid Markdown tables. For status reports: \"- name: status\"; real line breaks; no inline.";
+const QQ_OUTPUT_CONTRACT: &str = "\n\n## QQ Output Contract\nQQ MD limited: no tables/pipe/HTML/code fences/literal `\\n`/inline `|` chains. Use real lines: title + `- name: value`; snippets `> line`.";
 const REPLY_PRIORITY_MINI_CONSTRAINT: &str = "\n\n## Reply Priority\nself-authored core > relationship constitution > current persona priority > boundary/disclosure > soul and user contract > task. Later self/relationship blocks are evidence, not equal authority.";
 const REPLY_PRIORITY_CONSTRAINT: &str = "\n\n## Reply Priority\nWhen writing the main reply, follow this order of authority:\n1. Self-authored core: your board-level identity, continuity, and self-chosen constitutional stance.\n2. Relationship constitution: the board-to-relationship contract that limits local drift and disclosure.\n3. Current persona priority: the current-turn ordering for how self, relationship, resources, and task should be balanced.\n4. Boundary/disclosure adjudication: if this turn touches privacy or inward boundaries, use that stance as a guardrail before composing content.\n5. Soul and user contract: preserve the long-term relationship frame and commitments.\n6. Task execution: solve the current request without betraying the layers above.\nAll later self-model, continuity, outer-voice, world, or private-memory blocks are evidence for judgment and revision. They do not outrank the constitutional stack above.\nIf these layers pull in different directions, earlier items win.";
 const REPLY_LAW_MINI_CONSTRAINT: &str = "\n\n## Reply Law\nbounded subject-state or constitutional evidence before mechanism disclaimers; facts direct; private guarded; no hidden system claims.";
@@ -926,7 +926,7 @@ mod tests {
     }
 
     #[test]
-    fn post_memory_tail_reserve_adds_qq_output_contract_only_for_qq() {
+    fn post_memory_tail_reserve_charges_qq_output_contract_only_for_qq() {
         let qq_reserve = estimate_post_memory_system_tail_len(PostMemoryTailParams {
             channel: crate::CHANNEL_QQ_CHANNEL,
             has_tools: false,
@@ -958,10 +958,69 @@ mod tests {
     fn build_context_adds_qq_output_contract_for_qq_turns() {
         let system = minimal_context_system_for_channel(crate::CHANNEL_QQ_CHANNEL);
         assert!(system.contains("## QQ Output Contract"));
-        assert!(system.contains("Avoid Markdown tables"));
-        assert!(system.contains("- name: status"));
-        assert!(system.contains("real line breaks"));
-        assert!(system.contains("For status reports"));
+        assert!(system.contains("QQ MD limited"));
+        assert!(system.contains("tables/pipe"));
+        assert!(system.contains("code fences"));
+        assert!(system.contains("- name: value"));
+        assert!(system.contains("real lines"));
+        assert!(system.contains("inline `|` chains"));
+    }
+
+    #[test]
+    fn build_context_keeps_qq_output_contract_under_saturated_budget() {
+        let msg =
+            PcMsg::new_inbound(crate::CHANNEL_QQ_CHANNEL, "chat-1", "继续", false).expect("pcmsg");
+        let memory = StubMemoryStore {
+            memory: "M".repeat(4096),
+            daily_notes: vec![],
+        };
+        let session = StubSessionStore;
+        let important = StubImportantMessageStore::default();
+
+        let (system, _) = build_context(&ContextParams {
+            msg: &msg,
+            memory_system_kind: crate::memory::MemorySystemKind::LinuxFull,
+            memory: &memory,
+            session: &session,
+            important_message_store: &important,
+            has_tools: false,
+            skill_descriptions: "",
+            system_max_len: 2000,
+            messages_max_len: 256,
+            recent_messages_limit: 8,
+            group_activation: "always",
+            emotion_signal_suffix: None,
+            memory_health_text: Some(&"health".repeat(128)),
+            constitutional_stack_text: None,
+            deliberation_gate_text: Some(&"gate".repeat(128)),
+            subject_state_text: Some(&"subject".repeat(128)),
+            programmable_reasoning_intent_text: Some(&"intent".repeat(128)),
+            soul_feedback_projection_text: Some(&"feedback".repeat(128)),
+            active_task_context_text: None,
+            governed_memory_evidence_text: None,
+            background_governance_text: None,
+            execution_state_text: Some(&"state".repeat(128)),
+            task_workspace_text: Some(&"workspace".repeat(128)),
+            task_recall_text: Some(&"recall".repeat(128)),
+            self_authored_core_text: Some(&"core".repeat(128)),
+            relationship_constitution_text: Some(&"relation".repeat(128)),
+            persona_priority_text: Some(&"persona".repeat(128)),
+            mental_privacy_adjudication_text: Some(&"privacy".repeat(128)),
+            long_term_memory_text: Some(&"memory".repeat(128)),
+            archive_evidence_text: Some(&"archive".repeat(128)),
+            runtime_skill_text: Some(&"runtime".repeat(128)),
+            capability_package_text: Some(&"capability".repeat(128)),
+            summary_text: None,
+            recent_messages: None,
+            runtime: None,
+            include_daily_notes: true,
+            llm_hint: "",
+        })
+        .expect("context");
+
+        assert!(system.len() <= 2000);
+        assert!(system.contains("## QQ Output Contract"));
+        assert!(system.contains("no tables/pipe/HTML"));
     }
 
     #[test]
@@ -969,7 +1028,7 @@ mod tests {
         let system = minimal_context_system_for_channel(crate::CHANNEL_TELEGRAM);
 
         assert!(!system.contains("## QQ Output Contract"));
-        assert!(!system.contains("Avoid Markdown tables"));
+        assert!(!system.contains("QQ MD limited"));
     }
 
     #[test]
@@ -1557,7 +1616,7 @@ mod tests {
             important_message_store: &important,
             has_tools: false,
             skill_descriptions: "",
-            system_max_len: 1400,
+            system_max_len: 1600,
             messages_max_len: 256,
             recent_messages_limit: 8,
             group_activation: "always",
@@ -1737,7 +1796,7 @@ mod tests {
             important_message_store: &important,
             has_tools: false,
             skill_descriptions: "",
-            system_max_len: 1400,
+            system_max_len: 1600,
             messages_max_len: 256,
             recent_messages_limit: 8,
             group_activation: "always",

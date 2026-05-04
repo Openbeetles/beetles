@@ -7,15 +7,18 @@ Usage:
   scripts/esp_live_test_flow.sh --scenario NAME [options]
 
 Scenarios:
-  boot_idle       Flash, hard-reset, capture boot/idle serial log.
-  qq_text        Flash, hard-reset, capture while 10 QQ text messages are sent.
+  boot_idle       Flash update, hard-reset, capture boot/idle serial log.
+  qq_text        Flash update, hard-reset, capture while 10 QQ text/Markdown messages are sent.
 
 Options:
   --port DEVICE              Serial port. Defaults to ESPFLASH_PORT or auto-detect.
-  --chip CHIP                espflash chip. Default: esp32s3.
+  --board BOARD              build.sh board preset. Defaults to BOARD or esp32-s3-16mb.
+  --chip CHIP                espflash chip. Defaults from board.
   --baud BAUD                Monitor baud. Default: 115200.
   --duration SECONDS         Capture duration. Default: 180. Use 0 for manual Ctrl-C.
   --expected-messages COUNT  Required inbound count for qq_text. Default: 10.
+  --flash-mode MODE          update or full-erase. Default: update.
+  --qq-acceptance-file FILE  Required semantic acceptance evidence for qq_text.
   --output-dir DIR           Evidence root. Default: target/esp-live.
   -h, --help                 Show this help.
 
@@ -28,6 +31,29 @@ Flow:
 EOF
 }
 
+print_qq_acceptance_plan() {
+  local board_name="$1"
+  local baseline_clause
+  case "$board_name" in
+    esp32-s3-*) baseline_clause="confirm this S3 run is valid performance-baseline evidence." ;;
+    *) baseline_clause="state this run is compatibility evidence, not the S3 performance baseline." ;;
+  esac
+  cat >&2 <<'EOF'
+QQ acceptance plan:
+EOF
+  cat >&2 <<EOF
+  A. Board/resource identity: ask for chip/board, WiFi state, pressure, and $baseline_clause
+EOF
+  cat >&2 <<'EOF'
+  B. Resource/channel probe: ask for pressure, TLS fragmentation, QQ WSS online state, and queue depth.
+  C. Wall-clock probe: ask for current date/time, timezone surface, and sync credibility.
+  D. Reminder write-back: set a 45-second reminder and verify the bot sends the due reminder without manual prompting.
+  E. Capability boundary: ask for an unavailable hardware/audio/display capability and verify it reports unavailable instead of fabricating success.
+  F. Multi-turn tool mix: run at least two follow-up questions that require fresh status/tool reads, not fixed numeric echoes.
+  G. Markdown document rendering: ask for a compact status report containing headings, bullets, a table, and a short code block; verify QQ shows readable headings/lists and does not expose raw table pipes or code fences.
+EOF
+}
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
@@ -36,10 +62,14 @@ source "$SCRIPT_DIR/build_flash_strategy.sh"
 
 scenario=""
 port="${ESPFLASH_PORT:-}"
-chip="esp32s3"
+board="${BOARD:-esp32-s3-16mb}"
+chip=""
+chip_explicit=0
 baud="115200"
 duration="180"
 expected_messages="10"
+flash_mode="update"
+qq_acceptance_file=""
 output_dir="$REPO_ROOT/target/esp-live"
 
 while [[ $# -gt 0 ]]; do
@@ -54,10 +84,16 @@ while [[ $# -gt 0 ]]; do
       [[ $# -gt 0 ]] || { echo "Error: --port requires a value." >&2; exit 2; }
       port="$1"
       ;;
+    --board)
+      shift
+      [[ $# -gt 0 ]] || { echo "Error: --board requires a value." >&2; exit 2; }
+      board="$1"
+      ;;
     --chip)
       shift
       [[ $# -gt 0 ]] || { echo "Error: --chip requires a value." >&2; exit 2; }
       chip="$1"
+      chip_explicit=1
       ;;
     --baud)
       shift
@@ -73,6 +109,16 @@ while [[ $# -gt 0 ]]; do
       shift
       [[ $# -gt 0 ]] || { echo "Error: --expected-messages requires a value." >&2; exit 2; }
       expected_messages="$1"
+      ;;
+    --flash-mode)
+      shift
+      [[ $# -gt 0 ]] || { echo "Error: --flash-mode requires a value." >&2; exit 2; }
+      flash_mode="$1"
+      ;;
+    --qq-acceptance-file)
+      shift
+      [[ $# -gt 0 ]] || { echo "Error: --qq-acceptance-file requires a value." >&2; exit 2; }
+      qq_acceptance_file="$1"
       ;;
     --output-dir)
       shift
@@ -116,6 +162,33 @@ esac
   echo "Error: --expected-messages must be an integer." >&2
   exit 2
 }
+case "$flash_mode" in
+  update|full-erase) ;;
+  *)
+    echo "Error: --flash-mode must be update or full-erase." >&2
+    exit 2
+    ;;
+esac
+chip_for_board() {
+  local board_name="$1"
+  case "$board_name" in
+    esp32-p4-*) printf '%s\n' 'esp32p4' ;;
+    esp32-s3-*) printf '%s\n' 'esp32s3' ;;
+    *)
+      echo "Error: unsupported --board: $board_name" >&2
+      echo "Known live-flow boards: esp32-s3-8mb, esp32-s3-16mb, esp32-s3-32mb, esp32-p4-nano-16mb" >&2
+      exit 2
+      ;;
+  esac
+}
+
+board_chip="$(chip_for_board "$board")"
+if [[ -z "$chip" ]]; then
+  chip="$board_chip"
+elif [[ "$chip_explicit" -eq 1 && "$chip" != "$board_chip" ]]; then
+  echo "Error: --board $board requires --chip $board_chip, got $chip." >&2
+  exit 2
+fi
 
 add_existing_ports() {
   local pattern port_path
@@ -287,6 +360,63 @@ fail_if_analyzer_blockers() {
   rm -f /tmp/beetle-esp-live-regressions.$$
 }
 
+write_qq_acceptance_template() {
+  local file="$1"
+  [[ -n "$file" ]] || return 0
+  mkdir -p "$(dirname "$file")"
+  if [[ -e "$file" ]]; then
+    return 0
+  fi
+  {
+    echo '# Set every field to pass after checking the real QQ client rendering and behavior.'
+    echo 'QQ_SEMANTIC_ACCEPTANCE=pending'
+    echo 'board_resource_identity=pending'
+    echo 'resource_channel_probe=pending'
+    echo 'wall_clock_probe=pending'
+    echo 'reminder_write_back=pending'
+    echo 'capability_boundary=pending'
+    echo 'multi_turn_tool_mix=pending'
+    echo 'markdown_document_rendering=pending'
+    echo 'notes='
+  } > "$file"
+}
+
+require_qq_acceptance() {
+  local file="$1"
+  local key
+  [[ -f "$file" ]] || {
+    echo "Gate failed: QQ semantic acceptance file not found: $file" >&2
+    exit 1
+  }
+  for key in \
+    QQ_SEMANTIC_ACCEPTANCE \
+    board_resource_identity \
+    resource_channel_probe \
+    wall_clock_probe \
+    reminder_write_back \
+    capability_boundary \
+    multi_turn_tool_mix \
+    markdown_document_rendering
+  do
+    if ! grep -Eq "^${key}=pass([[:space:]]*(#.*)?)?$" "$file"; then
+      echo "Gate failed: QQ semantic acceptance missing ${key}=pass in $file" >&2
+      exit 1
+    fi
+  done
+}
+
+fail_on_unexpected_monitor_stderr() {
+  local stderr_file="$1"
+  local filtered_file="$2"
+  [[ -s "$stderr_file" ]] || return 0
+  grep -Ev 'BrokenPipe|Broken pipe' "$stderr_file" > "$filtered_file" || true
+  if [[ -s "$filtered_file" ]]; then
+    echo "Gate failed: monitor stderr contained unexpected output" >&2
+    cat "$filtered_file" >&2
+    exit 1
+  fi
+}
+
 run_gates() {
   local log_file="$1"
 
@@ -308,12 +438,12 @@ run_gates() {
     "$log_file" "legacy storage metric names found"
   fail_if_matches 'storage_contention=Critical' \
     "$log_file" "critical storage contention found"
-  fail_if_matches '\[thread\] started name=write_back' \
-    "$log_file" "dedicated write-back worker thread started on ESP"
   fail_if_matches 'wifi:state: run -> init|wifi_reconn=[1-9][0-9]*|wifi_ap_restart=[1-9][0-9]*' \
     "$log_file" "WiFi disconnect/restart pattern found"
   fail_if_matches 'missing msg_id for QQ v2 passive reply|message dropped after send attempts|defer limit reached.*dropping message' \
     "$log_file" "message delivery drop pattern found"
+  fail_if_matches '40054005|消息被去重|msgseq' \
+    "$log_file" "QQ msg_seq dedupe failure found"
   fail_if_matches 'dispatch_fail=[1-9][0-9]*|err_dispatch=[1-9][0-9]*|outbound_enq_fail=[1-9][0-9]*|inbound_drop=[1-9][0-9]*' \
     "$log_file" "message failure metric increased"
   fail_if_matches 'tool_err=[1-9][0-9]*|tool_protocol_violation=[1-9][0-9]*' \
@@ -340,23 +470,49 @@ assert_port_free "$selected_port"
 run_id="$(date -u +%Y%m%dT%H%M%SZ)-$$-$scenario"
 run_dir="$output_dir/$run_id"
 log_file="$run_dir/serial.log"
+monitor_stderr="$run_dir/monitor.stderr"
+monitor_unexpected_stderr="$run_dir/monitor.unexpected.stderr"
+if [[ "$scenario" == "qq_text" && -z "$qq_acceptance_file" ]]; then
+  qq_acceptance_file="$run_dir/qq_acceptance.env"
+fi
 mkdir -p "$run_dir"
 
 {
   echo "run_id=$run_id"
   echo "scenario=$scenario"
+  echo "board=$board"
   echo "chip=$chip"
   echo "baud=$baud"
   echo "duration_seconds=$duration"
   echo "expected_messages=$expected_messages"
+  echo "flash_mode=$flash_mode"
   echo "selected_port=$selected_port"
+  echo "monitor_stderr=$monitor_stderr"
+  echo "monitor_unexpected_stderr=$monitor_unexpected_stderr"
+  if [[ -n "$qq_acceptance_file" ]]; then
+    echo "qq_acceptance_file=$qq_acceptance_file"
+  fi
   echo "created_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 } > "$run_dir/metadata.env"
 
 cat > "$run_dir/commands.md" <<EOF
 # Reproduce ESP live test flow
 
-BEETLE_FLASH_MODE=full-erase TARGET=esp ESPFLASH_PORT=$selected_port ./build.sh --flash --no-monitor
+EOF
+board_prefix=""
+if [[ -n "$board" ]]; then
+  board_prefix="BOARD=$board "
+fi
+if [[ "$flash_mode" == "full-erase" ]]; then
+  cat >> "$run_dir/commands.md" <<EOF
+${board_prefix}BEETLE_FLASH_MODE=full-erase TARGET=esp ESPFLASH_PORT=$selected_port ./build.sh --flash --no-monitor
+EOF
+else
+  cat >> "$run_dir/commands.md" <<EOF
+${board_prefix}TARGET=esp ESPFLASH_PORT=$selected_port ./build.sh --flash-update --no-monitor
+EOF
+fi
+cat >> "$run_dir/commands.md" <<EOF
 espflash monitor --port $selected_port --chip $chip --monitor-baud $baud --non-interactive --after hard-reset
 scripts/esp_soak_analyze.sh --output-dir $run_dir/analysis $log_file
 EOF
@@ -370,8 +526,20 @@ echo
 echo "Step 1/5: serial port selected and free."
 
 echo
-echo "Step 2/5: flashing with ./build.sh."
-BEETLE_FLASH_MODE=full-erase TARGET=esp ESPFLASH_PORT="$selected_port" "$REPO_ROOT/build.sh" --flash --no-monitor
+echo "Step 2/5: flashing with ./build.sh ($flash_mode)."
+if [[ "$flash_mode" == "full-erase" ]]; then
+  if [[ -n "$board" ]]; then
+    BOARD="$board" BEETLE_FLASH_MODE=full-erase TARGET=esp ESPFLASH_PORT="$selected_port" "$REPO_ROOT/build.sh" --flash --no-monitor
+  else
+    BEETLE_FLASH_MODE=full-erase TARGET=esp ESPFLASH_PORT="$selected_port" "$REPO_ROOT/build.sh" --flash --no-monitor
+  fi
+else
+  if [[ -n "$board" ]]; then
+    BOARD="$board" TARGET=esp ESPFLASH_PORT="$selected_port" "$REPO_ROOT/build.sh" --flash-update --no-monitor
+  else
+    TARGET=esp ESPFLASH_PORT="$selected_port" "$REPO_ROOT/build.sh" --flash-update --no-monitor
+  fi
+fi
 
 echo
 echo "Step 3/5: rechecking serial port after flash."
@@ -381,10 +549,15 @@ assert_port_free "$selected_port"
 echo
 echo "Step 4/5: hard-reset monitor from boot."
 echo "For qq_text, send the QQ test messages only after '[qq_ws] hello ok' appears."
+if [[ "$scenario" == "qq_text" ]]; then
+  print_qq_acceptance_plan "$board"
+  write_qq_acceptance_template "$qq_acceptance_file"
+  echo "QQ semantic acceptance file: $qq_acceptance_file"
+fi
 if [[ "$duration" -eq 0 ]]; then
-  espflash monitor --port "$selected_port" --chip "$chip" --monitor-baud "$baud" --non-interactive --after hard-reset | tee "$log_file"
+  espflash monitor --port "$selected_port" --chip "$chip" --monitor-baud "$baud" --non-interactive --after hard-reset 2>"$monitor_stderr" | tee "$log_file"
 else
-  espflash monitor --port "$selected_port" --chip "$chip" --monitor-baud "$baud" --non-interactive --after hard-reset | tee "$log_file" &
+  espflash monitor --port "$selected_port" --chip "$chip" --monitor-baud "$baud" --non-interactive --after hard-reset 2>"$monitor_stderr" | tee "$log_file" &
   monitor_pid="$!"
   for (( elapsed = 0; elapsed < duration; elapsed++ )); do
     sleep 1
@@ -395,6 +568,10 @@ else
   done
   kill "$monitor_pid" 2>/dev/null || true
   wait "$monitor_pid" 2>/dev/null || true
+fi
+fail_on_unexpected_monitor_stderr "$monitor_stderr" "$monitor_unexpected_stderr"
+if [[ "$scenario" == "qq_text" ]]; then
+  require_qq_acceptance "$qq_acceptance_file"
 fi
 
 echo

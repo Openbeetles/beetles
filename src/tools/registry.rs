@@ -1020,7 +1020,11 @@ fn schema_property_declares_string(property_schema: &serde_json::Value) -> bool 
         Some(serde_json::Value::Array(kinds)) => kinds
             .iter()
             .any(|kind| kind.as_str().is_some_and(|kind| kind == "string")),
-        _ => false,
+        _ => property_schema
+            .get("oneOf")
+            .or_else(|| property_schema.get("anyOf"))
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|variants| variants.iter().any(schema_property_declares_string)),
     }
 }
 
@@ -1066,7 +1070,6 @@ fn split_relaxed_object_pairs(inner: &str) -> Option<Vec<&str>> {
 }
 
 fn find_relaxed_pair_colon(pair: &str) -> Option<usize> {
-    let mut colon = None;
     let mut in_string = false;
     let mut escaped = false;
     for (index, ch) in pair.char_indices() {
@@ -1083,14 +1086,11 @@ fn find_relaxed_pair_colon(pair: &str) -> Option<usize> {
         match ch {
             '"' => in_string = true,
             '{' | '}' | '[' | ']' => return None,
-            ':' if colon.replace(index).is_some() => return None,
+            ':' => return Some(index),
             _ => {}
         }
     }
-    if in_string {
-        return None;
-    }
-    colon
+    None
 }
 
 fn parse_relaxed_object_key(raw: &str) -> Option<String> {
@@ -1146,9 +1146,9 @@ fn is_relaxed_bare_scalar(raw: &str) -> bool {
 
 fn is_relaxed_bare_string(raw: &str) -> bool {
     raw.chars().any(|ch| !ch.is_whitespace())
-        && raw.chars().all(|ch| {
-            !ch.is_control() && !matches!(ch, '{' | '}' | '[' | ']' | ':' | ',' | '"' | '\'')
-        })
+        && raw
+            .chars()
+            .all(|ch| !ch.is_control() && !matches!(ch, '{' | '}' | '[' | ']' | ',' | '"' | '\''))
 }
 
 fn normalize_and_validate_tool_outcome(
@@ -1763,6 +1763,7 @@ mod tests {
     struct NetworkSearchPolicyTool;
     struct DiagnosticPolicyTool;
     struct VisibleOutboundPolicyTool;
+    struct ReminderArgsTool;
     struct CountingOutcomeTool {
         executions: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     }
@@ -1808,6 +1809,21 @@ mod tests {
         }
         fn execute(&self, _args: &str, _ctx: &mut dyn crate::tools::ToolContext) -> Result<String> {
             Ok(String::new())
+        }
+    }
+
+    impl Tool for ReminderArgsTool {
+        fn name(&self) -> &'static str {
+            "remind_at"
+        }
+        fn description(&self) -> &str {
+            "reminder args normalizer test tool"
+        }
+        fn schema(&self) -> &str {
+            r#"{"type":"object","properties":{"op":{"type":"string"},"at":{"oneOf":[{"type":"number"},{"type":"string"}]},"context":{"type":"string"}}}"#
+        }
+        fn execute(&self, _args: &str, _ctx: &mut dyn crate::tools::ToolContext) -> Result<String> {
+            Ok(r#"{"ok":true}"#.to_string())
         }
     }
 
@@ -3119,6 +3135,43 @@ mod tests {
     }
 
     #[test]
+    fn registry_normalizes_schema_declared_iso8601_string_values() {
+        let mut registry =
+            ToolRegistry::new().with_tool_protocol_authority(synthetic_protocol_authority(&[(
+                "remind_at",
+                ToolProtocolContract::structured_object_json_with_rich_blockers(),
+            )]));
+        registry.register(Box::new(ReminderArgsTool));
+
+        let normalized = registry.normalize_llm_tool_args(
+            "remind_at",
+            "{op: schedule, at: 2026-05-04T09:56:44Z, context: P4 QQ 定时提醒链路通过}",
+        );
+        let value: serde_json::Value =
+            serde_json::from_str(normalized.as_ref()).expect("normalized args are strict JSON");
+
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "op": "schedule",
+                "at": "2026-05-04T09:56:44Z",
+                "context": "P4 QQ 定时提醒链路通过"
+            })
+        );
+        match registry
+            .assess_llm_execution(
+                "remind_at",
+                normalized.as_ref(),
+                &ToolPolicyContext::new(crate::bus::IngressKind::User, "qq_channel"),
+            )
+            .expect("normalized reminder args should pass LLM execution assessment")
+        {
+            ToolExecutionGateDecision::Allow(_) => {}
+            other => panic!("expected allow, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn registry_keeps_freeform_json_like_tool_args_strictly_invalid() {
         let mut registry =
             ToolRegistry::new().with_tool_protocol_authority(synthetic_protocol_authority(&[(
@@ -3567,6 +3620,14 @@ mod tests {
         assert_eq!(message.output_protocol, "structured_json_with_outbound");
         assert!(message.supports_rich_blockers);
 
+        let remind_at = entries
+            .iter()
+            .find(|entry| entry.name == "remind_at")
+            .expect("remind_at catalog entry");
+        assert_eq!(remind_at.input_protocol, "structured_object");
+        assert_eq!(remind_at.output_protocol, "structured_json");
+        assert!(remind_at.supports_rich_blockers);
+
         #[cfg(all(
             feature = "capability_office",
             not(any(target_arch = "xtensa", target_arch = "riscv32"))
@@ -3580,6 +3641,20 @@ mod tests {
             assert_eq!(office_config.output_protocol, "structured_json");
             assert!(office_config.supports_rich_blockers);
         }
+    }
+
+    #[test]
+    fn remind_at_default_schedule_args_match_declared_protocol() {
+        let contract = crate::tools::build_default_tool_protocol_authority()
+            .get("remind_at")
+            .expect("remind_at contract");
+
+        validate_tool_input_protocol(
+            "remind_at",
+            r#"{"at":"2000000000","context":"P4 QQ 定时提醒链路通过"}"#,
+            contract,
+        )
+        .expect("remind_at default schedule args should satisfy protocol");
     }
 
     #[test]

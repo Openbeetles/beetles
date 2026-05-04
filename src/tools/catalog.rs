@@ -442,7 +442,7 @@ fn populate_core_tool_protocol_authority(authority: &mut ToolProtocolAuthority) 
     insert_many_protocol(
         authority,
         ToolProtocolContract::operation_envelope_json_with_rich_blockers(),
-        &["task", "remind_at"],
+        &["task"],
     );
     insert_many_protocol(
         authority,
@@ -452,7 +452,7 @@ fn populate_core_tool_protocol_authority(authority: &mut ToolProtocolAuthority) 
     insert_many_protocol(
         authority,
         ToolProtocolContract::structured_object_json_with_rich_blockers(),
-        &["file_write", "remind_list"],
+        &["file_write", "remind_at", "remind_list"],
     );
     insert_many_protocol(
         authority,
@@ -514,6 +514,33 @@ mod tests {
                 "expected {tool_name} to advertise rich blocker support"
             );
         }
+    }
+
+    #[test]
+    fn remind_at_protocol_matches_default_schedule_schema() {
+        let authority = build_default_tool_protocol_authority();
+
+        let remind_at = authority.get("remind_at").expect("remind_at contract");
+        assert_eq!(
+            remind_at.input_kind,
+            ToolInputProtocolKind::StructuredObject
+        );
+        assert_eq!(
+            remind_at.output_kind,
+            ToolOutputProtocolKind::StructuredJson
+        );
+        assert!(
+            remind_at.supports_rich_blockers,
+            "remind_at blockers must remain structured for schedule/delete failures"
+        );
+
+        let task = authority.get("task").expect("task contract");
+        assert_eq!(task.input_kind, ToolInputProtocolKind::OperationEnvelope);
+        assert_eq!(task.output_kind, ToolOutputProtocolKind::StructuredJson);
+        assert!(
+            task.supports_rich_blockers,
+            "task remains op-driven even though remind_at defaults schedule"
+        );
     }
 
     #[test]

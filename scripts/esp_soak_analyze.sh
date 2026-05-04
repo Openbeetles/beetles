@@ -112,6 +112,7 @@ BEGIN {
   write_back_starvation_count = 0;
   write_back_defer_churn_count = 0;
   write_back_thread_start_count = 0;
+  write_back_start_sample_index = 0;
   write_back_stalled_samples = 0;
   write_back_starvation_reported = 0;
   last_write_back_deferred = -1;
@@ -139,6 +140,14 @@ function numeric_after(line, key,    value) {
   value = value_after(line, key);
   gsub(/[^0-9].*/, "", value);
   return value;
+}
+
+function log_timestamp_ms(line,    captured) {
+  if (match(line, /\([0-9]+\)/) == 0) {
+    return "";
+  }
+  captured = substr(line, RSTART + 1, RLENGTH - 2);
+  return captured + 0;
 }
 
 function is_boot_startup_checkpoint_stage(stage) {
@@ -321,8 +330,29 @@ function storage_contention_from_metrics(wait_last, hold_last, ops, hold_stage, 
 
   if (lower_line ~ /\[thread\] started name=write_back/) {
     write_back_thread_start_count++;
-    if (write_back_thread_start_count > 3) {
-      record_issue(NR, "write_back_worker_churn", "blocker", "write_back worker thread starts=" write_back_thread_start_count);
+    write_back_start_ms = log_timestamp_ms(line);
+    if (write_back_start_ms == "") {
+      if (write_back_thread_start_count > 3) {
+        record_issue(NR, "write_back_worker_churn", "blocker", "write_back worker thread starts=" write_back_thread_start_count " without timestamps");
+      }
+    } else {
+      write_back_start_sample_index++;
+      write_back_start_samples[write_back_start_sample_index] = write_back_start_ms;
+      write_back_start_window_count = 0;
+      write_back_start_window_first_ms = write_back_start_ms;
+      for (write_back_start_sample in write_back_start_samples) {
+        if (write_back_start_ms - write_back_start_samples[write_back_start_sample] <= 10000) {
+          write_back_start_window_count++;
+          if (write_back_start_samples[write_back_start_sample] < write_back_start_window_first_ms) {
+            write_back_start_window_first_ms = write_back_start_samples[write_back_start_sample];
+          }
+        } else {
+          delete write_back_start_samples[write_back_start_sample];
+        }
+      }
+      if (write_back_start_window_count > 3) {
+        record_issue(NR, "write_back_worker_churn", "blocker", "write_back worker dense starts=" write_back_start_window_count " total=" write_back_thread_start_count " window_ms=" (write_back_start_ms - write_back_start_window_first_ms));
+      }
     }
   }
 

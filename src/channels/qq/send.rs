@@ -20,6 +20,7 @@ use crate::platform::PlatformHttpClient;
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 use std::sync::Arc;
 
+use super::markdown::{render_qq_markdown, render_qq_plain_text, QqMarkdownRender};
 use super::msg_id::{pop_msg_id, QqMsgIdCache};
 use super::token::{
     cached_qq_token_value, clear_shared_cached_qq_token, ensure_cached_qq_token,
@@ -76,6 +77,28 @@ struct QqTurnKey {
     req_id: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct QqReservationKey {
+    chat_id: String,
+    anchor: String,
+}
+
+impl QqReservationKey {
+    fn from_req_key(req_key: &QqTurnKey) -> Self {
+        Self {
+            chat_id: req_key.chat_id.clone(),
+            anchor: format!("req:{}", req_key.req_id),
+        }
+    }
+
+    fn from_msg_id(chat_id: &str, msg_id: &str) -> Self {
+        Self {
+            chat_id: chat_id.to_string(),
+            anchor: format!("msg:{msg_id}"),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 struct QqTurnReservationState {
     msg_id: Option<String>,
@@ -85,10 +108,71 @@ struct QqTurnReservationState {
 
 #[derive(Default)]
 struct QqTurnReservationTracker {
-    by_turn: HashMap<QqTurnKey, QqTurnReservationState>,
+    by_key: HashMap<QqReservationKey, QqTurnReservationState>,
+    req_aliases: HashMap<QqTurnKey, QqReservationKey>,
 }
 
 impl QqTurnReservationTracker {
+    fn prune(&mut self, now_secs: u64) {
+        self.by_key.retain(|_, state| {
+            now_secs.saturating_sub(state.last_used_at_secs) <= QQ_TURN_RESERVATION_TTL_SECS
+        });
+        self.req_aliases
+            .retain(|_, key| self.by_key.contains_key(key));
+        while self.by_key.len() > QQ_TURN_RESERVATION_CACHE_MAX {
+            let Some(oldest_key) = self
+                .by_key
+                .iter()
+                .min_by_key(|(_, state)| state.last_used_at_secs)
+                .map(|(key, _)| key.clone())
+            else {
+                break;
+            };
+            self.by_key.remove(&oldest_key);
+            self.req_aliases.retain(|_, key| *key != oldest_key);
+        }
+    }
+
+    fn resolve_key(
+        &mut self,
+        cache: &QqMsgIdCache,
+        message: &QueuedOutboundMessage,
+        req_key: &QqTurnKey,
+    ) -> (QqReservationKey, Option<String>) {
+        if let Some(msg_id) = message_platform_message_id(message) {
+            let msg_key = QqReservationKey::from_msg_id(&message.chat_id, &msg_id);
+            let req_state_key = QqReservationKey::from_req_key(req_key);
+            if !self.by_key.contains_key(&msg_key) {
+                if let Some(mut state) = self.by_key.remove(&req_state_key) {
+                    if state.msg_id.is_none() || state.msg_id.as_deref() == Some(msg_id.as_str()) {
+                        state.msg_id = Some(msg_id.clone());
+                        self.by_key.insert(msg_key.clone(), state);
+                    } else {
+                        self.by_key.insert(req_state_key, state);
+                    }
+                }
+            }
+            self.req_aliases.insert(req_key.clone(), msg_key.clone());
+            return (msg_key, Some(msg_id));
+        }
+
+        if let Some(aliased_key) = self.req_aliases.get(req_key).cloned() {
+            let msg_id = self
+                .by_key
+                .get(&aliased_key)
+                .and_then(|state| state.msg_id.clone());
+            return (aliased_key, msg_id);
+        }
+
+        if let Some(msg_id) = pop_msg_id(cache, &message.chat_id) {
+            let msg_key = QqReservationKey::from_msg_id(&message.chat_id, &msg_id);
+            self.req_aliases.insert(req_key.clone(), msg_key.clone());
+            return (msg_key, Some(msg_id));
+        }
+
+        (QqReservationKey::from_req_key(req_key), None)
+    }
+
     fn reserve(
         &mut self,
         cache: &QqMsgIdCache,
@@ -97,46 +181,43 @@ impl QqTurnReservationTracker {
     ) -> QqRetryableSendReservation {
         let normalized_chunk_count = chunk_count.max(1);
         let now_secs = qq_now_unix_secs();
-        self.by_turn.retain(|_, state| {
-            now_secs.saturating_sub(state.last_used_at_secs) <= QQ_TURN_RESERVATION_TTL_SECS
-        });
-        while self.by_turn.len() > QQ_TURN_RESERVATION_CACHE_MAX {
-            let Some(oldest_key) = self
-                .by_turn
-                .iter()
-                .min_by_key(|(_, state)| state.last_used_at_secs)
-                .map(|(key, _)| key.clone())
-            else {
-                break;
-            };
-            self.by_turn.remove(&oldest_key);
+        self.prune(now_secs);
+        let req_key = turn_key_for_message(message);
+        let (reservation_key, resolved_msg_id) = self.resolve_key(cache, message, &req_key);
+        let (msg_id, msg_seq) = {
+            let state = self
+                .by_key
+                .entry(reservation_key.clone())
+                .or_insert_with(|| QqTurnReservationState {
+                    msg_id: resolved_msg_id.clone(),
+                    next_seq: 1,
+                    last_used_at_secs: now_secs,
+                });
+            if state.msg_id.is_none() {
+                state.msg_id = resolved_msg_id;
+            }
+            let start = state.next_seq;
+            state.next_seq = state.next_seq.saturating_add(normalized_chunk_count as u64);
+            state.last_used_at_secs = now_secs;
+            (
+                state.msg_id.clone(),
+                if is_v2_chat(&message.chat_id) {
+                    Some(QqMsgSeqReservation {
+                        start,
+                        chunk_count: normalized_chunk_count,
+                    })
+                } else {
+                    None
+                },
+            )
+        };
+        if msg_id.is_some() {
+            self.req_aliases.insert(req_key, reservation_key);
         }
-        let state = self
-            .by_turn
-            .entry(turn_key_for_message(message))
-            .or_insert_with(|| QqTurnReservationState {
-                msg_id: message_platform_message_id(message)
-                    .or_else(|| pop_msg_id(cache, &message.chat_id)),
-                next_seq: 1,
-                last_used_at_secs: now_secs,
-            });
-        if state.msg_id.is_none() {
-            state.msg_id = message_platform_message_id(message);
-        }
-        let start = state.next_seq;
-        state.next_seq = state.next_seq.saturating_add(normalized_chunk_count as u64);
-        state.last_used_at_secs = now_secs;
         QqRetryableSendReservation {
             transport_send_id: message.transport_send_id,
-            msg_id: state.msg_id.clone(),
-            msg_seq: if is_v2_chat(&message.chat_id) {
-                Some(QqMsgSeqReservation {
-                    start,
-                    chunk_count: normalized_chunk_count,
-                })
-            } else {
-                None
-            },
+            msg_id,
+            msg_seq,
         }
     }
 }
@@ -181,18 +262,29 @@ fn reserve_fresh_send_reservation(
     turn_tracker: &mut QqTurnReservationTracker,
     message: &QueuedOutboundMessage,
 ) -> QqRetryableSendReservation {
-    let chunk_count = match &message.body {
+    let chunk_count = qq_payload_chunk_count_for_message(message);
+    turn_tracker.reserve(cache, message, chunk_count)
+}
+
+fn qq_payload_chunk_count_for_message(message: &QueuedOutboundMessage) -> usize {
+    match &message.body {
         CanonicalMessageBody::Text(body) if body.format == TextFormat::Plain => {
-            crate::channels::chunk::chunk_str_by_char_count_iter(
-                &message.content,
-                QQ_MAX_MESSAGE_LEN,
-            )
-            .count()
-            .max(1)
+            qq_plain_text_chunk_count(&render_qq_plain_text(&message.content))
+        }
+        CanonicalMessageBody::Text(body) if body.format == TextFormat::Markdown => {
+            match render_qq_markdown(&body.text, QQ_MAX_MESSAGE_LEN) {
+                QqMarkdownRender::Markdown { .. } => 1,
+                QqMarkdownRender::Plain { text } => qq_plain_text_chunk_count(&text),
+            }
         }
         _ => 1,
-    };
-    turn_tracker.reserve(cache, message, chunk_count)
+    }
+}
+
+fn qq_plain_text_chunk_count(content: &str) -> usize {
+    crate::channels::chunk::chunk_text_by_char_count(content, QQ_MAX_MESSAGE_LEN)
+        .len()
+        .max(1)
 }
 
 fn resolve_retryable_send_reservation(
@@ -356,11 +448,10 @@ fn push_reply_metadata(
 
 fn build_qq_markdown_body(
     content: &str,
+    content_projection: &str,
     msg_id: Option<&str>,
     msg_seq: Option<u64>,
 ) -> crate::error::Result<Vec<u8>> {
-    let content_projection =
-        crate::channels::outbound_text::render_markdownish_to_plain_text(content);
     let mut map = serde_json::Map::new();
     map.insert("content".to_string(), serde_json::json!(content_projection));
     map.insert("msg_type".to_string(), serde_json::json!(2));
@@ -551,32 +642,26 @@ fn render_qq_send_payloads<H: ChannelHttpClient>(
 ) -> crate::error::Result<Vec<ByteBuffer>> {
     match &message.body {
         CanonicalMessageBody::Text(body) if body.format == TextFormat::Markdown => {
-            Ok(vec![ByteBuffer::from_vec(build_qq_markdown_body(
-                &body.text,
-                msg_id,
-                msg_seq.and_then(|reservation| reservation.seq_for_chunk(0)),
-            )?)])
-        }
-        CanonicalMessageBody::Text(_) => {
-            let is_v2 = is_v2_chat(&message.chat_id);
-            let chunks = crate::channels::chunk::chunk_text_by_char_count(
-                &message.content,
-                QQ_MAX_MESSAGE_LEN,
-            );
-            let mut payloads = Vec::with_capacity(chunks.len().max(1));
-            for (index, chunk) in chunks.iter().enumerate() {
-                payloads.push(build_qq_send_body(
-                    chunk,
-                    if index == 0 { msg_id } else { None },
-                    if is_v2 {
-                        msg_seq.and_then(|reservation| reservation.seq_for_chunk(index))
-                    } else {
-                        None
-                    },
-                )?);
+            match render_qq_markdown(&body.text, QQ_MAX_MESSAGE_LEN) {
+                QqMarkdownRender::Markdown { content, fallback } => {
+                    Ok(vec![ByteBuffer::from_vec(build_qq_markdown_body(
+                        &content,
+                        &fallback,
+                        msg_id,
+                        msg_seq.and_then(|reservation| reservation.seq_for_chunk(0)),
+                    )?)])
+                }
+                QqMarkdownRender::Plain { text } => {
+                    render_qq_plain_text_payloads(&message.chat_id, &text, msg_id, msg_seq)
+                }
             }
-            Ok(payloads)
         }
+        CanonicalMessageBody::Text(_) => render_qq_plain_text_payloads(
+            &message.chat_id,
+            &render_qq_plain_text(&message.content),
+            msg_id,
+            msg_seq,
+        ),
         CanonicalMessageBody::Card(body) => match body.format {
             CardFormat::Ark => Ok(vec![ByteBuffer::from_vec(build_qq_card_body(
                 3,
@@ -615,6 +700,29 @@ fn render_qq_send_payloads<H: ChannelHttpClient>(
             msg_seq.and_then(|reservation| reservation.seq_for_chunk(0)),
         )?]),
     }
+}
+
+fn render_qq_plain_text_payloads(
+    chat_id: &str,
+    content: &str,
+    msg_id: Option<&str>,
+    msg_seq: Option<QqMsgSeqReservation>,
+) -> crate::error::Result<Vec<ByteBuffer>> {
+    let is_v2 = is_v2_chat(chat_id);
+    let chunks = crate::channels::chunk::chunk_text_by_char_count(content, QQ_MAX_MESSAGE_LEN);
+    let mut payloads = Vec::with_capacity(chunks.len().max(1));
+    for (index, chunk) in chunks.iter().enumerate() {
+        payloads.push(build_qq_send_body(
+            chunk,
+            if index == 0 { msg_id } else { None },
+            if is_v2 {
+                msg_seq.and_then(|reservation| reservation.seq_for_chunk(index))
+            } else {
+                None
+            },
+        )?);
+    }
+    Ok(payloads)
 }
 
 /// 发送单条 QQ 消息（含自动分片）。返回 `Ok(())` 表示所有分片都成功（HTTP 2xx）。
@@ -1257,6 +1365,51 @@ mod tests {
         assert_eq!(second.msg_id.as_deref(), Some("msg-1"));
     }
 
+    #[test]
+    fn msg_seq_advances_across_background_req_ids_for_same_msg_id() {
+        let cache: QqMsgIdCache = Arc::new(Mutex::new(HashMap::new()));
+        cache_msg_id(&cache, "c2c:chat-1", "msg-1").expect("cache msg_id");
+        let mut direct_reply = queued_message(
+            21,
+            "c2c:chat-1",
+            "reminder scheduled",
+            Some("req-user-turn"),
+            OutboundKind::Primary,
+        );
+        direct_reply.platform_message_id = "msg-1".to_string();
+        let reminder_due = queued_message(
+            22,
+            "c2c:chat-1",
+            "P4 QQ 定时提醒链路通过",
+            Some("req-reminder-due"),
+            OutboundKind::Primary,
+        );
+        let mut active = None;
+        let mut turn_tracker = QqTurnReservationTracker::default();
+
+        let first = resolve_retryable_send_reservation(
+            &mut active,
+            &mut turn_tracker,
+            &cache,
+            &direct_reply,
+        );
+        release_retryable_send_reservation(&mut active, direct_reply.transport_send_id);
+        let second = resolve_retryable_send_reservation(
+            &mut active,
+            &mut turn_tracker,
+            &cache,
+            &reminder_due,
+        );
+
+        let first_seq = first.msg_seq.expect("direct reply seq");
+        let second_seq = second.msg_seq.expect("background reminder seq");
+        assert_eq!(first.msg_id.as_deref(), Some("msg-1"));
+        assert_eq!(second.msg_id.as_deref(), Some("msg-1"));
+        assert_eq!(first_seq.start, 1);
+        assert_eq!(second_seq.start, 2);
+        assert_eq!(pop_msg_id(&cache, "c2c:chat-1"), None);
+    }
+
     #[derive(Default)]
     struct StubHttpState {
         token_results: VecDeque<crate::error::Result<(u16, ResponseBody)>>,
@@ -1318,7 +1471,7 @@ mod tests {
     }
 
     #[test]
-    fn sender_retry_reuses_same_http_msg_id_and_msg_seq_payload() {
+    fn sender_retry_reuses_same_http_msg_id_and_msg_seq_payload_on_transient_failure() {
         let cache: QqMsgIdCache = Arc::new(Mutex::new(HashMap::new()));
         cache_msg_id(&cache, "c2c:chat-1", "msg-1").expect("cache msg_id");
         let shared_token_cache = crate::channels::qq::new_shared_qq_token_cache();
@@ -1338,14 +1491,7 @@ mod tests {
                 )),
             ]),
             send_results: VecDeque::from([
-                Ok((
-                    400,
-                    ResponseBody::Heap(
-                        r#"{"message":"消息被去重，请检查请求msgseq","code":40054005}"#
-                            .as_bytes()
-                            .to_vec(),
-                    ),
-                )),
+                Ok((500, ResponseBody::Heap(b"{}".to_vec()))),
                 Ok((200, ResponseBody::Heap(b"{}".to_vec()))),
             ]),
             sent_bodies: Vec::new(),
@@ -1470,6 +1616,240 @@ mod tests {
             payload.get("content").and_then(|content| content.as_str()),
             Some("Hello")
         );
+    }
+
+    #[test]
+    fn send_one_qq_converts_markdown_table_before_send() {
+        let mut http = StubHttp::default();
+        let source = "# 状态\n\n| 项目 | 值 |\n| --- | --- |\n| CPU | 正常 |\n| 内存 | 256KB |";
+        let message = queued_message_with_body(
+            1,
+            "c2c:chat-1",
+            source,
+            crate::bus::CanonicalMessageBody::Text(crate::bus::TextBody {
+                text: source.to_string(),
+                format: crate::bus::TextFormat::Markdown,
+            }),
+            Some("req-1"),
+            OutboundKind::Primary,
+        );
+
+        send_one_qq(
+            &mut http,
+            "qq-token",
+            &message,
+            Some("msg-1"),
+            Some(QqMsgSeqReservation {
+                start: 1,
+                chunk_count: 1,
+            }),
+        )
+        .expect("markdown send");
+
+        let guard = http.state.lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(guard.sent_bodies.len(), 1);
+        let payload: serde_json::Value =
+            serde_json::from_slice(&guard.sent_bodies[0]).expect("payload json");
+        assert_eq!(payload.get("msg_type"), Some(&serde_json::json!(2)));
+        let markdown = payload
+            .get("markdown")
+            .and_then(|markdown| markdown.get("content"))
+            .and_then(|content| content.as_str())
+            .expect("markdown content");
+        assert!(markdown.contains("# 状态"));
+        assert!(markdown.contains("- CPU: 正常"));
+        assert!(markdown.contains("- 内存: 256KB"));
+        assert!(!markdown.contains("| 项目 | 值 |"));
+        assert_eq!(
+            payload.get("content").and_then(|content| content.as_str()),
+            Some("状态\n\n• CPU: 正常\n• 内存: 256KB")
+        );
+    }
+
+    #[test]
+    fn send_one_qq_converts_collapsed_markdown_table_before_send() {
+        let mut http = StubHttp::default();
+        let source = "状态报告 | 项目 | 值 |---|---| CPU | 正常 | 内存 | 256KB";
+        let message = queued_message_with_body(
+            1,
+            "c2c:chat-1",
+            source,
+            crate::bus::CanonicalMessageBody::Text(crate::bus::TextBody {
+                text: source.to_string(),
+                format: crate::bus::TextFormat::Markdown,
+            }),
+            Some("req-1"),
+            OutboundKind::Primary,
+        );
+
+        send_one_qq(
+            &mut http,
+            "qq-token",
+            &message,
+            Some("msg-1"),
+            Some(QqMsgSeqReservation {
+                start: 1,
+                chunk_count: 1,
+            }),
+        )
+        .expect("markdown send");
+
+        let guard = http.state.lock().unwrap_or_else(|e| e.into_inner());
+        let payload: serde_json::Value =
+            serde_json::from_slice(&guard.sent_bodies[0]).expect("payload json");
+        assert_eq!(payload.get("msg_type"), Some(&serde_json::json!(2)));
+        let markdown = payload
+            .get("markdown")
+            .and_then(|markdown| markdown.get("content"))
+            .and_then(|content| content.as_str())
+            .expect("markdown content");
+        assert!(markdown.contains("状态报告"));
+        assert!(markdown.contains("- CPU: 正常"));
+        assert!(markdown.contains("- 内存: 256KB"));
+        assert!(!markdown.contains("|---|"));
+        assert!(!markdown.contains("| 项目 | 值 |"));
+        assert_eq!(
+            payload.get("content").and_then(|content| content.as_str()),
+            Some("状态报告\n• CPU: 正常\n• 内存: 256KB")
+        );
+    }
+
+    #[test]
+    fn send_one_qq_converts_plain_pipe_table_projection_before_send() {
+        let mut http = StubHttp::default();
+        let source = "状态报告 | 项目 | 值 |---|---| CPU | 正常 | 内存 | 256KB";
+        let message = queued_message_with_body(
+            1,
+            "c2c:chat-1",
+            source,
+            crate::bus::CanonicalMessageBody::Text(crate::bus::TextBody {
+                text: source.to_string(),
+                format: crate::bus::TextFormat::Plain,
+            }),
+            Some("req-1"),
+            OutboundKind::Primary,
+        );
+
+        send_one_qq(
+            &mut http,
+            "qq-token",
+            &message,
+            Some("msg-1"),
+            Some(QqMsgSeqReservation {
+                start: 1,
+                chunk_count: 1,
+            }),
+        )
+        .expect("plain send");
+
+        let guard = http.state.lock().unwrap_or_else(|e| e.into_inner());
+        let payload: serde_json::Value =
+            serde_json::from_slice(&guard.sent_bodies[0]).expect("payload json");
+        assert_eq!(payload.get("msg_type"), Some(&serde_json::json!(0)));
+        let content = payload
+            .get("content")
+            .and_then(|content| content.as_str())
+            .expect("content");
+        assert!(content.contains("状态报告"));
+        assert!(content.contains("• CPU: 正常"));
+        assert!(content.contains("• 内存: 256KB"));
+        assert!(!content.contains("|---|"));
+        assert!(!content.contains("| 项目 | 值 |"));
+    }
+
+    #[test]
+    fn send_one_qq_converts_code_fence_before_send() {
+        let mut http = StubHttp::default();
+        let source = "```rust\nlet x = 1;\n```";
+        let message = queued_message_with_body(
+            1,
+            "c2c:chat-1",
+            source,
+            crate::bus::CanonicalMessageBody::Text(crate::bus::TextBody {
+                text: source.to_string(),
+                format: crate::bus::TextFormat::Markdown,
+            }),
+            Some("req-1"),
+            OutboundKind::Primary,
+        );
+
+        send_one_qq(
+            &mut http,
+            "qq-token",
+            &message,
+            Some("msg-1"),
+            Some(QqMsgSeqReservation {
+                start: 1,
+                chunk_count: 1,
+            }),
+        )
+        .expect("markdown send");
+
+        let guard = http.state.lock().unwrap_or_else(|e| e.into_inner());
+        let payload: serde_json::Value =
+            serde_json::from_slice(&guard.sent_bodies[0]).expect("payload json");
+        let markdown = payload
+            .get("markdown")
+            .and_then(|markdown| markdown.get("content"))
+            .and_then(|content| content.as_str())
+            .expect("markdown content");
+        assert!(markdown.contains("> Code: rust"));
+        assert!(markdown.contains("> let x = 1;"));
+        assert!(!markdown.contains("```"));
+    }
+
+    #[test]
+    fn explicit_oversized_qq_markdown_falls_back_to_plain_chunks() {
+        let mut http = StubHttp::default();
+        let source = format!("# 标题\n{}", "甲".repeat(QQ_MAX_MESSAGE_LEN + 5));
+        let message = queued_message_with_body(
+            1,
+            "c2c:chat-1",
+            &source,
+            crate::bus::CanonicalMessageBody::Text(crate::bus::TextBody {
+                text: source.clone(),
+                format: crate::bus::TextFormat::Markdown,
+            }),
+            Some("req-1"),
+            OutboundKind::Primary,
+        );
+        let cache: QqMsgIdCache = Arc::new(Mutex::new(HashMap::new()));
+        let mut turn_tracker = QqTurnReservationTracker::default();
+        let reservation = reserve_fresh_send_reservation(&cache, &mut turn_tracker, &message);
+
+        assert_eq!(
+            reservation.msg_seq,
+            Some(QqMsgSeqReservation {
+                start: 1,
+                chunk_count: 3,
+            })
+        );
+        send_one_qq(
+            &mut http,
+            "qq-token",
+            &message,
+            Some("msg-1"),
+            reservation.msg_seq,
+        )
+        .expect("markdown plain fallback send");
+
+        let guard = http.state.lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(guard.sent_bodies.len(), 3);
+        let first: serde_json::Value =
+            serde_json::from_slice(&guard.sent_bodies[0]).expect("first payload json");
+        let second: serde_json::Value =
+            serde_json::from_slice(&guard.sent_bodies[1]).expect("second payload json");
+        let third: serde_json::Value =
+            serde_json::from_slice(&guard.sent_bodies[2]).expect("third payload json");
+        assert_eq!(first.get("msg_type"), Some(&serde_json::json!(0)));
+        assert_eq!(second.get("msg_type"), Some(&serde_json::json!(0)));
+        assert_eq!(third.get("msg_type"), Some(&serde_json::json!(0)));
+        assert_eq!(first.get("msg_seq"), Some(&serde_json::json!(1)));
+        assert_eq!(second.get("msg_seq"), Some(&serde_json::json!(2)));
+        assert_eq!(third.get("msg_seq"), Some(&serde_json::json!(3)));
+        assert!(first.get("markdown").is_none());
+        assert!(second.get("markdown").is_none());
+        assert!(third.get("markdown").is_none());
     }
 
     #[test]

@@ -133,6 +133,19 @@ fn should_load_pre_reply_recent_persona_evidence(
 }
 
 #[inline(never)]
+fn runtime_platform_label_for_target_arch(target_arch: &str) -> &'static str {
+    match target_arch {
+        "xtensa" | "riscv32" => "ESP32",
+        _ => "Linux",
+    }
+}
+
+#[inline(never)]
+fn runtime_platform_label() -> &'static str {
+    runtime_platform_label_for_target_arch(std::env::consts::ARCH)
+}
+
+#[inline(never)]
 pub(super) fn compute_prepare_runtime(
     session: &mut WorkerPrepareSession,
     msg: &crate::bus::PcMsg,
@@ -164,11 +177,7 @@ pub(super) fn compute_prepare_runtime(
     let interactive_fast_path = msg.ingress == IngressKind::User && msg.channel.as_ref() != "voice";
     let runtime = RuntimeContext {
         now_secs: crate::util::current_unix_secs(),
-        platform: if cfg!(any(target_arch = "xtensa", target_arch = "riscv32")) {
-            "ESP32-S3"
-        } else {
-            "Linux"
-        },
+        platform: runtime_platform_label(),
         pressure: snapshot.pressure,
         active_agent_tasks: snapshot.active_agent_tasks,
         inbound_depth: snapshot.inbound_depth,
@@ -981,7 +990,10 @@ pub(super) fn finalize_prepare_context(
 
 #[cfg(test)]
 mod tests {
-    use super::{resolve_recent_messages_limit, should_load_pre_reply_recent_persona_evidence};
+    use super::{
+        resolve_recent_messages_limit, runtime_platform_label_for_target_arch,
+        should_load_pre_reply_recent_persona_evidence,
+    };
     use crate::bus::IngressKind;
     use crate::memory::{MemorySystemKind, PromptParticipationPlan};
 
@@ -991,6 +1003,13 @@ mod tests {
             MemorySystemKind::EspCompact,
             PromptParticipationPlan::embedded_first_turn_default(),
         ));
+    }
+
+    #[test]
+    fn esp_runtime_platform_label_is_soc_family_not_board_model() {
+        assert_eq!(runtime_platform_label_for_target_arch("xtensa"), "ESP32");
+        assert_eq!(runtime_platform_label_for_target_arch("riscv32"), "ESP32");
+        assert_eq!(runtime_platform_label_for_target_arch("aarch64"), "Linux");
     }
 
     #[test]
