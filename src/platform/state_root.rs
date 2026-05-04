@@ -1,4 +1,4 @@
-//! 状态挂载根路径：ESP 使用平台存储挂载点；host/Linux 由 `BEETLE_STATE_ROOT` 或行业默认（`/var/lib/beetle` → `/data/beetle`），在 `init_storage` 中解析并缓存。
+//! 状态挂载根路径：ESP 使用平台存储挂载点并由 storage 初始化必需目录；host/Linux 由 `BEETLE_STATE_ROOT` 或行业默认（`/var/lib/beetle` → `/data/beetle`），在 `init_storage` 中解析并缓存。
 //! State mount root: ESP uses the platform storage mount; host uses `BEETLE_STATE_ROOT` or FHS defaults, resolved in `init_storage`.
 
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]

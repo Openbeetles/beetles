@@ -1,5 +1,5 @@
-//! 状态存储挂载与路径约定。ESP 使用平台存储后端；host 使用文件系统状态根。
-//! State storage mount and path convention. ESP uses the platform storage backend; host uses a file-backed state root.
+//! 状态存储挂载与路径约定。ESP 使用平台存储实现；host 使用文件系统状态根。
+//! State storage mount and path convention. ESP uses the platform storage implementation; host uses a file-backed state root.
 //! ESP-IDF VFS 存储后端多线程并发会引发 fd 错用或死锁，故所有通过本模块的 ESP 状态存储访问串行化。
 
 use crate::error::{Error, Result};
@@ -148,6 +148,23 @@ static STORAGE_MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 const ESP_STORAGE_PARTITION_LABEL: &str = "storage";
 
+#[cfg_attr(
+    not(any(target_arch = "xtensa", target_arch = "riscv32")),
+    allow(dead_code)
+)]
+const ESP_STORAGE_ROOT_DIRS: &[&str] = &[
+    "memory",
+    "memory/daily",
+    "skills",
+    "config",
+    "s",
+    "m",
+    "r",
+    "c",
+    "k",
+    "g",
+];
+
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 static HOST_STORAGE_MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
 
@@ -252,8 +269,22 @@ pub fn init_storage() -> Result<()> {
             total,
             used
         );
+        ensure_esp_storage_root_dirs(base_str)?;
         Ok(())
     }
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+fn ensure_esp_storage_root_dirs(base_path: &str) -> Result<()> {
+    for rel in ESP_STORAGE_ROOT_DIRS {
+        let path = format!("{base_path}/{rel}");
+        match std::fs::create_dir_all(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(Error::io("storage_init_dirs", error)),
+        }
+    }
+    Ok(())
 }
 
 /// 返回状态存储总字节数与已用字节数；用于启动自检或运维。失败返回 None（如未挂载）。
@@ -378,6 +409,7 @@ fn esp_write_file_no_unlink(
     durability: WriteDurability,
     stage: &'static str,
 ) -> Result<()> {
+    ensure_esp_parent_dir(path_str, stage)?;
     let old_len = if tail_padding != WriteTailPadding::None {
         std::fs::metadata(path_str)
             .ok()
@@ -427,6 +459,17 @@ fn esp_write_file_no_unlink(
     }
     finish_file_after_write(&mut file, stage, durability)?;
     Ok(())
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+fn ensure_esp_parent_dir(path_str: &str, stage: &'static str) -> Result<()> {
+    let Some(parent) = Path::new(path_str).parent() else {
+        return Ok(());
+    };
+    if parent.as_os_str().is_empty() || parent == Path::new("/") {
+        return Ok(());
+    }
+    std::fs::create_dir_all(parent).map_err(|e| Error::io(stage, e))
 }
 
 pub(crate) fn finish_file_after_write(
@@ -530,6 +573,8 @@ pub fn append_line_file(path: impl AsRef<Path>, line: &[u8]) -> Result<()> {
         let path_str = p
             .to_str()
             .ok_or_else(|| Error::config("storage_append_line", "invalid path"))?;
+        #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+        ensure_esp_parent_dir(path_str, "storage_append_line")?;
         let needs_separator = match std::fs::metadata(path_str) {
             Ok(meta) if meta.len() > 0 => {
                 let mut existing = std::fs::File::open(path_str)
@@ -685,7 +730,7 @@ pub use world_sense::StorageWorldSenseStore;
 mod tests {
     use super::{
         append_line_file, esp_storage_rel_path, state_write_tail_padding,
-        truncate_on_open_for_write, write_json_file, WriteTailPadding,
+        truncate_on_open_for_write, write_json_file, WriteTailPadding, ESP_STORAGE_ROOT_DIRS,
     };
     use crate::agent::REL_PATH_ACTIVE_WORKS;
     use crate::memory::{
@@ -806,6 +851,16 @@ mod tests {
             esp_storage_rel_path(Path::new("config/llm.json")),
             PathBuf::from("config/llm.json")
         );
+    }
+
+    #[test]
+    fn esp_storage_root_dirs_cover_fresh_littlefs_boot_paths() {
+        for required in ["memory", "memory/daily", "skills", "config", "s", "m"] {
+            assert!(
+                ESP_STORAGE_ROOT_DIRS.contains(&required),
+                "missing ESP storage root dir {required}"
+            );
+        }
     }
 
     #[test]
