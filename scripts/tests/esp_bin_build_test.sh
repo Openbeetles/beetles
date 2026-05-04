@@ -461,6 +461,14 @@ assert_file_contains \
   "release catalog should expose segmented update parts"
 assert_file_contains \
   "$tmp_dir/dist/esp/v9.9.9/release-catalog.json" \
+  '"requires_full_erase": true' \
+  "release catalog should force full erase for destructive storage format migration"
+assert_file_contains \
+  "$tmp_dir/dist/esp/v9.9.9/release-catalog.json" \
+  '"storage_migration": "destructive"' \
+  "release catalog should expose the destructive storage migration contract"
+assert_file_contains \
+  "$tmp_dir/dist/esp/v9.9.9/release-catalog.json" \
   '"offset": 36864' \
   "release catalog should expose the partition-table update offset"
 assert_file_contains \

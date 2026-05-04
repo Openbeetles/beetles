@@ -97,9 +97,9 @@ export const enUS = {
       flashModeUpdate: 'Update',
       flashModeReinstall: 'Reinstall',
       flashModeUpdateHint:
-        'Flash official firmware in place and keep WiFi, pairing, and device configuration where possible.',
+        'Update mode is unavailable for this storage format migration release.',
       flashModeReinstallHint:
-        'Erase the entire flash before writing. This clears WiFi, pairing, device configuration, and history.',
+        'Erase the entire flash before writing. This clears WiFi, pairing, device configuration, memory, and storage space.',
       flashFirmwareSourceUnavailable: 'Automatic firmware source is unavailable. Confirm the release firmware is mounted.',
       flashFirmwareInvalid:
         'The automatic firmware is not a valid Beetle ESP merged .bin.',

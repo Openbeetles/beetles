@@ -232,7 +232,7 @@ if [[ ! -x "$ROOT_DIR/scripts/esp_symbolize_panic.sh" ]]; then
 fi
 assert_file_contains \
   "$ROOT_DIR/partitions.csv" \
-  'spiffs,    data, spiffs,  0x620000, 0x9D0000' \
+  'storage,   data, littlefs,0x620000, 0x9D0000' \
   "default S3 partition table should move the storage partition behind the single 6MiB factory app slot"
 assert_file_contains \
   "$ROOT_DIR/partitions.csv" \
@@ -248,8 +248,12 @@ assert_file_not_contains \
   "default S3 partition table should no longer publish OTA app slots"
 assert_file_contains \
   "$ROOT_DIR/build.sh" \
-  'storage config is preserved only if partition offset/size are unchanged' \
-  "build.sh update-flash prompt must not imply storage config survives partition layout changes"
+  'filesystem format changes require full erase/factory reflash even when offset/size stay unchanged' \
+  "build.sh update-flash prompt must not imply storage config survives format changes"
+assert_file_contains \
+  "$ROOT_DIR/build.sh" \
+  'Flash mode: full chip erase required for this storage format migration' \
+  "build.sh flash menu must force full erase during destructive storage migration"
 assert_file_not_contains \
   "$ROOT_DIR/build.sh" \
   'python3 -m esptool --chip "$FLASH_CHIP" elf2image' \

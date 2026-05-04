@@ -97,9 +97,9 @@ export const zhCN = {
       flashModeUpdate: '更新',
       flashModeReinstall: '重装',
       flashModeUpdateHint:
-        '仅重刷官方固件，尽量保留 WiFi、配对码和设备配置。',
+        '当前存储格式迁移版本不可使用更新模式。',
       flashModeReinstallHint:
-        '先整片擦除再烧录，会清空 WiFi、配对码、设备配置和历史数据。',
+        '先整片擦除再烧录，会清空 WiFi、配对码、设备配置、记忆和存储空间。',
       flashFirmwareSourceUnavailable: '自动固件源不可用，请确认发布固件已挂载。',
       flashFirmwareInvalid:
         '自动固件不是有效的 Beetle ESP merged .bin。',

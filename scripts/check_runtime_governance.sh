@@ -27,10 +27,12 @@ existing_paths() {
 }
 
 sanitize_storage_backend_wording() {
-  sed -E 's/[sS][pP][iI][fF][fF][sS]/storage-backend/g'
+  sed -E \
+    -e 's/[sS][pP][iI][fF][fF][sS]/storage-backend/g' \
+    -e 's/[lL][iI][tT][tT][lL][eE][fF][sS]/storage-backend/g'
 }
 
-USER_STORAGE_SPIFFS_LEAK_PATTERN='"[^"]*([sS][pP][iI][fF][fF][sS]|spiffs_)|beetle_spiffs|name:[[:space:]]*"spiffs_|usage:[[:space:]]*"spiffs_'
+USER_STORAGE_BACKEND_LEAK_PATTERN='[sS][pP][iI][fF][fF][sS]|[lL][iI][tT][tT][lL][eE][fF][sS]|spiffs_|littlefs_|beetle_spiffs|name:[[:space:]]*"spiffs_|usage:[[:space:]]*"spiffs_'
 USER_STORAGE_SPIFFS_LEAK_PATHS="$(
   existing_paths \
     src/cli \
@@ -38,10 +40,16 @@ USER_STORAGE_SPIFFS_LEAK_PATHS="$(
     src/heartbeat \
     src/metrics.rs \
     src/display.rs \
-    src/platform/http_server/handlers
+    src/platform/http_server/handlers \
+    configure-ui/src \
+    docs/en-us \
+    docs/zh-cn \
+    README.md \
+    README.zh-CN.md \
+    packaging/linux
 )"
 if [[ -n "$USER_STORAGE_SPIFFS_LEAK_PATHS" ]] &&
-   rg -n "$USER_STORAGE_SPIFFS_LEAK_PATTERN" $USER_STORAGE_SPIFFS_LEAK_PATHS >/tmp/beetle-storage-leaks.$$; then
+   rg -n "$USER_STORAGE_BACKEND_LEAK_PATTERN" $USER_STORAGE_SPIFFS_LEAK_PATHS >/tmp/beetle-storage-leaks.$$; then
   echo "FAIL: user/business-facing storage wording leaked platform backend naming:" >&2
   sanitize_storage_backend_wording </tmp/beetle-storage-leaks.$$ >&2
   rm -f /tmp/beetle-storage-leaks.$$

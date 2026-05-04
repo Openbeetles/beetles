@@ -145,6 +145,9 @@ fn esp_alias_extension(rel: &str) -> &'static str {
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 static STORAGE_MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
 
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+const ESP_STORAGE_PARTITION_LABEL: &str = "storage";
+
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 static HOST_STORAGE_MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
 
@@ -220,19 +223,29 @@ pub fn init_storage() -> Result<()> {
             .to_str()
             .ok_or_else(|| Error::config("storage", "invalid state mount path"))?;
         let base = CString::new(base_str).map_err(|e| Error::config("storage", e.to_string()))?;
-        let conf = esp_idf_svc::sys::esp_vfs_spiffs_conf_t {
+        let label = CString::new(ESP_STORAGE_PARTITION_LABEL)
+            .map_err(|e| Error::config("storage", e.to_string()))?;
+        let mut conf = esp_idf_svc::sys::esp_vfs_littlefs_conf_t {
             base_path: base.as_ptr(),
-            partition_label: std::ptr::null(),
-            max_files: 10,
-            format_if_mount_failed: true,
+            partition_label: label.as_ptr(),
+            partition: std::ptr::null(),
+            ..Default::default()
         };
-        let err = unsafe { esp_idf_svc::sys::esp_vfs_spiffs_register(&conf) };
+        conf.set_format_if_mount_failed(1);
+        conf.set_read_only(0);
+        conf.set_dont_mount(0);
+        conf.set_grow_on_mount(0);
+        let err = unsafe { esp_idf_svc::sys::esp_vfs_littlefs_register(&conf) };
         if err != 0 {
             return Err(Error::esp("storage_register", err));
         }
         let mut total: usize = 0;
         let mut used: usize = 0;
-        unsafe { esp_idf_svc::sys::esp_spiffs_info(std::ptr::null(), &mut total, &mut used) };
+        let info_err =
+            unsafe { esp_idf_svc::sys::esp_littlefs_info(label.as_ptr(), &mut total, &mut used) };
+        if info_err != 0 {
+            return Err(Error::esp("storage_info", info_err));
+        }
         log::info!(
             "[platform::storage] mounted base={} total={} used={}",
             base_str,
@@ -248,10 +261,11 @@ pub fn storage_usage() -> Option<(u64, u64)> {
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
     {
         with_fs_lock_value_stage("storage_usage", || {
+            let label = CString::new(ESP_STORAGE_PARTITION_LABEL).ok()?;
             let mut total: usize = 0;
             let mut used: usize = 0;
             let ret = unsafe {
-                esp_idf_svc::sys::esp_spiffs_info(std::ptr::null(), &mut total, &mut used)
+                esp_idf_svc::sys::esp_littlefs_info(label.as_ptr(), &mut total, &mut used)
             };
             if ret == 0 {
                 Some((total as u64, used as u64))

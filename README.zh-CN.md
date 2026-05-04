@@ -303,7 +303,7 @@ BOARD=esp32-p4-nano-16mb ./build.sh --flash
 | `docs/` | 用户文档、集成文档、开发文档 |
 | `components/` | ESP-IDF 侧组件与底层封装 |
 | `scripts/` | 构建、烧录、检查和辅助脚本 |
-| `spiffs_data/` | ESP 侧默认文件系统数据 |
+| `storage_data/` | ESP 侧默认存储数据 |
 | `packaging/` | Linux 发布包相关内容 |
 | `tests/` | 运行时、工具、记忆和 Agent 行为测试 |
 
@@ -332,7 +332,7 @@ Beetles OS 由 **Openbeetles** 发起。我们希望把大语言模型、边缘�
 - 烧录失败：检查 USB 线、串口和 `ESPFLASH_PORT`。
 - `flash-c6` 失败：检查 WiFi 协处理器串口 `ESP_HOSTED_C6_PORT`，并让 P4 进入 bootloader 模式。
 - 配置页打不开：重新连接热点 **Beetle**，再打开 `http://192.168.4.1`；Linux 版本请确认当前 LAN IP。
-- `spiffs partition could not be found`：通常由板型预设或分区表不匹配导致。
+- `storage partition could not be found`：通常由板型预设或分区表不匹配导致。
 - 通道无消息：检查模型配置、通道凭据和 allowed chat ids。
 - 硬件工具没有出现：检查 `hardware.json`，确认对应设备能力已经注册。
 

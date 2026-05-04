@@ -30,8 +30,8 @@ assert_contains "$FLOW" 'beetle_preferred_flash_port_for_chip "$chip"' \
   "live flow must select ports through the shared flash strategy"
 assert_contains "$FLOW" 'lsof "$selected" "$sibling"' \
   "live flow must reject busy cu/tty serial aliases before flashing"
-assert_contains "$FLOW" '"$REPO_ROOT/build.sh" --flash-update --no-monitor' \
-  "live flow must flash through build.sh without opening build.sh monitor"
+assert_contains "$FLOW" 'BEETLE_FLASH_MODE=full-erase TARGET=esp ESPFLASH_PORT="$selected_port" "$REPO_ROOT/build.sh" --flash --no-monitor' \
+  "live flow must flash through build.sh full erase without opening build.sh monitor"
 assert_contains "$FLOW" 'wait_for_port "$selected_port"' \
   "live flow must rediscover the serial port after flashing"
 assert_contains "$FLOW" 'espflash monitor --port "$selected_port" --chip "$chip" --monitor-baud "$baud" --non-interactive --after hard-reset' \

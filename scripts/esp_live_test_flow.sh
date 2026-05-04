@@ -351,7 +351,7 @@ mkdir -p "$run_dir"
 cat > "$run_dir/commands.md" <<EOF
 # Reproduce ESP live test flow
 
-TARGET=esp ESPFLASH_PORT=$selected_port ./build.sh --flash-update --no-monitor
+BEETLE_FLASH_MODE=full-erase TARGET=esp ESPFLASH_PORT=$selected_port ./build.sh --flash --no-monitor
 espflash monitor --port $selected_port --chip $chip --monitor-baud $baud --non-interactive --after hard-reset
 scripts/esp_soak_analyze.sh --output-dir $run_dir/analysis $log_file
 EOF
@@ -366,7 +366,7 @@ echo "Step 1/5: serial port selected and free."
 
 echo
 echo "Step 2/5: flashing with ./build.sh."
-TARGET=esp ESPFLASH_PORT="$selected_port" "$REPO_ROOT/build.sh" --flash-update --no-monitor
+BEETLE_FLASH_MODE=full-erase TARGET=esp ESPFLASH_PORT="$selected_port" "$REPO_ROOT/build.sh" --flash --no-monitor
 
 echo
 echo "Step 3/5: rechecking serial port after flash."

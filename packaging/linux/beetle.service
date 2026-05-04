@@ -17,7 +17,7 @@ ExecStart=/opt/beetle/current/beetle run
 # Recover from crashes; cap bursts so a broken binary does not spin forever.
 Restart=on-failure
 RestartSec=5
-# State and SPIFFS-emulation paths (host): see README.txt for BEETLE_STATE_ROOT.
+# State and storage paths (host): see README.txt for BEETLE_STATE_ROOT.
 EnvironmentFile=-/etc/default/beetle
 # Do not set ReadWritePaths= here: on embedded images it enables mount namespacing and fails with
 # status 226/NAMESPACE if a listed path (e.g. /data/beetle) does not exist. Harden with ProtectSystem=

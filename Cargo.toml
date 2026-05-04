@@ -24,6 +24,9 @@ component_dirs = ["components"]
 remote_component = { name = "espressif/esp_lcd_ili9341", version = "2.0.2" }
 bindings_header = "components/beetle_lcd_deps/bindings.h"
 
+[[package.metadata.esp-idf-sys.extra_components]]
+remote_component = { name = "joltwallet/littlefs", version = "1.21.1" }
+
 [lints.rust.unexpected_cfgs]
 level = "warn"
 check-cfg = ['cfg(esp_idf_version_at_least_6_0_0)']

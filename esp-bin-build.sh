@@ -122,6 +122,8 @@ with open(records_path, newline="", encoding="utf-8") as fh:
                 "target": row["target"],
                 "flash_size": row["flash_size"],
                 "partition_table": row["partition_table"],
+                "requires_full_erase": True,
+                "storage_migration": "destructive",
                 "bin": {
                     "file": row["bin_file"],
                     "sha256": row["bin_sha256"],
@@ -141,6 +143,8 @@ payload = {
     "product": "beetle",
     "version": version,
     "generated_at_utc": generated_at,
+    "requires_full_erase": True,
+    "storage_migration": "destructive",
     "boards": boards,
 }
 json.dump(payload, sys.stdout, indent=2, ensure_ascii=False)
@@ -209,6 +213,8 @@ with open(records_path, newline="", encoding="utf-8") as fh:
                 "target": row["target"],
                 "flash_size": row["flash_size"],
                 "partition_table": row["partition_table"],
+                "requires_full_erase": True,
+                "storage_migration": "destructive",
                 "artifacts": {
                     "bin": {
                         "file": row["bin_file"],
