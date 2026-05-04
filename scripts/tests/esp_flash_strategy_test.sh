@@ -246,14 +246,30 @@ assert_file_not_contains \
   "$ROOT_DIR/partitions.csv" \
   'ota_' \
   "default S3 partition table should no longer publish OTA app slots"
-assert_file_contains \
+assert_file_not_contains \
   "$ROOT_DIR/build.sh" \
-  'filesystem format changes require full erase/factory reflash even when offset/size stay unchanged' \
-  "build.sh update-flash prompt must not imply storage config survives format changes"
-assert_file_contains \
+  'STORAGE_BACKEND_MIGRATION_REQUIRES_FULL_ERASE' \
+  "build.sh must not bake release-specific destructive migration policy into generic flashing"
+assert_file_not_contains \
   "$ROOT_DIR/build.sh" \
-  'Flash mode: full chip erase required for this storage format migration' \
-  "build.sh flash menu must force full erase during destructive storage migration"
+  'storage format migration' \
+  "build.sh must keep migration-specific reinstall guidance in release notes, not script policy"
+assert_file_not_contains \
+  "$ROOT_DIR/build.ps1" \
+  'STORAGE_BACKEND_MIGRATION_REQUIRES_FULL_ERASE' \
+  "build.ps1 must not bake release-specific destructive migration policy into generic flashing"
+assert_file_not_contains \
+  "$ROOT_DIR/build.ps1" \
+  'storage format migration' \
+  "build.ps1 must keep migration-specific reinstall guidance in release notes, not script policy"
+assert_file_contains \
+  "$ROOT_DIR/sdkconfig.defaults" \
+  'CONFIG_LITTLEFS_SPIFFS_COMPAT=y' \
+  "ESP LittleFS VFS must auto-create parent dirs for Beetle logical slash paths"
+assert_file_contains \
+  "$ROOT_DIR/sdkconfig.defaults" \
+  'CONFIG_LITTLEFS_OPEN_DIR=y' \
+  "ESP LittleFS VFS must support directory-open semantics used by storage listing"
 assert_file_not_contains \
   "$ROOT_DIR/build.sh" \
   'python3 -m esptool --chip "$FLASH_CHIP" elf2image' \

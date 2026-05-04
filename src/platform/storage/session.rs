@@ -9,6 +9,7 @@ use crate::memory::{
 use serde_json;
 use std::collections::HashMap;
 use std::collections::VecDeque;
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 use std::fs::OpenOptions;
 use std::io::{Read, Write};
 use std::path::Path;
@@ -19,10 +20,9 @@ use std::sync::Mutex;
 use crate::platform::psram_vec::PsramVec;
 use crate::platform::state_root::state_mount_path;
 
-use super::{
-    finish_file_after_write, list_dir, read_file, with_fs_lock_stage, WriteDurability,
-    MAX_WRITE_SIZE,
-};
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+use super::finish_file_after_write;
+use super::{list_dir, read_file, with_fs_lock_stage, WriteDurability, MAX_WRITE_SIZE};
 
 const TAG: &str = "platform::storage::session";
 
@@ -376,7 +376,10 @@ fn ensure_session_parent_dir(path: &Path, stage: &'static str) -> Result<()> {
 }
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-fn ensure_session_parent_dir(_path: &Path, _stage: &'static str) -> Result<()> {
+fn ensure_session_parent_dir(path: &Path, stage: &'static str) -> Result<()> {
+    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        super::ensure_esp_storage_dir(parent, stage)?;
+    }
     Ok(())
 }
 
@@ -384,7 +387,9 @@ fn ensure_sessions_dir_exists(stage: &'static str) -> Result<()> {
     let mut dir = state_mount_path();
     dir.push(REL_PATH_SESSIONS_DIR);
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-    let _ = stage;
+    {
+        super::ensure_esp_storage_dir(&dir, stage)?;
+    }
     #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
     {
         std::fs::create_dir_all(&dir).map_err(|e| Error::io(stage, e))?;
@@ -496,59 +501,25 @@ fn observe_session_append_state_unlocked(path: &Path) -> Result<SessionAppendSta
     })
 }
 
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 fn write_session_body_unlocked(path: &Path, data: &[u8]) -> Result<()> {
     ensure_session_parent_dir(path, "session_write")?;
-    super::write_file_unlocked(
-        path,
-        data,
-        super::WriteTailPadding::Newlines,
-        WriteDurability::Durable,
-        "session_write",
-    )
+    super::write_file_unlocked(path, data, WriteDurability::Durable, "session_write")
 }
 
-fn write_session_messages_unlocked<'a>(
-    path: &Path,
+fn write_session_messages_to_sink<'a>(
     chat_id: &str,
     write_header: bool,
     messages: impl IntoIterator<Item = &'a StoredSessionMessage>,
+    mut write_chunk: impl FnMut(&[u8]) -> Result<()>,
 ) -> Result<SessionAppendState> {
-    ensure_session_parent_dir(path, "session_write")?;
-    let path_str = path
-        .to_str()
-        .ok_or_else(|| Error::config("session_write", "invalid path"))?;
-    let old_len = std::fs::metadata(path_str)
-        .ok()
-        .and_then(|meta| usize::try_from(meta.len()).ok())
-        .unwrap_or(0);
-    let truncate_on_open =
-        super::truncate_on_open_for_write(super::WriteTailPadding::Newlines, old_len);
-    let file = OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(truncate_on_open)
-        .open(path_str)
-        .or_else(|error| {
-            if !truncate_on_open && error.kind() == std::io::ErrorKind::NotFound {
-                OpenOptions::new()
-                    .create(true)
-                    .write(true)
-                    .truncate(true)
-                    .open(path_str)
-            } else {
-                Err(error)
-            }
-        })
-        .map_err(|e| Error::io("session_write", e))?;
-    let mut file = file;
     let mut written = 0usize;
     let mut message_count = 0usize;
 
     if write_header {
-        file.write_all(CHAT_ID_HEADER_PREFIX.as_bytes())
-            .and_then(|_| file.write_all(chat_id.as_bytes()))
-            .and_then(|_| file.write_all(b"\n"))
-            .map_err(|e| Error::io("session_write", e))?;
+        write_chunk(CHAT_ID_HEADER_PREFIX.as_bytes())?;
+        write_chunk(chat_id.as_bytes())?;
+        write_chunk(b"\n")?;
         written = written
             .saturating_add(CHAT_ID_HEADER_PREFIX.len())
             .saturating_add(chat_id.len())
@@ -568,29 +539,66 @@ fn write_session_messages_unlocked<'a>(
                 ),
             ));
         }
-        file.write_all(line.as_bytes())
-            .and_then(|_| file.write_all(b"\n"))
-            .map_err(|e| Error::io("session_write", e))?;
+        write_chunk(line.as_bytes())?;
+        write_chunk(b"\n")?;
         written = written.saturating_add(line.len()).saturating_add(1);
         message_count = message_count.saturating_add(1);
     }
 
-    if old_len > written {
-        let mut remaining = old_len - written;
-        const LINE_PAD: &[u8] =
-            b"\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n";
-        while remaining > 0 {
-            let n = remaining.min(LINE_PAD.len());
-            file.write_all(&LINE_PAD[..n])
-                .map_err(|e| Error::io("session_write", e))?;
-            remaining -= n;
-        }
-    }
-    finish_file_after_write(&mut file, "session_write", WriteDurability::Durable)?;
     Ok(SessionAppendState::from_written_messages(
         message_count,
         written > 0,
     ))
+}
+
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+fn write_session_messages_unlocked<'a>(
+    path: &Path,
+    chat_id: &str,
+    write_header: bool,
+    messages: impl IntoIterator<Item = &'a StoredSessionMessage>,
+) -> Result<SessionAppendState> {
+    ensure_session_parent_dir(path, "session_write")?;
+    let mut body = String::new();
+    let state = write_session_messages_to_sink(chat_id, write_header, messages, |chunk| {
+        let part = std::str::from_utf8(chunk)
+            .map_err(|e| Error::config("session_write", e.to_string()))?;
+        body.push_str(part);
+        Ok(())
+    })?;
+    write_session_body_unlocked(path, body.as_bytes())?;
+    Ok(state)
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+fn write_session_messages_unlocked<'a>(
+    path: &Path,
+    chat_id: &str,
+    write_header: bool,
+    messages: impl IntoIterator<Item = &'a StoredSessionMessage>,
+) -> Result<SessionAppendState> {
+    ensure_session_parent_dir(path, "session_write")?;
+    let path_str = path
+        .to_str()
+        .ok_or_else(|| Error::config("session_write", "invalid path"))?;
+    let file = super::esp_stdio_open(path_str, "wb", "session_write_open")?;
+    let write_result = write_session_messages_to_sink(chat_id, write_header, messages, |chunk| {
+        super::esp_stdio_write_all(file, chunk, "session_write_body")
+    })
+    .and_then(|state| {
+        super::esp_stdio_finish(file, "session_write_sync", WriteDurability::Durable)?;
+        Ok(state)
+    });
+    match write_result {
+        Ok(state) => {
+            super::esp_stdio_close(file, "session_write_close")?;
+            Ok(state)
+        }
+        Err(error) => {
+            super::esp_stdio_close_suppress(file);
+            Err(error)
+        }
+    }
 }
 
 fn append_session_lines_unlocked(
@@ -611,46 +619,76 @@ fn append_session_lines_unlocked(
         .ok()
         .and_then(|meta| usize::try_from(meta.len()).ok())
         .unwrap_or(0);
-    let open_result = OpenOptions::new().create(true).append(true).open(path_str);
-    let mut file = match open_result {
-        Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            let mut body = String::with_capacity(
-                CHAT_ID_HEADER_PREFIX.len()
-                    + chat_id.len()
-                    + lines.iter().map(|line| line.len() + 1).sum::<usize>()
-                    + if write_header { 2 } else { 0 },
-            );
-            if write_header {
-                body.push_str(CHAT_ID_HEADER_PREFIX);
-                body.push_str(chat_id);
-                body.push('\n');
-            }
-            for line in lines {
-                body.push_str(line);
-                body.push('\n');
-            }
-            return write_session_body_unlocked(path, body.as_bytes());
+    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+    {
+        let mut chunks: Vec<&[u8]> = Vec::with_capacity(
+            lines.len().saturating_mul(2)
+                + usize::from(file_len == 0 && write_header).saturating_mul(3)
+                + usize::from(file_len > 0 && prepend_newline),
+        );
+        if file_len == 0 && write_header {
+            chunks.push(CHAT_ID_HEADER_PREFIX.as_bytes());
+            chunks.push(chat_id.as_bytes());
+            chunks.push(b"\n");
         }
-        Err(error) => return Err(Error::io("session_append", error)),
-    };
-    if file_len == 0 && write_header {
-        file.write_all(CHAT_ID_HEADER_PREFIX.as_bytes())
-            .and_then(|_| file.write_all(chat_id.as_bytes()))
-            .and_then(|_| file.write_all(b"\n"))
-            .map_err(|e| Error::io("session_append", e))?;
+        if file_len > 0 && prepend_newline {
+            chunks.push(b"\n");
+        }
+        for line in lines {
+            chunks.push(line.as_bytes());
+            chunks.push(b"\n");
+        }
+        super::esp_append_file_chunks_stdio(
+            path_str,
+            &chunks,
+            "session_append",
+            WriteDurability::Durable,
+        )?;
+        Ok(())
     }
-    if file_len > 0 && prepend_newline {
-        file.write_all(b"\n")
-            .map_err(|e| Error::io("session_append", e))?;
+    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    {
+        let open_result = OpenOptions::new().create(true).append(true).open(path_str);
+        let mut file = match open_result {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let mut body = String::with_capacity(
+                    CHAT_ID_HEADER_PREFIX.len()
+                        + chat_id.len()
+                        + lines.iter().map(|line| line.len() + 1).sum::<usize>()
+                        + if write_header { 2 } else { 0 },
+                );
+                if write_header {
+                    body.push_str(CHAT_ID_HEADER_PREFIX);
+                    body.push_str(chat_id);
+                    body.push('\n');
+                }
+                for line in lines {
+                    body.push_str(line);
+                    body.push('\n');
+                }
+                return write_session_body_unlocked(path, body.as_bytes());
+            }
+            Err(error) => return Err(Error::io("session_append", error)),
+        };
+        if file_len == 0 && write_header {
+            file.write_all(CHAT_ID_HEADER_PREFIX.as_bytes())
+                .and_then(|_| file.write_all(chat_id.as_bytes()))
+                .and_then(|_| file.write_all(b"\n"))
+                .map_err(|e| Error::io("session_append", e))?;
+        }
+        if file_len > 0 && prepend_newline {
+            file.write_all(b"\n")
+                .map_err(|e| Error::io("session_append", e))?;
+        }
+        for line in lines {
+            file.write_all(line.as_bytes())
+                .and_then(|_| file.write_all(b"\n"))
+                .map_err(|e| Error::io("session_append", e))?;
+        }
+        finish_file_after_write(&mut file, "session_append", WriteDurability::Durable)?;
+        Ok(())
     }
-    for line in lines {
-        file.write_all(line.as_bytes())
-            .and_then(|_| file.write_all(b"\n"))
-            .map_err(|e| Error::io("session_append", e))?;
-    }
-    finish_file_after_write(&mut file, "session_append", WriteDurability::Durable)?;
-    Ok(())
 }
 
 fn load_session_snapshot_unlocked(
@@ -1274,10 +1312,14 @@ impl SessionStore for StorageSessionStore {
 mod tests {
     use super::{
         load_session_snapshot_unlocked, scan_session_file, session_path,
-        write_session_body_unlocked, SessionAppendState, SessionRepairMode, StorageSessionStore,
-        StoredSessionMessage, SESSION_MESSAGE_ID_PREFIX,
+        write_session_body_unlocked, write_session_messages_to_sink, SessionAppendState,
+        SessionRepairMode, StorageSessionStore, StoredSessionMessage, SESSION_MESSAGE_ID_PREFIX,
     };
-    use crate::memory::{SessionMessage, SessionStore, MAX_SESSION_ENTRIES};
+    use crate::memory::{
+        SessionMessage, SessionStore, MAX_SESSION_ENTRIES, MAX_SESSION_MESSAGE_LEN,
+        REL_PATH_SESSIONS_DIR,
+    };
+    use crate::platform::state_root::state_mount_path;
 
     #[test]
     fn counts_only_message_lines() {
@@ -1634,6 +1676,55 @@ mod tests {
         );
 
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn session_rewrite_streams_full_ring_beyond_esp_single_write_cap() {
+        const ESP_SINGLE_WRITE_CAP: usize = 256 * 1024;
+
+        let content = "x".repeat(MAX_SESSION_MESSAGE_LEN - 256);
+        let mut messages = Vec::with_capacity(MAX_SESSION_ENTRIES);
+        for index in 0..MAX_SESSION_ENTRIES {
+            messages.push(StoredSessionMessage {
+                message_id: format!("msg_seed_{index:03}"),
+                role: "user".to_string(),
+                content: content.clone(),
+            });
+        }
+
+        let mut total = 0usize;
+        let mut max_chunk = 0usize;
+        let state =
+            write_session_messages_to_sink("stream-rewrite", false, messages.iter(), |chunk| {
+                total = total.saturating_add(chunk.len());
+                max_chunk = max_chunk.max(chunk.len());
+                Ok(())
+            })
+            .expect("stream rewrite");
+
+        assert_eq!(state.message_count, MAX_SESSION_ENTRIES);
+        assert!(
+            total > ESP_SINGLE_WRITE_CAP,
+            "fixture must exceed the ESP generic single-write cap"
+        );
+        assert!(
+            max_chunk <= MAX_SESSION_MESSAGE_LEN,
+            "session rewrite must emit per-line chunks instead of one large body"
+        );
+    }
+
+    #[test]
+    fn ensure_session_parent_dir_recreates_missing_parent() {
+        let parent = state_mount_path()
+            .join(REL_PATH_SESSIONS_DIR)
+            .join(format!("ensure-parent-{}", std::process::id()));
+        let path = parent.join("session.jsonl");
+        let _ = std::fs::remove_dir_all(&parent);
+
+        super::ensure_session_parent_dir(&path, "session_test").expect("ensure parent");
+        assert!(parent.is_dir());
+
+        let _ = std::fs::remove_dir_all(&parent);
     }
 
     #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]

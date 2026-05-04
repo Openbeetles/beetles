@@ -59,12 +59,10 @@ impl StateFs for Esp32StateFs {
         let rel = crate::util::normalize_state_rel_path(rel_path)?;
         let rel_path = Path::new(&rel);
         let path = state_mount_path().join(storage::esp_storage_rel_path(rel_path));
-        // ESP 存储后端无真实目录：`mkdir`/`create_dir_all` 会返回 Not supported（如 raw_os_error 134）。
-        // 带 `/` 的路径由 VFS 直接 `File::create` 即可（见后端 `write_file`）。
-        match storage::state_write_tail_padding(rel_path) {
-            storage::WriteTailPadding::JsonWhitespace => storage::write_json_file(&path, data),
-            storage::WriteTailPadding::Newlines => storage::write_line_file(&path, data),
-            storage::WriteTailPadding::None => storage::write_file(&path, data),
+        match storage::state_write_kind(rel_path) {
+            storage::StateWriteKind::Json => storage::write_json_file(&path, data),
+            storage::StateWriteKind::Lines => storage::write_line_file(&path, data),
+            storage::StateWriteKind::Raw => storage::write_file(&path, data),
         }
     }
 

@@ -6,10 +6,12 @@ use crate::error::{Error, Result};
 use crate::platform::psram_vec::PsramVec;
 use crate::platform::state_root::state_mount_path;
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-use std::ffi::CString;
+use core::ffi::c_void;
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-use std::fs::OpenOptions;
+use std::ffi::CString;
 use std::io::{Read, Seek, SeekFrom, Write};
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+use std::path::Component;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
@@ -33,10 +35,10 @@ pub(crate) fn state_path_join(rel: impl AsRef<Path>) -> PathBuf {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum WriteTailPadding {
-    None,
-    JsonWhitespace,
-    Newlines,
+pub(crate) enum StateWriteKind {
+    Raw,
+    Json,
+    Lines,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -48,11 +50,11 @@ pub(crate) enum WriteDurability {
     not(any(target_arch = "xtensa", target_arch = "riscv32")),
     allow(dead_code)
 )]
-pub(crate) fn state_write_tail_padding(rel: &Path) -> WriteTailPadding {
+pub(crate) fn state_write_kind(rel: &Path) -> StateWriteKind {
     match rel.extension().and_then(|ext| ext.to_str()) {
-        Some("json") => WriteTailPadding::JsonWhitespace,
-        Some("jsonl") => WriteTailPadding::Newlines,
-        _ => WriteTailPadding::None,
+        Some("json") => StateWriteKind::Json,
+        Some("jsonl") => StateWriteKind::Lines,
+        _ => StateWriteKind::Raw,
     }
 }
 
@@ -278,10 +280,48 @@ pub fn init_storage() -> Result<()> {
 fn ensure_esp_storage_root_dirs(base_path: &str) -> Result<()> {
     for rel in ESP_STORAGE_ROOT_DIRS {
         let path = format!("{base_path}/{rel}");
-        match std::fs::create_dir_all(&path) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-            Err(error) => return Err(Error::io("storage_init_dirs", error)),
+        ensure_esp_storage_dir(Path::new(&path), "storage_init_dirs")?;
+    }
+    Ok(())
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+pub(super) fn ensure_esp_storage_dir(path: &Path, stage: &'static str) -> Result<()> {
+    if path.as_os_str().is_empty() || path == Path::new("/") {
+        return Ok(());
+    }
+    let base = state_mount_path();
+    if path == base {
+        return Ok(());
+    }
+    let relative = path.strip_prefix(&base).map_err(|_| {
+        Error::config(
+            stage,
+            format!(
+                "ESP storage dir {} is outside mount {}",
+                path.display(),
+                base.display()
+            ),
+        )
+    })?;
+    let mut current = base;
+    for component in relative.components() {
+        match component {
+            Component::Normal(part) => {
+                current.push(part);
+                match std::fs::create_dir(&current) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                    Err(error) => return Err(Error::io(stage, error)),
+                }
+            }
+            Component::CurDir => {}
+            _ => {
+                return Err(Error::config(
+                    stage,
+                    format!("invalid ESP storage dir component in {}", path.display()),
+                ));
+            }
         }
     }
     Ok(())
@@ -397,68 +437,144 @@ pub fn read_file_to_vec(path: impl AsRef<Path>) -> Result<Vec<u8>> {
     })
 }
 
-pub(crate) fn truncate_on_open_for_write(tail_padding: WriteTailPadding, old_len: usize) -> bool {
-    tail_padding == WriteTailPadding::None || old_len == 0
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+fn esp_stdio_error(fallback: impl Into<String>) -> std::io::Error {
+    let error = std::io::Error::last_os_error();
+    match error.raw_os_error() {
+        Some(0) | None => std::io::Error::other(fallback.into()),
+        Some(_) => error,
+    }
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+pub(super) fn esp_stdio_open(
+    path_str: &str,
+    mode: &str,
+    stage: &'static str,
+) -> Result<*mut esp_idf_svc::sys::FILE> {
+    let path = CString::new(path_str).map_err(|e| Error::config(stage, e.to_string()))?;
+    let mode = CString::new(mode).map_err(|e| Error::config(stage, e.to_string()))?;
+    let file = unsafe { esp_idf_svc::sys::fopen(path.as_ptr(), mode.as_ptr()) };
+    if file.is_null() {
+        Err(Error::io(
+            stage,
+            esp_stdio_error(format!("fopen({path_str}) failed")),
+        ))
+    } else {
+        Ok(file)
+    }
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+pub(super) fn esp_stdio_write_all(
+    file: *mut esp_idf_svc::sys::FILE,
+    data: &[u8],
+    stage: &'static str,
+) -> Result<()> {
+    if data.is_empty() {
+        return Ok(());
+    }
+    let len = u32::try_from(data.len())
+        .map_err(|_| Error::config(stage, format!("write size {} exceeds u32", data.len())))?;
+    let written = unsafe { esp_idf_svc::sys::fwrite(data.as_ptr().cast::<c_void>(), 1, len, file) };
+    if written == len {
+        Ok(())
+    } else {
+        Err(Error::io(
+            stage,
+            esp_stdio_error(format!("fwrite wrote {written} of {len} bytes")),
+        ))
+    }
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+pub(super) fn esp_stdio_finish(
+    file: *mut esp_idf_svc::sys::FILE,
+    stage: &'static str,
+    durability: WriteDurability,
+) -> Result<()> {
+    match durability {
+        WriteDurability::Durable => {
+            if unsafe { esp_idf_svc::sys::fflush(file) } != 0 {
+                return Err(Error::io(stage, esp_stdio_error("fflush failed")));
+            }
+            let fd = unsafe { esp_idf_svc::sys::fileno(file) };
+            if fd < 0 {
+                return Err(Error::io(stage, esp_stdio_error("fileno failed")));
+            }
+            if unsafe { esp_idf_svc::sys::fsync(fd) } != 0 {
+                return Err(Error::io(stage, esp_stdio_error("fsync failed")));
+            }
+            Ok(())
+        }
+    }
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+pub(super) fn esp_stdio_close(
+    file: *mut esp_idf_svc::sys::FILE,
+    stage: &'static str,
+) -> Result<()> {
+    if unsafe { esp_idf_svc::sys::fclose(file) } == 0 {
+        Ok(())
+    } else {
+        Err(Error::io(stage, esp_stdio_error("fclose failed")))
+    }
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+pub(super) fn esp_stdio_close_suppress(file: *mut esp_idf_svc::sys::FILE) {
+    if !file.is_null() {
+        let _ = unsafe { esp_idf_svc::sys::fclose(file) };
+    }
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+fn esp_overwrite_file_stdio(
+    path_str: &str,
+    data: &[u8],
+    durability: WriteDurability,
+) -> Result<()> {
+    let file = esp_stdio_open(path_str, "wb", "storage_write_open")?;
+    if let Err(error) = esp_stdio_write_all(file, data, "storage_write_body")
+        .and_then(|_| esp_stdio_finish(file, "storage_write_sync", durability))
+    {
+        esp_stdio_close_suppress(file);
+        return Err(error);
+    }
+    esp_stdio_close(file, "storage_write_close")
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+pub(super) fn esp_append_file_chunks_stdio(
+    path_str: &str,
+    chunks: &[&[u8]],
+    stage: &'static str,
+    durability: WriteDurability,
+) -> Result<()> {
+    let file = esp_stdio_open(path_str, "ab", stage)?;
+    for chunk in chunks {
+        if let Err(error) = esp_stdio_write_all(file, chunk, stage) {
+            esp_stdio_close_suppress(file);
+            return Err(error);
+        }
+    }
+    if let Err(error) = esp_stdio_finish(file, stage, durability) {
+        esp_stdio_close_suppress(file);
+        return Err(error);
+    }
+    esp_stdio_close(file, stage)
 }
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 fn esp_write_file_no_unlink(
     path_str: &str,
     data: &[u8],
-    tail_padding: WriteTailPadding,
     durability: WriteDurability,
-    stage: &'static str,
+    _stage: &'static str,
 ) -> Result<()> {
-    ensure_esp_parent_dir(path_str, stage)?;
-    let old_len = if tail_padding != WriteTailPadding::None {
-        std::fs::metadata(path_str)
-            .ok()
-            .and_then(|meta| usize::try_from(meta.len()).ok())
-            .unwrap_or(0)
-    } else {
-        0
-    };
-    let truncate_on_open = truncate_on_open_for_write(tail_padding, old_len);
-    let file = OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(truncate_on_open)
-        .open(path_str)
-        .or_else(|error| {
-            if tail_padding != WriteTailPadding::None
-                && !truncate_on_open
-                && error.kind() == std::io::ErrorKind::NotFound
-            {
-                OpenOptions::new()
-                    .create(true)
-                    .write(true)
-                    .truncate(true)
-                    .open(path_str)
-            } else {
-                Err(error)
-            }
-        })
-        .map_err(|e| Error::io(stage, e))?;
-    let mut file = file;
-    file.write_all(data).map_err(|e| Error::io(stage, e))?;
-    if tail_padding != WriteTailPadding::None && old_len > data.len() {
-        let mut remaining = old_len - data.len();
-        const JSON_PAD: &[u8] = b"                                                                ";
-        const LINE_PAD: &[u8] =
-            b"\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n";
-        let pad = match tail_padding {
-            WriteTailPadding::None => unreachable!(),
-            WriteTailPadding::JsonWhitespace => JSON_PAD,
-            WriteTailPadding::Newlines => LINE_PAD,
-        };
-        while remaining > 0 {
-            let n = remaining.min(pad.len());
-            file.write_all(&pad[..n]).map_err(|e| Error::io(stage, e))?;
-            remaining -= n;
-        }
-    }
-    finish_file_after_write(&mut file, stage, durability)?;
-    Ok(())
+    ensure_esp_parent_dir(path_str, "storage_write_parent")?;
+    esp_overwrite_file_stdio(path_str, data, durability)
 }
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
@@ -469,9 +585,10 @@ fn ensure_esp_parent_dir(path_str: &str, stage: &'static str) -> Result<()> {
     if parent.as_os_str().is_empty() || parent == Path::new("/") {
         return Ok(());
     }
-    std::fs::create_dir_all(parent).map_err(|e| Error::io(stage, e))
+    ensure_esp_storage_dir(parent, stage)
 }
 
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub(crate) fn finish_file_after_write(
     file: &mut std::fs::File,
     stage: &'static str,
@@ -485,7 +602,6 @@ pub(crate) fn finish_file_after_write(
 pub(crate) fn write_file_unlocked(
     path: &Path,
     data: &[u8],
-    tail_padding: WriteTailPadding,
     durability: WriteDurability,
     stage: &'static str,
 ) -> Result<()> {
@@ -500,58 +616,39 @@ pub(crate) fn write_file_unlocked(
         let path_str = path
             .to_str()
             .ok_or_else(|| Error::config(stage, "invalid path"))?;
-        esp_write_file_no_unlink(path_str, data, tail_padding, durability, stage)
+        esp_write_file_no_unlink(path_str, data, durability, stage)
     }
     #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
     {
-        let _ = tail_padding;
         let _ = durability;
         crate::platform::fs_atomic::atomic_write(path, data)
     }
 }
 
 /// 写字节到文件。超过 MAX_WRITE_SIZE 返回错误。
-/// ESP：storage 运行态禁止 unlink+rewrite，普通字节路径直接覆盖；host：同目录 tmp + fsync + rename（原子替换）。
+/// ESP：通过 LittleFS 官方组件覆盖最完整的 stdio/VFS 写入面直接覆盖；host：同目录 tmp + fsync + rename（原子替换）。
 pub fn write_file(path: impl AsRef<Path>, data: &[u8]) -> Result<()> {
     let p = path.as_ref();
     with_fs_lock_stage("storage_write", || {
-        write_file_unlocked(
-            p,
-            data,
-            WriteTailPadding::None,
-            WriteDurability::Durable,
-            "storage_write",
-        )
+        write_file_unlocked(p, data, WriteDurability::Durable, "storage_write")
     })
 }
 
-/// 写 JSON 状态文件。ESP 上短写用 JSON 合法空白覆盖旧尾部，避免 `storage_remove`。
-/// Write JSON state. On ESP, shorter writes pad the previous tail with JSON whitespace instead of unlinking.
+/// 写 JSON 状态文件。保留独立入口，便于调用方表达状态文件语义与日志 stage。
+/// Write JSON state through the common storage overwrite primitive.
 pub fn write_json_file(path: impl AsRef<Path>, data: &[u8]) -> Result<()> {
     let p = path.as_ref();
     with_fs_lock_stage("storage_write_json", || {
-        write_file_unlocked(
-            p,
-            data,
-            WriteTailPadding::JsonWhitespace,
-            WriteDurability::Durable,
-            "storage_write_json",
-        )
+        write_file_unlocked(p, data, WriteDurability::Durable, "storage_write_json")
     })
 }
 
-/// 写换行分隔文本状态。ESP 上短写用空行覆盖旧尾部，避免 JSONL/session 旧行复活。
-/// Write newline-delimited text state. On ESP, shorter writes blank old tails with newlines.
+/// 写换行分隔文本状态。保留独立入口，便于调用方表达 JSONL/文本状态语义与日志 stage。
+/// Write newline-delimited state through the common storage overwrite primitive.
 pub fn write_line_file(path: impl AsRef<Path>, data: &[u8]) -> Result<()> {
     let p = path.as_ref();
     with_fs_lock_stage("storage_write_line", || {
-        write_file_unlocked(
-            p,
-            data,
-            WriteTailPadding::Newlines,
-            WriteDurability::Durable,
-            "storage_write_line",
-        )
+        write_file_unlocked(p, data, WriteDurability::Durable, "storage_write_line")
     })
 }
 
@@ -592,20 +689,37 @@ pub fn append_line_file(path: impl AsRef<Path>, line: &[u8]) -> Result<()> {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
             Err(error) => return Err(Error::io("storage_append_line", error)),
         };
-        let mut file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path_str)
-            .map_err(|e| Error::io("storage_append_line", e))?;
-        if needs_separator {
+        #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+        {
+            let separator = if needs_separator {
+                b"\n".as_slice()
+            } else {
+                &[]
+            };
+            esp_append_file_chunks_stdio(
+                path_str,
+                &[separator, line, b"\n"],
+                "storage_append_line",
+                WriteDurability::Durable,
+            )?;
+        }
+        #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+        {
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path_str)
+                .map_err(|e| Error::io("storage_append_line", e))?;
+            if needs_separator {
+                file.write_all(b"\n")
+                    .map_err(|e| Error::io("storage_append_line", e))?;
+            }
+            file.write_all(line)
+                .map_err(|e| Error::io("storage_append_line", e))?;
             file.write_all(b"\n")
                 .map_err(|e| Error::io("storage_append_line", e))?;
+            finish_file_after_write(&mut file, "storage_append_line", WriteDurability::Durable)?;
         }
-        file.write_all(line)
-            .map_err(|e| Error::io("storage_append_line", e))?;
-        file.write_all(b"\n")
-            .map_err(|e| Error::io("storage_append_line", e))?;
-        finish_file_after_write(&mut file, "storage_append_line", WriteDurability::Durable)?;
         Ok(())
     })
 }
@@ -729,8 +843,8 @@ pub use world_sense::StorageWorldSenseStore;
 #[cfg(test)]
 mod tests {
     use super::{
-        append_line_file, esp_storage_rel_path, state_write_tail_padding,
-        truncate_on_open_for_write, write_json_file, WriteTailPadding, ESP_STORAGE_ROOT_DIRS,
+        append_line_file, esp_storage_rel_path, state_write_kind, write_json_file, StateWriteKind,
+        ESP_STORAGE_ROOT_DIRS,
     };
     use crate::agent::REL_PATH_ACTIVE_WORKS;
     use crate::memory::{
@@ -745,27 +859,6 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     const MAX_SAFE_ESP_REL_PATH_LEN: usize = 31;
-
-    #[test]
-    fn json_tail_padding_is_valid_after_shorter_rewrite() {
-        let mut bytes = br#"{"ok":true}"#.to_vec();
-        bytes
-            .extend_from_slice(b"                                                                ");
-        let parsed: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(parsed["ok"], true);
-    }
-
-    #[test]
-    fn line_tail_padding_is_ignored_by_jsonl_reader() {
-        let mut bytes = br#"{"ok":true}"#.to_vec();
-        bytes.extend_from_slice(b"\n\n\n\n");
-        let text = String::from_utf8(bytes).unwrap();
-        let lines = text
-            .lines()
-            .filter(|line| !line.trim().is_empty())
-            .collect::<Vec<_>>();
-        assert_eq!(lines, vec![r#"{"ok":true}"#]);
-    }
 
     #[test]
     fn write_json_file_keeps_shorter_rewrite_parseable() {
@@ -786,40 +879,26 @@ mod tests {
     }
 
     #[test]
-    fn new_json_state_writes_use_truncate_create_mode() {
-        assert!(truncate_on_open_for_write(
-            WriteTailPadding::JsonWhitespace,
-            0
-        ));
-        assert!(truncate_on_open_for_write(WriteTailPadding::Newlines, 0));
-        assert!(!truncate_on_open_for_write(
-            WriteTailPadding::JsonWhitespace,
-            16
-        ));
-        assert!(truncate_on_open_for_write(WriteTailPadding::None, 16));
-    }
-
-    #[test]
-    fn state_write_padding_uses_json_semantics_for_json_state() {
+    fn state_write_kind_uses_extension_semantics() {
         assert_eq!(
-            state_write_tail_padding(Path::new("config/channels.json")),
-            WriteTailPadding::JsonWhitespace
+            state_write_kind(Path::new("config/channels.json")),
+            StateWriteKind::Json
         );
         assert_eq!(
-            state_write_tail_padding(Path::new("memory/tool_execution_governance.json")),
-            WriteTailPadding::JsonWhitespace
+            state_write_kind(Path::new("memory/tool_execution_governance.json")),
+            StateWriteKind::Json
         );
         assert_eq!(
-            state_write_tail_padding(Path::new("memory/tool_execution_governance.corrupt.json")),
-            WriteTailPadding::JsonWhitespace
+            state_write_kind(Path::new("memory/tool_execution_governance.corrupt.json")),
+            StateWriteKind::Json
         );
         assert_eq!(
-            state_write_tail_padding(Path::new("memory/session.jsonl")),
-            WriteTailPadding::Newlines
+            state_write_kind(Path::new("memory/session.jsonl")),
+            StateWriteKind::Lines
         );
         assert_eq!(
-            state_write_tail_padding(Path::new("runtime/blob.bin")),
-            WriteTailPadding::None
+            state_write_kind(Path::new("runtime/blob.bin")),
+            StateWriteKind::Raw
         );
     }
 

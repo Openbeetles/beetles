@@ -41,7 +41,7 @@ Non-interactive / CI: use --no-deploy, BEETLE_SKIP_DEPLOY_PROMPT=1, or redirect 
 
 Skip the question and flash ESP immediately (automation):
   --flash          Build then flash ESP; interactive erase menu (default: update only, keep NVS).
-  --flash-update   Build then flash ESP without erase when storage format is compatible; disabled during storage format migrations.
+  --flash-update   Build then flash ESP without erase when storage format is compatible.
 
 Quick examples:
   ./build.sh
@@ -115,7 +115,6 @@ DO_PACKAGE_LINUX=""
 NO_MONITOR=""
 NO_DEPLOY_PROMPT=""
 FLASH_NO_ERASE=""
-STORAGE_BACKEND_MIGRATION_REQUIRES_FULL_ERASE=1
 BUILD_METHOD="${BUILD_METHOD:-auto}" # auto | docker | local | remote
 BUILD_PROFILE="release"
 PACKAGE_PROFILE="${PACKAGE_PROFILE:-}"
@@ -2963,21 +2962,9 @@ select_flash_mode() {
   local port="$1" triple="$2"
   ERASE_BEFORE_FLASH=0
   if [[ -n "$FLASH_NO_ERASE" ]]; then
-    if [[ "$STORAGE_BACKEND_MIGRATION_REQUIRES_FULL_ERASE" -eq 1 ]]; then
-      echo -e "${RED}Error: --flash-update is disabled for this storage format migration.${NC}" >&2
-      echo "Use --flash and select full chip erase, or use the factory reinstall path." >&2
-      echo "filesystem format changes require full erase/factory reflash even when offset/size stay unchanged." >&2
-      exit 1
-    fi
     echo -e "${YELLOW}! Flash mode: update only — no full-chip erase, but partition-table changes can still make storage format reinitialize.${NC}"
     echo "  Bootloader, partition table, and app will be refreshed in place."
     echo "  NVS is kept; storage files are kept only when the storage partition offset, size, and format are unchanged."
-    echo ""
-    return 0
-  fi
-  if [[ "$STORAGE_BACKEND_MIGRATION_REQUIRES_FULL_ERASE" -eq 1 ]]; then
-    ERASE_BEFORE_FLASH=1
-    echo -e "${YELLOW}! Flash mode: full chip erase required for this storage format migration.${NC}"
     echo ""
     return 0
   fi
@@ -2989,7 +2976,7 @@ select_flash_mode() {
   fi
   echo "========== Flash mode =========="
   echo ""
-  echo "  1) Update flash — keep NVS; storage files are preserved only if partition offset/size/backend are unchanged"
+  echo "  1) Update flash — keep NVS; storage files are preserved only if partition offset/size/format are unchanged"
   echo "  2) Full chip erase then flash — wipes entire flash (factory reset / partition change)"
   echo "  3) Cancel"
   echo ""

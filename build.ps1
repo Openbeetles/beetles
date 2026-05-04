@@ -3,7 +3,7 @@
 # Usage: .\build.ps1  or  .\build.ps1 --target xtensa-esp32s3-espidf [--package-profile <name>]
 #        .\build.ps1 clean           清理项目根与短路径 D:\pc_b 的 target（路径过长时只需跑一次）
 #        .\build.ps1 --flash          构建后烧录（数字菜单，默认 1=仅更新；与 build.sh Linux 部署菜单风格一致）
-#        .\build.ps1 --flash-update   构建后烧录且不擦除（仅存储格式兼容时可用；迁移期禁用）
+#        .\build.ps1 --flash-update   构建后烧录且不擦除（仅存储格式兼容时可用）
 #        .\build.ps1 build-c6         构建 vendored ESP32-C6 hosted slave firmware
 #        .\build.ps1 flash-c6         烧录板载 ESP32-C6 hosted slave firmware
 #        .\build.ps1 flash-all        先烧 C6，再烧 P4 主固件
@@ -603,7 +603,6 @@ function Refresh-EspComponentGraphCache {
 }
 
 # 烧录时显式传入分区表与 bootloader。优先用本次构建生成的 partition-table.bin（与 bootloader 同源），避免传 CSV 时解析/格式导致未写入正确表。
-$storageBackendMigrationRequiresFullErase = $true
 $releaseDir = Join-Path $effectiveTargetDir "$buildTarget\$buildProfile"
 $bootloaderBin = Join-Path $releaseDir "bootloader.bin"
 $partitionTableBin = Join-Path $releaseDir "partition-table.bin"
@@ -629,12 +628,8 @@ Write-BuildStatus -Step "Detected hardware / build config"
 function Select-FlashMode {
   param([string]$ChosenPort, [string]$TargetTriple, [bool]$FlashUpdate)
   if ($FlashUpdate) {
-    if ($storageBackendMigrationRequiresFullErase) {
-      Write-Error "Error: --flash-update is disabled for this storage format migration. Use --flash and select full chip erase, or use the factory reinstall path."
-      exit 1
-    }
     Write-Host "✓ Flash mode: update only — entire flash will NOT be erased." -ForegroundColor Green
-    Write-Host "  Storage files are kept only when the storage partition offset, size, and filesystem backend are unchanged."
+    Write-Host "  Storage files are kept only when the storage partition offset, size, and format are unchanged."
     Write-Host ""
     $script:eraseBeforeFlash = $false
     return
@@ -645,15 +640,9 @@ function Select-FlashMode {
     Write-Host ""
     return
   }
-  if ($storageBackendMigrationRequiresFullErase) {
-    $script:eraseBeforeFlash = $true
-    Write-Host "! Flash mode: full chip erase required for this storage format migration." -ForegroundColor Yellow
-    Write-Host ""
-    return
-  }
   Write-Host "========== Flash mode ==========" -ForegroundColor Cyan
   Write-Host ""
-  Write-Host "  1) Update flash — keep NVS; storage files are preserved only if partition offset/size/backend are unchanged"
+  Write-Host "  1) Update flash — keep NVS; storage files are preserved only if partition offset/size/format are unchanged"
   Write-Host "  2) Full chip erase then flash — wipes entire flash (factory reset / partition change)"
   Write-Host "  3) Cancel"
   Write-Host ""

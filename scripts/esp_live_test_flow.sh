@@ -292,8 +292,13 @@ run_gates() {
 
   require_matches 'firmware_identity' "$log_file" "firmware identity not found"
   require_matches 'partition_layout_mismatch=false' "$log_file" "partition layout was not verified"
-  require_matches 'STA connected|sta ip:' "$log_file" "STA did not connect"
-  require_matches '\[qq_ws\] hello ok' "$log_file" "QQ WSS did not reach hello ok"
+  if [[ "$scenario" == "qq_text" ]]; then
+    require_matches 'STA connected|sta ip:' "$log_file" "STA did not connect"
+    require_matches '\[qq_ws\] hello ok' "$log_file" "QQ WSS did not reach hello ok"
+  else
+    require_matches 'WiFi ready \(SoftAP bootstrap active|STA connected|sta ip:' "$log_file" \
+      "boot_idle did not reach SoftAP or STA WiFi readiness"
+  fi
   require_matches 'HEARTBEAT version=' "$log_file" "heartbeat not captured"
   require_matches '\[heartbeat\] metrics .*storage_ops=' "$log_file" "storage metrics not captured"
 

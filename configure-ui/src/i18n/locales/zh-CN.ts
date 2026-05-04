@@ -97,7 +97,7 @@ export const zhCN = {
       flashModeUpdate: '更新',
       flashModeReinstall: '重装',
       flashModeUpdateHint:
-        '当前存储格式迁移版本不可使用更新模式。',
+        '仅更新应用、引导程序和分区表，不擦除整片 flash；仅在存储布局与格式兼容时保留存储空间。',
       flashModeReinstallHint:
         '先整片擦除再烧录，会清空 WiFi、配对码、设备配置、记忆和存储空间。',
       flashFirmwareSourceUnavailable: '自动固件源不可用，请确认发布固件已挂载。',

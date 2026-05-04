@@ -97,7 +97,7 @@ export const enUS = {
       flashModeUpdate: 'Update',
       flashModeReinstall: 'Reinstall',
       flashModeUpdateHint:
-        'Update mode is unavailable for this storage format migration release.',
+        'Updates the app, bootloader, and partition table without erasing the whole flash; storage space is preserved only when layout and format are compatible.',
       flashModeReinstallHint:
         'Erase the entire flash before writing. This clears WiFi, pairing, device configuration, memory, and storage space.',
       flashFirmwareSourceUnavailable: 'Automatic firmware source is unavailable. Confirm the release firmware is mounted.',

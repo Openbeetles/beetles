@@ -73,7 +73,7 @@ ESPFLASH_PORT=/dev/ttyUSB0 ./build.sh --flash
 
 - `--flash` 会在构建完成后直接进入烧录流程
 - `--flash` 默认保留现有配置、记忆和存储；如果你需要全擦，脚本会给你选项
-- `--flash-update` 不进擦除选择，直接按保留存储前提下的串口重刷方式烧录；会原地刷新 bootloader、分区表和 app，但不会整片擦除。只有存储布局和存储格式都兼容时，存储数据才可安全保留；存储格式迁移版本会禁用 update，必须走整片擦除 / 重装。
+- `--flash-update` 不进擦除选择，直接走串口原地重刷路径；会刷新 bootloader、分区表和 app，但不会整片擦除。只有发布说明明确允许保留现有配置、记忆和存储时才使用它；如果某个版本要求干净重装，就显式选择擦除 / 重装流程。
 - 串口烧录会按当前板型的构建产物地址写入，不再假设所有 ESP 芯片使用同一组固定烧录地址；ESP32-P4 不需要手动改 offset。
 - `--no-monitor` 表示烧录完成后不打开串口监视
 - 若串口可唯一识别，脚本自动选择该串口；否则进入选择流程
@@ -116,7 +116,7 @@ dist/esp/v0.1.0/SHA256SUMS
 - 版型浏览器烧录 manifest 走单 part + `offset: 0`，让安装器直接刷对应的单 bin
 - Configure UI 的在线烧录通过浏览器 Web Serial + `esptool-js` 连接 ESP ROM bootloader；扫描设备时以芯片描述和 Flash 容量作为版型匹配依据，不把 USB 桥 VID/PID 当作开发板信息
 - Configure UI 浏览器烧录不让用户手动选择 `.bin` 或 `release-catalog.json`；设备扫描后按识别到的芯片 / Flash 容量映射官方支持版型，再从同源 `/firmware/release-catalog.json`（或构建时配置的 `VITE_ESP_FIRMWARE_BASE_URL`）读取发布目录，校验固件 SHA-256 与关键 offset；PSRAM 是主线硬件合同与运行态诊断事实，不作为浏览器 ROM 阶段的刷写准入硬门槛
-- Configure UI 浏览器烧录提供「更新 / 重装」二选一模式：更新使用 `update_parts` 分别写 bootloader、partition-table、app，并只在发布固件声明允许时保留 WiFi、配对码、设备配置、记忆和存储；重装使用 merged single bin 写入 `0x0`，并会先整片擦除再烧录，清空 WiFi、配对码、设备配置、记忆和存储空间。遇到存储格式迁移发布包时，Configure UI 会按发布目录强制整片擦除。
+- Configure UI 浏览器烧录提供「更新 / 重装」二选一模式：更新使用 `update_parts` 分别写 bootloader、partition-table、app，不会整片擦除；重装使用 merged single bin 写入 `0x0`，并会先整片擦除再烧录，清空 WiFi、配对码、设备配置、记忆和存储空间。某个发布版本是否要求干净重装由发布说明承载，不通过 release catalog 策略强制。
 - 发布目录先在临时 stage 下构建，全部成功后再整体替换最终版本目录，避免残留半成品产物
 - `dist/esp/v<version>/` 是发布包真源；`configure-ui/public/firmware/` 是浏览器烧录协议目录，由脚本在发布成功后整体替换，避免残留旧固件或旧 catalog
 
@@ -164,7 +164,7 @@ scripts/esp_symbolize_panic.sh target/esp-artifacts/<artifact-id> 0x4037f815
 
 禁止用其他构建轮次的 ELF/map 猜地址；ESP panic 定责必须以匹配的 artifact id 为准。
 
-`--flash-update` 会刷新 bootloader、编译后的分区表和 app；只有当存储布局与存储格式都兼容时，配置、记忆和存储数据才可被保留，避免新 app 搭配旧分区表或旧存储格式污染排查结论。如果你需要干净重装，或发布版本要求存储格式迁移，请选择擦除流程，让已保存的配置、记忆和存储空间一起清空。
+`--flash-update` 会刷新 bootloader、编译后的分区表和 app，但不会整片擦除。只有发布说明明确允许保留配置、记忆和存储时才使用它。如果你需要干净重装，或发布说明要求干净重装，请选择擦除流程，让已保存的配置、记忆和存储空间一起清空。
 
 ## Linux 示例
 

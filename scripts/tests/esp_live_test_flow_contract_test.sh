@@ -44,6 +44,14 @@ assert_contains "$FLOW" 'qq_text expected message/reply metrics reached; ending 
   "live flow must report early qq_text completion before analysis"
 assert_contains "$FLOW" 'partition_layout_mismatch=false' \
   "live flow must require partition identity in serial logs"
+assert_contains "$FLOW" 'WiFi ready \(SoftAP bootstrap active|STA connected|sta ip:' \
+  "boot_idle must accept fresh full-erase SoftAP readiness without requiring STA credentials"
+assert_contains "$FLOW" 'if [[ "$scenario" == "qq_text" ]]; then' \
+  "qq_text-specific gates must remain isolated from fresh boot_idle"
+assert_contains "$FLOW" "require_matches 'STA connected|sta ip:'" \
+  "qq_text must require STA readiness before manual QQ testing"
+assert_contains "$FLOW" "require_matches '\\[qq_ws\\] hello ok'" \
+  "qq_text must require QQ WSS hello before manual QQ testing"
 assert_contains "$FLOW" '\[heartbeat\] metrics .*storage_ops=' \
   "live flow must require storage metrics in serial logs"
 assert_contains "$FLOW" 'storage_contention=Critical' \

@@ -54,7 +54,6 @@ type FirmwareCatalogEntry = {
   boardId: string;
   bin: FirmwareCatalogAsset;
   flashSize: string | null;
-  requiresFullErase: boolean;
   updateParts: FirmwareCatalogUpdatePart[];
 };
 
@@ -80,7 +79,6 @@ type FirmwareFlashBundle = {
   boardId: string;
   files: FirmwareFlashFile[];
   mode: FirmwareFlashMode;
-  requiresFullErase: boolean;
 };
 
 type SerialPortInfo = {
@@ -190,13 +188,6 @@ function readNumberField(
   return typeof field === "number" && Number.isFinite(field) && field >= 0
     ? field
     : null;
-}
-
-function readBooleanField(
-  value: Record<string, unknown>,
-  key: string,
-): boolean {
-  return value[key] === true;
 }
 
 function flashDeviceErrorMessage(
@@ -333,9 +324,6 @@ function parseFirmwareCatalog(text: string): FirmwareCatalogEntry[] {
   if (!isRecord(parsed) || parsed.product !== "beetle") {
     throw new FlashDeviceError("device.flashFirmwareCatalogInvalid");
   }
-  const catalogRequiresFullErase =
-    readBooleanField(parsed, "requires_full_erase") ||
-    readStringField(parsed, "storage_migration") === "destructive";
   const boards = parsed.boards;
   if (!Array.isArray(boards)) {
     throw new FlashDeviceError("device.flashFirmwareCatalogInvalid");
@@ -351,10 +339,6 @@ function parseFirmwareCatalog(text: string): FirmwareCatalogEntry[] {
       boardId,
       bin,
       flashSize,
-      requiresFullErase:
-        catalogRequiresFullErase ||
-        readBooleanField(board, "requires_full_erase") ||
-        readStringField(board, "storage_migration") === "destructive",
       updateParts: readCatalogUpdateParts(board.update_parts),
     });
   }
@@ -520,11 +504,7 @@ async function fetchOfficialFirmwareForDevice(
   }
   ensureCatalogEntryMatchesBoard(entry, board);
 
-  const effectiveMode: FirmwareFlashMode = entry.requiresFullErase
-    ? "reinstall"
-    : mode;
-
-  if (effectiveMode === "reinstall") {
+  if (mode === "reinstall") {
     const data = await fetchFirmwareAsset(bundleBaseUrl, entry.bin);
     const bundle = {
       boardId: board.value,
@@ -536,8 +516,7 @@ async function fetchOfficialFirmwareForDevice(
           kind: "merged" as const,
         },
       ],
-      mode: effectiveMode,
-      requiresFullErase: entry.requiresFullErase,
+      mode,
     };
     validateFirmwareBundleForDevice(bundle, deviceInfo);
     return bundle;
@@ -558,8 +537,7 @@ async function fetchOfficialFirmwareForDevice(
   const bundle = {
     boardId: board.value,
     files,
-    mode: effectiveMode,
-    requiresFullErase: entry.requiresFullErase,
+    mode,
   };
   validateFirmwareBundleForDevice(bundle, deviceInfo);
   return bundle;
@@ -804,7 +782,7 @@ export function FirmwareFlashDialog({ open, onClose }: FirmwareFlashDialogProps)
   const [serialPortIndex, setSerialPortIndex] = useState("");
   const [serialScanning, setSerialScanning] = useState(false);
   const [serialError, setSerialError] = useState("");
-  const [flashMode, setFlashMode] = useState<FirmwareFlashMode>("reinstall");
+  const [flashMode, setFlashMode] = useState<FirmwareFlashMode>("update");
   const [running, setRunning] = useState(false);
   const [flashProgress, setFlashProgress] = useState<number | null>(null);
 
@@ -908,9 +886,7 @@ export function FirmwareFlashDialog({ open, onClose }: FirmwareFlashDialogProps)
       );
       const info = await flashFirmwareToDevice({
         bundle: firmware,
-        eraseAll:
-          firmware.requiresFullErase ||
-          shouldEraseBeforeFirmwareFlash(flashMode),
+        eraseAll: shouldEraseBeforeFirmwareFlash(flashMode),
         onProgress: setFlashProgress,
         port: selectedDevice.port,
       });
@@ -1124,7 +1100,7 @@ export function FirmwareFlashDialog({ open, onClose }: FirmwareFlashDialogProps)
                     disabled={running}
                     aria-label={t("device.flashModeLabel")}
                   >
-                    <ToggleButton value="update" disabled>
+                    <ToggleButton value="update">
                       {t("device.flashModeUpdate")}
                     </ToggleButton>
                     <ToggleButton value="reinstall">

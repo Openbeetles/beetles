@@ -14,3 +14,11 @@ CONFIG_LWIP_LOCAL_HOSTNAME="beetle"
 
 # 线程默认栈：agent/build_context + JSON 序列化等需要更大栈，避免栈溢出
 CONFIG_PTHREAD_TASK_STACK_SIZE_DEFAULT=16384
+
+# LittleFS VFS: Beetle's storage contract uses logical slash paths
+# (memory/..., config/..., skills/...). Enable the component's parent-dir
+# creation and directory-open support so fresh formatted ESP storage behaves
+# like the platform storage API expects. This is not old SPIFFS data
+# compatibility; releases still require a destructive storage refresh.
+CONFIG_LITTLEFS_SPIFFS_COMPAT=y
+CONFIG_LITTLEFS_OPEN_DIR=y
