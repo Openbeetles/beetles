@@ -931,7 +931,7 @@ pub fn is_private_url(url: &str) -> bool {
 // | os_outbound                           | STACK_OS_OUTBOUND      | 20 KB | 96 KB |
 // | tg_sender, qq_sender, fs/dt/wc_sender | STACK_CHANNEL_SENDER   | 8 KB  | 96 KB |
 // | tg_poll                               | STACK_CHANNEL_SENDER   | 8 KB  | 96 KB |
-// | runtime_bootstrap                     | STACK_ESP_RUNTIME_BOOT | 32 KB | n/a   | ← ESP-only: moves Rust-heavy SPIFFS/registry/audio startup off IDF main_task
+// | runtime_bootstrap                     | STACK_ESP_RUNTIME_BOOT | 32 KB | n/a   | ← ESP-only: moves Rust-heavy storage/registry/audio startup off IDF main_task
 // | agent guard (bg_timer)                | n/a                    | 0 KB  | n/a   | ← ESP-only: supervised by bg_timer, no dedicated long-lived stack
 // | display                               | STACK_DISPLAY          | 8 KB  | 8 KB  | ← no TLS; recover 4KB internal SRAM while keeping a safer floor above the old 6 KB budget
 // | audio_io_worker                       | STACK_AUDIO_IO_STD_COMPAT | 8 KB  | 8 KB  | ← no TLS, I2S + acoustic wake state; std-compatible surface
@@ -941,8 +941,8 @@ pub fn is_private_url(url: &str) -> bool {
 // | http_config_exec                       | STACK_HTTP_CONFIG_WORKER | 28 KB | 32 KB | ← config writes must fit normal post-startup largest-block budget
 // | http_diag_exec                         | STACK_HTTP_DIAG_WORKER   | 28 KB | 32 KB | ← scan/diagnostic lane after first-screen fan-out was moved off this worker
 // | dispatch                              | STACK_DISPATCH         | 6 KB  | 6 KB  | ← 常驻逻辑只做 admission/retry/cooldown，不承接重执行链
-// | bg_timer                              | STACK_BG_TIMER         | 16 KB | 96 KB | ← heartbeat + cron + delayed-task wake; no SPIFFS/serde flush closures execute on this plane
-// | write_back                            | runtime local          | 24 KB | 24 KB | ← governed lazy SPIFFS/serde flush worker; separate from bg_timer
+// | bg_timer                              | STACK_BG_TIMER         | 16 KB | 96 KB | ← heartbeat + cron + delayed-task wake; no storage/serde flush closures execute on this plane
+// | write_back                            | runtime local          | 24 KB | 24 KB | ← governed lazy storage/serde flush worker; separate from bg_timer
 // | sntp                                  | STACK_SNTP_WORKER      | 8 KB  | 96 KB | ← default guarded worker, no direct TLS call
 // | cli_repl                              | STACK_CLI_REPL         | 8 KB  | 8 KB  | ← no TLS
 // | voice_session                         | STACK_VOICE_CONTROL    | 8 KB  | 8 KB  | ← scheduler only; realtime WSS moved off this always-on thread
@@ -963,7 +963,7 @@ const DEFAULT_GUARD_STACK_SIZE: usize = 8192;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 const DEFAULT_GUARD_STACK_SIZE: usize = LINUX_RUSTLS_THREAD_STACK;
 
-/// ESP runtime bootstrap：承接 SPIFFS recovery、runtime assembly、registry、audio init
+/// ESP runtime bootstrap：承接 storage recovery、runtime assembly、registry、audio init
 /// 与后续 guard loop。不能继续跑在 ESP-IDF `main_task` 的窄栈上。
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 pub const STACK_ESP_RUNTIME_BOOT: usize = 32 * 1024;
@@ -992,7 +992,7 @@ pub const STACK_VOICE_REALTIME_CONNECT: usize = LINUX_RUSTLS_THREAD_STACK;
 /// ESP `agent_loop` 栈预算。
 ///
 /// 2026-04-24 实机符号化显示，QQ 入站首条真实消息在
-/// `execute_turn -> prompt_context -> turn-ledger SPIFFS read` 路径上已把
+/// `execute_turn -> prompt_context -> turn-ledger storage read` 路径上已把
 /// 40KB 预算推到危险边缘；2026-04-25 首条 QQ 回复完成后又触发 pthread
 /// stack overflow，说明未 boxed 的回复收尾/ledger 结算峰值不能压在 48KB 内。
 /// 当前生产路径已把 heavy turn state 改为 boxed handoff；2026-05-03 S3
@@ -1068,14 +1068,14 @@ pub const STACK_VOICE_REALTIME: usize = 16 * 1024;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub const STACK_VOICE_REALTIME: usize = LINUX_RUSTLS_THREAD_STACK;
 
-/// HTTP snapshot route worker：承接本地只读 SPIFFS/config/resource 快照，避免压在
+/// HTTP snapshot route worker：承接本地只读 storage/config/resource 快照，避免压在
 /// IDF HTTPD 回调线程上，同时不为这类非 TLS 路由预留诊断/TLS worker 余量。
 ///
 /// P4 `/api/resource` 实机高水位暴露了 20KB 预算不足；common ESP 预算仍需以
 /// S3 release-size soak 作为最低准入基线，优先拆路由深度而不是继续上调通用栈。
 pub const STACK_HTTP_SNAPSHOT_WORKER: usize = 24 * 1024;
 
-/// ESP HTTP config route worker：承接 NVS/SPIFFS/serde 配置写入，避免压在
+/// ESP HTTP config route worker：承接 NVS/storage/serde 配置写入，避免压在
 /// IDF HTTPD 回调线程上。配置面必须能在 post-startup 约 31-32KB largest block
 /// 下按需启动；不能再沿用一个 48KB 通用 worker 把产品配置入口永久 admission 掉。
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
@@ -1094,13 +1094,13 @@ pub const STACK_HTTP_DIAG_WORKER: usize = 32 * 1024;
 /// ESP `bg_timer` stack budget.
 ///
 /// `bg_timer` is the scheduler/heartbeat owner. It may enqueue or wake the
-/// governed write-back plane, but must not execute SPIFFS/session/serde flush
+/// governed write-back plane, but must not execute storage/session/serde flush
 /// closures inline. Keeping the old 24KB storage-worker budget here permanently
 /// consumes internal SRAM and makes post-write-back heartbeat sampling too thin.
 pub const ESP_BG_TIMER_STACK_BUDGET: usize = 16 * 1024;
 
 /// `bg_timer`：heartbeat + cron + remind/task + self-runtime 聚合线程。
-/// ESP 侧只承接调度、heartbeat 与 delayed wake；真实 SPIFFS/session/serde flush
+/// ESP 侧只承接调度、heartbeat 与 delayed wake；真实 storage/session/serde flush
 /// 必须继续由独立 lazy `write_back` worker 执行。非 ESP 目标保留 Linux TLS
 /// 统一栈预算，避免 host / Linux embedded 路径回到 16KB 旧风险。
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
@@ -1109,7 +1109,7 @@ pub const STACK_BG_TIMER: usize = ESP_BG_TIMER_STACK_BUDGET;
 pub const STACK_BG_TIMER: usize = LINUX_RUSTLS_THREAD_STACK;
 
 /// `startup_recovery`：启动期 soul/runtime recovery 线程。
-/// 该线程会做恢复状态扫描与 SPIFFS 读写，不能复用普通后台线程预算。
+/// 该线程会做恢复状态扫描与 storage 读写，不能复用普通后台线程预算。
 pub const STACK_STARTUP_RECOVERY: usize = 32 * 1024;
 
 /// `sntp`：由默认 guarded worker 启动，保持与 `spawn_guarded` 隐式预算一致。
@@ -1433,7 +1433,7 @@ mod thread_stack_budget_tests {
     }
 
     #[test]
-    fn esp_agent_loop_stack_keeps_prompt_spiffs_headroom() {
+    fn esp_agent_loop_stack_keeps_prompt_storage_headroom() {
         const {
             assert!(
                 ESP_AGENT_LOOP_STACK_BUDGET >= 48 * 1024,

@@ -29,7 +29,7 @@ use std::sync::Arc;
 /// ESP implementations may keep the raw bytes in PSRAM for large files.
 pub type StateBytes = crate::platform::byte_buffer::ByteBuffer;
 
-/// 状态根目录下的受控文件访问（相对路径）。ESP 委托 SPIFFS + 互斥；Linux 由 `LinuxPlatform` 实现。
+/// 状态根目录下的受控文件访问（相对路径）。ESP 委托 storage + 互斥；Linux 由 `LinuxPlatform` 实现。
 /// Controlled file access under the platform state root (relative paths).
 pub trait StateFs: Send + Sync {
     /// 读取文件，不存在返回 `Ok(None)`。
@@ -38,7 +38,7 @@ pub trait StateFs: Send + Sync {
     fn read_bytes(&self, rel_path: &str) -> crate::error::Result<Option<StateBytes>> {
         Ok(self.read(rel_path)?.map(StateBytes::from_vec))
     }
-    /// 写入文件；实现须先创建父目录再写入。单文件大小上界由实现保证（与 `spiffs::MAX_WRITE_SIZE` 一致）。
+    /// 写入文件；实现须先创建父目录再写入。单文件大小上界由存储实现保证。
     fn write(&self, rel_path: &str, data: &[u8]) -> crate::error::Result<()>;
     /// 删除文件，不存在时 `Ok(())`。
     fn remove(&self, rel_path: &str) -> crate::error::Result<()>;
@@ -119,12 +119,12 @@ impl AudioDuplexProfile {
     }
 }
 
-/// 存储介质类型。用于统一表达 ESP SPIFFS、Linux mmc/nvme/usb 等底层介质。
-/// Storage media kind across targets (SPIFFS, SD/eMMC/NVMe/USB, virtual mounts).
+/// 存储介质类型。用于统一表达 ESP flash、Linux mmc/nvme/usb 等底层介质。
+/// Storage media kind across targets (flash, SD/eMMC/NVMe/USB, virtual mounts).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StorageMediaKind {
-    Spiffs,
+    Flash,
     SdCard,
     Emmc,
     UsbMassStorage,
@@ -351,7 +351,7 @@ pub trait ConfigStore: Send + Sync {
     fn erase_keys(&self, keys: &[&str]) -> Result<()>;
 }
 
-/// 技能元数据（顺序、禁用列表）存储抽象。用于 SPIFFS config/skills_meta.json，避免 NVS 高频单键写。
+/// 技能元数据（顺序、禁用列表）存储抽象。用于 storage config/skills_meta.json，避免 NVS 高频单键写。
 pub trait SkillMetaStore: Send + Sync {
     /// 返回 (order, disabled)。
     fn read_meta(&self) -> Result<(Vec<String>, Vec<String>)>;
@@ -601,7 +601,7 @@ impl PlatformHttpClient for Box<dyn PlatformHttpClient + '_> {
 
 /// 平台能力聚合。main 只依赖当前平台的 Platform 实现。Send + Sync 以便跨线程传入 run_http_server。
 pub trait Platform: Send + Sync + PlatformCamera {
-    /// 状态文件系统抽象（SPIFFS 根或 Linux 状态目录）。业务域经此访问，禁止直引 `platform::spiffs`。
+    /// 状态文件系统抽象（ESP 平台存储根或 Linux 状态目录）。业务域经此访问，禁止直引平台存储后端。
     fn state_fs(&self) -> Arc<dyn StateFs + Send + Sync>;
 
     /// 当前内存快照；须来自真实数据源（ESP: `heap`；Linux: `/proc/meminfo`），禁止占位常量。
@@ -609,12 +609,12 @@ pub trait Platform: Send + Sync + PlatformCamera {
     /// 记忆承载制度；用于区分 Linux 厚治理体系与 ESP 紧凑体系。
     fn memory_system_kind(&self) -> MemorySystemKind;
 
-    /// 平台初始化（link_patches、日志、NVS、SPIFFS 等）。main 在构造后首先调用。
+    /// 平台初始化（link_patches、日志、NVS、storage 等）。main 在构造后首先调用。
     fn init(&self) -> Result<()> {
         Ok(())
     }
     fn init_nvs(&self) -> Result<()>;
-    fn init_spiffs(&self) -> Result<()>;
+    fn init_storage(&self) -> Result<()>;
     fn config_store(&self) -> Arc<dyn ConfigStore + Send + Sync>;
     fn connect_wifi(&self, config: &AppConfig) -> Result<()>;
     /// WiFi 扫描句柄（SoftAP 就绪且底层已注册扫描时为 Some；STA 失败时仍应保留以便配网）；用于 GET /api/wifi/scan。
@@ -636,7 +636,7 @@ pub trait Platform: Send + Sync + PlatformCamera {
         None
     }
     /// 返回平台可见的存储介质列表。Linux 可返回 mmc/nvme/usb/virtual mount；
-    /// ESP 后续可返回 SPIFFS/SD/FATFS。默认空列表，表示当前平台未实现探测。
+    /// ESP 后续可返回 storage/SD/FATFS。默认空列表，表示当前平台未实现探测。
     fn storage_media(&self) -> Result<Vec<StorageMediaInfo>> {
         Ok(Vec::new())
     }
@@ -700,10 +700,10 @@ pub trait Platform: Send + Sync + PlatformCamera {
     ) -> Result<Box<dyn PlatformHttpClient>> {
         self.create_http_client(config)
     }
-    fn spiffs_usage(&self) -> Option<(u64, u64)>;
+    fn storage_usage(&self) -> Option<(u64, u64)>;
     fn read_heartbeat_file(&self) -> Result<String>;
 
-    /// 板级状态 JSON（芯片、堆、运行时间、压力、WiFi、SPIFFS）。默认实现委托 `platform/board_info`；新平台可覆写。
+    /// 板级状态 JSON（芯片、堆、运行时间、压力、WiFi、storage）。默认实现委托 `platform/board_info`；新平台可覆写。
     fn board_info_json(&self) -> Result<String> {
         let mut payload: serde_json::Value =
             serde_json::from_str(&crate::platform::board_info::board_info_json_string())
@@ -990,13 +990,7 @@ pub trait Platform: Send + Sync + PlatformCamera {
 
     /// 通用 I2C 传感器读取（SHT3x / AHT20 / raw）；内部完成测量命令、等待、读回与解析，返回 JSON。
     /// Generic I2C sensor read; returns JSON with temperature/humidity or raw hex for `raw` model.
-    fn drive_i2c_sensor(
-        &self,
-        _addr: u8,
-        _model: &str,
-        _watch_field: &str,
-        _options: &Value,
-    ) -> Result<String> {
+    fn drive_i2c_sensor(&self, _addr: u8, _model: &str, _options: &Value) -> Result<String> {
         Err(crate::error::Error::config(
             "drive_i2c_sensor",
             "I2C sensor not supported on this platform",

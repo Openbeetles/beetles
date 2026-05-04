@@ -233,7 +233,7 @@ fi
 assert_file_contains \
   "$ROOT_DIR/partitions.csv" \
   'spiffs,    data, spiffs,  0x620000, 0x9D0000' \
-  "default S3 partition table should move SPIFFS behind the single 6MiB factory app slot"
+  "default S3 partition table should move the storage partition behind the single 6MiB factory app slot"
 assert_file_contains \
   "$ROOT_DIR/partitions.csv" \
   'factory,   app,  factory, 0x20000,  0x600000' \
@@ -248,8 +248,8 @@ assert_file_not_contains \
   "default S3 partition table should no longer publish OTA app slots"
 assert_file_contains \
   "$ROOT_DIR/build.sh" \
-  'SPIFFS config is preserved only if partition offset/size are unchanged' \
-  "build.sh update-flash prompt must not imply SPIFFS config survives partition layout changes"
+  'storage config is preserved only if partition offset/size are unchanged' \
+  "build.sh update-flash prompt must not imply storage config survives partition layout changes"
 assert_file_not_contains \
   "$ROOT_DIR/build.sh" \
   'python3 -m esptool --chip "$FLASH_CHIP" elf2image' \

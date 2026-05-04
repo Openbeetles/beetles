@@ -412,7 +412,6 @@
       "id": "aht20_env",
       "addr": 56,
       "model": "aht20",
-      "watch_field": "temperature",
       "what": "AHT20 温湿度传感器",
       "how": "通过 I2C 读取环境温度与湿度；地址 0x38。",
       "options": {}

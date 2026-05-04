@@ -449,7 +449,7 @@ pub(crate) use world_sense::{
 };
 pub(crate) use write_coordination::whole_record_lease_advanced;
 
-/// 单次写入内容最大字节数（与 platform::spiffs 上界一致）。实现应拒绝超长写入。
+/// 单次写入内容最大字节数（与 platform::storage 上界一致）。实现应拒绝超长写入。
 pub const MAX_MEMORY_CONTENT_LEN: usize = 256 * 1024;
 
 /// 单条会话消息最大长度（role + content 序列化后）。实现应拒绝超长单条。
@@ -457,7 +457,7 @@ pub const MAX_SESSION_MESSAGE_LEN: usize = 4 * 1024;
 /// 单会话最大条数（ring 上界）。超过时实现应淘汰最旧再追加。
 pub const MAX_SESSION_ENTRIES: usize = 128;
 
-/// 相对路径（实现需拼接 SPIFFS_BASE）：MEMORY 文件。
+/// 相对路径（实现需拼接 storage_BASE）：MEMORY 文件。
 pub const REL_PATH_MEMORY: &str = "memory/MEMORY.md";
 /// 相对路径：每日笔记目录。
 pub const REL_PATH_DAILY_DIR: &str = "memory/daily";
@@ -698,14 +698,14 @@ impl EmotionSignalStore for MemoryEmotionSignalStore {
     }
 }
 
-/// 待重试消息存储。实现由 platform 注入（如 SpiffsPendingRetryStore）。低内存且入队满时落盘，启动或循环前取回重试。
+/// 待重试消息存储。实现由 platform 注入（如 StoragePendingRetryStore）。低内存且入队满时落盘，启动或循环前取回重试。
 pub trait PendingRetryStore: Send + Sync {
     fn save_pending_retry(&self, msg: &PcMsg) -> Result<()>;
     fn load_pending_retry(&self) -> Result<Option<PcMsg>>;
     fn clear_pending_retry(&self) -> Result<()>;
 }
 
-/// 长期记忆与每日笔记存储。实现由 platform 注入（如 SpiffsMemoryStore）。
+/// 长期记忆与每日笔记存储。实现由 platform 注入（如 StorageMemoryStore）。
 pub trait MemoryStore: Send + Sync {
     fn get_memory(&self) -> Result<String>;
     fn set_memory(&self, content: &str) -> Result<()>;
@@ -800,7 +800,7 @@ pub(crate) fn synthesize_session_message_records(
         .collect()
 }
 
-/// 按 chat_id 的会话存储。实现由 platform 注入（如 SpiffsSessionStore）。
+/// 按 chat_id 的会话存储。实现由 platform 注入（如 StorageSessionStore）。
 pub trait SessionStore: Send + Sync {
     fn append(&self, chat_id: &str, role: &str, content: &str) -> Result<()>;
     /// 批量追加多条消息；默认逐条 `append`。实现可覆写为单锁/单次 fsync 的热路径优化。

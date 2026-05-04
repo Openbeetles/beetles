@@ -1,4 +1,4 @@
-//! 同目录原子替换写入（Linux/host）：tmp + fsync + rename，供 `spiffs::write_file` 与 NVS JSON 使用。
+//! 同目录原子替换写入（Linux/host）：tmp + fsync + rename，供 `storage::write_file` 与 NVS JSON 使用。
 //! Same-directory atomic replace for host: tmp, fsync, rename.
 
 use crate::error::{Error, Result};

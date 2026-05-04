@@ -19,6 +19,36 @@ prod_source() {
   sed '/^#\[cfg(test)\]/,$d' "$1"
 }
 
+existing_paths() {
+  local path
+  for path in "$@"; do
+    [[ -e "$path" ]] && printf '%s\n' "$path"
+  done
+}
+
+sanitize_storage_backend_wording() {
+  sed -E 's/[sS][pP][iI][fF][fF][sS]/storage-backend/g'
+}
+
+USER_STORAGE_SPIFFS_LEAK_PATTERN='"[^"]*([sS][pP][iI][fF][fF][sS]|spiffs_)|beetle_spiffs|name:[[:space:]]*"spiffs_|usage:[[:space:]]*"spiffs_'
+USER_STORAGE_SPIFFS_LEAK_PATHS="$(
+  existing_paths \
+    src/cli \
+    src/tools \
+    src/heartbeat \
+    src/metrics.rs \
+    src/display.rs \
+    src/platform/http_server/handlers
+)"
+if [[ -n "$USER_STORAGE_SPIFFS_LEAK_PATHS" ]] &&
+   rg -n "$USER_STORAGE_SPIFFS_LEAK_PATTERN" $USER_STORAGE_SPIFFS_LEAK_PATHS >/tmp/beetle-storage-leaks.$$; then
+  echo "FAIL: user/business-facing storage wording leaked platform backend naming:" >&2
+  sanitize_storage_backend_wording </tmp/beetle-storage-leaks.$$ >&2
+  rm -f /tmp/beetle-storage-leaks.$$
+  exit 1
+fi
+rm -f /tmp/beetle-storage-leaks.$$
+
 RESPONSE_BODY_INTO_VEC_HOT_PATH='ResponseBody::into_vec|\b(body|resp_body|response_body)\.into_vec\s*\('
 if rg -n "$RESPONSE_BODY_INTO_VEC_HOT_PATH" src \
   --glob '!src/platform/response_body.rs' >/dev/null; then
@@ -209,9 +239,9 @@ if ! rg -n 'schedule_session_gc_runs_on_write_back_worker' src/runtime/write_bac
    ! rg -n 'service_write_back_tasks_runs_due_work_off_caller_thread' src/runtime/write_back.rs >/dev/null ||
    ! rg -n 'scheduler_storage_ticks_run_on_write_back_worker' src/runtime/write_back.rs >/dev/null ||
    ! rg -n 'periodic_storage_maintenance_defers_when_worker_stack_would_break_tls_floor' src/runtime/write_back.rs >/dev/null ||
-   ! rg -n 'read_paths_do_not_touch_or_rewrite_long_term_memory_file' src/platform/spiffs/long_term_memory.rs >/dev/null ||
-   ! rg -n 'append_batch_defers_cold_malformed_session_repair' src/platform/spiffs/session.rs >/dev/null ||
-   ! rg -n 'load_recent_records_defers_repair_and_synthesizes_stable_ids' src/platform/spiffs/session.rs >/dev/null; then
+   ! rg -n 'read_paths_do_not_touch_or_rewrite_long_term_memory_file' src/platform/storage/long_term_memory.rs >/dev/null ||
+   ! rg -n 'append_batch_defers_cold_malformed_session_repair' src/platform/storage/session.rs >/dev/null ||
+   ! rg -n 'load_recent_records_defers_repair_and_synthesizes_stable_ids' src/platform/storage/session.rs >/dev/null; then
   echo "FAIL: P4 storage/write-back/session deferred repair contract tests are missing" >&2
   exit 1
 fi
@@ -223,9 +253,9 @@ if ! rg -n 'current_periodic_storage_maintenance_admission\(\)' src/runtime/writ
   exit 1
 fi
 
-if rg -n 'touch_long_term_memory_usage' src/platform/spiffs/long_term_memory.rs >/dev/null; then
+if rg -n 'touch_long_term_memory_usage' src/platform/storage/long_term_memory.rs >/dev/null; then
   echo "FAIL: long-term memory read paths must not touch/persist usage metadata from hot routes or turn prepare" >&2
-  rg -n 'touch_long_term_memory_usage' src/platform/spiffs/long_term_memory.rs >&2
+  rg -n 'touch_long_term_memory_usage' src/platform/storage/long_term_memory.rs >&2
   exit 1
 fi
 

@@ -2,7 +2,7 @@
 //! NVS init and read/write: erase then init on failure; read/write strings in namespace pc_cfg.
 //! 所有对 NVS 的读写均经本模块，ESP 下用 NVS_MUTEX 串行化；open/commit 返回 4361 时单次 recover+重试。
 //! 配置策略：NVS 仅存系统小键（wifi_ssid、wifi_pass、proxy_url、locale）；
-//! LLM 与通道存 SPIFFS（config/llm.json、config/channels.json），技能元数据存 config/skills_meta.json，以减少 NVS 写放大与 4361。
+//! LLM 与通道存 storage（config/llm.json、config/channels.json），技能元数据存 config/skills_meta.json，以减少 NVS 写放大与 4361。
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 use std::ffi::CString;
@@ -78,13 +78,13 @@ fn load_pc_cfg_map() -> Result<HashMap<String, String>> {
 fn save_pc_cfg_map(map: &HashMap<String, String>) -> Result<()> {
     let v =
         serde_json::to_vec_pretty(map).map_err(|e| Error::config("nvs_pc_cfg", e.to_string()))?;
-    if v.len() > crate::platform::spiffs::MAX_WRITE_SIZE {
+    if v.len() > crate::platform::storage::MAX_WRITE_SIZE {
         return Err(Error::config(
             "nvs_pc_cfg",
             format!(
                 "serialized size {} exceeds {}",
                 v.len(),
-                crate::platform::spiffs::MAX_WRITE_SIZE
+                crate::platform::storage::MAX_WRITE_SIZE
             ),
         ));
     }

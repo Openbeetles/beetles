@@ -412,7 +412,6 @@ Generic AHT20 example:
       "id": "aht20_env",
       "addr": 56,
       "model": "aht20",
-      "watch_field": "temperature",
       "what": "AHT20 temperature and humidity sensor",
       "how": "Read ambient temperature and humidity over I2C at address 0x38.",
       "options": {}

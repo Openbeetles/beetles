@@ -2421,7 +2421,7 @@ mod tests {
         );
         assert!(
             store.get(&key).expect("load").is_none(),
-            "embedded post-reply scheduling should not write detached-work SPIFFS state on agent_loop"
+            "embedded post-reply scheduling should not write detached-work storage state on agent_loop"
         );
     }
 

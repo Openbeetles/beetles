@@ -1,5 +1,5 @@
-//! 状态挂载根路径：ESP 固定 `/spiffs`；host/Linux 由 `BEETLE_STATE_ROOT` 或行业默认（`/var/lib/beetle` → `/data/beetle`），在 `init_spiffs` 中解析并缓存。
-//! State mount root: `/spiffs` on ESP; host uses `BEETLE_STATE_ROOT` or FHS defaults, resolved in `init_spiffs`.
+//! 状态挂载根路径：ESP 使用平台存储挂载点；host/Linux 由 `BEETLE_STATE_ROOT` 或行业默认（`/var/lib/beetle` → `/data/beetle`），在 `init_storage` 中解析并缓存。
+//! State mount root: ESP uses the platform storage mount; host uses `BEETLE_STATE_ROOT` or FHS defaults, resolved in `init_storage`.
 
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 use crate::error::{Error, Result};
@@ -13,7 +13,7 @@ use std::sync::OnceLock;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 static STATE_ROOT: OnceLock<PathBuf> = OnceLock::new();
 
-/// Host：解析并创建状态根（及 `nvs/`）。幂等；由 `init_spiffs` 调用。失败时返回明确错误（须设置 `BEETLE_STATE_ROOT` 或保证 `/var/lib` 或 `/data` 可写）。
+/// Host：解析并创建状态根（及 `nvs/`）。幂等；由 `init_storage` 调用。失败时返回明确错误（须设置 `BEETLE_STATE_ROOT` 或保证 `/var/lib` 或 `/data` 可写）。
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub(crate) fn init_host_state_root() -> Result<()> {
     if STATE_ROOT.get().is_some() {
@@ -24,7 +24,7 @@ pub(crate) fn init_host_state_root() -> Result<()> {
     std::fs::create_dir_all(root.join("nvs")).map_err(|e| Error::io("state_root", e))?;
     std::fs::create_dir_all(root.join(REL_PATH_SESSIONS_DIR))
         .map_err(|e| Error::io("state_root", e))?;
-    // `SpiffsSkillStorage::list_names` uses read_dir; host must have the dir (unlike single-file stores).
+    // `StorageSkillStorage::list_names` uses read_dir; host must have the dir (unlike single-file stores).
     std::fs::create_dir_all(root.join("skills")).map_err(|e| Error::io("state_root", e))?;
     STATE_ROOT
         .set(root)
@@ -68,17 +68,17 @@ fn resolve_host_state_root() -> Result<PathBuf> {
     ))
 }
 
-/// 返回状态根目录（SPIFFS 挂载点或 host 已初始化的根）。**host 上**须先 `init_spiffs`（会调用 `init_host_state_root`）。
-/// Returns state filesystem root. On host, `init_spiffs` must run first.
+/// 返回状态根目录（ESP 平台存储挂载点或 host 已初始化的根）。**host 上**须先 `init_storage`（会调用 `init_host_state_root`）。
+/// Returns state filesystem root. On host, `init_storage` must run first.
 pub fn state_mount_path() -> PathBuf {
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
     {
-        PathBuf::from("/spiffs")
+        PathBuf::from("/storage")
     }
     #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
     {
         STATE_ROOT.get().cloned().unwrap_or_else(|| {
-            log::error!("[state_root] not initialized; init_spiffs must run before state_mount_path; using fallback /tmp/beetle");
+            log::error!("[state_root] not initialized; init_storage must run before state_mount_path; using fallback /tmp/beetle");
             PathBuf::from("/tmp/beetle")
         })
     }

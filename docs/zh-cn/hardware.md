@@ -55,7 +55,7 @@ Linux 还提供了硬件发现能力。
 
 ## 常见问题
 
-- `spiffs partition could not be found`
+- `storage partition could not be found`
   基本就是板型或固件布局没用对。
 - 设备能启动但没有硬件能力
   先确认配置已经存在，而且当前机器真的接了对应硬件。

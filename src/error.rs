@@ -14,8 +14,8 @@ pub enum Error {
         stage: &'static str,
     },
 
-    #[error("SPIFFS (stage: {stage})")]
-    Spiffs {
+    #[error("storage (stage: {stage})")]
+    Storage {
         #[source]
         source: Option<Box<dyn std::error::Error + Send + Sync>>,
         stage: &'static str,
@@ -58,7 +58,7 @@ impl Error {
                 source: Some(source),
                 ..
             }
-            | Error::Spiffs {
+            | Error::Storage {
                 source: Some(source),
                 ..
             }
@@ -84,18 +84,18 @@ impl Error {
         }
     }
 
-    pub fn spiffs_stage(stage: &'static str) -> Self {
-        Error::Spiffs {
+    pub fn storage_stage(stage: &'static str) -> Self {
+        Error::Storage {
             source: None,
             stage,
         }
     }
 
-    pub fn spiffs(
+    pub fn storage(
         stage: &'static str,
         source: impl std::error::Error + Send + Sync + 'static,
     ) -> Self {
-        Error::Spiffs {
+        Error::Storage {
             source: Some(Box::new(source)),
             stage,
         }
@@ -124,7 +124,7 @@ impl Error {
     pub fn stage(&self) -> &'static str {
         match self {
             Error::Nvs { stage, .. } => stage,
-            Error::Spiffs { stage, .. } => stage,
+            Error::Storage { stage, .. } => stage,
             Error::Config { stage, .. } => stage,
             Error::Io { stage, .. } => stage,
             Error::Esp { stage, .. } => stage,
@@ -192,7 +192,7 @@ impl Error {
     pub fn with_stage(self, stage: &'static str) -> Self {
         match self {
             Error::Nvs { source, .. } => Error::Nvs { source, stage },
-            Error::Spiffs { source, .. } => Error::Spiffs { source, stage },
+            Error::Storage { source, .. } => Error::Storage { source, stage },
             Error::Config { message, .. } => Error::Config { message, stage },
             Error::Io { source, .. } => Error::Io { source, stage },
             Error::Esp { code, .. } => Error::Esp { code, stage },

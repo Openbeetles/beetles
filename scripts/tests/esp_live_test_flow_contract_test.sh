@@ -15,6 +15,17 @@ assert_contains() {
   fi
 }
 
+assert_not_contains() {
+  local file="$1"
+  local needle="$2"
+  local message="$3"
+  if grep -F "$needle" "$file" >/dev/null; then
+    echo "FAIL: $message" >&2
+    echo "unexpected legacy backend wording" >&2
+    exit 1
+  fi
+}
+
 assert_contains "$FLOW" 'beetle_preferred_flash_port_for_chip "$chip"' \
   "live flow must select ports through the shared flash strategy"
 assert_contains "$FLOW" 'lsof "$selected" "$sibling"' \
@@ -33,6 +44,14 @@ assert_contains "$FLOW" 'qq_text expected message/reply metrics reached; ending 
   "live flow must report early qq_text completion before analysis"
 assert_contains "$FLOW" 'partition_layout_mismatch=false' \
   "live flow must require partition identity in serial logs"
+assert_contains "$FLOW" '\[heartbeat\] metrics .*storage_ops=' \
+  "live flow must require storage metrics in serial logs"
+assert_contains "$FLOW" 'storage_contention=Critical' \
+  "live flow must fail when critical storage contention appears"
+assert_contains "$FLOW" 'legacy storage metric names found' \
+  "live flow must reject legacy backend metric names without user-facing backend wording"
+assert_not_contains "$FLOW" 'SPIFFS' \
+  "live flow must not emit user-facing backend wording"
 assert_contains "$FLOW" 'missing msg_id for QQ v2 passive reply|message dropped after send attempts' \
   "live flow must fail on QQ passive-reply anchor drops"
 assert_contains "$FLOW" 'dispatch_fail=[1-9][0-9]*|err_dispatch=[1-9][0-9]*' \

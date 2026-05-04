@@ -14,7 +14,7 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-/// 相对状态根路径，与历史 SPIFFS 布局一致。
+/// 相对状态根路径，与历史 storage 布局一致。
 const KV_STORE_REL_PATH: &str = "memory/kv_store.json";
 
 /// 从状态根读取 KV map；文件不存在或解析失败时返回空 map（容错）。

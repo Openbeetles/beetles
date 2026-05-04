@@ -43,7 +43,7 @@ pub enum Message {
     CsrfTokenRequired,
     // --- tr_error 桶（阶段 1 粗粒度；阶段 3 细化 Config）---
     ErrorNvs,
-    ErrorSpiffs,
+    ErrorStorage,
     ErrorIo,
     ErrorEsp,
     ErrorHttpStatus {
@@ -154,7 +154,7 @@ pub fn tr(msg: Message, loc: Locale) -> String {
             Message::CsrfInvalidToken => zh("CSRF 令牌无效"),
             Message::CsrfTokenRequired => zh("需要 CSRF 令牌"),
             Message::ErrorNvs => zh("存储访问失败，请稍后重试"),
-            Message::ErrorSpiffs => zh("文件存储异常，请稍后重试"),
+            Message::ErrorStorage => zh("文件存储异常，请稍后重试"),
             Message::ErrorIo => zh("读写失败，请稍后重试"),
             Message::ErrorEsp => zh("设备错误，请重启后重试"),
             Message::ErrorHttpStatus { code } => {
@@ -288,7 +288,7 @@ pub fn tr(msg: Message, loc: Locale) -> String {
             Message::CsrfInvalidToken => en("Invalid CSRF token"),
             Message::CsrfTokenRequired => en("CSRF token required"),
             Message::ErrorNvs => en("Storage access failed, try again later"),
-            Message::ErrorSpiffs => en("File storage error, try again later"),
+            Message::ErrorStorage => en("File storage error, try again later"),
             Message::ErrorIo => en("Read/write failed, try again later"),
             Message::ErrorEsp => en("Device error, restart and try again"),
             Message::ErrorHttpStatus { code } => {

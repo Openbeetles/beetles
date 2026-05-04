@@ -12,6 +12,7 @@ Product-facing docs use the name Beetle OS. Commands, service names, and filesys
 ## Capabilities
 
 - [capabilities.md](capabilities.md): product shapes, capability areas, and platform fit
+- [memory-system.md](memory-system.md): memory system white paper
 
 ## Configure
 

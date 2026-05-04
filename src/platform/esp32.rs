@@ -12,26 +12,26 @@ use crate::platform::abstraction::{MemorySnapshot, Platform, StateFs};
     feature = "capability_office",
     any(target_arch = "xtensa", target_arch = "riscv32")
 ))]
-use crate::platform::spiffs::{SpiffsOfficeCredentialStore, SpiffsOfficeRuntimeStatusStore};
+use crate::platform::storage::{StorageOfficeCredentialStore, StorageOfficeRuntimeStatusStore};
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 use crate::platform::{
     display_driver::{install_display_state, DisplayState},
     heartbeat_file::read_heartbeat_file,
-    spiffs::{
-        spiffs_usage, CachedSkillMetaStore, CachedSkillStorage, SpiffsActiveWorkStore,
-        SpiffsAutonomyStrategyStore, SpiffsCalendarStore, SpiffsContinuityCapsuleStore,
-        SpiffsCoreRevisionLedgerStore, SpiffsDetachedWorkStore, SpiffsExecutionStateStore,
-        SpiffsFeltSignificanceStore, SpiffsImportantMessageStore, SpiffsInnerConflictStore,
-        SpiffsInnerLifeStore, SpiffsLongTermMemoryExtractionStateStore, SpiffsLongTermMemoryStore,
-        SpiffsMemoryStore, SpiffsMentalPrivacyStore, SpiffsOuterVoiceStore,
-        SpiffsPendingRetryStore, SpiffsPrivateDocStore, SpiffsPrivateGardenStore,
-        SpiffsRelationshipConstitutionStore, SpiffsRelationshipPortfolioStore,
-        SpiffsRelationshipTopologyStore, SpiffsRemindAtStore, SpiffsSelfAuthoredCoreStore,
-        SpiffsSelfContinuityStore, SpiffsSelfModelStore, SpiffsSessionStore,
-        SpiffsSessionSummaryStore, SpiffsSkillMetaStore, SpiffsSkillStorage,
-        SpiffsTaskArtifactStore, SpiffsTaskExecutionLedgerStore, SpiffsTaskLearningStore,
-        SpiffsTaskRunStore, SpiffsTaskStore, SpiffsTemperamentContinuityStore,
-        SpiffsTurnLedgerStore, SpiffsWorldSenseStore,
+    storage::{
+        storage_usage, CachedSkillMetaStore, CachedSkillStorage, StorageActiveWorkStore,
+        StorageAutonomyStrategyStore, StorageCalendarStore, StorageContinuityCapsuleStore,
+        StorageCoreRevisionLedgerStore, StorageDetachedWorkStore, StorageExecutionStateStore,
+        StorageFeltSignificanceStore, StorageImportantMessageStore, StorageInnerConflictStore,
+        StorageInnerLifeStore, StorageLongTermMemoryExtractionStateStore,
+        StorageLongTermMemoryStore, StorageMemoryStore, StorageMentalPrivacyStore,
+        StorageOuterVoiceStore, StoragePendingRetryStore, StoragePrivateDocStore,
+        StoragePrivateGardenStore, StorageRelationshipConstitutionStore,
+        StorageRelationshipPortfolioStore, StorageRelationshipTopologyStore, StorageRemindAtStore,
+        StorageSelfAuthoredCoreStore, StorageSelfContinuityStore, StorageSelfModelStore,
+        StorageSessionStore, StorageSessionSummaryStore, StorageSkillMetaStore,
+        StorageSkillStorage, StorageTaskArtifactStore, StorageTaskExecutionLedgerStore,
+        StorageTaskLearningStore, StorageTaskRunStore, StorageTaskStore,
+        StorageTemperamentContinuityStore, StorageTurnLedgerStore, StorageWorldSenseStore,
     },
     NvsConfigStore,
 };
@@ -76,25 +76,25 @@ pub struct Esp32Platform {
     config_store: Arc<NvsConfigStore>,
     skill_storage: Arc<dyn crate::platform::SkillStorage + Send + Sync>,
     skill_meta_store: Arc<dyn crate::platform::SkillMetaStore + Send + Sync>,
-    memory_store: Arc<SpiffsMemoryStore>,
-    long_term_memory_store: Arc<SpiffsLongTermMemoryStore>,
+    memory_store: Arc<StorageMemoryStore>,
+    long_term_memory_store: Arc<StorageLongTermMemoryStore>,
     continuity_capsule_store: Arc<dyn ContinuityCapsuleStore + Send + Sync>,
     long_term_memory_extraction_state_store:
         Arc<dyn LongTermMemoryExtractionStateStore + Send + Sync>,
     session_store: Arc<dyn SessionStore + Send + Sync>,
-    pending_retry_store: Arc<SpiffsPendingRetryStore>,
-    calendar_store: Arc<SpiffsCalendarStore>,
+    pending_retry_store: Arc<StoragePendingRetryStore>,
+    calendar_store: Arc<StorageCalendarStore>,
     #[cfg(feature = "capability_office")]
-    office_credential_store: Arc<SpiffsOfficeCredentialStore>,
+    office_credential_store: Arc<StorageOfficeCredentialStore>,
     #[cfg(feature = "capability_office")]
-    office_runtime_status_store: Arc<SpiffsOfficeRuntimeStatusStore>,
-    task_store: Arc<SpiffsTaskStore>,
-    task_run_store: Arc<SpiffsTaskRunStore>,
-    task_artifact_store: Arc<SpiffsTaskArtifactStore>,
-    task_execution_ledger_store: Arc<SpiffsTaskExecutionLedgerStore>,
-    task_learning_store: Arc<SpiffsTaskLearningStore>,
+    office_runtime_status_store: Arc<StorageOfficeRuntimeStatusStore>,
+    task_store: Arc<StorageTaskStore>,
+    task_run_store: Arc<StorageTaskRunStore>,
+    task_artifact_store: Arc<StorageTaskArtifactStore>,
+    task_execution_ledger_store: Arc<StorageTaskExecutionLedgerStore>,
+    task_learning_store: Arc<StorageTaskLearningStore>,
     active_work_store: Arc<dyn crate::agent::ActiveWorkStore + Send + Sync>,
-    detached_work_store: Arc<SpiffsDetachedWorkStore>,
+    detached_work_store: Arc<StorageDetachedWorkStore>,
     execution_state_store: Arc<dyn ExecutionStateStore + Send + Sync>,
     self_model_store: Arc<dyn SelfModelStore + Send + Sync>,
     self_authored_core_store: Arc<dyn SelfAuthoredCoreStore + Send + Sync>,
@@ -110,11 +110,11 @@ pub struct Esp32Platform {
     inner_conflict_store: Arc<dyn InnerConflictStore + Send + Sync>,
     relationship_portfolio_store: Arc<dyn RelationshipPortfolioStore + Send + Sync>,
     relationship_topology_store: Arc<dyn RelationshipTopologyStore + Send + Sync>,
-    private_doc_store: Arc<SpiffsPrivateDocStore>,
-    private_garden_store: Arc<SpiffsPrivateGardenStore>,
+    private_doc_store: Arc<StoragePrivateDocStore>,
+    private_garden_store: Arc<StoragePrivateGardenStore>,
     mental_privacy_store: Arc<dyn MentalPrivacyStore + Send + Sync>,
     important_message_store: Arc<dyn ImportantMessageStore + Send + Sync>,
-    remind_at_store: Arc<SpiffsRemindAtStore>,
+    remind_at_store: Arc<StorageRemindAtStore>,
     session_summary_store: Arc<dyn SessionSummaryStore + Send + Sync>,
     turn_ledger_store: Arc<dyn TurnLedgerStore + Send + Sync>,
     wifi_scan_handle: Mutex<Option<Arc<dyn crate::platform::WifiScan + Send + Sync>>>,
@@ -130,99 +130,99 @@ impl Esp32Platform {
         let state_fs: Arc<dyn StateFs + Send + Sync> =
             Arc::new(crate::platform::state_fs::Esp32StateFs);
         let long_term_memory_extraction_state_store = BufferedLongTermExtractionStateStore::wrap(
-            Arc::new(SpiffsLongTermMemoryExtractionStateStore::new())
+            Arc::new(StorageLongTermMemoryExtractionStateStore::new())
                 as Arc<dyn LongTermMemoryExtractionStateStore + Send + Sync>,
         );
         let session_store = BufferedSessionStore::wrap(
-            Arc::new(SpiffsSessionStore::new()) as Arc<dyn SessionStore + Send + Sync>
+            Arc::new(StorageSessionStore::new()) as Arc<dyn SessionStore + Send + Sync>
         );
         let execution_state_store =
-            BufferedExecutionStateStore::wrap(Arc::new(SpiffsExecutionStateStore::new())
+            BufferedExecutionStateStore::wrap(Arc::new(StorageExecutionStateStore::new())
                 as Arc<dyn ExecutionStateStore + Send + Sync>);
         let self_model_store = BufferedSelfModelStore::wrap(
-            Arc::new(SpiffsSelfModelStore::new()) as Arc<dyn SelfModelStore + Send + Sync>
+            Arc::new(StorageSelfModelStore::new()) as Arc<dyn SelfModelStore + Send + Sync>
         );
         let self_authored_core_store =
-            BufferedSelfAuthoredCoreStore::wrap(Arc::new(SpiffsSelfAuthoredCoreStore::new())
+            BufferedSelfAuthoredCoreStore::wrap(Arc::new(StorageSelfAuthoredCoreStore::new())
                 as Arc<dyn SelfAuthoredCoreStore + Send + Sync>);
         let core_revision_ledger_store =
-            BufferedCoreRevisionLedgerStore::wrap(Arc::new(SpiffsCoreRevisionLedgerStore::new())
+            BufferedCoreRevisionLedgerStore::wrap(Arc::new(StorageCoreRevisionLedgerStore::new())
                 as Arc<dyn CoreRevisionLedgerStore + Send + Sync>);
         let relationship_constitution_store = BufferedRelationshipConstitutionStore::wrap(
-            Arc::new(SpiffsRelationshipConstitutionStore::new())
+            Arc::new(StorageRelationshipConstitutionStore::new())
                 as Arc<dyn RelationshipConstitutionStore + Send + Sync>,
         );
         let world_sense_store = BufferedWorldSenseStore::wrap(
-            Arc::new(SpiffsWorldSenseStore::new()) as Arc<dyn WorldSenseStore + Send + Sync>,
+            Arc::new(StorageWorldSenseStore::new()) as Arc<dyn WorldSenseStore + Send + Sync>,
         );
         let autonomy_strategy_store =
-            BufferedAutonomyStrategyStore::wrap(Arc::new(SpiffsAutonomyStrategyStore::new())
+            BufferedAutonomyStrategyStore::wrap(Arc::new(StorageAutonomyStrategyStore::new())
                 as Arc<dyn AutonomyStrategyStore + Send + Sync>);
         let outer_voice_store = BufferedOuterVoiceStore::wrap(
-            Arc::new(SpiffsOuterVoiceStore::new()) as Arc<dyn OuterVoiceStore + Send + Sync>,
+            Arc::new(StorageOuterVoiceStore::new()) as Arc<dyn OuterVoiceStore + Send + Sync>,
         );
         let inner_life_store = BufferedInnerLifeStore::wrap(
-            Arc::new(SpiffsInnerLifeStore::new()) as Arc<dyn InnerLifeStore + Send + Sync>
+            Arc::new(StorageInnerLifeStore::new()) as Arc<dyn InnerLifeStore + Send + Sync>
         );
         let self_continuity_store =
-            BufferedSelfContinuityStore::wrap(Arc::new(SpiffsSelfContinuityStore::new())
+            BufferedSelfContinuityStore::wrap(Arc::new(StorageSelfContinuityStore::new())
                 as Arc<dyn SelfContinuityStore + Send + Sync>);
         let felt_significance_store =
-            BufferedFeltSignificanceStore::wrap(Arc::new(SpiffsFeltSignificanceStore::new())
+            BufferedFeltSignificanceStore::wrap(Arc::new(StorageFeltSignificanceStore::new())
                 as Arc<dyn FeltSignificanceStore + Send + Sync>);
         let temperament_continuity_store = BufferedTemperamentContinuityStore::wrap(Arc::new(
-            SpiffsTemperamentContinuityStore::new(),
+            StorageTemperamentContinuityStore::new(),
         )
             as Arc<dyn TemperamentContinuityStore + Send + Sync>);
         let inner_conflict_store =
-            BufferedInnerConflictStore::wrap(Arc::new(SpiffsInnerConflictStore::new())
+            BufferedInnerConflictStore::wrap(Arc::new(StorageInnerConflictStore::new())
                 as Arc<dyn InnerConflictStore + Send + Sync>);
         let relationship_portfolio_store = BufferedRelationshipPortfolioStore::wrap(Arc::new(
-            SpiffsRelationshipPortfolioStore::new(),
+            StorageRelationshipPortfolioStore::new(),
         )
             as Arc<dyn RelationshipPortfolioStore + Send + Sync>);
         let relationship_topology_store = BufferedRelationshipTopologyStore::wrap(Arc::new(
-            SpiffsRelationshipTopologyStore::new(),
+            StorageRelationshipTopologyStore::new(),
         )
             as Arc<dyn RelationshipTopologyStore + Send + Sync>);
         let mental_privacy_store =
-            BufferedMentalPrivacyStore::wrap(Arc::new(SpiffsMentalPrivacyStore::new())
+            BufferedMentalPrivacyStore::wrap(Arc::new(StorageMentalPrivacyStore::new())
                 as Arc<dyn MentalPrivacyStore + Send + Sync>);
         let important_message_store =
-            BufferedImportantMessageStore::wrap(Arc::new(SpiffsImportantMessageStore::new())
+            BufferedImportantMessageStore::wrap(Arc::new(StorageImportantMessageStore::new())
                 as Arc<dyn ImportantMessageStore + Send + Sync>);
         let session_summary_store =
-            BufferedSessionSummaryStore::wrap(Arc::new(SpiffsSessionSummaryStore::new())
+            BufferedSessionSummaryStore::wrap(Arc::new(StorageSessionSummaryStore::new())
                 as Arc<dyn SessionSummaryStore + Send + Sync>);
         let turn_ledger_store = BufferedTurnLedgerStore::wrap(
-            Arc::new(SpiffsTurnLedgerStore::new()) as Arc<dyn TurnLedgerStore + Send + Sync>,
+            Arc::new(StorageTurnLedgerStore::new()) as Arc<dyn TurnLedgerStore + Send + Sync>,
         );
         let active_work_store =
-            BufferedActiveWorkStore::wrap(Arc::new(SpiffsActiveWorkStore::new())
+            BufferedActiveWorkStore::wrap(Arc::new(StorageActiveWorkStore::new())
                 as Arc<dyn crate::agent::ActiveWorkStore + Send + Sync>);
         Self {
             state_fs,
             config_store: Arc::new(NvsConfigStore),
-            skill_storage: CachedSkillStorage::wrap(Arc::new(SpiffsSkillStorage)),
-            skill_meta_store: CachedSkillMetaStore::wrap(Arc::new(SpiffsSkillMetaStore)),
-            memory_store: Arc::new(SpiffsMemoryStore::new()),
-            long_term_memory_store: Arc::new(SpiffsLongTermMemoryStore::new()),
-            continuity_capsule_store: Arc::new(SpiffsContinuityCapsuleStore::new()),
+            skill_storage: CachedSkillStorage::wrap(Arc::new(StorageSkillStorage)),
+            skill_meta_store: CachedSkillMetaStore::wrap(Arc::new(StorageSkillMetaStore)),
+            memory_store: Arc::new(StorageMemoryStore::new()),
+            long_term_memory_store: Arc::new(StorageLongTermMemoryStore::new()),
+            continuity_capsule_store: Arc::new(StorageContinuityCapsuleStore::new()),
             long_term_memory_extraction_state_store,
             session_store,
-            pending_retry_store: Arc::new(SpiffsPendingRetryStore::new()),
-            calendar_store: Arc::new(SpiffsCalendarStore::new()),
+            pending_retry_store: Arc::new(StoragePendingRetryStore::new()),
+            calendar_store: Arc::new(StorageCalendarStore::new()),
             #[cfg(feature = "capability_office")]
-            office_credential_store: Arc::new(SpiffsOfficeCredentialStore::new()),
+            office_credential_store: Arc::new(StorageOfficeCredentialStore::new()),
             #[cfg(feature = "capability_office")]
-            office_runtime_status_store: Arc::new(SpiffsOfficeRuntimeStatusStore::new()),
-            task_store: Arc::new(SpiffsTaskStore::new()),
-            task_run_store: Arc::new(SpiffsTaskRunStore::new()),
-            task_artifact_store: Arc::new(SpiffsTaskArtifactStore::new()),
-            task_execution_ledger_store: Arc::new(SpiffsTaskExecutionLedgerStore::new()),
-            task_learning_store: Arc::new(SpiffsTaskLearningStore::new()),
+            office_runtime_status_store: Arc::new(StorageOfficeRuntimeStatusStore::new()),
+            task_store: Arc::new(StorageTaskStore::new()),
+            task_run_store: Arc::new(StorageTaskRunStore::new()),
+            task_artifact_store: Arc::new(StorageTaskArtifactStore::new()),
+            task_execution_ledger_store: Arc::new(StorageTaskExecutionLedgerStore::new()),
+            task_learning_store: Arc::new(StorageTaskLearningStore::new()),
             active_work_store,
-            detached_work_store: Arc::new(SpiffsDetachedWorkStore::new()),
+            detached_work_store: Arc::new(StorageDetachedWorkStore::new()),
             execution_state_store,
             self_model_store,
             self_authored_core_store,
@@ -238,11 +238,11 @@ impl Esp32Platform {
             inner_conflict_store,
             relationship_portfolio_store,
             relationship_topology_store,
-            private_doc_store: Arc::new(SpiffsPrivateDocStore::new()),
-            private_garden_store: Arc::new(SpiffsPrivateGardenStore::new()),
+            private_doc_store: Arc::new(StoragePrivateDocStore::new()),
+            private_garden_store: Arc::new(StoragePrivateGardenStore::new()),
             mental_privacy_store,
             important_message_store,
-            remind_at_store: Arc::new(SpiffsRemindAtStore::new()),
+            remind_at_store: Arc::new(StorageRemindAtStore::new()),
             session_summary_store,
             turn_ledger_store,
             wifi_scan_handle: Mutex::new(None),
@@ -302,7 +302,7 @@ impl Platform for Esp32Platform {
                 .set_target_level(target, log::LevelFilter::Warn);
         }
         self.init_nvs()?;
-        self.init_spiffs()?;
+        self.init_storage()?;
         if let Err(e) = self.remind_at_store.warm_cache() {
             log::warn!("[platform::esp32] warm remind cache failed: {}", e);
         }
@@ -316,8 +316,8 @@ impl Platform for Esp32Platform {
         crate::platform::nvs::init_nvs()
     }
 
-    fn init_spiffs(&self) -> crate::error::Result<()> {
-        crate::platform::spiffs::init_spiffs()
+    fn init_storage(&self) -> crate::error::Result<()> {
+        crate::platform::storage::init_storage()
     }
 
     fn config_store(&self) -> Arc<dyn crate::platform::ConfigStore + Send + Sync> {
@@ -547,8 +547,8 @@ impl Platform for Esp32Platform {
         }
     }
 
-    fn spiffs_usage(&self) -> Option<(u64, u64)> {
-        spiffs_usage()
+    fn storage_usage(&self) -> Option<(u64, u64)> {
+        storage_usage()
     }
 
     fn read_heartbeat_file(&self) -> crate::error::Result<String> {
@@ -854,7 +854,6 @@ impl Platform for Esp32Platform {
         &self,
         addr: u8,
         model: &str,
-        _watch_field: &str,
         options: &serde_json::Value,
     ) -> crate::error::Result<String> {
         use crate::platform::hardware_drivers::{parse_aht20, parse_sht3x};

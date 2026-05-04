@@ -18,6 +18,7 @@
 | 任务 | 中文 | English |
 |------|------|---------|
 | 能力概览与适用场景 | [zh-cn/capabilities.md](zh-cn/capabilities.md) | [en-us/capabilities.md](en-us/capabilities.md) |
+| 记忆系统白皮书 | [zh-cn/memory-system.md](zh-cn/memory-system.md) | [en-us/memory-system.md](en-us/memory-system.md) |
 
 ## Configure
 
@@ -69,6 +70,7 @@ Commands, service names, and filesystem paths still use `beetle`.
 | Task | English | 中文 |
 |------|---------|------|
 | See what Beetle OS can do and what it fits | [en-us/capabilities.md](en-us/capabilities.md) | [zh-cn/capabilities.md](zh-cn/capabilities.md) |
+| Read the memory system white paper | [en-us/memory-system.md](en-us/memory-system.md) | [zh-cn/memory-system.md](zh-cn/memory-system.md) |
 
 ### Configure
 

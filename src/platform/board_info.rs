@@ -1,4 +1,4 @@
-//! 板级状态 JSON。ESP：芯片、堆、SPIFFS 等；Linux：`platform` 为 `linux`；其它操作系统为 `std::env::consts::OS`（如 `macos`、`windows`）。供 `Platform::board_info_json` 与工具层复用。
+//! 板级状态 JSON。ESP：芯片、堆、存储等；Linux：`platform` 为 `linux`；其它操作系统为 `std::env::consts::OS`（如 `macos`、`windows`）。供 `Platform::board_info_json` 与工具层复用。
 //! Board status JSON: ESP; Linux (`platform` = `linux`); other OS (`platform` = `std::env::consts::OS`, e.g. `macos`, `windows`).
 
 use serde_json::json;
@@ -13,8 +13,8 @@ struct EspPayloadInput<'a> {
     uptime_secs: u64,
     idf_version: &'a str,
     wifi_sta_connected: bool,
-    spiffs: serde_json::Value,
-    spiffs_usage_pct: f32,
+    storage: serde_json::Value,
+    storage_usage_pct: f32,
 }
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
@@ -47,8 +47,8 @@ fn esp_payload(input: EspPayloadInput<'_>) -> serde_json::Value {
         "hint": input.snap.budget.llm_hint,
         "runtime_capabilities": crate::orchestrator::runtime_capability_summary(),
         "wifi_sta_connected": input.wifi_sta_connected,
-        "spiffs": input.spiffs,
-        "spiffs_usage_percent": input.spiffs_usage_pct,
+        "storage": input.storage,
+        "storage_usage_percent": input.storage_usage_pct,
     })
 }
 
@@ -61,7 +61,7 @@ fn collect_esp() -> String {
     let uptime_secs = crate::platform::time::app_uptime_secs();
     let idf_version = option_env!("IDF_VERSION").unwrap_or("unknown");
     let wifi_sta_connected = crate::platform::is_wifi_sta_connected();
-    let (spiffs, spiffs_usage_pct) = crate::platform::spiffs_usage()
+    let (storage, storage_usage_pct) = crate::platform::storage_usage()
         .map(|(total, used)| {
             let free = total.saturating_sub(used);
             let pct = if total > 0 {
@@ -89,13 +89,13 @@ fn collect_esp() -> String {
         uptime_secs,
         idf_version,
         wifi_sta_connected,
-        spiffs,
-        spiffs_usage_pct,
+        storage,
+        storage_usage_pct,
     });
     out.to_string()
 }
 
-/// 返回 state_root 所在文件系统的 (total_bytes, used_bytes)，语义对齐 ESP `spiffs_usage`。
+/// 返回 state_root 所在文件系统的 (total_bytes, used_bytes)，语义对齐 ESP `storage_usage`。
 /// Non-unix 返回 None。
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub fn host_state_root_usage() -> Option<(u64, u64)> {
@@ -225,8 +225,8 @@ mod tests {
             uptime_secs: 84,
             idf_version: "v6.0",
             wifi_sta_connected: true,
-            spiffs: json!({"total_bytes": 100, "used_bytes": 2, "free_bytes": 98}),
-            spiffs_usage_pct: 2.0,
+            storage: json!({"total_bytes": 100, "used_bytes": 2, "free_bytes": 98}),
+            storage_usage_pct: 2.0,
         });
 
         assert_eq!(payload["heap_free"].as_u64(), Some(90_700));

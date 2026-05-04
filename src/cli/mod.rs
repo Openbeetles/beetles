@@ -157,12 +157,12 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         handler: cmd_baseline,
     },
     CommandSpec {
-        name: "spiffs_stress",
+        name: "storage_stress",
         aliases: &[],
-        usage: "spiffs_stress [workers] [rounds] [payload_bytes]",
-        summary: "Stress SPIFFS lock and report deltas",
+        usage: "storage_stress [workers] [rounds] [payload_bytes]",
+        summary: "Stress storage lock and report deltas",
         visible_in_help: true,
-        handler: cmd_spiffs_stress,
+        handler: cmd_storage_stress,
     },
     CommandSpec {
         name: "config_show",
@@ -420,14 +420,14 @@ fn cmd_health(ctx: &CliContext, _args: Vec<&str>) -> String {
     let thread_snapshot = crate::runtime::thread_registry::snapshot();
     let metrics = crate::metrics::snapshot();
     format!(
-        "health:\n  wifi: {}\n  inbound_depth: {}\n  outbound_depth: {}\n  last_error: {}\n  threads_alive: {}\n  spiffs_lock_ops: {}\n  spiffs_lock_contention: {}\n",
+        "health:\n  wifi: {}\n  inbound_depth: {}\n  outbound_depth: {}\n  last_error: {}\n  threads_alive: {}\n  storage_lock_ops: {}\n  storage_lock_contention: {}\n",
         wifi,
         inbound,
         outbound,
         last_err,
         thread_snapshot.alive_threads,
-        metrics.spiffs_lock_ops_total,
-        metrics.spiffs_lock_contention_total,
+        metrics.storage_lock_ops_total,
+        metrics.storage_lock_contention_total,
     )
 }
 
@@ -614,7 +614,7 @@ fn cmd_package_rollback(ctx: &CliContext, args: Vec<&str>) -> String {
     }
 }
 
-fn cmd_spiffs_stress(ctx: &CliContext, args: Vec<&str>) -> String {
+fn cmd_storage_stress(ctx: &CliContext, args: Vec<&str>) -> String {
     const DEFAULT_WORKERS: usize = 4;
     const DEFAULT_ROUNDS: usize = 64;
     const DEFAULT_PAYLOAD_BYTES: usize = 1024;
@@ -645,12 +645,12 @@ fn cmd_spiffs_stress(ctx: &CliContext, args: Vec<&str>) -> String {
 
     for worker_id in 0..workers {
         let state_fs = Arc::clone(&fs);
-        let name = format!("spiffs_stress_{}", worker_id);
+        let name = format!("storage_stress_{}", worker_id);
         let handle = std::thread::Builder::new()
             .name(name)
             .stack_size(4096)
             .spawn(move || -> crate::error::Result<()> {
-                let rel_path = format!("diag/spiffs_stress_{}.bin", worker_id);
+                let rel_path = format!("diag/storage_stress_{}.bin", worker_id);
                 let fill = b'a'.saturating_add((worker_id % 26) as u8);
                 let payload = vec![fill; payload_bytes];
                 for round in 0..rounds {
@@ -666,7 +666,7 @@ fn cmd_spiffs_stress(ctx: &CliContext, args: Vec<&str>) -> String {
         match handle {
             Ok(handle) => handles.push(handle),
             Err(e) => {
-                return format!("spiffs_stress spawn error: {}\n", e);
+                return format!("storage_stress spawn error: {}\n", e);
             }
         }
     }
@@ -674,31 +674,31 @@ fn cmd_spiffs_stress(ctx: &CliContext, args: Vec<&str>) -> String {
     for handle in handles {
         match handle.join() {
             Ok(Ok(())) => {}
-            Ok(Err(e)) => return format!("spiffs_stress worker error: {}\n", e),
-            Err(_) => return "spiffs_stress worker panicked\n".into(),
+            Ok(Err(e)) => return format!("storage_stress worker error: {}\n", e),
+            Err(_) => return "storage_stress worker panicked\n".into(),
         }
     }
 
     let elapsed_ms = start.elapsed().as_millis();
     let after = crate::metrics::snapshot();
     format!(
-        "spiffs_stress:\n  workers: {}\n  rounds: {}\n  payload_bytes: {}\n  elapsed_ms: {}\n  lock_ops_delta: {}\n  contention_delta: {}\n  wait_total_us_delta: {}\n  hold_total_us_delta: {}\n",
+        "storage_stress:\n  workers: {}\n  rounds: {}\n  payload_bytes: {}\n  elapsed_ms: {}\n  lock_ops_delta: {}\n  contention_delta: {}\n  wait_total_us_delta: {}\n  hold_total_us_delta: {}\n",
         workers,
         rounds,
         payload_bytes,
         elapsed_ms,
         after
-            .spiffs_lock_ops_total
-            .saturating_sub(before.spiffs_lock_ops_total),
+            .storage_lock_ops_total
+            .saturating_sub(before.storage_lock_ops_total),
         after
-            .spiffs_lock_contention_total
-            .saturating_sub(before.spiffs_lock_contention_total),
+            .storage_lock_contention_total
+            .saturating_sub(before.storage_lock_contention_total),
         after
-            .spiffs_lock_wait_total_us
-            .saturating_sub(before.spiffs_lock_wait_total_us),
+            .storage_lock_wait_total_us
+            .saturating_sub(before.storage_lock_wait_total_us),
         after
-            .spiffs_lock_hold_total_us
-            .saturating_sub(before.spiffs_lock_hold_total_us),
+            .storage_lock_hold_total_us
+            .saturating_sub(before.storage_lock_hold_total_us),
     )
 }
 

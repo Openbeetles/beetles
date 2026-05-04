@@ -87,12 +87,12 @@ pub fn body_prometheus(_ctx: &HandlerContext) -> Result<String, std::io::Error> 
         snap.wake_feed_calls_total
     ));
     buf.push_str(&format!(
-        "beetle_spiffs_lock_ops_total {}\n",
-        snap.spiffs_lock_ops_total
+        "beetle_storage_lock_ops_total {}\n",
+        snap.storage_lock_ops_total
     ));
     buf.push_str(&format!(
-        "beetle_spiffs_lock_contention_total {}\n",
-        snap.spiffs_lock_contention_total
+        "beetle_storage_lock_contention_total {}\n",
+        snap.storage_lock_contention_total
     ));
 
     Ok(buf)

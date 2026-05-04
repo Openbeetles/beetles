@@ -1,19 +1,19 @@
-//! ESP32：状态文件委托 `platform::spiffs`（含 SPIFFS 互斥）。
-//! ESP32: state files delegate to `platform::spiffs` (including SPIFFS mutex).
+//! ESP32：状态文件委托平台存储后端（含存储互斥）。
+//! ESP32: state files delegate to the platform storage backend.
 
 use crate::error::{Error, Result};
 use crate::platform::abstraction::{StateBytes, StateFs};
-use crate::platform::spiffs::{self, MAX_WRITE_SIZE};
 use crate::platform::state_root::state_mount_path;
+use crate::platform::storage::{self, MAX_WRITE_SIZE};
 use std::path::{Path, PathBuf};
 
-/// 零大小类型；SPIFFS 串行化在 `spiffs::*` 内完成。
+/// 零大小类型；存储串行化在平台后端内完成。
 #[derive(Debug, Default)]
 pub struct Esp32StateFs;
 
 fn abs_path(rel_path: &str) -> Result<PathBuf> {
     let rel = crate::util::normalize_state_rel_path(rel_path)?;
-    Ok(state_mount_path().join(spiffs::esp_storage_rel_path(Path::new(&rel))))
+    Ok(state_mount_path().join(storage::esp_storage_rel_path(Path::new(&rel))))
 }
 
 fn map_read_result(r: std::result::Result<Vec<u8>, Error>) -> Result<Option<Vec<u8>>> {
@@ -41,12 +41,12 @@ fn map_read_bytes_result(
 impl StateFs for Esp32StateFs {
     fn read(&self, rel_path: &str) -> Result<Option<Vec<u8>>> {
         let path = abs_path(rel_path)?;
-        map_read_result(spiffs::read_file_to_vec(&path))
+        map_read_result(storage::read_file_to_vec(&path))
     }
 
     fn read_bytes(&self, rel_path: &str) -> Result<Option<StateBytes>> {
         let path = abs_path(rel_path)?;
-        map_read_bytes_result(spiffs::read_file(&path))
+        map_read_bytes_result(storage::read_file(&path))
     }
 
     fn write(&self, rel_path: &str, data: &[u8]) -> Result<()> {
@@ -58,19 +58,19 @@ impl StateFs for Esp32StateFs {
         }
         let rel = crate::util::normalize_state_rel_path(rel_path)?;
         let rel_path = Path::new(&rel);
-        let path = state_mount_path().join(spiffs::esp_storage_rel_path(rel_path));
-        // SPIFFS 无真实目录：`mkdir`/`create_dir_all` 会返回 Not supported（如 raw_os_error 134）。
-        // 带 `/` 的路径由 VFS 直接 `File::create` 即可（见 `spiffs::write_file`）。
-        match spiffs::state_write_tail_padding(rel_path) {
-            spiffs::WriteTailPadding::JsonWhitespace => spiffs::write_json_file(&path, data),
-            spiffs::WriteTailPadding::Newlines => spiffs::write_line_file(&path, data),
-            spiffs::WriteTailPadding::None => spiffs::write_file(&path, data),
+        let path = state_mount_path().join(storage::esp_storage_rel_path(rel_path));
+        // ESP 存储后端无真实目录：`mkdir`/`create_dir_all` 会返回 Not supported（如 raw_os_error 134）。
+        // 带 `/` 的路径由 VFS 直接 `File::create` 即可（见后端 `write_file`）。
+        match storage::state_write_tail_padding(rel_path) {
+            storage::WriteTailPadding::JsonWhitespace => storage::write_json_file(&path, data),
+            storage::WriteTailPadding::Newlines => storage::write_line_file(&path, data),
+            storage::WriteTailPadding::None => storage::write_file(&path, data),
         }
     }
 
     fn remove(&self, rel_path: &str) -> Result<()> {
         let path = abs_path(rel_path)?;
-        match spiffs::remove_file(&path) {
+        match storage::remove_file(&path) {
             Ok(()) => Ok(()),
             Err(e) => match &e {
                 Error::Io { source, .. } if source.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -90,6 +90,6 @@ impl StateFs for Esp32StateFs {
 
     fn list_dir(&self, rel_path: &str) -> Result<Vec<String>> {
         let path = abs_path(rel_path)?;
-        spiffs::list_dir(&path)
+        storage::list_dir(&path)
     }
 }

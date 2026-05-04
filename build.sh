@@ -1481,7 +1481,7 @@ REMOTE_EOF
 OFFICIAL_SKILLS_UPLOADED=0
 OFFICIAL_SKILLS_EXPECTED=0
 linux_deploy_upload_official_skills() {
-    local skills_dir="$SCRIPT_ROOT/spiffs_data/skills"
+    local skills_dir="$SCRIPT_ROOT/storage_data/skills"
     local remote_stage_dir=""
     local has=""
     local f=""
@@ -2962,15 +2962,15 @@ select_flash_mode() {
   local port="$1" triple="$2"
   ERASE_BEFORE_FLASH=0
   if [[ -n "$FLASH_NO_ERASE" ]]; then
-    echo -e "${YELLOW}! Flash mode: update only — no full-chip erase, but partition-table changes can still make SPIFFS reformat.${NC}"
+    echo -e "${YELLOW}! Flash mode: update only — no full-chip erase, but partition-table changes can still make storage backend reformat.${NC}"
     echo "  Bootloader, partition table, and app will be refreshed in place."
-    echo "  NVS is kept; config files are kept only when the SPIFFS partition offset and size are unchanged."
+    echo "  NVS is kept; config files are kept only when the storage partition offset and size are unchanged."
     echo ""
     return 0
   fi
   echo "========== Flash mode =========="
   echo ""
-  echo "  1) Update flash — keep NVS; SPIFFS config is preserved only if partition offset/size are unchanged"
+  echo "  1) Update flash — keep NVS; storage config is preserved only if partition offset/size are unchanged"
   echo "  2) Full chip erase then flash — wipes entire flash (factory reset / partition change)"
   echo "  3) Cancel"
   echo ""

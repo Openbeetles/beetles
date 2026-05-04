@@ -15,8 +15,8 @@ assert_contains() {
   fi
 }
 
-assert_contains 'spiffs_data/skills' \
-  "linux deploy should source official runtime skills from spiffs_data/skills"
+assert_contains 'storage_data/skills' \
+  "linux deploy should source official runtime skills from storage_data/skills"
 assert_contains 'REMOTE_TMP_SKILLS_DIR' \
   "linux deploy should stage official skill artifacts on the remote device"
 assert_contains 'mkdir -p "\$DEPLOY_STATE_DIR/skills"' \

@@ -72,8 +72,8 @@ ESPFLASH_PORT=/dev/ttyUSB0 ./build.sh --flash
 说明：
 
 - `--flash` 会在构建完成后直接进入烧录流程
-- `--flash` 默认保留 NVS；如果你需要全擦，脚本会给你选项
-- `--flash-update` 不进擦除选择，直接按保留数据前提下的串口重刷方式烧录；会原地刷新 bootloader、分区表和 app，但不会整片擦除。NVS 会保留；只有 SPIFFS 分区 offset 和 size 都不变时，SPIFFS 配置才可认为安全保留。
+- `--flash` 默认保留现有配置、记忆和存储；如果你需要全擦，脚本会给你选项
+- `--flash-update` 不进擦除选择，直接按保留存储前提下的串口重刷方式烧录；会原地刷新 bootloader、分区表和 app，但不会整片擦除。只有存储布局兼容时，存储数据才可安全保留。
 - 串口烧录会按当前板型的构建产物地址写入，不再假设所有 ESP 芯片使用同一组固定烧录地址；ESP32-P4 不需要手动改 offset。
 - `--no-monitor` 表示烧录完成后不打开串口监视
 - 若串口可唯一识别，脚本自动选择该串口；否则进入选择流程
@@ -116,7 +116,7 @@ dist/esp/v0.1.0/SHA256SUMS
 - 版型浏览器烧录 manifest 走单 part + `offset: 0`，让安装器直接刷对应的单 bin
 - Configure UI 的在线烧录通过浏览器 Web Serial + `esptool-js` 连接 ESP ROM bootloader；扫描设备时以芯片描述和 Flash 容量作为版型匹配依据，不把 USB 桥 VID/PID 当作开发板信息
 - Configure UI 浏览器烧录不让用户手动选择 `.bin` 或 `release-catalog.json`；设备扫描后按识别到的芯片 / Flash 容量映射官方支持版型，再从同源 `/firmware/release-catalog.json`（或构建时配置的 `VITE_ESP_FIRMWARE_BASE_URL`）读取发布目录，校验固件 SHA-256 与关键 offset；PSRAM 是主线硬件合同与运行态诊断事实，不作为浏览器 ROM 阶段的刷写准入硬门槛
-- Configure UI 浏览器烧录提供「更新 / 重装」二选一模式：更新使用 `update_parts` 分别写 bootloader、partition-table、app，不写 NVS 区间以保留 WiFi、配对码与设备配置；重装使用 merged single bin 写入 `0x0`，并会先整片擦除再烧录，清空 WiFi、配对码、设备配置和历史数据
+- Configure UI 浏览器烧录提供「更新 / 重装」二选一模式：更新使用 `update_parts` 分别写 bootloader、partition-table、app，并保留 WiFi、配对码、设备配置、记忆和存储；重装使用 merged single bin 写入 `0x0`，并会先整片擦除再烧录，清空 WiFi、配对码、设备配置、记忆和存储空间
 - 发布目录先在临时 stage 下构建，全部成功后再整体替换最终版本目录，避免残留半成品产物
 - `dist/esp/v<version>/` 是发布包真源；`configure-ui/public/firmware/` 是浏览器烧录协议目录，由脚本在发布成功后整体替换，避免残留旧固件或旧 catalog
 
@@ -164,7 +164,7 @@ scripts/esp_symbolize_panic.sh target/esp-artifacts/<artifact-id> 0x4037f815
 
 禁止用其他构建轮次的 ELF/map 猜地址；ESP panic 定责必须以匹配的 artifact id 为准。
 
-`--flash-update` 会刷新 bootloader、编译后的分区表和 app；只有当 NVS/SPIFFS 的 offset 与 size 不变时，数据区才可被保留，避免新 app 搭配旧分区表污染排查结论；如果改变 SPIFFS extent，ESP-IDF 可能会格式化文件系统。当前 16MB S3 主线分区使用单 `factory` app 槽位 `0x20000/0x600000`，并保持 SPIFFS extent 为 `0x620000/0x9D0000`；除非明确要迁移或格式化用户配置，否则不要再次改变这个 extent。
+`--flash-update` 会刷新 bootloader、编译后的分区表和 app；只有当存储布局兼容时，配置、记忆和存储数据才可被保留，避免新 app 搭配旧分区表污染排查结论。如果你需要干净重装，请选择擦除流程，让已保存的配置、记忆和存储空间一起清空。
 
 ## Linux 示例
 
@@ -183,7 +183,7 @@ TARGET=linux ./build.sh --package-linux
 - `--package-linux` 会直接从 `Cargo.toml package.version` 生成 bundle 版本，不再要求额外手工跑第二条打包命令
 - `BUILD_METHOD=auto` 现在不再弹构建方式菜单：macOS 下优先 Docker，其次已保存的远端 Linux 主机，最后才回落到本地交叉构建
 - `--deploy-linux` 不重新编译，只部署现有产物
-- `--deploy-linux` 还会把 `spiffs_data/skills/*.md` 里的官方运行时技能同步到远端 Beetle OS state root 的 `skills/` 目录
+- `--deploy-linux` 还会把随包发布的官方运行时技能同步到远端 Beetle OS state root 的 `skills/` 目录
 - `./build.sh` 是 Linux 构建和部署的主入口；Docker helper 脚本只是 `BUILD_METHOD=docker` 背后的内部帮手
 - `TARGET=linux BUILD_METHOD=docker` 在 amd64 Linux 容器内构建 GNU 目标，避免把 Linux 系统库依赖强行变成 musl 交叉 sysroot 问题
 - ARM Linux 目标在 `BUILD_METHOD=docker` 下会自动拉起对应的 GNU 构建容器

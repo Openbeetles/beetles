@@ -89,7 +89,7 @@ awk -v floor="$heap_largest_floor" \
     -v summary="$summary_md" \
     -v log_file="$log_file" '
 BEGIN {
-  print "line,pressure,tls_fragmentation,heap_largest,worker_starts_total,stack_low_margin,active_wss,camera_frame_active" > metrics;
+  print "line,pressure,tls_fragmentation,storage_contention,storage_ops,storage_wait_last_us,storage_wait_total_us,storage_hold_last_us,storage_hold_total_us,storage_hold_last_stage,storage_last_age_ms,heap_largest,worker_starts_total,stack_low_margin,active_wss,camera_frame_active" > metrics;
   print "line,check,severity,detail" > regressions;
   first_largest = -1;
   min_largest = -1;
@@ -102,6 +102,8 @@ BEGIN {
   issue_count = 0;
   blocker_count = 0;
   stack_low_margin_count = 0;
+  storage_contention_risk_count = 0;
+  storage_contention_blocker_count = 0;
   heap_floor_count = 0;
   heap_floor_risk_count = 0;
   voice_wss_count = 0;
@@ -152,14 +154,51 @@ function record_issue(line_no, check, severity, detail) {
   }
 }
 
+function storage_contention_from_metrics(wait_last, hold_last, ops, hold_stage, last_age,    wait_value, hold_value) {
+  if (ops == "" || ops + 0 == 0 ||
+      hold_stage == "" ||
+      last_age == "" || last_age + 0 > 10000) {
+    return "Healthy";
+  }
+  wait_value = wait_last == "" ? 0 : wait_last + 0;
+  hold_value = hold_last == "" ? 0 : hold_last + 0;
+  if (hold_value >= 1000000 || wait_value >= 50000) {
+    return "Critical";
+  }
+  if (hold_value >= 200000 || wait_value >= 5000) {
+    return "Cautious";
+  }
+  return "Healthy";
+}
+
 {
   line = $0;
   lower_line = tolower(line);
+  if (lower_line ~ /\[heartbeat\] metrics .*spiffs_/) {
+    record_issue(NR, "legacy_storage_metric_names", "blocker", "legacy backend metric names found");
+  }
   pressure = value_after(line, "pressure");
   if (pressure == "") {
     pressure = value_after(line, "resource_pressure");
   }
   tls_fragmentation = value_after(line, "tls_fragmentation");
+  storage_contention = value_after(line, "storage_contention");
+  storage_contention_state = storage_contention;
+  if (storage_contention_state ~ /^[0-9]+$/) {
+    storage_contention_state = "";
+  }
+  storage_ops = numeric_after(line, "storage_ops");
+  storage_wait_last_us = numeric_after(line, "storage_wait_last_us");
+  storage_wait_total_us = numeric_after(line, "storage_wait_total_us");
+  storage_hold_last_us = numeric_after(line, "storage_hold_last_us");
+  storage_hold_total_us = numeric_after(line, "storage_hold_total_us");
+  storage_hold_last_stage = value_after(line, "storage_hold_last_stage");
+  storage_last_age_ms = numeric_after(line, "storage_last_age_ms");
+  if (storage_contention_state == "" &&
+      (storage_ops != "" || storage_wait_last_us != "" || storage_hold_last_us != "" ||
+       storage_hold_last_stage != "" || storage_last_age_ms != "")) {
+    storage_contention_state = storage_contention_from_metrics(storage_wait_last_us, storage_hold_last_us, storage_ops, storage_hold_last_stage, storage_last_age_ms);
+  }
 
   heap_largest = numeric_after(line, "heap_largest");
   if (heap_largest == "") {
@@ -194,6 +233,16 @@ function record_issue(line_no, check, severity, detail) {
     saw_critical = 1;
   } else if (pressure == "Normal") {
     critical_open = 0;
+  }
+
+  if (storage_contention_state == "Critical") {
+    storage_contention_blocker_count++;
+    storage_detail = "storage_contention=Critical storage_contention_count=" storage_contention " storage_ops=" storage_ops " storage_wait_last_us=" storage_wait_last_us " storage_hold_last_us=" storage_hold_last_us " storage_hold_last_stage=" storage_hold_last_stage " storage_last_age_ms=" storage_last_age_ms;
+    record_issue(NR, "storage_contention_critical", "blocker", storage_detail);
+  } else if (storage_contention_state == "Cautious") {
+    storage_contention_risk_count++;
+    storage_detail = "storage_contention=Cautious storage_contention_count=" storage_contention " storage_ops=" storage_ops " storage_wait_last_us=" storage_wait_last_us " storage_hold_last_us=" storage_hold_last_us " storage_hold_last_stage=" storage_hold_last_stage " storage_last_age_ms=" storage_last_age_ms;
+    record_issue(NR, "storage_contention_cautious", "risk", storage_detail);
   }
 
   if (heap_largest != "") {
@@ -320,8 +369,12 @@ function record_issue(line_no, check, severity, detail) {
     record_issue(NR, "display_refresh_suppressed_under_pressure", "blocker", trim(line));
   }
 
-  if (pressure != "" || tls_fragmentation != "" || heap_largest != "" || worker_starts != "" || low_margin != "" || active_wss != "" || camera_frame_active != "") {
-    print NR "," pressure "," tls_fragmentation "," heap_largest "," worker_starts "," low_margin "," active_wss "," camera_frame_active >> metrics;
+  if (pressure != "" || tls_fragmentation != "" || storage_contention != "" ||
+      storage_ops != "" || storage_wait_last_us != "" || storage_wait_total_us != "" ||
+      storage_hold_last_us != "" || storage_hold_total_us != "" || storage_hold_last_stage != "" ||
+      storage_last_age_ms != "" || heap_largest != "" || worker_starts != "" ||
+      low_margin != "" || active_wss != "" || camera_frame_active != "") {
+    print NR "," pressure "," tls_fragmentation "," storage_contention "," storage_ops "," storage_wait_last_us "," storage_wait_total_us "," storage_hold_last_us "," storage_hold_total_us "," storage_hold_last_stage "," storage_last_age_ms "," heap_largest "," worker_starts "," low_margin "," active_wss "," camera_frame_active >> metrics;
     metric_rows++;
   }
 }
@@ -340,6 +393,8 @@ END {
   print "- Blocker issues detected: " blocker_count >> summary;
   print "- Panic/task failure lines: " panic_count >> summary;
   print "- Stack low-margin lines: " stack_low_margin_count >> summary;
+  print "- Storage contention risk lines: " storage_contention_risk_count >> summary;
+  print "- Storage contention blocker lines: " storage_contention_blocker_count >> summary;
   print "- Heap largest below floor lines: " heap_floor_count >> summary;
   print "- Heap largest below floor risk lines: " heap_floor_risk_count >> summary;
   print "- VoiceExclusive + external WSS violations: " voice_wss_count >> summary;

@@ -1,10 +1,10 @@
-//! Linux / host：`std::fs` + `state_mount_path()`，互斥与 ESP 上 SPIFFS 语义一致。
-//! Linux/host: std::fs under state_mount_path; mutex aligns with ESP SPIFFS serialization.
+//! Linux / host：`std::fs` + `state_mount_path()`，写入语义与 ESP 状态存储一致。
+//! Linux/host: std::fs under state_mount_path; write semantics align with ESP state storage.
 
 use crate::error::{Error, Result};
 use crate::platform::abstraction::StateFs;
-use crate::platform::spiffs::MAX_WRITE_SIZE;
 use crate::platform::state_root::state_mount_path;
+use crate::platform::storage::MAX_WRITE_SIZE;
 use std::io::ErrorKind;
 use std::path::PathBuf;
 

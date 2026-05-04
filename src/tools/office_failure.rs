@@ -262,7 +262,7 @@ fn classify_office_failure_kind(error: &Error) -> ToolExecutionFailureKind {
             std::io::ErrorKind::PermissionDenied => ToolExecutionFailureKind::Capability,
             _ => ToolExecutionFailureKind::Permanent,
         },
-        Error::Nvs { .. } | Error::Spiffs { .. } => ToolExecutionFailureKind::Capability,
+        Error::Nvs { .. } | Error::Storage { .. } => ToolExecutionFailureKind::Capability,
         Error::Esp { .. } | Error::Other { .. } => ToolExecutionFailureKind::Permanent,
     }
 }

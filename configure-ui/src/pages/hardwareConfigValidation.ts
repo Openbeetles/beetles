@@ -86,15 +86,6 @@ export function validateHardwareSegment(
       ) {
         return t("hardwareConfig.validation.dhtModel");
       }
-      const watchField = device.options?.watch_field;
-      if (
-        watchField != null &&
-        typeof watchField === "string" &&
-        watchField !== "temperature" &&
-        watchField !== "humidity"
-      ) {
-        return t("hardwareConfig.validation.dhtWatchField");
-      }
       const pull = device.options?.pull;
       if (
         pull != null &&
@@ -179,12 +170,6 @@ export function validateHardwareSegment(
     }
     if (!I2C_SENSOR_MODELS.includes(sensor.model as I2cSensorModel)) {
       return t("hardwareConfig.validation.i2cSensorModel");
-    }
-    if (
-      sensor.watch_field !== "temperature" &&
-      sensor.watch_field !== "humidity"
-    ) {
-      return t("hardwareConfig.validation.i2cSensorWatchField");
     }
     if (sensor.what.length > 128) {
       return t("hardwareConfig.validation.i2cSensorWhatLen");

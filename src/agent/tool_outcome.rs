@@ -58,7 +58,7 @@ pub(crate) fn classify_tool_error(err: &Error) -> ToolFailureAssessment {
             kind: ToolFailureKind::Permanent,
             hint: " The underlying platform rejected this operation. Do not keep retrying unchanged parameters.",
         },
-        Error::Nvs { .. } | Error::Spiffs { .. } => ToolFailureAssessment {
+        Error::Nvs { .. } | Error::Storage { .. } => ToolFailureAssessment {
             kind: ToolFailureKind::Capability,
             hint: " This operation is blocked by local storage state or permissions. Explain the limitation if it cannot be corrected now.",
         },

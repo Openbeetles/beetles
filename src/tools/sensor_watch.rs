@@ -493,24 +493,10 @@ fn read_sensor_value(
         let _i2c_guard = crate::orchestrator::try_begin_runtime_capability_call(
             crate::orchestrator::RUNTIME_CAPABILITY_HARDWARE_I2C,
         )?;
-        let s = platform.drive_i2c_sensor(
-            e.addr,
-            e.model.as_str(),
-            e.watch_field.as_str(),
-            &e.options,
-        )?;
+        let s = platform.drive_i2c_sensor(e.addr, e.model.as_str(), &e.options)?;
         let v: Value = serde_json::from_str(&s)
             .map_err(|er| Error::config("sensor_watch", format!("i2c_sensor JSON: {}", er)))?;
-        let field = e.watch_field.as_str();
-        if field != "temperature" && field != "humidity" {
-            return Err(Error::config(
-                "sensor_watch",
-                format!(
-                    "i2c watch_field must be 'temperature' or 'humidity', got '{}'",
-                    field
-                ),
-            ));
-        }
+        let field = "temperature";
         let val = v.get(field).and_then(|x| x.as_f64()).ok_or_else(|| {
             Error::config(
                 "sensor_watch",

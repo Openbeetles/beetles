@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# §14.2：业务域不得直引 platform::spiffs / heap / hardware_drivers，不得 use crate::platform::*。
+# §14.2：业务域不得直引 platform storage / heap / hardware backend，不得 use crate::platform::*。
 # §14.2: business modules must not import platform implementation modules or glob-import platform.
 # See dev-docs/platform-isolation-plan.md §14.2.
 
@@ -35,15 +35,22 @@ for dir in "${DIRS[@]}"; do
   fi
 done
 
-PATTERN1='use\s+crate::platform::(spiffs|heap|hardware_drivers)'
+PATTERN1='use\s+crate::platform::(storage|heap|hardware_drivers)'
 PATTERN2='use\s+crate::platform::\*'
 PATTERN3='esp_idf_svc::'
 PATTERN4='crate::platform::is_wifi_sta_connected\s*\('
 PATTERN5='crate::platform::wifi::wifi_sta_ip\s*\('
+PATTERN6='crate::platform::storage::'
 
 if rg -q "$PATTERN1" "${EXISTING_DIRS[@]}"; then
-  echo "FAIL: forbidden direct use of platform implementation modules (spiffs|heap|hardware_drivers):" >&2
-  rg "$PATTERN1" "${EXISTING_DIRS[@]}" >&2
+  echo "FAIL: forbidden direct use of platform storage/heap/hardware backend modules:" >&2
+  rg "$PATTERN1" "${EXISTING_DIRS[@]}" | sed -E 's/[sS][pP][iI][fF][fF][sS]/storage-backend/g' >&2
+  exit 1
+fi
+
+if rg -q "$PATTERN6" "${EXISTING_DIRS[@]}"; then
+  echo "FAIL: forbidden direct use of platform storage backend from business domains:" >&2
+  rg "$PATTERN6" "${EXISTING_DIRS[@]}" | sed -E 's/[sS][pP][iI][fF][fF][sS]/storage-backend/g' >&2
   exit 1
 fi
 

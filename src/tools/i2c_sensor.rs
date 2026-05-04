@@ -190,12 +190,9 @@ impl Tool for I2cSensorTool {
         let guard = ReleaseLockGuard::new(self, idx);
 
         let s = &self.sensors[idx];
-        let result = self.platform.drive_i2c_sensor(
-            s.addr,
-            s.model.as_str(),
-            s.watch_field.as_str(),
-            &s.options,
-        );
+        let result = self
+            .platform
+            .drive_i2c_sensor(s.addr, s.model.as_str(), &s.options);
 
         guard.release();
 

@@ -72,8 +72,8 @@ ESPFLASH_PORT=/dev/ttyUSB0 ./build.sh --flash
 What matters most:
 
 - `--flash` goes straight into the flash flow after build
-- `--flash` keeps NVS by default; if you need a full erase, the script offers that choice
-- `--flash-update` skips the erase choice and uses an in-place serial reflash path that preserves data only when the layout stays compatible; it refreshes bootloader, partition table, and app without a full-chip erase. NVS is kept, but SPIFFS config is safe only when the SPIFFS partition offset and size are unchanged.
+- `--flash` keeps existing config, memory, and storage by default; if you need a full erase, the script offers that choice
+- `--flash-update` skips the erase choice and uses an in-place serial reflash path that preserves storage only when the layout stays compatible; it refreshes bootloader, partition table, and app without a full-chip erase.
 - Serial flashing now writes images at the addresses emitted for the selected board instead of assuming one fixed ESP address layout; ESP32-P4 does not require manual offset edits.
 - `--no-monitor` means do not open the serial monitor after flashing
 - if the serial port is obvious, the script usually picks it; otherwise it asks
@@ -116,7 +116,7 @@ Implementation contract:
 - board manifests use a single part at `offset: 0`, so browser installers can flash the merged image directly
 - Configure UI online flashing uses browser Web Serial plus `esptool-js` to connect to the ESP ROM bootloader; board matching uses the detected chip description and Flash size, not the USB bridge VID/PID
 - Configure UI browser flashing does not ask users to pick `.bin` or `release-catalog.json` files; after device scan it maps detected chip / Flash capacity to an official board, reads the release catalog from same-origin `/firmware/release-catalog.json` or build-time `VITE_ESP_FIRMWARE_BASE_URL`, and verifies firmware SHA-256 plus critical offsets; PSRAM remains part of the mainline hardware contract and runtime diagnostics, but it is not a hard flashing-admission gate during the browser ROM stage
-- Configure UI browser flashing offers `Update` and `Reinstall` modes: update writes `update_parts` for bootloader, partition table, and app separately without touching the NVS range, preserving WiFi, pairing, and device configuration; reinstall writes the merged single bin at `0x0`, erases the whole flash before writing, and clears WiFi, pairing, device configuration, and history
+- Configure UI browser flashing offers `Update` and `Reinstall` modes: update writes `update_parts` for bootloader, partition table, and app separately while preserving WiFi, pairing, device configuration, memory, and storage; reinstall writes the merged single bin at `0x0`, erases the whole flash before writing, and clears WiFi, pairing, device configuration, memory, and storage space
 - the bundle is assembled under a staging directory and only replaces the final version directory after every board and metadata file succeeds
 - `dist/esp/v<version>/` remains the release-bundle source of truth; `configure-ui/public/firmware/` is the browser flashing protocol directory and is replaced as a whole after publication so stale firmware or catalog files cannot remain
 
@@ -164,7 +164,7 @@ scripts/esp_symbolize_panic.sh target/esp-artifacts/<artifact-id> 0x4037f815
 
 Do not guess final addresses with an ELF/map from another build. ESP panic attribution must start from the matching artifact id.
 
-`--flash-update` refreshes bootloader, the compiled partition table, and the app while preserving data partitions such as NVS/SPIFFS only when their offset and size stay unchanged. This prevents a new app from running against an old partition table during bring-up, but changing the SPIFFS extent can make ESP-IDF format the filesystem. The current 16MB S3 mainline layout uses a single `factory` app slot at `0x20000/0x600000` and keeps SPIFFS at `0x620000/0x9D0000`; do not change that extent again unless you are intentionally migrating or reformatting user configuration.
+`--flash-update` refreshes bootloader, the compiled partition table, and the app while preserving config, memory, and storage only when the storage layout stays compatible. This prevents a new app from running against an old partition table during bring-up. If you intentionally need a clean reinstall, choose the erase flow so stored config, memory, and storage space are cleared together.
 
 ## Common Linux Workflows
 
@@ -183,7 +183,7 @@ What matters most:
 - `--package-linux` derives the bundle version from `Cargo.toml package.version`, so the public release path no longer needs a second manual packaging command
 - `BUILD_METHOD=auto` is now non-interactive: on macOS it prefers Docker, then a saved remote Linux host, and only then falls back to local cross-build
 - `--deploy-linux` does not compile; it deploys an existing artifact
-- `--deploy-linux` also syncs shipped official runtime skills from `spiffs_data/skills/*.md` into the remote Beetle OS state root `skills/` directory
+- `--deploy-linux` also syncs shipped official runtime skills into the remote Beetle OS state root `skills/` directory
 - `./build.sh` is the main Linux build and deploy entry; Docker helper scripts are internal helpers behind `BUILD_METHOD=docker`
 - `TARGET=linux BUILD_METHOD=docker` builds the GNU target inside an amd64 Linux container, avoiding a fake musl cross sysroot for normal Linux system-library dependencies
 - for ARM Linux targets, `BUILD_METHOD=docker` automatically boots the matching host-architecture GNU build container

@@ -33,7 +33,6 @@ export interface I2cSensorEntry {
   id: string
   addr: number
   model: string
-  watch_field: string
   what: string
   how: string
   options?: Record<string, unknown>

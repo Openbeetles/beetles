@@ -1,6 +1,6 @@
-//! 编译时/环境变量配置，加载后校验；密钥与敏感字段永不打印、不写 SPIFFS。
-//! NVS 仅存系统小键；LLM/通道存 SPIFFS，由 ConfigFileStore 读写。
-//! Build-time / env config with validation; secrets never logged or written to SPIFFS.
+//! 编译时/环境变量配置，加载后校验；密钥与敏感字段永不打印、不写存储空间。
+//! NVS 仅存系统小键；LLM/通道存储在 storage，由 ConfigFileStore 读写。
+//! Build-time / env config with validation; secrets never logged or written to storage.
 
 use crate::display::{
     default_disabled_display_config, is_framebuffer_config, validate_display_config_core,
@@ -23,9 +23,9 @@ fn lock_channels_config() -> std::sync::MutexGuard<'static, ()> {
         .unwrap_or_else(|error| error.into_inner())
 }
 
-/// SPIFFS 读出的单体 JSON：默认严格解析（与历史行为一致）；仅当整段非法而「第一个顶层值」仍合法时降级
+/// 存储读出的单体 JSON：默认严格解析（与历史行为一致）；仅当整段非法而「第一个顶层值」仍合法时降级
 /// （典型：短写未截断导致尾部旧字节 → `trailing characters`），并打 warn，避免静默掩盖其它错误。
-fn deserialize_spiffs_json_loose_tail<T: DeserializeOwned>(
+fn deserialize_storage_json_loose_tail<T: DeserializeOwned>(
     s: &str,
 ) -> std::result::Result<T, serde_json::Error> {
     let s = s.trim_start();
@@ -36,7 +36,7 @@ fn deserialize_spiffs_json_loose_tail<T: DeserializeOwned>(
             match iter.next() {
                 Some(Ok(v)) => {
                     log::warn!(
-                        "[config] SPIFFS JSON strict parse failed ({}); accepted first top-level value only — re-save config or check flash write",
+                        "[config] storage JSON strict parse failed ({}); accepted first top-level value only — re-save config or check flash write",
                         e_strict
                     );
                     Ok(v)
@@ -47,7 +47,7 @@ fn deserialize_spiffs_json_loose_tail<T: DeserializeOwned>(
     }
 }
 
-fn load_spiffs_json_merge<F>(
+fn load_storage_json_merge<F>(
     reader: Option<&dyn ConfigFileStore>,
     rel_path: &'static str,
     read_error_code: &'static str,
@@ -74,7 +74,7 @@ fn load_spiffs_json_merge<F>(
     }
 }
 
-/// SPIFFS 配置文件读写，用于 config/llm.json、config/channels.json。由 Platform 实现。
+/// 存储配置文件读写，用于 config/llm.json、config/channels.json。由 Platform 实现。
 pub trait ConfigFileStore: Send + Sync {
     fn read_config_file(&self, rel_path: &str) -> Result<Option<Vec<u8>>>;
     fn write_config_file(&self, rel_path: &str, data: &[u8]) -> Result<()>;
@@ -130,7 +130,7 @@ pub struct LlmSource {
     pub max_tokens: Option<u32>,
 }
 
-/// NVS 仅存系统小键；LLM/通道存 SPIFFS config/llm.json、config/channels.json。
+/// NVS 仅存系统小键；LLM/通道存储在 storage config/llm.json、config/channels.json。
 pub(crate) const NVS_ALL_KEYS: &[&str] = &[
     NVS_KEY_WIFI_SSID,
     NVS_KEY_WIFI_PASS,
@@ -225,32 +225,32 @@ pub struct AppConfig {
     #[serde(default)]
     pub llm_worker_source_index: Option<u32>,
 
-    /// 硬件设备配置（从 SPIFFS config/hardware.json 加载），不序列化到 NVS。
+    /// 硬件设备配置（从 storage config/hardware.json 加载），不序列化到 NVS。
     #[serde(skip, default)]
     pub hardware_devices: Vec<DeviceEntry>,
 
-    /// I2C 总线配置（从 SPIFFS config/hardware.json 加载），不序列化到 NVS。
+    /// I2C 总线配置（从 storage config/hardware.json 加载），不序列化到 NVS。
     #[serde(skip, default)]
     pub i2c_bus: Option<I2cBusConfig>,
-    /// I2C 设备列表（从 SPIFFS config/hardware.json 加载），不序列化到 NVS。
+    /// I2C 设备列表（从 storage config/hardware.json 加载），不序列化到 NVS。
     #[serde(skip, default)]
     pub i2c_devices: Vec<I2cDeviceEntry>,
-    /// I2C 温湿度等传感器条目（从 SPIFFS config/hardware.json 加载），不序列化到 NVS。
+    /// I2C 温湿度等传感器条目（从 storage config/hardware.json 加载），不序列化到 NVS。
     #[serde(skip, default)]
     pub i2c_sensors: Vec<I2cSensorEntry>,
 
-    /// 显示配置（从 SPIFFS config/display.json 加载），不序列化到 NVS。
+    /// 显示配置（从 storage config/display.json 加载），不序列化到 NVS。
     #[serde(skip, default)]
     pub display: Option<DisplayConfig>,
-    /// 音频配置（从 SPIFFS config/audio.json 加载），不序列化到 NVS。
+    /// 音频配置（从 storage config/audio.json 加载），不序列化到 NVS。
     #[serde(skip, default)]
     pub audio: Option<AudioSegment>,
-    /// 办公账户配置（从 SPIFFS config/accounts.json 加载）。
+    /// 办公账户配置（从 storage config/accounts.json 加载）。
     #[cfg(feature = "capability_office")]
     #[serde(default)]
     pub office_accounts: OfficeAccountsSegment,
 
-    /// 加载过程中产生的可观测错误（NVS/SPIFFS/JSON 解析），仅 load() 内写入，不序列化。
+    /// 加载过程中产生的可观测错误（NVS/storage/JSON 解析），仅 load() 内写入，不序列化。
     #[serde(skip, default)]
     pub load_errors: Option<Vec<String>>,
 }
@@ -324,12 +324,12 @@ impl AppConfig {
         }
     }
 
-    /// 加载过程中产生的错误码列表（nvs_read_failed / spiffs_*_unavailable / *_json_invalid），供 health/diagnose 或日志可观测。
+    /// 加载过程中产生的错误码列表（nvs_read_failed / storage_*_unavailable / *_json_invalid），供 health/diagnose 或日志可观测。
     pub fn load_errors(&self) -> &[String] {
         self.load_errors.as_deref().unwrap_or(&[])
     }
 
-    /// 多源加载：先 load_from_env()，再 NVS 系统键覆盖，再可选从 reader 读 SPIFFS llm/channels 合并。
+    /// 多源加载：先 load_from_env()，再 NVS 系统键覆盖，再可选从 reader 读 storage llm/channels 合并。
     pub fn load(store: &dyn ConfigStore, reader: Option<&dyn ConfigFileStore>) -> Self {
         let mut c = Self::load_from_env();
         let mut load_errors = Vec::new();
@@ -363,46 +363,46 @@ impl AppConfig {
                 c.locale = Some(s.clone());
             }
         }
-        load_spiffs_json_merge(
+        load_storage_json_merge(
             reader,
             "config/llm.json",
-            "spiffs_llm_read_error",
+            "storage_llm_read_error",
             &mut load_errors,
             |json, errors| c.merge_llm_from_json(json, errors),
         );
-        load_spiffs_json_merge(
+        load_storage_json_merge(
             reader,
             "config/channels.json",
-            "spiffs_channels_read_error",
+            "storage_channels_read_error",
             &mut load_errors,
             |json, errors| c.merge_channels_from_json(json, errors),
         );
-        load_spiffs_json_merge(
+        load_storage_json_merge(
             reader,
             "config/hardware.json",
-            "spiffs_hardware_read_error",
+            "storage_hardware_read_error",
             &mut load_errors,
             |json, errors| c.merge_hardware_from_json(json, errors),
         );
-        load_spiffs_json_merge(
+        load_storage_json_merge(
             reader,
             "config/display.json",
-            "spiffs_display_read_error",
+            "storage_display_read_error",
             &mut load_errors,
             |json, errors| c.merge_display_from_json(json, errors),
         );
-        load_spiffs_json_merge(
+        load_storage_json_merge(
             reader,
             "config/audio.json",
-            "spiffs_audio_read_error",
+            "storage_audio_read_error",
             &mut load_errors,
             |json, errors| c.merge_audio_from_json(json, errors),
         );
         #[cfg(feature = "capability_office")]
-        load_spiffs_json_merge(
+        load_storage_json_merge(
             reader,
             "config/accounts.json",
-            "spiffs_accounts_read_error",
+            "storage_accounts_read_error",
             &mut load_errors,
             |json, errors| c.merge_office_accounts_from_json(json, errors),
         );
@@ -420,9 +420,9 @@ impl AppConfig {
         c
     }
 
-    /// 从 SPIFFS 读到的 llm.json 字符串合并到当前 config（仅覆盖 LLM 相关字段）。
+    /// 从 storage 读到的 llm.json 字符串合并到当前 config（仅覆盖 LLM 相关字段）。
     pub fn merge_llm_from_json(&mut self, json: &str, errors: &mut Vec<String>) {
-        match deserialize_spiffs_json_loose_tail::<LlmSegment>(json) {
+        match deserialize_storage_json_loose_tail::<LlmSegment>(json) {
             Ok(seg) => {
                 self.llm_router_source_index = seg.llm_router_source_index;
                 self.llm_worker_source_index = seg.llm_worker_source_index;
@@ -442,9 +442,9 @@ impl AppConfig {
         }
     }
 
-    /// 从 SPIFFS 读到的 channels.json 字符串合并到当前 config（仅覆盖通道相关字段）。
+    /// 从 storage 读到的 channels.json 字符串合并到当前 config（仅覆盖通道相关字段）。
     pub fn merge_channels_from_json(&mut self, json: &str, errors: &mut Vec<String>) {
-        match deserialize_spiffs_json_loose_tail::<ChannelsSegment>(json) {
+        match deserialize_storage_json_loose_tail::<ChannelsSegment>(json) {
             Ok(seg) => {
                 self.tg_group_activation = seg.tg_group_activation;
                 self.tg_token = seg.tg_token;
@@ -470,10 +470,10 @@ impl AppConfig {
         }
     }
 
-    /// 从 SPIFFS 读到的 hardware.json 字符串合并到当前 config（仅覆盖硬件设备列表）。
+    /// 从 storage 读到的 hardware.json 字符串合并到当前 config（仅覆盖硬件设备列表）。
     /// 解析成功后校验；校验失败则不覆盖、保留空列表，并记录 hardware_validation_failed。
     pub fn merge_hardware_from_json(&mut self, json: &str, errors: &mut Vec<String>) {
-        match deserialize_spiffs_json_loose_tail::<HardwareSegment>(json) {
+        match deserialize_storage_json_loose_tail::<HardwareSegment>(json) {
             Ok(seg) => {
                 if let Err(e) = validate_hardware_segment(&seg) {
                     log::warn!("[config] merge_hardware_from_json validation failed: {}", e);
@@ -492,9 +492,9 @@ impl AppConfig {
         }
     }
 
-    /// 从 SPIFFS 读到的 display.json 字符串合并到当前 config。
+    /// 从 storage 读到的 display.json 字符串合并到当前 config。
     pub fn merge_display_from_json(&mut self, json: &str, errors: &mut Vec<String>) {
-        match deserialize_spiffs_json_loose_tail::<DisplayConfig>(json) {
+        match deserialize_storage_json_loose_tail::<DisplayConfig>(json) {
             Ok(mut cfg) => {
                 if cfg.version == 0 {
                     cfg.version = DISPLAY_CONFIG_VERSION;
@@ -513,9 +513,9 @@ impl AppConfig {
         }
     }
 
-    /// 从 SPIFFS 读到的 audio.json 字符串合并到当前 config。
+    /// 从 storage 读到的 audio.json 字符串合并到当前 config。
     pub fn merge_audio_from_json(&mut self, json: &str, errors: &mut Vec<String>) {
-        match deserialize_spiffs_json_loose_tail::<AudioSegment>(json) {
+        match deserialize_storage_json_loose_tail::<AudioSegment>(json) {
             Ok(mut seg) => {
                 if seg.version == 0 {
                     seg.version = AUDIO_CONFIG_VERSION;
@@ -876,7 +876,7 @@ impl AppConfig {
 }
 
 /// 将配置按键名逐字段写入 store；单条 value 超 NVS_MAX_VALUE_LEN 返回错误。
-/// 仅写入 NVS 保留的系统键；LLM/通道由 save_llm_segment / save_channels_segment 写 SPIFFS。
+/// 仅写入 NVS 保留的系统键；LLM/通道由 save_llm_segment / save_channels_segment 写 storage。
 pub fn save_to_nvs(store: &dyn ConfigStore, config: &AppConfig) -> Result<()> {
     let locale = config.locale.as_deref().unwrap_or("zh");
     store.write_strings(&[
@@ -1567,7 +1567,7 @@ pub struct I2cDeviceEntry {
     pub options: serde_json::Value,
 }
 
-/// I2C 传感器条目（SHT3x / AHT20 / raw）；与 `I2cDeviceEntry` 分离，供 `drive_i2c_sensor` 与 `sensor_watch` 使用。
+/// I2C 传感器条目（SHT3x / AHT20 / raw）；与 `I2cDeviceEntry` 分离，供 `drive_i2c_sensor` 使用。
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct I2cSensorEntry {
     pub id: String,
@@ -1575,8 +1575,6 @@ pub struct I2cSensorEntry {
     pub addr: u8,
     /// `sht3x` | `aht20` | `raw`
     pub model: String,
-    /// `temperature` | `humidity`（`sensor_watch` 监控字段）。
-    pub watch_field: String,
     pub what: String,
     pub how: String,
     #[serde(default)]
@@ -2389,17 +2387,6 @@ fn validate_hardware_segment(seg: &HardwareSegment) -> Result<()> {
                     ));
                 }
             }
-            if let Some(field) = dev.options.get("watch_field").and_then(|v| v.as_str()) {
-                if field != "temperature" && field != "humidity" {
-                    return Err(Error::config(
-                        "hardware",
-                        format!(
-                            "hardware_devices[{}] dht options.watch_field '{}' must be temperature|humidity",
-                            i, field
-                        ),
-                    ));
-                }
-            }
         }
     }
     if pwm_count > MAX_PWM_DEVICES {
@@ -2490,15 +2477,6 @@ fn validate_hardware_segment(seg: &HardwareSegment) -> Result<()> {
                 format!(
                     "i2c_sensors[{}].model '{}' must be one of {:?}",
                     i, s.model, I2C_SENSOR_MODELS
-                ),
-            ));
-        }
-        if s.watch_field != "temperature" && s.watch_field != "humidity" {
-            return Err(Error::config(
-                "hardware",
-                format!(
-                    "i2c_sensors[{}].watch_field '{}' must be temperature|humidity",
-                    i, s.watch_field
                 ),
             ));
         }
@@ -2724,14 +2702,14 @@ fn validate_llm_segment(seg: &LlmSegment) -> Result<()> {
     Ok(())
 }
 
-/// 校验 LlmSegment 并写入 SPIFFS config/llm.json；body 即全量，不做合并。
+/// 校验 LlmSegment 并写入 storage config/llm.json；body 即全量，不做合并。
 pub fn save_llm_segment(writer: &dyn ConfigFileStore, body: &str) -> Result<()> {
     let seg: LlmSegment =
         serde_json::from_str(body).map_err(|e| Error::config("deserialize", e.to_string()))?;
     save_llm_segment_value(writer, &seg)
 }
 
-/// 校验 LlmSegment 并写入 SPIFFS config/llm.json；直接消费已解析的配置对象。
+/// 校验 LlmSegment 并写入 storage config/llm.json；直接消费已解析的配置对象。
 pub fn save_llm_segment_value(writer: &dyn ConfigFileStore, seg: &LlmSegment) -> Result<()> {
     validate_llm_segment(seg)?;
     let json =
@@ -2740,7 +2718,7 @@ pub fn save_llm_segment_value(writer: &dyn ConfigFileStore, seg: &LlmSegment) ->
     Ok(())
 }
 
-/// 校验 ChannelsSegment 并写入 SPIFFS config/channels.json；直接消费已解析的配置对象。
+/// 校验 ChannelsSegment 并写入 storage config/channels.json；直接消费已解析的配置对象。
 pub fn save_channels_segment_value(
     writer: &dyn ConfigFileStore,
     seg: &ChannelsSegment,
@@ -2773,7 +2751,7 @@ pub fn save_tg_group_activation_to_channels(
         Some(bytes) => {
             let json = std::str::from_utf8(&bytes)
                 .map_err(|e| Error::config("channels", e.to_string()))?;
-            deserialize_spiffs_json_loose_tail::<ChannelsSegment>(json)
+            deserialize_storage_json_loose_tail::<ChannelsSegment>(json)
                 .map_err(|e| Error::config("channels", e.to_string()))?
         }
         None => ChannelsSegment::from_app_config(&AppConfig::load_from_env()),
@@ -2856,14 +2834,14 @@ pub(crate) fn apply_system_segment_to_config(config: &mut AppConfig, seg: &Syste
     }
 }
 
-/// 校验 HardwareSegment 并写入 SPIFFS config/hardware.json；body 即全量，不做合并。
+/// 校验 HardwareSegment 并写入 storage config/hardware.json；body 即全量，不做合并。
 pub fn save_hardware_segment(writer: &dyn ConfigFileStore, body: &str) -> Result<()> {
     let seg: HardwareSegment =
         serde_json::from_str(body).map_err(|e| Error::config("deserialize", e.to_string()))?;
     save_hardware_segment_value(writer, &seg)
 }
 
-/// 校验 HardwareSegment 并写入 SPIFFS config/hardware.json；直接消费已解析的配置对象。
+/// 校验 HardwareSegment 并写入 storage config/hardware.json；直接消费已解析的配置对象。
 pub fn save_hardware_segment_value(
     writer: &dyn ConfigFileStore,
     seg: &HardwareSegment,
@@ -2884,14 +2862,14 @@ pub fn get_audio_segment(reader: &dyn ConfigFileStore) -> Result<String> {
     }
 }
 
-/// POST /api/config/audio：校验并写入 SPIFFS config/audio.json；body 即全量，不做合并。
+/// POST /api/config/audio：校验并写入 storage config/audio.json；body 即全量，不做合并。
 pub fn save_audio_segment(writer: &dyn ConfigFileStore, body: &str) -> Result<()> {
     let seg: AudioSegment =
         serde_json::from_str(body).map_err(|e| Error::config("deserialize", e.to_string()))?;
     save_audio_segment_value(writer, seg).map(|_| ())
 }
 
-/// POST /api/config/audio：校验并写入 SPIFFS config/audio.json；返回规范化后的配置对象。
+/// POST /api/config/audio：校验并写入 storage config/audio.json；返回规范化后的配置对象。
 pub fn save_audio_segment_value(
     writer: &dyn ConfigFileStore,
     mut seg: AudioSegment,
@@ -2916,7 +2894,7 @@ pub fn get_display_segment(reader: &dyn ConfigFileStore) -> Result<String> {
     }
 }
 
-/// POST /api/config/display：校验并写入 SPIFFS config/display.json；body 即全量，不做合并。
+/// POST /api/config/display：校验并写入 storage config/display.json；body 即全量，不做合并。
 pub fn save_display_segment(
     writer: &dyn ConfigFileStore,
     hardware_devices: &[DeviceEntry],
@@ -2927,7 +2905,7 @@ pub fn save_display_segment(
     save_display_segment_value(writer, hardware_devices, seg).map(|_| ())
 }
 
-/// POST /api/config/display：校验并写入 SPIFFS config/display.json；返回规范化后的配置对象。
+/// POST /api/config/display：校验并写入 storage config/display.json；返回规范化后的配置对象。
 pub fn save_display_segment_value(
     writer: &dyn ConfigFileStore,
     hardware_devices: &[DeviceEntry],
@@ -3079,7 +3057,6 @@ mod tests {
             id: "box_aht20".into(),
             addr: 0x38,
             model: "aht20".into(),
-            watch_field: "temperature".into(),
             what: "AHT20 temperature and humidity sensor".into(),
             how: "AHT20 on I2C expansion bus".into(),
             options: serde_json::json!({}),

@@ -56,7 +56,7 @@ The discovery path available today is mainly for USB-related devices such as:
 
 ## Common Problems
 
-- `spiffs partition could not be found`
+- `storage partition could not be found`
   Usually means the wrong board preset or firmware layout was used.
 - Beetle OS starts but hardware features do not appear
   Check that the related config exists and that the hardware is actually attached.

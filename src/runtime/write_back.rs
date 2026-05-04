@@ -1,6 +1,6 @@
 //! Debounced write-back wrappers for hot runtime stores.
 //! 将热路径上的小型持久化写入从用户/语音临界区中移出，复用现有 delayed task，
-//! 并由受治理的后台存储执行面承接 SPIFFS/serde/session flush 重活。
+//! 并由受治理的后台存储执行面承接 storage/serde/session flush 重活。
 
 use crate::agent::{ActiveWorkRecord, ActiveWorkStore, DetachedWorkStore};
 use crate::bus::SystemInboundTx;
@@ -65,7 +65,7 @@ pub(crate) const WRITE_BACK_QUEUE_MAX: usize = WRITE_BACK_RUNTIME_DOMAIN_FLOOR +
 pub(crate) const WRITE_BACK_QUEUE_MAX: usize = WRITE_BACK_RUNTIME_DOMAIN_FLOOR + 40;
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-// SPIFFS + serde flushes need their own ESP stack budget, separate from agent_loop.
+// storage + serde flushes need their own ESP stack budget, separate from agent_loop.
 // 24KB is the governed lazy storage worker budget; bg_timer must only wake this plane.
 pub(crate) const WRITE_BACK_WORKER_STACK: usize = 24 * 1024;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
@@ -426,7 +426,7 @@ fn schedule_write_back_task(label: &'static str, due_at: Instant, task: WriteBac
 /// Schedule a bounded storage-maintenance task on the write-back plane.
 ///
 /// Callers must keep the closure scoped to storage mutation or storage-backed
-/// due-item claiming. The caller thread only queues the task; serde/SPIFFS work
+/// due-item claiming. The caller thread only queues the task; serde/storage work
 /// runs under the governed storage lease and admission policy on the lazy
 /// write-back worker.
 pub(crate) fn schedule_storage_maintenance_task(
@@ -1020,7 +1020,7 @@ fn next_write_back_worker_step(idle_started: &mut Instant) -> WriteBackWorkerSte
 /// Wake the background write-back execution plane.
 ///
 /// This function is intentionally light enough for `agent_loop`: heavy
-/// SPIFFS/serde/session flush closures run only on the governed background
+/// storage/serde/session flush closures run only on the governed background
 /// storage plane.
 pub fn service_write_back_tasks() {
     service_write_back_tasks_from_scheduled_wake();
@@ -2443,7 +2443,7 @@ mod tests {
         assert_eq!(
             counter.set_calls.load(Ordering::Relaxed),
             0,
-            "full write-back queue must not flush SPIFFS-backed turn ledger inline on agent_loop"
+            "full write-back queue must not flush storage-backed turn ledger inline on agent_loop"
         );
         reset_write_back_queue_for_tests();
     }
@@ -2637,7 +2637,7 @@ mod tests {
 
         assert_ne!(
             run_thread, caller_thread,
-            "storage write-back must not execute heavy SPIFFS/serde work on the producer or bg_timer stack"
+            "storage write-back must not execute heavy storage/serde work on the producer or bg_timer stack"
         );
         assert!(
             snapshot().worker_starts_total > starts_before,
@@ -2708,7 +2708,7 @@ mod tests {
 
         assert_ne!(
             worker_thread, caller_thread,
-            "session GC must not perform SPIFFS remove on the scheduler caller stack"
+            "session GC must not perform storage remove on the scheduler caller stack"
         );
         assert_eq!(store.gc_calls.load(Ordering::Relaxed), 1);
     }
@@ -3050,8 +3050,8 @@ mod tests {
             heap_largest_block_spiram: 8 * 1024 * 1024,
             heap_largest_block: 128 * 1024,
         });
-        crate::metrics::record_spiffs_lock_wait_us(0);
-        crate::metrics::record_spiffs_lock_hold_us(0);
+        crate::metrics::record_storage_lock_wait_us(0);
+        crate::metrics::record_storage_lock_hold_us(0);
         let scheduler = write_back_scheduler();
         let mut state = scheduler.state.lock().unwrap_or_else(|e| e.into_inner());
         state.next_attempt_at = None;
@@ -3662,8 +3662,8 @@ mod tests {
             heap_largest_block_spiram: 8 * 1024 * 1024,
             heap_largest_block: 128 * 1024,
         });
-        crate::metrics::record_spiffs_lock_wait_us(7_500);
-        crate::metrics::record_spiffs_lock_hold_us(0);
+        crate::metrics::record_storage_lock_wait_us(7_500);
+        crate::metrics::record_storage_lock_hold_us(0);
         let _agent = crate::orchestrator::begin_agent_task();
 
         assert!(
@@ -3671,8 +3671,8 @@ mod tests {
             "Cautious storage contention must defer write-back while agent foreground work is active"
         );
 
-        crate::metrics::record_spiffs_lock_wait_us(0);
-        crate::metrics::record_spiffs_lock_hold_us(0);
+        crate::metrics::record_storage_lock_wait_us(0);
+        crate::metrics::record_storage_lock_hold_us(0);
     }
 
     #[test]
@@ -3691,8 +3691,8 @@ mod tests {
             heap_largest_block_spiram: 8 * 1024 * 1024,
             heap_largest_block: 128 * 1024,
         });
-        crate::metrics::record_spiffs_lock_wait_us(7_500);
-        crate::metrics::record_spiffs_lock_hold_us(0);
+        crate::metrics::record_storage_lock_wait_us(7_500);
+        crate::metrics::record_storage_lock_hold_us(0);
         let agent = crate::orchestrator::begin_agent_task();
         let (tx, rx) = std::sync::mpsc::channel();
 
@@ -3723,8 +3723,8 @@ mod tests {
             );
         }
         drop(agent);
-        crate::metrics::record_spiffs_lock_wait_us(0);
-        crate::metrics::record_spiffs_lock_hold_us(0);
+        crate::metrics::record_storage_lock_wait_us(0);
+        crate::metrics::record_storage_lock_hold_us(0);
         std::thread::sleep(Duration::from_millis(WRITE_BACK_RETRY_BACKOFF_MS + 5));
         service_write_back_tasks();
         std::thread::sleep(Duration::from_millis(WRITE_BACK_QUIET_WINDOW_MS + 5));
@@ -3753,8 +3753,8 @@ mod tests {
             heap_largest_block_spiram: 8 * 1024 * 1024,
             heap_largest_block: 128 * 1024,
         });
-        crate::metrics::record_spiffs_lock_wait_us(0);
-        crate::metrics::record_spiffs_lock_hold_us(0);
+        crate::metrics::record_storage_lock_wait_us(0);
+        crate::metrics::record_storage_lock_hold_us(0);
         let deferred_before = snapshot().deferred_total;
 
         assert!(schedule_write_back_task(
@@ -3805,14 +3805,14 @@ mod tests {
 
     #[test]
     fn enospc_write_back_errors_are_not_retried() {
-        let error = Error::io("spiffs_write", std::io::Error::from_raw_os_error(28));
+        let error = Error::io("storage_write", std::io::Error::from_raw_os_error(28));
 
         assert!(!should_retry_write_back_error(&error));
     }
 
     #[test]
     fn enoent_write_back_errors_are_not_retried_indefinitely() {
-        let error = Error::io("spiffs_write_json", std::io::Error::from_raw_os_error(2));
+        let error = Error::io("storage_write_json", std::io::Error::from_raw_os_error(2));
 
         assert!(!should_retry_write_back_error(&error));
     }

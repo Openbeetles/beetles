@@ -3329,7 +3329,7 @@ fn prepare_runtime_assembly(
     }
     let wifi_init_status = if wifi_init_ok { "ok" } else { "failed" };
     let sta_up = beetle::platform::is_wifi_sta_connected();
-    let spiffs_usage = platform.spiffs_usage();
+    let storage_usage = platform.storage_usage();
     let startup_session_count = runtime
         .session_store
         .list_chat_ids()
@@ -3337,19 +3337,19 @@ fn prepare_runtime_assembly(
         .unwrap_or(0);
     let state_fs_ready = beetle::orchestrator::update_session_storage_from_bytes(
         startup_session_count,
-        spiffs_usage,
+        storage_usage,
     );
     let wall_clock_valid = beetle::platform::time::wall_clock_is_trustworthy();
-    let spiffs_info = spiffs_usage
+    let storage_info = storage_usage
         .map(|(total, used)| format!("{} free", total.saturating_sub(used)))
         .unwrap_or_else(|| "N/A".to_string());
     log::info!(
-        "[{}] startup self-check ok (storage readable, wifi_init={}, sta_up={}, wall_clock_valid={}, spiffs={})",
+        "[{}] startup self-check ok (storage readable, wifi_init={}, sta_up={}, wall_clock_valid={}, storage={})",
         TAG,
         wifi_init_status,
         sta_up,
         wall_clock_valid,
-        spiffs_info
+        storage_info
     );
     beetle::orchestrator::observe_runtime_capabilities_from_platform_with_config(
         platform.as_ref(),

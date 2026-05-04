@@ -296,13 +296,11 @@ export function HardwareGpioPanel() {
                       nextOpts = {
                         ...o,
                         model: "dht11",
-                        watch_field: "temperature",
                       };
                     }
                     if (dev.device_type === "dht" && nextType !== "dht") {
                       const o = { ...nextOpts };
                       delete o.model;
-                      delete o.watch_field;
                       delete o.pull;
                       nextOpts = o;
                     }
@@ -387,25 +385,6 @@ export function HardwareGpioPanel() {
                           {m}
                         </MenuItem>
                       ))}
-                    </TextField>
-                    <TextField
-                      select
-                      fullWidth
-                      label={t("hardwareConfig.dhtWatchField")}
-                      value={
-                        typeof dev.options?.watch_field === "string"
-                          ? dev.options.watch_field
-                          : "temperature"
-                      }
-                      onChange={(e) => {
-                        const o: Record<string, unknown> = { ...dev.options };
-                        o.watch_field = e.target.value;
-                        updateDevice(i, { ...dev, options: o });
-                      }}
-                      slotProps={{ inputLabel: { shrink: true } }}
-                    >
-                      <MenuItem value="temperature">temperature</MenuItem>
-                      <MenuItem value="humidity">humidity</MenuItem>
                     </TextField>
                     <TextField
                       select

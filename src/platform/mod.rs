@@ -41,9 +41,9 @@ pub mod runtime_board;
 pub mod sntp;
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 pub mod softap_ip;
-pub(crate) mod spiffs;
 pub mod state_fs;
 pub mod state_root;
+pub mod storage;
 pub(crate) mod task_affinity;
 pub mod task_wdt;
 pub mod time;
@@ -75,17 +75,18 @@ pub use nvs::{
 };
 pub use response_body::ResponseBody;
 pub use sntp::init_sntp;
-pub use spiffs::{
-    default_skill_storage_arc, init_spiffs, spiffs_usage, CachedSkillMetaStore,
-    SpiffsActiveWorkStore, SpiffsCalendarStore, SpiffsContinuityCapsuleStore,
-    SpiffsDetachedWorkStore, SpiffsLongTermMemoryExtractionStateStore, SpiffsLongTermMemoryStore,
-    SpiffsMemoryStore, SpiffsMentalPrivacyStore, SpiffsSessionStore, SpiffsSkillMetaStore,
-    SpiffsSkillStorage, SpiffsTaskArtifactStore, SpiffsTaskExecutionLedgerStore,
-    SpiffsTaskLearningStore, SpiffsTaskRunStore, SpiffsTaskStore, SpiffsTurnLedgerStore,
+pub use state_root::state_mount_path;
+pub use storage::{
+    default_skill_storage_arc, init_storage, storage_usage, CachedSkillMetaStore,
+    StorageActiveWorkStore, StorageCalendarStore, StorageContinuityCapsuleStore,
+    StorageDetachedWorkStore, StorageLongTermMemoryExtractionStateStore,
+    StorageLongTermMemoryStore, StorageMemoryStore, StorageMentalPrivacyStore, StorageSessionStore,
+    StorageSkillMetaStore, StorageSkillStorage, StorageTaskArtifactStore,
+    StorageTaskExecutionLedgerStore, StorageTaskLearningStore, StorageTaskRunStore,
+    StorageTaskStore, StorageTurnLedgerStore,
 };
 #[cfg(feature = "capability_office")]
-pub use spiffs::{SpiffsOfficeCredentialStore, SpiffsOfficeRuntimeStatusStore};
-pub use state_root::state_mount_path;
+pub use storage::{StorageOfficeCredentialStore, StorageOfficeRuntimeStatusStore};
 pub use wifi::{
     connect as connect_wifi, is_wifi_sta_connected, passive_scan_handle, refresh_runtime_state,
     wait_for_network_ready, WifiApEntry, WifiScan, WifiScanHandle,

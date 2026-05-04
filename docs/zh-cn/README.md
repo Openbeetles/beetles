@@ -12,6 +12,7 @@
 ## Capabilities
 
 - [capabilities.md](capabilities.md)：产品形态、能力范围和平台适配
+- [memory-system.md](memory-system.md)：记忆系统白皮书
 
 ## Configure
 

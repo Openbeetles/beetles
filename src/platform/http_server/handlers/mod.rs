@@ -19,7 +19,7 @@ impl ControlPlaneRouteContract {
 }
 
 /// 各 handler 共享的上下文，由 run() 构建后以 Arc 传入闭包。
-/// `cached_config` 缓存最新配置：读路径零 `AppConfig::load()`；SPIFFS 写路径仍可 `reload_config()`，
+/// `cached_config` 缓存最新配置：读路径零 `AppConfig::load()`；storage 写路径仍可 `reload_config()`，
 /// NVS-only 小改动则原地投影到缓存，避免整包重载。
 #[allow(dead_code)]
 pub struct HandlerContext {

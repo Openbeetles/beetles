@@ -77,7 +77,7 @@ pub(crate) fn heartbeat_tick(
             .unwrap_or(0);
         let state_fs_ready = crate::orchestrator::update_session_storage_from_bytes(
             sess_count,
-            platform.spiffs_usage(),
+            platform.storage_usage(),
         );
         storage_state_fs_ready =
             storage_state_fs_ready_for_runtime_capability_refresh(state.round, state_fs_ready);

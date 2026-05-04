@@ -612,7 +612,7 @@ mod tests {
     use crate::platform::MemorySnapshot;
 
     #[test]
-    fn storage_usage_from_spiffs_usage_reports_kb_and_ready_state() {
+    fn storage_usage_from_storage_usage_reports_kb_and_ready_state() {
         let (used_kb, total_kb, ready) =
             super::storage_usage_kb_from_bytes(Some((8 * 1024 * 1024, 944_889)));
 
@@ -622,7 +622,7 @@ mod tests {
     }
 
     #[test]
-    fn storage_usage_from_missing_spiffs_usage_reports_unavailable() {
+    fn storage_usage_from_missing_storage_usage_reports_unavailable() {
         let (used_kb, total_kb, ready) = super::storage_usage_kb_from_bytes(None);
 
         assert_eq!(used_kb, 0);

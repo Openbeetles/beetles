@@ -24,7 +24,7 @@ pub fn diagnose(
     outbound_depth: usize,
     last_error: Option<String>,
     storage_ok: bool,
-    spiffs_ok: Option<(u64, u64)>,
+    storage_usage: Option<(u64, u64)>,
     nvs_ok: bool,
     memory_loaded: bool,
     skills_count: usize,
@@ -46,18 +46,18 @@ pub fn diagnose(
         });
     }
 
-    if let Some((total, used)) = spiffs_ok {
+    if let Some((total, used)) = storage_usage {
         let free = total.saturating_sub(used);
         out.push(DiagResult {
             severity: "ok".into(),
             category: "storage".into(),
-            message: format!("spiffs total={} used={} free={}", total, used, free),
+            message: format!("storage total={} used={} free={}", total, used, free),
         });
     } else {
         out.push(DiagResult {
             severity: "warn".into(),
             category: "storage".into(),
-            message: "spiffs unavailable".into(),
+            message: "storage usage unavailable".into(),
         });
     }
 

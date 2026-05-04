@@ -229,7 +229,7 @@ fn validate_cron_expr(expr: &str) -> Result<()> {
     Ok(())
 }
 
-/// Load persisted cron tasks from SPIFFS (for use by cron loop).
+/// Load persisted cron tasks from storage (for use by cron loop).
 /// Returns empty vec on any error.
 pub fn load_persisted_cron_tasks(store: &dyn MemoryStore) -> Vec<CronTask> {
     match store.get_daily_note(CRON_TASKS_REL_PATH) {

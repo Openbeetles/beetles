@@ -295,9 +295,14 @@ run_gates() {
   require_matches 'STA connected|sta ip:' "$log_file" "STA did not connect"
   require_matches '\[qq_ws\] hello ok' "$log_file" "QQ WSS did not reach hello ok"
   require_matches 'HEARTBEAT version=' "$log_file" "heartbeat not captured"
+  require_matches '\[heartbeat\] metrics .*storage_ops=' "$log_file" "storage metrics not captured"
 
   fail_if_matches 'Guru Meditation|Task watchdog|TWDT|panic|abort|stack canary|Failed to create task|RTC_SW_CPU_RST' \
     "$log_file" "fatal runtime/reset pattern found"
+  fail_if_matches '\[heartbeat\] metrics .*spiffs_' \
+    "$log_file" "legacy storage metric names found"
+  fail_if_matches 'storage_contention=Critical' \
+    "$log_file" "critical storage contention found"
   fail_if_matches '\[thread\] started name=write_back' \
     "$log_file" "dedicated write-back worker thread started on ESP"
   fail_if_matches 'wifi:state: run -> init|wifi_reconn=[1-9][0-9]*|wifi_ap_restart=[1-9][0-9]*' \

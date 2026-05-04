@@ -7,7 +7,7 @@ use crate::state;
 pub fn body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
     let memory_loaded = ctx.memory_store.get_memory().is_ok();
     let storage_ok = memory_loaded;
-    let spiffs_ok = ctx.platform.spiffs_usage();
+    let storage_usage = ctx.platform.storage_usage();
     let nvs_ok = ctx.platform.config_store().read_string("wifi_ssid").is_ok();
     let last_error = state::get_last_error();
     let inc_val = ctx.inbound_depth.load(std::sync::atomic::Ordering::Relaxed);
@@ -22,7 +22,7 @@ pub fn body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
         out_val,
         last_error,
         storage_ok,
-        spiffs_ok,
+        storage_usage,
         nvs_ok,
         memory_loaded,
         skills_count,

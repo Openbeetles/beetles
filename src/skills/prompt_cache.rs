@@ -7,7 +7,7 @@ struct PromptCacheState {
     rendered: String,
 }
 
-/// 技能描述字符串缓存，供 system prompt 直接复用，避免在用户消息热路径里重读 SPIFFS。
+/// 技能描述字符串缓存，供 system prompt 直接复用，避免在用户消息热路径里重读 storage。
 pub struct SkillPromptCache {
     meta_store: Arc<dyn SkillMetaStore + Send + Sync>,
     storage: Arc<dyn SkillStorage + Send + Sync>,

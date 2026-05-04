@@ -90,7 +90,7 @@ pub fn run_memory_hygiene_jobs(
         daily_notes_aggregated: daily_report.archived_note_names.len(),
         transcripts_rolled_up: transcript_report.chat_ids.len(),
         // Session file removal belongs to the governed write-back plane; hygiene
-        // can report it, but must not perform SPIFFS remove from post-reply jobs.
+        // can report it, but must not perform storage remove from post-reply jobs.
         sessions_gc: 0,
         daily_aggregate_targets: daily_report.aggregate_targets,
         transcript_rollup_chat_ids: transcript_report.chat_ids,

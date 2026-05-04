@@ -1389,7 +1389,7 @@ mod tests {
         );
         assert!(
             detached_work_store.get(&key).expect("load").is_none(),
-            "embedded post-reply self-runtime should not write detached-work SPIFFS state on agent_loop"
+            "embedded post-reply self-runtime should not write detached-work storage state on agent_loop"
         );
         let audit = workflow_audit_snapshot(4);
         assert_eq!(audit.summary.deferred, 1);
@@ -1474,7 +1474,7 @@ mod tests {
             DetachedWorkKey::new("qq_channel", "chat-a", DetachedJobKind::SelfRuntimeIdleTick);
         assert!(
             detached_work_store.get(&key).expect("load").is_none(),
-            "embedded idle self-runtime should not write detached-work SPIFFS state on bg_timer"
+            "embedded idle self-runtime should not write detached-work storage state on bg_timer"
         );
         let audit = workflow_audit_snapshot(4);
         assert_eq!(audit.summary.deferred, 1);

@@ -66,7 +66,6 @@ function createNewI2cSensor(taken: Set<string>): I2cSensorEntry {
     id,
     addr: 0x38,
     model: "aht20",
-    watch_field: "temperature",
     what: "",
     how: "",
     options: {},
@@ -440,22 +439,6 @@ export function I2cSensorsPanel() {
                       {m}
                     </MenuItem>
                   ))}
-                </TextField>
-                <TextField
-                  select
-                  fullWidth
-                  label={t("hardwareConfig.i2cSensorWatchField")}
-                  value={sens.watch_field}
-                  onChange={(e) =>
-                    updateI2cSensor(i, {
-                      ...sens,
-                      watch_field: e.target.value,
-                    })
-                  }
-                  slotProps={{ inputLabel: { shrink: true } }}
-                >
-                  <MenuItem value="temperature">temperature</MenuItem>
-                  <MenuItem value="humidity">humidity</MenuItem>
                 </TextField>
                 {sens.model === "raw" && (
                   <>

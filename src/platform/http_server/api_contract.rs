@@ -63,7 +63,7 @@ pub fn error_key(error: &Error) -> &'static str {
     match error {
         Error::Config { message, stage } => config_error_key(message, stage),
         Error::Nvs { .. } => COMMON_STORAGE_ACCESS_FAILED,
-        Error::Spiffs { .. } => COMMON_FILE_STORAGE_FAILED,
+        Error::Storage { .. } => COMMON_FILE_STORAGE_FAILED,
         Error::Io { .. } => COMMON_IO_FAILED,
         Error::Esp { .. } => SYSTEM_DEVICE_ERROR,
         Error::Http { .. } => COMMON_UPSTREAM_HTTP_STATUS,

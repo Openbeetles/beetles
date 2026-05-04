@@ -556,7 +556,7 @@ pub fn get_hardware_body(ctx: &HandlerContext) -> Result<String, std::io::Error>
     serde_json::to_string(&segment).map_err(|e| to_io(e.to_string()))
 }
 
-/// POST /api/config/hardware：校验并写入 HardwareSegment 到 SPIFFS config/hardware.json。
+/// POST /api/config/hardware：校验并写入 HardwareSegment 到存储中的 config/hardware.json。
 pub fn post_hardware(ctx: &HandlerContext, body: &str) -> Result<ApiResponse, std::io::Error> {
     let segment: config::HardwareSegment = match serde_json::from_str(body) {
         Ok(segment) => segment,
@@ -580,7 +580,7 @@ pub fn get_audio_body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
     serde_json::to_string(&segment).map_err(|e| to_io(e.to_string()))
 }
 
-/// POST /api/config/audio：校验并写入 AudioSegment 到 SPIFFS config/audio.json。
+/// POST /api/config/audio：校验并写入 AudioSegment 到存储中的 config/audio.json。
 pub fn post_audio(ctx: &HandlerContext, body: &str) -> Result<ApiResponse, std::io::Error> {
     let segment: config::AudioSegment = match serde_json::from_str(body) {
         Ok(segment) => segment,
@@ -606,7 +606,7 @@ pub fn get_display_body(ctx: &HandlerContext) -> Result<String, std::io::Error> 
     serde_json::to_string(&segment).map_err(|e| to_io(e.to_string()))
 }
 
-/// POST /api/config/display：校验并写入 DisplayConfig 到 SPIFFS config/display.json。
+/// POST /api/config/display：校验并写入 DisplayConfig 到存储中的 config/display.json。
 pub fn post_display(ctx: &HandlerContext, body: &str) -> Result<ApiResponse, std::io::Error> {
     let segment: crate::display::DisplayConfig = match serde_json::from_str(body) {
         Ok(segment) => segment,

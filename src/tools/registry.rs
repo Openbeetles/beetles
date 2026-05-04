@@ -919,7 +919,7 @@ impl ToolRegistry {
                 }
                 (
                     crate::orchestrator::RUNTIME_CAPABILITY_STORAGE_STATE_FS,
-                    Error::Spiffs { .. } | Error::Nvs { .. } | Error::Io { .. },
+                    Error::Storage { .. } | Error::Nvs { .. } | Error::Io { .. },
                 ) => Some(crate::orchestrator::RuntimeCapabilityReason::DriverError),
                 _ => None,
             };

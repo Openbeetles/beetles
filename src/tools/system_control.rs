@@ -48,7 +48,7 @@ impl Tool for SystemControlTool {
 
         match op {
             "storage_usage" => {
-                let usage = self.platform.spiffs_usage();
+                let usage = self.platform.storage_usage();
                 let state_root = crate::platform::state_mount_path();
                 match usage {
                     Some((total, used)) => {

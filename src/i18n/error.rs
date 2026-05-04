@@ -15,7 +15,7 @@ fn map_error(err: &Error) -> Message {
     match err {
         Error::Config { message, stage } => map_config(message, stage),
         Error::Nvs { .. } => Message::ErrorNvs,
-        Error::Spiffs { .. } => Message::ErrorSpiffs,
+        Error::Storage { .. } => Message::ErrorStorage,
         Error::Io { .. } => Message::ErrorIo,
         Error::Esp { .. } => Message::ErrorEsp,
         Error::Http { status_code: c, .. } => Message::ErrorHttpStatus { code: *c },

@@ -10,8 +10,10 @@ import Box from "@mui/material/Box";
 import Typography from "@mui/material/Typography";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
+import { ChatDialog } from "./ChatDialog";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { DeviceAccessCard } from "./DeviceAccessCard";
+import { FloatingChatButton } from "./FloatingChatButton";
 import { ShellPageTransition } from "./ShellPageTransition";
 import { Taskbar } from "./Taskbar";
 import { TopBar } from "./TopBar";
@@ -93,6 +95,7 @@ export function Layout({ onOpenSettings }: LayoutProps) {
   const { auth, localPairing } = useDeviceStatus();
   const restartPhase = useRestartPhase();
   const [pendingPath, setPendingPath] = useState<string | null>(null);
+  const [chatOpen, setChatOpen] = useState(false);
   const showRestartBanner = restartPhase !== "idle";
   const showProtectedRouteBlocker = shouldShowProtectedRouteBlocker({
     pathname: location.pathname,
@@ -151,6 +154,7 @@ export function Layout({ onOpenSettings }: LayoutProps) {
   const protectedRouteBlocker = showProtectedRouteBlocker ? (
     <DeviceAccessCard />
   ) : null;
+  const showFloatingChatButton = appMode === "ready";
 
   /** 全屏磨砂底：拦截底层交互，避免可视蒙层下仍可点击 */
   const statusOverlayBackdropSx = {
@@ -270,6 +274,16 @@ export function Layout({ onOpenSettings }: LayoutProps) {
           <MainSurface immersive={useImmersiveMainSurface}>
             {protectedRouteBlocker ?? <ShellPageTransition />}
           </MainSurface>
+          {showFloatingChatButton ? (
+            <>
+              <FloatingChatButton onClick={() => setChatOpen(true)} />
+              <ChatDialog
+                open={chatOpen}
+                onClose={() => setChatOpen(false)}
+                onMinimize={() => setChatOpen(false)}
+              />
+            </>
+          ) : null}
           <Taskbar onOpenSettings={onOpenSettings} />
         </Box>
       </Box>
