@@ -116,6 +116,50 @@ test('request queues csrf token fetches behind an in-flight device request', asy
   }
 })
 
+test('request times out stalled fetches and releases the device request queue', async () => {
+  clearCsrfToken()
+
+  const calls: string[] = []
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input)
+    calls.push(url)
+    if (url.endsWith('/api/health')) {
+      return new Promise<Response>((_, reject) => {
+        init?.signal?.addEventListener('abort', () => {
+          reject(new DOMException('The operation was aborted.', 'AbortError'))
+        })
+      })
+    }
+    return jsonResponse({ body: { pressure: 'Normal' } })
+  }) as typeof fetch
+
+  let health: ReturnType<typeof request> | null = null
+  let resource: ReturnType<typeof request> | null = null
+  try {
+    health = request('http://device', '/api/health', { timeoutMs: 1 })
+    resource = request('http://device', '/api/resource', { timeoutMs: 1_000 })
+    await flushQueuedRequestStart()
+
+    assert.deepEqual(calls, ['http://device/api/health'])
+    assert.deepEqual(await health, {
+      ok: false,
+      error: 'network.request_failed',
+      errorKey: 'network.request_failed',
+      upstreamError: undefined,
+    })
+    assert.equal((await resource).ok, true)
+    assert.deepEqual(calls, [
+      'http://device/api/health',
+      'http://device/api/resource',
+    ])
+  } finally {
+    await Promise.allSettled([health, resource].filter(Boolean) as Promise<unknown>[])
+    globalThis.fetch = originalFetch
+    clearCsrfToken()
+  }
+})
+
 test('request opens operator window and retries the original request once', async () => {
   clearCsrfToken()
 

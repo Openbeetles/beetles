@@ -28,6 +28,7 @@ import {
 
 /** 定时检测设备连接间隔（毫秒），用于更快更新重启与连接状态 */
 const CONNECTION_POLL_INTERVAL_MS = 10_000
+const CONNECTION_POLL_TIMEOUT_MS = 5_000
 
 type PollMeta = { prevConnection: 'checking' | 'reachable' | 'unreachable' | 'none'; csrfPrimed: boolean }
 type DeviceSessionMeta = { baseUrl: string; pairingCode: string }
@@ -139,7 +140,7 @@ export function DeviceProvider({ children }: { children: React.ReactNode }) {
     pollMetaRef.current = { prevConnection: 'checking', csrfPrimed: false }
     setDeviceProbeState({ transport: 'checking', devicePairing: 'unknown' })
     let cancelled = false
-    getPairingCode(url).then((res) => {
+    getPairingCode(url, { timeoutMs: CONNECTION_POLL_TIMEOUT_MS }).then((res) => {
       applyPairingResult(url, generation, cancelled, res)
     })
     return () => {
@@ -153,7 +154,7 @@ export function DeviceProvider({ children }: { children: React.ReactNode }) {
     if (!url) return
     const generation = pollGenerationRef.current
     const tick = () => {
-      getPairingCode(url).then((res) => {
+      getPairingCode(url, { timeoutMs: CONNECTION_POLL_TIMEOUT_MS }).then((res) => {
         applyPairingResult(url, generation, false, res)
       })
     }

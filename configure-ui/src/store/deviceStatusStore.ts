@@ -59,6 +59,7 @@ const RESTART_TIMEOUT_MS = 60_000;
  * 超过该时长自动结束 pending，避免蒙层卡死。
  */
 const RESTART_PENDING_MAX_MS = 90_000;
+const RESTART_REACHABLE_CONFIRM_MS = 15_000;
 
 function deriveActivated(devicePairing: DevicePairingState): boolean | null {
   if (devicePairing === "initialized") return true;
@@ -222,6 +223,12 @@ function commitSource(next: DeviceStatusSource): void {
   emitChange();
 }
 
+function clearRestartLifecycle(): void {
+  restartPending = false;
+  restartPendingSince = null;
+  restartDropTime = null;
+}
+
 export function setDeviceSessionState(args: {
   hasTarget: boolean;
   localPairing: LocalPairingState;
@@ -229,6 +236,7 @@ export function setDeviceSessionState(args: {
 }): void {
   const { hasTarget, localPairing, preserveAuth = false } = args;
   if (!hasTarget) {
+    clearRestartLifecycle();
     commitSource({
       ...source,
       hasTarget: false,
@@ -351,35 +359,35 @@ export function setRestartPending(): void {
  */
 export function updateRestartState(connectionStatus: ConnectionStatus): void {
   if (!restartPending) return;
+  const now = Date.now();
+  if (
+    connectionStatus === "reachable" &&
+    (restartDropTime !== null ||
+      (restartPendingSince !== null &&
+        now - restartPendingSince >= RESTART_REACHABLE_CONFIRM_MS))
+  ) {
+    clearRestartLifecycle();
+    reconnectedAfterRestart = true;
+    emitChange();
+    return;
+  }
   if (
     restartDropTime === null &&
     restartPendingSince !== null &&
-    Date.now() - restartPendingSince > RESTART_PENDING_MAX_MS
+    now - restartPendingSince > RESTART_PENDING_MAX_MS
   ) {
-    restartPending = false;
-    restartPendingSince = null;
-    restartDropTime = null;
+    clearRestartLifecycle();
     restartTimeout = true;
     emitChange();
     return;
   }
   if (connectionStatus === "unreachable") {
-    if (restartDropTime === null) restartDropTime = Date.now();
-    else if (Date.now() - restartDropTime > RESTART_TIMEOUT_MS) {
-      restartPending = false;
-      restartPendingSince = null;
-      restartDropTime = null;
+    if (restartDropTime === null) restartDropTime = now;
+    else if (now - restartDropTime > RESTART_TIMEOUT_MS) {
+      clearRestartLifecycle();
       restartTimeout = true;
       emitChange();
     }
-    return;
-  }
-  if (connectionStatus === "reachable" && restartDropTime !== null) {
-    restartPending = false;
-    restartPendingSince = null;
-    restartDropTime = null;
-    reconnectedAfterRestart = true;
-    emitChange();
   }
 }
 

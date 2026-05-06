@@ -25,6 +25,7 @@ type ProtectedApiAuthObserver = ((event: ProtectedApiAuthEvent) => void) | null
 let csrfToken: string | null = null
 let protectedApiAuthObserver: ProtectedApiAuthObserver = null
 const deviceRequestQueues = new Map<string, Promise<void>>()
+const DEFAULT_DEVICE_REQUEST_TIMEOUT_MS = 15_000
 
 function requestQueueKey(baseUrl: string): string {
   return baseUrl.trim().replace(/\/$/, '')
@@ -57,11 +58,20 @@ async function fetchQueuedText(
   baseUrl: string,
   url: string,
   init?: RequestInit,
+  timeoutMs = DEFAULT_DEVICE_REQUEST_TIMEOUT_MS,
 ): Promise<{ res: Response; text: string }> {
   return runQueuedDeviceRequest(baseUrl, async () => {
-    const res = await fetch(url, init)
-    const text = await res.text()
-    return { res, text }
+    const controller = new AbortController()
+    const timeout = globalThis.setTimeout(() => {
+      controller.abort()
+    }, timeoutMs)
+    try {
+      const res = await fetch(url, { ...init, signal: controller.signal })
+      const text = await res.text()
+      return { res, text }
+    } finally {
+      globalThis.clearTimeout(timeout)
+    }
   })
 }
 
@@ -69,11 +79,16 @@ export function clearCsrfToken(): void {
   csrfToken = null
 }
 
-export async function fetchCsrfToken(baseUrl: string): Promise<string | null> {
+export async function fetchCsrfToken(
+  baseUrl: string,
+  timeoutMs = DEFAULT_DEVICE_REQUEST_TIMEOUT_MS,
+): Promise<string | null> {
   try {
     const { res, text } = await fetchQueuedText(
       baseUrl,
       buildUrl(baseUrl, '/api/csrf_token'),
+      undefined,
+      timeoutMs,
     )
     if (!res.ok) {
       csrfToken = null
@@ -119,6 +134,7 @@ export interface ApiRequestOptions {
   pairingCode?: string
   authPolicy?: 'none' | 'validate'
   operatorWindowPolicy?: 'auto' | 'manual'
+  timeoutMs?: number
 }
 
 export interface ApiResult<T = unknown> {
@@ -160,6 +176,7 @@ async function requestInternal<T = unknown>(
     pairingCode,
     authPolicy = 'none',
     operatorWindowPolicy = 'auto',
+    timeoutMs = DEFAULT_DEVICE_REQUEST_TIMEOUT_MS,
   } = options
   const url = buildUrl(baseUrl, path)
   const headers: Record<string, string> = {
@@ -175,11 +192,16 @@ async function requestInternal<T = unknown>(
   }
 
   try {
-    const { res, text } = await fetchQueuedText(baseUrl, url, {
-      method,
-      headers,
-      body: typeof body === 'object' ? JSON.stringify(body) : body,
-    })
+    const { res, text } = await fetchQueuedText(
+      baseUrl,
+      url,
+      {
+        method,
+        headers,
+        body: typeof body === 'object' ? JSON.stringify(body) : body,
+      },
+      timeoutMs,
+    )
     let data: unknown
     try {
       data = text ? JSON.parse(text) : null

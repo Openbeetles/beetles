@@ -4,6 +4,11 @@ import {
   deriveAppMode,
   deriveLocalPairingState,
   shouldPreservePairingAuthOnSessionChange,
+  consumeReconnectedAfterRestart,
+  consumeRestartTimeout,
+  getRestartPhase,
+  setRestartPending,
+  updateRestartState,
   getAppMode,
   markPairingAuthValid,
   setDeviceProbeState,
@@ -18,6 +23,19 @@ import {
 function resetStoreState() {
   setDeviceSessionState({ hasTarget: false, localPairing: "absent" });
   setDeviceProbeState({ transport: "none", devicePairing: "unknown" });
+  consumeReconnectedAfterRestart();
+  consumeRestartTimeout();
+}
+
+function withMockedNow<T>(startMs: number, run: (clock: { now: number }) => T): T {
+  const originalNow = Date.now;
+  const clock = { now: startMs };
+  Date.now = () => clock.now;
+  try {
+    return run(clock);
+  } finally {
+    Date.now = originalNow;
+  }
 }
 
 function expectAppMode(args: {
@@ -228,4 +246,37 @@ test("pairing auth preservation allows a validated empty-to-present unlock promo
     }),
     true,
   );
+});
+
+test("restart flow completes when reachable is observed after the confirmation window", () => {
+  resetStoreState();
+  withMockedNow(1_000, (clock) => {
+    setRestartPending();
+    assert.equal(getRestartPhase(), "pending");
+
+    clock.now = 15_999;
+    updateRestartState("reachable");
+    assert.equal(getRestartPhase(), "pending");
+
+    clock.now = 16_000;
+    updateRestartState("reachable");
+    assert.equal(getRestartPhase(), "idle");
+    assert.equal(consumeReconnectedAfterRestart(), true);
+  });
+  resetStoreState();
+});
+
+test("restart flow completes when the device becomes reachable after an observed drop", () => {
+  resetStoreState();
+  withMockedNow(10_000, (clock) => {
+    setRestartPending();
+    updateRestartState("unreachable");
+    assert.equal(getRestartPhase(), "restarting");
+
+    clock.now = 11_000;
+    updateRestartState("reachable");
+    assert.equal(getRestartPhase(), "idle");
+    assert.equal(consumeReconnectedAfterRestart(), true);
+  });
+  resetStoreState();
 });
