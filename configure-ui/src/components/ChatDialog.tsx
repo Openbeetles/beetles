@@ -547,18 +547,7 @@ export function ChatDialog({ open, onClose, onMinimize }: ChatDialogProps) {
                 "color-mix(in srgb, var(--card) 76%, var(--surface))",
             }}
           >
-            <Box sx={{ px: 2, py: 1.5 }}>
-              <Typography
-                sx={{
-                  color: "var(--text-secondary)",
-                  fontSize: "var(--font-size-caption)",
-                  fontWeight: 700,
-                }}
-              >
-                {t("chat.conversationList")}
-              </Typography>
-            </Box>
-            <Stack sx={{ px: 1.25, pb: 1.25, overflow: "auto" }} spacing={0.75}>
+            <Stack sx={{ px: 1.25, py: 1.25, overflow: "auto" }} spacing={0.75}>
               {listLoading ? (
                 <Typography
                   sx={{

@@ -13,7 +13,6 @@ export const enUS = {
       minimize: 'Minimize chat window',
       fullScreen: 'Full-screen chat window',
       exitFullScreen: 'Exit full screen',
-      conversationList: 'Conversations',
       online: 'Online',
       localPreview: 'Local preview',
       inputPlaceholder: 'Type a message; Enter sends, Shift + Enter inserts a line',

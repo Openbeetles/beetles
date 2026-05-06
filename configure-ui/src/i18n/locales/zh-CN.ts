@@ -13,7 +13,6 @@ export const zhCN = {
       minimize: '最小化聊天窗口',
       fullScreen: '全屏聊天窗口',
       exitFullScreen: '退出全屏',
-      conversationList: '对话',
       online: '在线',
       localPreview: '本地预览',
       inputPlaceholder: '输入消息；Enter 发送，Shift + Enter 换行',
