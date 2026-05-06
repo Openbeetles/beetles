@@ -97,6 +97,12 @@ function normalizeModelKind(modelKind: string): LlmModelKind {
     : "text";
 }
 
+function llmSourceTitle(row: SourceFormRow, t: (k: string) => string): string {
+  const provider = t(LLM_PROVIDER_LABEL_KEY[normalizeProvider(row.provider)]).trim();
+  const model = row.model.trim();
+  return model ? `${provider} ${model}` : provider;
+}
+
 function generateSourceId(): string {
   if (typeof globalThis.crypto?.randomUUID === "function") {
     return `llm_${globalThis.crypto.randomUUID()}`;
@@ -496,7 +502,8 @@ export function AIConfigPage() {
                   }}
                 >
                   <FormSectionSubCollapsible
-                    title={`${t("config.llmSource")} ${i + 1}`}
+                    title={llmSourceTitle(row, t)}
+                    idBase={`llm-source-${row.id}`}
                     defaultOpen={i === 0}
                     action={
                       <Stack

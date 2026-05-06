@@ -50,6 +50,10 @@ export function SectionSubTitleRow({
         variant="subtitle2"
         sx={{
           ...TEXT_SUBSECTION_TITLE_SX,
+          minWidth: 0,
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          whiteSpace: "nowrap",
           letterSpacing: "0.01em",
           textTransform: "none",
         }}

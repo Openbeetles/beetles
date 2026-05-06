@@ -16,20 +16,31 @@ interface FormSectionSubCollapsibleProps {
   title: string;
   children: ReactNode;
   defaultOpen?: boolean;
+  /** Stable DOM id seed when title is user-editable or can duplicate. */
+  idBase?: string;
   /** 标题行右侧操作（如删除），点击不触发展开/收起 */
   action?: ReactNode;
+}
+
+function toDomIdPart(value: string): string {
+  return (
+    value.trim().replace(/[^A-Za-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "") ||
+    "section"
+  );
 }
 
 export function FormSectionSubCollapsible({
   title,
   children,
   defaultOpen = true,
+  idBase,
   action,
 }: FormSectionSubCollapsibleProps) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(defaultOpen);
-  const headerId = `header-${title.replace(/\s/g, "-")}`;
-  const collapseId = `collapse-${title.replace(/\s/g, "-")}`;
+  const domIdPart = toDomIdPart(idBase ?? title);
+  const headerId = `header-${domIdPart}`;
+  const collapseId = `collapse-${domIdPart}`;
 
   return (
     <Box
