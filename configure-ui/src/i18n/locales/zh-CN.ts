@@ -34,6 +34,7 @@ export const zhCN = {
       content_required: '请输入消息后再发送。',
       message_invalid: '当前消息无法发送。',
       stream_busy: '上一条聊天回复仍在输出。',
+      resource_pressure: '设备当前资源不足，暂时无法处理聊天请求，请稍后再试。',
       stream_pressure: '设备资源压力较高，请稍后再试。',
       stream_storage_busy: '存储正在忙，请稍后再试。',
       stream_incomplete: '聊天流在回复完成前中断。',

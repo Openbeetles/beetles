@@ -34,6 +34,7 @@ export const enUS = {
       content_required: 'Type a message before sending.',
       message_invalid: 'The message cannot be sent in its current form.',
       stream_busy: 'Another chat response is still streaming.',
+      resource_pressure: 'The device does not have enough resource headroom to handle chat right now. Try again shortly.',
       stream_pressure: 'The device is under resource pressure. Try again shortly.',
       stream_storage_busy: 'Storage is busy. Try again shortly.',
       stream_incomplete: 'The chat stream ended before the response finished.',

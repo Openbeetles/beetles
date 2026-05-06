@@ -9,7 +9,7 @@ import Tooltip from "@mui/material/Tooltip";
 import Typography from "@mui/material/Typography";
 import SendRoundedIcon from "@mui/icons-material/SendRounded";
 import { useTranslation } from "react-i18next";
-import { translateApiError } from "../i18n/apiErrors";
+import { translateChatApiError } from "./chatErrors";
 import { useDeviceApi } from "../hooks/useDeviceApi";
 import type {
   ChatSessionMessage,
@@ -192,7 +192,7 @@ export function ChatDialog({ open, onClose, onMinimize }: ChatDialogProps) {
       setListLoading(false);
       const sessionItems = result.data?.items;
       if (!result.ok || !Array.isArray(sessionItems)) {
-        setErrorText(translateApiError(t, result.error, "chat.loadFailed"));
+        setErrorText(translateChatApiError(t, result.error, "chat.loadFailed"));
         setConversations([createEmptyConversation(t("chat.defaultSessionTitle"))]);
         setActiveId(DEFAULT_CHAT_ID);
         return;
@@ -231,7 +231,7 @@ export function ChatDialog({ open, onClose, onMinimize }: ChatDialogProps) {
       setMessagesLoading(false);
       const messageItems = result.data?.items;
       if (!result.ok || !Array.isArray(messageItems)) {
-        setErrorText(translateApiError(t, result.error, "chat.loadFailed"));
+        setErrorText(translateChatApiError(t, result.error, "chat.loadFailed"));
         setMessagesByChatId((current) => ({ ...current, [chatId]: [] }));
         return;
       }
@@ -366,7 +366,7 @@ export function ChatDialog({ open, onClose, onMinimize }: ChatDialogProps) {
     if (event.type === "error") {
       updateMessage(chatId, assistantId, (message) => ({
         ...message,
-        text: translateApiError(t, event.error, "chat.sendFailed"),
+        text: translateChatApiError(t, event.error, "chat.sendFailed"),
         pending: false,
         error: true,
       }));
@@ -393,7 +393,7 @@ export function ChatDialog({ open, onClose, onMinimize }: ChatDialogProps) {
 
     setIsStreaming(false);
     if (!result.ok) {
-      const error = translateApiError(t, result.error, "chat.sendFailed");
+      const error = translateChatApiError(t, result.error, "chat.sendFailed");
       setErrorText(error);
       updateMessage(chatId, assistantId, (message) => ({
         ...message,
