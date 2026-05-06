@@ -708,59 +708,6 @@ export function ChatDialog({ open, onClose, onMinimize }: ChatDialogProps) {
               flexDirection: "column",
             }}
           >
-            <Box
-              sx={{
-                px: { xs: 1.5, sm: 2 },
-                py: 1.45,
-                minHeight: 64,
-                borderBottom:
-                  "1px solid color-mix(in srgb, var(--border) 12%, transparent)",
-                display: "flex",
-                alignItems: "center",
-                gap: 1.25,
-                backgroundColor: "var(--card)",
-              }}
-            >
-              <Box
-                sx={{
-                  width: 42,
-                  height: 42,
-                  borderRadius: "var(--radius-control)",
-                  display: "grid",
-                  placeItems: "center",
-                  backgroundColor: "var(--surface)",
-                  boxShadow: "var(--os3d-icon-well-dish)",
-                }}
-              >
-                <Os3dIcon
-                  src={OS_ICON_NAV["/channels-config"]}
-                  variant="inline"
-                />
-              </Box>
-              <Box sx={{ minWidth: 0 }}>
-                <Typography
-                  noWrap
-                  sx={{
-                    color: "var(--text-primary)",
-                    fontSize: "var(--font-size-body)",
-                    fontWeight: 800,
-                  }}
-                >
-                  {activeConversation?.title ?? t("chat.defaultSessionTitle")}
-                </Typography>
-                <Typography
-                  noWrap
-                  sx={{
-                    color: "var(--text-tertiary)",
-                    fontSize: "var(--font-size-caption)",
-                    fontWeight: 600,
-                  }}
-                >
-                  {t(activeConversation?.online ? "chat.online" : "chat.localPreview")}
-                </Typography>
-              </Box>
-            </Box>
-
             <Stack
               spacing={1.15}
               sx={{
