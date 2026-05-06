@@ -16,7 +16,7 @@ import type {
   ChatSessionStreamEvent,
   ChatSessionSummary,
 } from "../api/endpoints/sessions";
-import { OS_ICON_NAV } from "../config/osIcons";
+import { OS_ICON_DASHBOARD, OS_ICON_NAV } from "../config/osIcons";
 import { Os3dIcon } from "./Os3dIcon";
 
 interface ChatDialogProps {
@@ -718,15 +718,56 @@ export function ChatDialog({ open, onClose, onMinimize }: ChatDialogProps) {
                 </Typography>
               ) : null}
               {!messagesLoading && activeMessages.length === 0 ? (
-                <Typography
+                <Box
+                  role={errorText ? "alert" : undefined}
+                  aria-live={errorText ? "polite" : undefined}
                   sx={{
-                    color: "var(--text-tertiary)",
-                    fontSize: "var(--font-size-body-sm)",
-                    fontWeight: 700,
+                    flex: 1,
+                    minHeight: 0,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    textAlign: "center",
                   }}
                 >
-                  {errorText ?? t("chat.noMessages")}
-                </Typography>
+                  <Stack
+                    spacing={1.15}
+                    alignItems="center"
+                    sx={{
+                      maxWidth: 560,
+                      px: 2,
+                      pb: { xs: 2, sm: 4 },
+                    }}
+                  >
+                    {errorText ? (
+                      <Box
+                        sx={{
+                          width: { xs: 68, sm: 82 },
+                          height: { xs: 68, sm: 82 },
+                        }}
+                      >
+                        <Os3dIcon
+                          src={OS_ICON_DASHBOARD.faults}
+                          alt=""
+                          variant="tile"
+                        />
+                      </Box>
+                    ) : null}
+                    <Typography
+                      sx={{
+                        color: errorText
+                          ? "color-mix(in srgb, var(--semantic-danger) 34%, var(--text-secondary))"
+                          : "var(--text-tertiary)",
+                        fontSize: "var(--font-size-body-sm)",
+                        fontWeight: 700,
+                        lineHeight: "var(--line-height-snug)",
+                        overflowWrap: "anywhere",
+                      }}
+                    >
+                      {errorText ?? t("chat.noMessages")}
+                    </Typography>
+                  </Stack>
+                </Box>
               ) : null}
               {activeMessages.map((message) => {
                 const isUser = message.author === "user";
