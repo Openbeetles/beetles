@@ -499,6 +499,7 @@ fn run_self_runtime_job(
     config: &AgentLoopConfig,
     _system_inbound_tx: &SystemInboundTx,
     msg: &PcMsg,
+    current_background_agent_task_slots: u32,
 ) -> DetachedJobRunDisposition {
     let payload: crate::memory::SelfRuntimeJobPayload = match serde_json::from_str(&msg.content) {
         Ok(payload) => payload,
@@ -548,49 +549,58 @@ fn run_self_runtime_job(
                 delay_ms: super::BACKGROUND_DEFER_DELAY_MS,
             };
         }
-        match crate::orchestrator::current_pressure() {
-            crate::orchestrator::PressureLevel::Normal => {}
-            crate::orchestrator::PressureLevel::Cautious => {
-                if payload.trigger == crate::memory::SelfRuntimeTrigger::PostReply
-                    && super::now_unix_ms().saturating_sub(payload.now_secs.saturating_mul(1000))
-                        >= crate::constants::POST_REPLY_BACKGROUND_MAX_DEFER_MS
-                {
+        if payload.trigger == crate::memory::SelfRuntimeTrigger::PostReply {
+            match embedded_post_reply_gate_policy(
+                config.runtime.memory_system_kind.memory_profile(),
+                crate::agent::DetachedJobKind::SelfRuntimePostReply,
+                &crate::orchestrator::snapshot(),
+                current_background_agent_task_slots,
+                Some(payload.now_secs.saturating_mul(1000)),
+                super::now_unix_ms(),
+            ) {
+                BackgroundGatePolicy::Run => {}
+                BackgroundGatePolicy::Lightweight => {
                     log::info!(
                         "[self_runtime] lightweight post-reply runtime advanced chat_id={} after bounded deferral",
                         msg.chat_id
                     );
                     return DetachedJobRunDisposition::Completed;
                 }
-                log::debug!(
-                    "[self_runtime] defer chat_id={} trigger={:?} because pressure is cautious",
-                    msg.chat_id,
-                    payload.trigger
-                );
-                return DetachedJobRunDisposition::RetryLater {
-                    reason: "self_runtime_pressure_cautious",
-                    delay_ms: super::BACKGROUND_DEFER_DELAY_MS,
-                };
+                BackgroundGatePolicy::Defer { reason, delay_ms } => {
+                    log::debug!(
+                        "[self_runtime] defer chat_id={} trigger={:?} because {}",
+                        msg.chat_id,
+                        payload.trigger,
+                        reason
+                    );
+                    return DetachedJobRunDisposition::RetryLater { reason, delay_ms };
+                }
             }
-            crate::orchestrator::PressureLevel::Critical => {
-                if payload.trigger == crate::memory::SelfRuntimeTrigger::PostReply
-                    && super::now_unix_ms().saturating_sub(payload.now_secs.saturating_mul(1000))
-                        >= crate::constants::POST_REPLY_BACKGROUND_MAX_DEFER_MS
-                {
-                    log::info!(
-                        "[self_runtime] lightweight post-reply runtime advanced chat_id={} after bounded deferral",
-                        msg.chat_id
+        } else {
+            match crate::orchestrator::current_pressure() {
+                crate::orchestrator::PressureLevel::Normal => {}
+                crate::orchestrator::PressureLevel::Cautious => {
+                    log::debug!(
+                        "[self_runtime] defer chat_id={} trigger={:?} because pressure is cautious",
+                        msg.chat_id,
+                        payload.trigger
                     );
-                    return DetachedJobRunDisposition::Completed;
+                    return DetachedJobRunDisposition::RetryLater {
+                        reason: "self_runtime_pressure_cautious",
+                        delay_ms: super::BACKGROUND_DEFER_DELAY_MS,
+                    };
                 }
-                log::debug!(
-                    "[self_runtime] defer chat_id={} trigger={:?} because pressure is critical",
-                    msg.chat_id,
-                    payload.trigger
-                );
-                return DetachedJobRunDisposition::RetryLater {
-                    reason: "self_runtime_pressure_critical",
-                    delay_ms: super::BACKGROUND_DEFER_DELAY_MS,
-                };
+                crate::orchestrator::PressureLevel::Critical => {
+                    log::debug!(
+                        "[self_runtime] defer chat_id={} trigger={:?} because pressure is critical",
+                        msg.chat_id,
+                        payload.trigger
+                    );
+                    return DetachedJobRunDisposition::RetryLater {
+                        reason: "self_runtime_pressure_critical",
+                        delay_ms: super::BACKGROUND_DEFER_DELAY_MS,
+                    };
+                }
             }
         }
     }
@@ -1222,7 +1232,14 @@ pub(super) fn try_run_lane_background_job(
         return run_idle_memory_forge_job(config, msg);
     }
     if super::is_self_runtime_job(msg) {
-        return run_self_runtime_job(http, worker_llm, config, system_inbound_tx, msg);
+        return run_self_runtime_job(
+            http,
+            worker_llm,
+            config,
+            system_inbound_tx,
+            msg,
+            current_background_agent_task_slots,
+        );
     }
     if super::is_operator_maintenance_job(msg) {
         return run_operator_maintenance_job(config, system_inbound_tx, msg);
@@ -1997,6 +2014,7 @@ mod tests {
             strategy: AgentRunStrategy::Embedded,
             stream_editor: None,
             stream_editor_channel: None,
+            chat_streams: Arc::new(crate::chat_stream::ChatStreamBroker::new()),
             resolve_locale: Arc::new(|| UiLocale::Zh),
         }
     }
@@ -2528,6 +2546,46 @@ mod tests {
             ),
             BackgroundGatePolicy::Lightweight
         );
+
+        assert_eq!(
+            embedded_post_reply_gate_policy(
+                crate::memory::MemoryProfile::Embedded,
+                DetachedJobKind::SelfRuntimePostReply,
+                &resource,
+                0,
+                Some(1_000),
+                1_000u64.saturating_add(crate::constants::POST_REPLY_BACKGROUND_MAX_DEFER_MS),
+            ),
+            BackgroundGatePolicy::Lightweight
+        );
+    }
+
+    #[test]
+    fn embedded_self_runtime_post_reply_reuses_post_reply_resource_gate() {
+        let state = crate::orchestrator::state::OrchestratorState::new();
+        state
+            .active_agent_tasks
+            .store(2, std::sync::atomic::Ordering::Relaxed);
+        let mut resource = crate::orchestrator::ResourceSnapshot::from_state(&state);
+        resource.active_http_count = 0;
+        resource.active_wss_count = 0;
+        resource.inbound_depth = 0;
+        resource.outbound_depth = 0;
+
+        assert!(matches!(
+            embedded_post_reply_gate_policy(
+                crate::memory::MemoryProfile::Embedded,
+                DetachedJobKind::SelfRuntimePostReply,
+                &resource,
+                1,
+                None,
+                5_000,
+            ),
+            BackgroundGatePolicy::Defer {
+                reason: "post_reply_resource_window_busy",
+                ..
+            }
+        ));
     }
 
     #[test]

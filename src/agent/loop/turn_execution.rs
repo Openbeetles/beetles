@@ -577,8 +577,15 @@ pub(super) fn execute_turn_boxed(
         let mut first_token_marked = latency.ttft_ms.is_some();
         let round_tools = request_plan.request_tools();
         let progress_base = worker_start;
-        let mut progress_cb = |_delta: &str, accumulated: &str| {
+        let mut progress_cb = |delta: &str, accumulated: &str| {
             crate::platform::task_wdt::feed_current_task();
+            if msg.channel.as_ref() == crate::chat_stream::CHANNEL_CONFIGURE_UI_CHAT {
+                if let Some(stream_id) = msg.req_id.as_deref() {
+                    config
+                        .chat_streams
+                        .emit_delta(stream_id, delta, accumulated);
+                }
+            }
             if !first_token_marked && !accumulated.is_empty() {
                 latency.ttft_ms = Some(progress_base.elapsed().as_millis());
                 first_token_marked = true;

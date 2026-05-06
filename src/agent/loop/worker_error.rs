@@ -94,6 +94,15 @@ pub(super) fn handle_worker_path_error(
         }
     }
 
+    if crate::chat_stream::is_configure_ui_stream_turn(msg) {
+        if let Some(stream_id) = msg.req_id.as_deref() {
+            config
+                .chat_streams
+                .emit_error(stream_id, "chat.failed", Some(error.stage()));
+        }
+        return;
+    }
+
     match PcMsg::new_outbound_reply_to(msg, tr(user_message, loc)) {
         Ok(reply) => {
             turn_ledger.reason = normalize_turn_reason("chat_failure_copy");

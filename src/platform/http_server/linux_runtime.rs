@@ -131,14 +131,70 @@ fn handle_linux_request<H, A>(
 }
 
 fn respond(log_tag: &'static str, request: tiny_http::Request, outgoing: OutgoingResponse) {
-    let mut response = tiny_http::Response::from_data(outgoing.body)
-        .with_status_code(tiny_http::StatusCode(outgoing.status));
-    for (key, value) in outgoing.headers {
-        if let Ok(header) = tiny_http::Header::from_bytes(key.as_bytes(), value.as_bytes()) {
+    let headers = outgoing
+        .headers
+        .iter()
+        .filter_map(|(key, value)| {
+            tiny_http::Header::from_bytes(key.as_bytes(), value.as_bytes()).ok()
+        })
+        .collect::<Vec<_>>();
+    if let Some(stream) = outgoing.stream {
+        let response = tiny_http::Response::new(
+            tiny_http::StatusCode(outgoing.status),
+            headers,
+            SseReceiverReader::new(stream),
+            None,
+            None,
+        );
+        if let Err(error) = request.respond(response) {
+            log::warn!("[{}] respond failed: {}", log_tag, error);
+        }
+    } else {
+        let mut response = tiny_http::Response::from_data(outgoing.body)
+            .with_status_code(tiny_http::StatusCode(outgoing.status));
+        for header in headers {
             response.add_header(header);
         }
+        if let Err(error) = request.respond(response) {
+            log::warn!("[{}] respond failed: {}", log_tag, error);
+        }
     }
-    if let Err(error) = request.respond(response) {
-        log::warn!("[{}] respond failed: {}", log_tag, error);
+}
+
+struct SseReceiverReader {
+    stream: crate::chat_stream::ChatStreamReceiver,
+    buffer: Vec<u8>,
+    offset: usize,
+}
+
+impl SseReceiverReader {
+    fn new(stream: crate::chat_stream::ChatStreamReceiver) -> Self {
+        Self {
+            stream,
+            buffer: Vec::new(),
+            offset: 0,
+        }
+    }
+}
+
+impl std::io::Read for SseReceiverReader {
+    fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+        if out.is_empty() {
+            return Ok(0);
+        }
+        while self.offset >= self.buffer.len() {
+            match self.stream.recv() {
+                Some(chunk) => {
+                    self.buffer = chunk;
+                    self.offset = 0;
+                }
+                None => return Ok(0),
+            }
+        }
+        let available = self.buffer.len().saturating_sub(self.offset);
+        let n = available.min(out.len());
+        out[..n].copy_from_slice(&self.buffer[self.offset..self.offset + n]);
+        self.offset += n;
+        Ok(n)
     }
 }

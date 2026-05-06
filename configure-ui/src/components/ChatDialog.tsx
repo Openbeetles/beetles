@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import Box from "@mui/material/Box";
 import Dialog from "@mui/material/Dialog";
 import IconButton from "@mui/material/IconButton";
@@ -9,6 +9,13 @@ import Tooltip from "@mui/material/Tooltip";
 import Typography from "@mui/material/Typography";
 import SendRoundedIcon from "@mui/icons-material/SendRounded";
 import { useTranslation } from "react-i18next";
+import { translateApiError } from "../i18n/apiErrors";
+import { useDeviceApi } from "../hooks/useDeviceApi";
+import type {
+  ChatSessionMessage,
+  ChatSessionStreamEvent,
+  ChatSessionSummary,
+} from "../api/endpoints/sessions";
 import { OS_ICON_NAV } from "../config/osIcons";
 import { Os3dIcon } from "./Os3dIcon";
 
@@ -18,95 +25,63 @@ interface ChatDialogProps {
   onMinimize: () => void;
 }
 
-interface MockConversation {
+interface ChatConversation {
   id: string;
-  titleKey: string;
+  title: string;
   subtitle?: string;
-  subtitleKey?: string;
   timeKey?: string;
   time?: string;
   unread?: number;
   online?: boolean;
-  messages: MockMessage[];
+  messageCount?: number;
 }
 
-interface MockMessage {
+interface ChatMessageView {
   id: string;
   author: "beetle" | "user";
-  text?: string;
-  textKey?: string;
+  text: string;
   timeKey?: string;
   time?: string;
+  pending?: boolean;
+  error?: boolean;
 }
 
 const CHAT_DIALOG_TITLE_ID = "chat-dialog-title";
+const DEFAULT_CHAT_ID = "configure-ui:default";
+const SESSION_LIST_LIMIT = 20;
+const SESSION_MESSAGE_LIMIT = 50;
 
-const INITIAL_CONVERSATIONS: MockConversation[] = [
-  {
-    id: "main",
-    titleKey: "chat.preview.main.title",
-    subtitleKey: "chat.preview.main.subtitle",
-    time: "12:45",
-    unread: 2,
+function conversationFromSession(
+  session: ChatSessionSummary,
+  fallbackTitle: string,
+): ChatConversation {
+  return {
+    id: session.chat_id,
+    title: session.title?.trim() || fallbackTitle,
+    subtitle: session.last_message?.preview ?? "",
+    timeKey: session.last_message ? "chat.recent" : undefined,
     online: true,
-    messages: [
-      {
-        id: "main-1",
-        author: "beetle",
-        textKey: "chat.preview.main.message1",
-        time: "12:42",
-      },
-      {
-        id: "main-2",
-        author: "user",
-        textKey: "chat.preview.main.message2",
-        time: "12:43",
-      },
-      {
-        id: "main-3",
-        author: "beetle",
-        textKey: "chat.preview.main.message3",
-        time: "12:45",
-      },
-    ],
-  },
-  {
-    id: "ops",
-    titleKey: "chat.preview.ops.title",
-    subtitleKey: "chat.preview.ops.subtitle",
-    time: "11:58",
+    messageCount: session.message_count,
+  };
+}
+
+function messageFromSession(message: ChatSessionMessage): ChatMessageView {
+  return {
+    id: message.message_id,
+    author: message.role === "user" ? "user" : "beetle",
+    text: message.content,
+  };
+}
+
+function createEmptyConversation(title: string): ChatConversation {
+  return {
+    id: DEFAULT_CHAT_ID,
+    title,
+    subtitle: "",
     online: true,
-    messages: [
-      {
-        id: "ops-1",
-        author: "beetle",
-        textKey: "chat.preview.ops.message1",
-        time: "11:56",
-      },
-      {
-        id: "ops-2",
-        author: "user",
-        textKey: "chat.preview.ops.message2",
-        time: "11:58",
-      },
-    ],
-  },
-  {
-    id: "notes",
-    titleKey: "chat.preview.notes.title",
-    subtitleKey: "chat.preview.notes.subtitle",
-    timeKey: "chat.preview.yesterday",
-    unread: 1,
-    messages: [
-      {
-        id: "notes-1",
-        author: "beetle",
-        textKey: "chat.preview.notes.message1",
-        timeKey: "chat.preview.yesterday",
-      },
-    ],
-  },
-];
+    messageCount: 0,
+  };
+}
 
 function WindowControl({
   label,
@@ -177,42 +152,262 @@ function WindowControl({
 
 export function ChatDialog({ open, onClose, onMinimize }: ChatDialogProps) {
   const { t } = useTranslation();
+  const { api, canAccessProtectedApis } = useDeviceApi();
   const [fullScreen, setFullScreen] = useState(false);
-  const [activeId, setActiveId] = useState(INITIAL_CONVERSATIONS[0].id);
+  const [activeId, setActiveId] = useState(DEFAULT_CHAT_ID);
   const [draft, setDraft] = useState("");
-  const [conversations, setConversations] = useState(INITIAL_CONVERSATIONS);
+  const [conversations, setConversations] = useState<ChatConversation[]>(() => [
+    createEmptyConversation(t("chat.defaultSessionTitle")),
+  ]);
+  const [messagesByChatId, setMessagesByChatId] = useState<Record<string, ChatMessageView[]>>({});
+  const [sessionsLoaded, setSessionsLoaded] = useState(false);
+  const [listLoading, setListLoading] = useState(false);
+  const [messagesLoading, setMessagesLoading] = useState(false);
+  const [errorText, setErrorText] = useState<string | null>(null);
+  const [isStreaming, setIsStreaming] = useState(false);
+  const listRequestSeq = useRef(0);
+  const detailRequestSeq = useRef(0);
   const activeConversation = useMemo(
     () =>
       conversations.find((conversation) => conversation.id === activeId) ??
       conversations[0],
     [activeId, conversations],
   );
+  const activeChatId = activeConversation?.id;
+  const activeMessages = activeConversation
+    ? (messagesByChatId[activeConversation.id] ?? [])
+    : [];
 
-  const sendDraft = () => {
-    const text = draft.trim();
-    if (!text) return;
-    setConversations((current) =>
-      current.map((conversation) =>
-        conversation.id === activeConversation.id
+  useEffect(() => {
+    if (!open || !canAccessProtectedApis) return;
+    const requestSeq = listRequestSeq.current + 1;
+    listRequestSeq.current = requestSeq;
+
+    const loadSessions = async () => {
+      setListLoading(true);
+      setSessionsLoaded(false);
+      setErrorText(null);
+      const result = await api.sessions.list({ limit: SESSION_LIST_LIMIT });
+      if (listRequestSeq.current !== requestSeq) return;
+      setListLoading(false);
+      const sessionItems = result.data?.items;
+      if (!result.ok || !Array.isArray(sessionItems)) {
+        setErrorText(translateApiError(t, result.error, "chat.loadFailed"));
+        setConversations([createEmptyConversation(t("chat.defaultSessionTitle"))]);
+        setActiveId(DEFAULT_CHAT_ID);
+        return;
+      }
+
+      const nextConversations =
+        sessionItems.length > 0
+          ? sessionItems.map((session) =>
+              conversationFromSession(session, t("chat.defaultSessionTitle")),
+            )
+          : [createEmptyConversation(t("chat.defaultSessionTitle"))];
+
+      setConversations(nextConversations);
+      setActiveId((currentId) =>
+        nextConversations.some((conversation) => conversation.id === currentId)
+          ? currentId
+          : nextConversations[0]?.id ?? DEFAULT_CHAT_ID,
+      );
+      setSessionsLoaded(true);
+    };
+
+    void loadSessions();
+  }, [api, canAccessProtectedApis, open, t]);
+
+  useEffect(() => {
+    if (!open || !canAccessProtectedApis || !sessionsLoaded || !activeChatId) return;
+    const chatId = activeChatId;
+    const requestSeq = detailRequestSeq.current + 1;
+    detailRequestSeq.current = requestSeq;
+
+    const loadMessages = async () => {
+      setMessagesLoading(true);
+      setErrorText(null);
+      const result = await api.sessions.getMessages({ chatId, limit: SESSION_MESSAGE_LIMIT });
+      if (detailRequestSeq.current !== requestSeq) return;
+      setMessagesLoading(false);
+      const messageItems = result.data?.items;
+      if (!result.ok || !Array.isArray(messageItems)) {
+        setErrorText(translateApiError(t, result.error, "chat.loadFailed"));
+        setMessagesByChatId((current) => ({ ...current, [chatId]: [] }));
+        return;
+      }
+      setMessagesByChatId((current) => ({
+        ...current,
+        [chatId]: messageItems.map(messageFromSession),
+      }));
+    };
+
+    void loadMessages();
+  }, [activeChatId, api, canAccessProtectedApis, open, sessionsLoaded, t]);
+
+  const upsertConversation = (chatId: string, userText: string) => {
+    setConversations((current) => {
+      const exists = current.some((conversation) => conversation.id === chatId);
+      const next = exists
+        ? current.map((conversation) =>
+            conversation.id === chatId
+              ? {
+                  ...conversation,
+                  subtitle: userText,
+                  timeKey: "chat.now",
+                  time: undefined,
+                  messageCount: (conversation.messageCount ?? 0) + 1,
+                }
+              : conversation,
+          )
+        : [
+            createEmptyConversation(t("chat.defaultSessionTitle")),
+            ...current.filter((conversation) => conversation.id !== DEFAULT_CHAT_ID),
+          ];
+      return next.map((conversation) =>
+        conversation.id === chatId
           ? {
               ...conversation,
-              subtitle: text,
+              id: chatId,
+              title: conversation.title || t("chat.defaultSessionTitle"),
+              subtitle: userText,
               timeKey: "chat.now",
-              time: undefined,
-              messages: [
-                ...conversation.messages,
-                {
-                  id: `${conversation.id}-${Date.now()}`,
-                  author: "user",
-                  text,
-                  timeKey: "chat.now",
-                },
-              ],
+              online: true,
             }
           : conversation,
+      );
+    });
+  };
+
+  const updateMessage = (
+    chatId: string,
+    messageId: string,
+    update: (message: ChatMessageView) => ChatMessageView,
+  ) => {
+    setMessagesByChatId((current) => ({
+      ...current,
+      [chatId]: (current[chatId] ?? []).map((message) =>
+        message.id === messageId ? update(message) : message,
       ),
-    );
+    }));
+  };
+
+  const appendLocalExchange = (chatId: string, userText: string, assistantId: string) => {
+    const userMessage: ChatMessageView = {
+      id: `local-user-${Date.now()}`,
+      author: "user",
+      text: userText,
+      timeKey: "chat.now",
+    };
+    const assistantMessage: ChatMessageView = {
+      id: assistantId,
+      author: "beetle",
+      text: "",
+      timeKey: "chat.now",
+      pending: true,
+    };
+    setMessagesByChatId((current) => ({
+      ...current,
+      [chatId]: [...(current[chatId] ?? []), userMessage, assistantMessage],
+    }));
+  };
+
+  const applyStreamEvent = (
+    chatId: string,
+    assistantId: string,
+    event: ChatSessionStreamEvent,
+    accumulatedRef: { current: string },
+  ) => {
+    if (event.type === "delta") {
+      accumulatedRef.current = event.accumulated ?? `${accumulatedRef.current}${event.delta}`;
+      updateMessage(chatId, assistantId, (message) => ({
+        ...message,
+        text: accumulatedRef.current,
+        pending: false,
+      }));
+      return;
+    }
+    if (event.type === "snapshot") {
+      if (event.messages) {
+        const assistantSnapshot = [...event.messages]
+          .reverse()
+          .find((message) => message.role === "assistant");
+        const snapshotContent =
+          assistantSnapshot?.content ?? event.messages.at(-1)?.content ?? event.content;
+        if (snapshotContent !== undefined) {
+          accumulatedRef.current = snapshotContent;
+          updateMessage(chatId, assistantId, (message) => ({
+            ...message,
+            text: snapshotContent,
+            pending: false,
+          }));
+        }
+        return;
+      }
+      if (event.content !== undefined) {
+        accumulatedRef.current = event.content;
+        updateMessage(chatId, assistantId, (message) => ({
+          ...message,
+          text: event.content ?? "",
+          pending: false,
+        }));
+      }
+      return;
+    }
+    if (event.type === "final") {
+      if (event.content !== undefined) accumulatedRef.current = event.content;
+      updateMessage(chatId, assistantId, (message) => ({
+        ...message,
+        id: event.messageId ?? message.id,
+        text: event.content ?? message.text,
+        pending: false,
+      }));
+      return;
+    }
+    if (event.type === "error") {
+      updateMessage(chatId, assistantId, (message) => ({
+        ...message,
+        text: translateApiError(t, event.error, "chat.sendFailed"),
+        pending: false,
+        error: true,
+      }));
+    }
+  };
+
+  const sendDraft = async () => {
+    const text = draft.trim();
+    if (!text || !activeConversation || isStreaming || !canAccessProtectedApis) return;
+    const chatId = activeConversation.id;
+    const assistantId = `local-assistant-${Date.now()}`;
+    const accumulatedRef = { current: "" };
+
+    upsertConversation(chatId, text);
+    appendLocalExchange(chatId, text, assistantId);
     setDraft("");
+    setErrorText(null);
+    setIsStreaming(true);
+
+    const result = await api.sessions.streamMessage(
+      { chat_id: chatId, content: text },
+      (event) => applyStreamEvent(chatId, assistantId, event, accumulatedRef),
+    );
+
+    setIsStreaming(false);
+    if (!result.ok) {
+      const error = translateApiError(t, result.error, "chat.sendFailed");
+      setErrorText(error);
+      updateMessage(chatId, assistantId, (message) => ({
+        ...message,
+        text: error,
+        pending: false,
+        error: true,
+      }));
+      return;
+    }
+    updateMessage(chatId, assistantId, (message) => ({
+      ...message,
+      text: message.text || t("chat.noResponse"),
+      pending: false,
+    }));
   };
 
   return (
@@ -364,12 +559,23 @@ export function ChatDialog({ open, onClose, onMinimize }: ChatDialogProps) {
               </Typography>
             </Box>
             <Stack sx={{ px: 1.25, pb: 1.25, overflow: "auto" }} spacing={0.75}>
+              {listLoading ? (
+                <Typography
+                  sx={{
+                    px: 1,
+                    py: 1.4,
+                    color: "var(--text-tertiary)",
+                    fontSize: "var(--font-size-caption)",
+                    fontWeight: 700,
+                  }}
+                >
+                  {t("chat.loadingSessions")}
+                </Typography>
+              ) : null}
               {conversations.map((conversation) => {
                 const selected = conversation.id === activeConversation.id;
-                const title = t(conversation.titleKey);
-                const subtitle =
-                  conversation.subtitle ??
-                  (conversation.subtitleKey ? t(conversation.subtitleKey) : "");
+                const title = conversation.title;
+                const subtitle = conversation.subtitle ?? t("chat.emptySession");
                 const time =
                   conversation.time ??
                   (conversation.timeKey ? t(conversation.timeKey) : "");
@@ -540,7 +746,7 @@ export function ChatDialog({ open, onClose, onMinimize }: ChatDialogProps) {
                     fontWeight: 800,
                   }}
                 >
-                  {t(activeConversation.titleKey)}
+                  {activeConversation?.title ?? t("chat.defaultSessionTitle")}
                 </Typography>
                 <Typography
                   noWrap
@@ -550,7 +756,7 @@ export function ChatDialog({ open, onClose, onMinimize }: ChatDialogProps) {
                     fontWeight: 600,
                   }}
                 >
-                  {t(activeConversation.online ? "chat.online" : "chat.localPreview")}
+                  {t(activeConversation?.online ? "chat.online" : "chat.localPreview")}
                 </Typography>
               </Box>
             </Box>
@@ -564,10 +770,31 @@ export function ChatDialog({ open, onClose, onMinimize }: ChatDialogProps) {
                 p: { xs: 1.5, sm: 2.25 },
               }}
             >
-              {activeConversation.messages.map((message) => {
+              {messagesLoading ? (
+                <Typography
+                  sx={{
+                    color: "var(--text-tertiary)",
+                    fontSize: "var(--font-size-body-sm)",
+                    fontWeight: 700,
+                  }}
+                >
+                  {t("chat.loadingMessages")}
+                </Typography>
+              ) : null}
+              {!messagesLoading && activeMessages.length === 0 ? (
+                <Typography
+                  sx={{
+                    color: "var(--text-tertiary)",
+                    fontSize: "var(--font-size-body-sm)",
+                    fontWeight: 700,
+                  }}
+                >
+                  {errorText ?? t("chat.noMessages")}
+                </Typography>
+              ) : null}
+              {activeMessages.map((message) => {
                 const isUser = message.author === "user";
-                const text =
-                  message.text ?? (message.textKey ? t(message.textKey) : "");
+                const text = message.text || (message.pending ? t("chat.thinking") : "");
                 const time =
                   message.time ?? (message.timeKey ? t(message.timeKey) : "");
                 return (
@@ -590,7 +817,11 @@ export function ChatDialog({ open, onClose, onMinimize }: ChatDialogProps) {
                         backgroundColor: isUser
                           ? "color-mix(in srgb, var(--primary) 84%, var(--card))"
                           : "var(--card)",
-                        color: isUser ? "var(--primary-fg)" : "var(--text-primary)",
+                        color: message.error
+                          ? "var(--semantic-danger)"
+                          : isUser
+                            ? "var(--primary-fg)"
+                            : "var(--text-primary)",
                         boxShadow: isUser
                           ? "var(--os3d-selection-pill-stack)"
                           : "var(--os3d-control-soft-lift-stack)",
@@ -652,7 +883,7 @@ export function ChatDialog({ open, onClose, onMinimize }: ChatDialogProps) {
                       <IconButton
                         aria-label={t("chat.send")}
                         onClick={sendDraft}
-                        disabled={!draft.trim()}
+                        disabled={!draft.trim() || isStreaming || !canAccessProtectedApis}
                         sx={{
                           color: "var(--primary)",
                           borderRadius: "var(--radius-chip)",

@@ -48,6 +48,7 @@ pub struct OutgoingResponse {
     /// 与 `common::CORS_HEADERS` 等一致；空则使用默认 CORS JSON
     pub headers: &'static [(&'static str, &'static str)],
     pub body: Vec<u8>,
+    pub stream: Option<crate::chat_stream::ChatStreamReceiver>,
     pub restart: RestartAction,
 }
 
@@ -69,6 +70,23 @@ impl OutgoingResponse {
             status_text,
             headers,
             body,
+            stream: None,
+            restart: RestartAction::None,
+        }
+    }
+
+    pub fn stream(
+        status: u16,
+        status_text: &'static str,
+        headers: &'static [(&'static str, &str)],
+        stream: crate::chat_stream::ChatStreamReceiver,
+    ) -> Self {
+        Self {
+            status,
+            status_text,
+            headers,
+            body: Vec::new(),
+            stream: Some(stream),
             restart: RestartAction::None,
         }
     }

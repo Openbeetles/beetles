@@ -6,6 +6,7 @@ mod build_package;
 pub mod capability_package;
 pub mod channel_capability;
 pub mod channel_catalog;
+pub mod chat_stream;
 pub mod constants;
 pub mod device_capability;
 mod host_observability;
@@ -44,6 +45,7 @@ pub use channel_catalog::{
     normalize_compiled_enabled_channel, selectable_channel_entries, CompiledChannelEntry,
     DISPLAY_CHANNEL_CAPACITY,
 };
+pub use chat_stream::{ChatStreamBroker, CHANNEL_CONFIGURE_UI_CHAT};
 pub use device_capability::{
     build_device_capability_registry, build_device_capability_registry_from_input,
     build_device_capability_snapshots, build_device_capability_snapshots_for_registry,

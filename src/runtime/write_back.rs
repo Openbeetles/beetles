@@ -8,17 +8,18 @@ use crate::channels::inbound_backpressure::{self, EventIngressSource};
 use crate::error::{Error, Result};
 use crate::i18n::Locale;
 use crate::memory::{
-    derive_recent_persona_evidence, AutonomyStrategy, AutonomyStrategyStore, CoreRevisionLedger,
-    CoreRevisionLedgerStore, ExecutionState, ExecutionStateStore, FeltSignificance,
-    FeltSignificanceStore, ImportantMessageStore, InnerConflict, InnerConflictStore, InnerLife,
-    InnerLifeStore, LongTermMemoryExtractionState, LongTermMemoryExtractionStateStore,
-    MemoryProfile, MentalPrivacyState, MentalPrivacyStore, OuterVoice, OuterVoiceStore,
-    RecentPersonaEvidence, RelationshipConstitution, RelationshipConstitutionStore,
-    RelationshipPortfolio, RelationshipPortfolioStore, RelationshipTopology,
-    RelationshipTopologyStore, RemindAtStore, SelfAuthoredCore, SelfAuthoredCoreStore,
-    SelfContinuity, SelfContinuityStore, SelfModel, SelfModelStore, SessionMessage, SessionStore,
-    SessionSummaryStore, TemperamentContinuity, TemperamentContinuityStore, TurnLedger,
-    TurnLedgerStore, WorldSense, WorldSenseStore, RECENT_PERSONA_EVIDENCE_MEANINGFUL_TURNS,
+    derive_recent_persona_evidence, synthesize_session_message_records, AutonomyStrategy,
+    AutonomyStrategyStore, CoreRevisionLedger, CoreRevisionLedgerStore, ExecutionState,
+    ExecutionStateStore, FeltSignificance, FeltSignificanceStore, ImportantMessageStore,
+    InnerConflict, InnerConflictStore, InnerLife, InnerLifeStore, LongTermMemoryExtractionState,
+    LongTermMemoryExtractionStateStore, MemoryProfile, MentalPrivacyState, MentalPrivacyStore,
+    OuterVoice, OuterVoiceStore, RecentPersonaEvidence, RelationshipConstitution,
+    RelationshipConstitutionStore, RelationshipPortfolio, RelationshipPortfolioStore,
+    RelationshipTopology, RelationshipTopologyStore, RemindAtStore, SelfAuthoredCore,
+    SelfAuthoredCoreStore, SelfContinuity, SelfContinuityStore, SelfModel, SelfModelStore,
+    SessionMessage, SessionMessageRecord, SessionStore, SessionSummaryStore, TemperamentContinuity,
+    TemperamentContinuityStore, TurnLedger, TurnLedgerStore, WorldSense, WorldSenseStore,
+    RECENT_PERSONA_EVIDENCE_MEANINGFUL_TURNS,
 };
 use crate::platform::Platform;
 use crate::task::TaskStore;
@@ -2001,6 +2002,27 @@ impl SessionStore for BufferedSessionStore {
         Ok(combined.into_iter().skip(start).collect())
     }
 
+    fn load_recent_records(&self, chat_id: &str, n: usize) -> Result<Vec<SessionMessageRecord>> {
+        let Some(write) = self.pending.peek(chat_id) else {
+            return self.inner.load_recent_records(chat_id, n);
+        };
+        let mut combined = if write.clear {
+            Vec::new()
+        } else {
+            self.inner
+                .load_recent_records(chat_id, crate::memory::MAX_SESSION_ENTRIES)?
+        };
+        combined.extend(synthesize_session_message_records(chat_id, write.appended));
+        if combined.len() > crate::memory::MAX_SESSION_ENTRIES {
+            let start = combined.len() - crate::memory::MAX_SESSION_ENTRIES;
+            combined = combined.split_off(start);
+        }
+        let start = combined
+            .len()
+            .saturating_sub(n.min(crate::memory::MAX_SESSION_ENTRIES));
+        Ok(combined.into_iter().skip(start).collect())
+    }
+
     fn message_count(&self, chat_id: &str) -> Result<usize> {
         let Some(write) = self.pending.peek(chat_id) else {
             return self.inner.message_count(chat_id);
@@ -2053,7 +2075,7 @@ impl SessionStore for BufferedSessionStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::{ExecutionStatus, SessionStore, TurnLedgerStatus};
+    use crate::memory::{ExecutionStatus, SessionMessageRecord, SessionStore, TurnLedgerStatus};
     use std::sync::atomic::AtomicUsize;
 
     #[test]
@@ -2212,6 +2234,26 @@ mod tests {
             Ok(values.split_off(start))
         }
 
+        fn load_recent_records(
+            &self,
+            chat_id: &str,
+            n: usize,
+        ) -> Result<Vec<SessionMessageRecord>> {
+            let entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+            let values = entries.get(chat_id).cloned().unwrap_or_default();
+            let start = values.len().saturating_sub(n);
+            Ok(values
+                .into_iter()
+                .enumerate()
+                .skip(start)
+                .map(|(index, message)| SessionMessageRecord {
+                    message_id: format!("msg_{}", index.saturating_add(1)),
+                    role: message.role,
+                    content: message.content,
+                })
+                .collect())
+        }
+
         fn clear(&self, chat_id: &str) -> Result<()> {
             self.entries
                 .lock()
@@ -2328,6 +2370,29 @@ mod tests {
         assert_eq!(recent.len(), 2);
         assert_eq!(recent[0].content, "hi");
         assert_eq!(recent[1].content, "hello");
+    }
+
+    #[test]
+    fn buffered_session_store_preserves_persisted_message_ids_when_merging_pending_records() {
+        let _write_back_guard = write_back_test_guard();
+        reset_write_back_queue_for_tests();
+        let (_state_guard, _delayed_guard) =
+            crate::runtime::delayed_task::delayed_task_test_scope();
+        let inner = Arc::new(StubSessionStore::default());
+        inner.append("chat", "user", "persisted").unwrap();
+        let store = BufferedSessionStore::wrap(inner);
+
+        store.append("chat", "assistant", "pending").unwrap();
+
+        let records = store.load_recent_records("chat", 8).unwrap();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].message_id, "msg_1");
+        assert_eq!(records[0].content, "persisted");
+        assert!(
+            !records[0].message_id.starts_with("legacy_"),
+            "persisted storage ids must not be replaced by synthesized ids"
+        );
+        assert_eq!(records[1].content, "pending");
     }
 
     #[test]
@@ -2573,8 +2638,20 @@ mod tests {
             )
             .unwrap();
 
+        let mut humanization_labels = queued_write_back_labels_for_tests()
+            .into_iter()
+            .filter(|label| {
+                matches!(
+                    *label,
+                    "felt_significance_write_back"
+                        | "inner_conflict_write_back"
+                        | "temperament_continuity_write_back"
+                )
+            })
+            .collect::<Vec<_>>();
+        humanization_labels.sort_unstable();
         assert_eq!(
-            queued_write_back_labels_for_tests(),
+            humanization_labels,
             vec![
                 "felt_significance_write_back",
                 "inner_conflict_write_back",

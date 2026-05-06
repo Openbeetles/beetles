@@ -54,6 +54,7 @@ pub fn run(
     system_inbound_tx: crate::bus::SystemInboundTx,
     skill_prompt_cache: Arc<crate::skills::SkillPromptCache>,
     inbound_tx: crate::bus::InboundTx,
+    chat_streams: Arc<crate::chat_stream::ChatStreamBroker>,
     shared_config: Arc<std::sync::RwLock<crate::config::AppConfig>>,
 ) -> Result<()> {
     use crate::platform::http_server::common::MAX_OPEN_SOCKETS;
@@ -83,6 +84,7 @@ pub fn run(
         Arc::clone(&memory_store),
         Arc::clone(&session_store),
         Some(system_inbound_tx.clone()),
+        Arc::clone(&chat_streams),
         Arc::clone(&skill_prompt_cache),
         Arc::clone(&shared_config),
         handlers::ControlPlaneRouteContract::FULL,
@@ -131,6 +133,7 @@ pub fn run_with_bound_listener(
     system_inbound_tx: crate::bus::SystemInboundTx,
     skill_prompt_cache: Arc<crate::skills::SkillPromptCache>,
     inbound_tx: crate::bus::InboundTx,
+    chat_streams: Arc<crate::chat_stream::ChatStreamBroker>,
     shared_config: Arc<std::sync::RwLock<crate::config::AppConfig>>,
 ) -> Result<()> {
     let ctx = Arc::new(handlers::build_runtime_handler_context(
@@ -143,6 +146,7 @@ pub fn run_with_bound_listener(
         memory_store,
         session_store,
         Some(system_inbound_tx),
+        Arc::clone(&chat_streams),
         skill_prompt_cache,
         shared_config,
         handlers::ControlPlaneRouteContract::FULL,
@@ -216,6 +220,7 @@ pub fn run(
     system_inbound_tx: crate::bus::SystemInboundTx,
     skill_prompt_cache: Arc<crate::skills::SkillPromptCache>,
     inbound_tx: crate::bus::InboundTx,
+    chat_streams: Arc<crate::chat_stream::ChatStreamBroker>,
     shared_config: Arc<std::sync::RwLock<crate::config::AppConfig>>,
 ) -> Result<()> {
     let (listen, listener) = bind_linux_config_http_listener()?;
@@ -233,6 +238,7 @@ pub fn run(
         system_inbound_tx,
         skill_prompt_cache,
         inbound_tx,
+        chat_streams,
         shared_config,
     )
 }

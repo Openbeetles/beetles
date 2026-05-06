@@ -72,6 +72,7 @@ fn route_auth_response(
         | (RouteMethod::Post, ROUTE_CONFIG_AUDIO)
         | (RouteMethod::Post, ROUTE_CONFIG_DISPLAY)
         | (RouteMethod::Post, ROUTE_CHANNEL_CONNECTIVITY_REFRESH)
+        | (RouteMethod::Post, ROUTE_SESSIONS)
         | (RouteMethod::Delete, ROUTE_SESSIONS)
         | (RouteMethod::Post, ROUTE_MEMORY_MAINTENANCE)
         | (RouteMethod::Post, ROUTE_CAPABILITY_PACKAGES)

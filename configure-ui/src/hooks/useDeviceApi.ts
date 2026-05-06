@@ -15,6 +15,7 @@ import * as pairingCodeApi from '../api/endpoints/pairingCode'
 import * as skillsApi from '../api/endpoints/skills'
 import * as toolsApi from '../api/endpoints/tools'
 import * as systemApi from '../api/endpoints/system'
+import * as sessionsApi from '../api/endpoints/sessions'
 import type {
   LlmConfigSegment,
   ChannelsConfigSegment,
@@ -126,6 +127,22 @@ export function useDeviceApi() {
         channelConnectivity: () =>
           systemApi.getChannelConnectivity(baseUrl ?? '', pairingCode ?? undefined),
         restart: () => systemApi.postRestart(baseUrl ?? '', (pairingCode ?? '').trim()),
+      },
+      sessions: {
+        list: (options?: sessionsApi.ChatSessionListOptions) =>
+          sessionsApi.listSessions(baseUrl ?? '', pairingCode ?? undefined, options),
+        getMessages: (options: sessionsApi.ChatSessionMessagesOptions) =>
+          sessionsApi.getSessionMessages(baseUrl ?? '', pairingCode ?? undefined, options),
+        streamMessage: (
+          body: sessionsApi.ChatSessionPostBody,
+          onEvent: sessionsApi.ChatSessionStreamHandler,
+        ) =>
+          sessionsApi.streamSessionMessage(
+            baseUrl ?? '',
+            (pairingCode ?? '').trim(),
+            body,
+            onEvent,
+          ),
       },
       device: {
         probe: (targetBaseUrl?: string) => request(targetBaseUrl ?? baseUrl ?? '', '/'),

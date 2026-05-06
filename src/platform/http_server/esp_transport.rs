@@ -604,6 +604,7 @@ fn route_worker_reject_response(
             extra,
         )
         .body,
+        stream: None,
         restart: RestartAction::None,
     }
 }
@@ -627,6 +628,7 @@ fn routed_error_response(_store: &dyn ConfigStore, error: crate::error::Error) -
         status_text,
         headers: CORS_HEADERS,
         body: ApiResponse::err_key(status, status_text, error_key).body,
+        stream: None,
         restart: RestartAction::None,
     }
 }
@@ -781,6 +783,7 @@ fn esp_method(method: RouteMethod) -> Method {
 fn collect_headers(req: &impl Headers) -> Vec<(String, String)> {
     const NAMES: &[&str] = &[
         "Host",
+        "Accept",
         "Content-Type",
         "X-Pairing-Code",
         "X-CSRF-Token",
@@ -875,6 +878,9 @@ fn route_runtime_admission_response(
 }
 
 fn response_pressure_reject(out: &OutgoingResponse) -> Option<ApiResponse> {
+    if out.stream.is_some() {
+        return None;
+    }
     if out.status >= 400 || out.body.len() < ESP_LARGE_RESPONSE_GUARD_BYTES {
         return None;
     }
@@ -933,7 +939,14 @@ fn write_outgoing<C: Connection>(
     let mut resp = req
         .into_response(out.status, Some(out.status_text), out.headers)
         .map_err(common::to_io)?;
-    resp.write_all(&out.body).map_err(common::to_io)?;
+    if let Some(stream) = out.stream {
+        for chunk in stream {
+            crate::platform::task_wdt::feed_current_task();
+            resp.write_all(&chunk).map_err(common::to_io)?;
+        }
+    } else {
+        resp.write_all(&out.body).map_err(common::to_io)?;
+    }
     if out.restart == RestartAction::After300Ms {
         let scheduled = crate::runtime::schedule_restart_with_continuity_flush(
             Arc::clone(&ctx.platform),
@@ -1044,7 +1057,7 @@ fn esp_dispatch_route<C: Connection>(
         body,
     };
     let out = match spec.execution_class {
-        RouteExecutionClass::ImmediateRoute => {
+        RouteExecutionClass::ImmediateRoute | RouteExecutionClass::StreamingRoute => {
             dispatch_incoming(ctx, env, store.as_ref(), incoming)
         }
         RouteExecutionClass::RejectedRoute => {

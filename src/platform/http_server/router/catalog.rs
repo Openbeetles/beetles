@@ -39,6 +39,7 @@ pub(crate) enum RouteBodyMode {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RouteExecutionClass {
     ImmediateRoute,
+    StreamingRoute,
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
     SnapshotRoute,
     AsyncConfigRoute,
@@ -187,7 +188,7 @@ pub(crate) fn route_worker_runtime_busy_detail(
 impl RouteExecutionClass {
     pub(crate) const fn worker_contract(self) -> Option<RouteWorkerContract> {
         match self {
-            Self::ImmediateRoute | Self::RejectedRoute => None,
+            Self::ImmediateRoute | Self::StreamingRoute | Self::RejectedRoute => None,
             Self::SnapshotRoute => Some(RouteWorkerContract {
                 lane: RouteWorkerLane::Snapshot,
                 stack_size: crate::util::STACK_HTTP_SNAPSHOT_WORKER,
@@ -255,6 +256,52 @@ pub(crate) enum OperatorRouteAccess {
     Windowed,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RouteHandler {
+    RootGet,
+    PairingCodeGet,
+    PairingCodePost,
+    ConfigLlmGet,
+    ConfigLlmPost,
+    ConfigChannelsGet,
+    ConfigChannelsPost,
+    ConfigSystemGet,
+    ConfigSystemPost,
+    ConfigHardwareGet,
+    ConfigHardwarePost,
+    ConfigAudioGet,
+    ConfigAudioPost,
+    ConfigDisplayGet,
+    ConfigDisplayPost,
+    WifiScanGet,
+    HardwareDiscoveryGet,
+    HealthGet,
+    OperatorStatusGet,
+    OperatorWindowPost,
+    MetricsGet,
+    ResourceGet,
+    DiagnoseGet,
+    SystemInfoGet,
+    ChannelConnectivityGet,
+    ChannelConnectivityRefreshPost,
+    ToolsGet,
+    SessionsGet,
+    SessionsPost,
+    SessionsDelete,
+    MemoryStatusGet,
+    MemoryMaintenancePost,
+    CapabilityPackagesGet,
+    CapabilityPackagesPost,
+    SkillsGet,
+    SkillsPost,
+    SkillsDelete,
+    SkillsImportPost,
+    RestartPost,
+    ConfigResetPost,
+    WebhookPost,
+    CsrfTokenGet,
+}
+
 #[cfg_attr(
     not(any(target_arch = "xtensa", target_arch = "riscv32", test)),
     allow(dead_code)
@@ -275,6 +322,7 @@ pub(crate) struct HttpRouteSpec {
     pub(crate) path: &'static str,
     pub(crate) method: RouteMethod,
     pub(crate) body_mode: RouteBodyMode,
+    pub(crate) handler: Option<RouteHandler>,
     pub(crate) execution_class: RouteExecutionClass,
     pub(crate) operator_access: OperatorRouteAccess,
     config_activity_phase: Option<crate::runtime::ConfigActivityPhase>,
@@ -291,6 +339,7 @@ impl HttpRouteSpec {
             path,
             method,
             body_mode,
+            handler: None,
             execution_class: RouteExecutionClass::ImmediateRoute,
             operator_access: OperatorRouteAccess::Hidden,
             config_activity_phase: None,
@@ -308,7 +357,26 @@ impl HttpRouteSpec {
             path,
             method,
             body_mode,
+            handler: None,
             execution_class: RouteExecutionClass::ImmediateRoute,
+            operator_access,
+            config_activity_phase: None,
+            reject_during_voice_exclusive: false,
+        }
+    }
+
+    pub(crate) const fn streaming_operator(
+        path: &'static str,
+        method: RouteMethod,
+        body_mode: RouteBodyMode,
+        operator_access: OperatorRouteAccess,
+    ) -> Self {
+        Self {
+            path,
+            method,
+            body_mode,
+            handler: None,
+            execution_class: RouteExecutionClass::StreamingRoute,
             operator_access,
             config_activity_phase: None,
             reject_during_voice_exclusive: false,
@@ -325,6 +393,7 @@ impl HttpRouteSpec {
             path,
             method,
             body_mode,
+            handler: None,
             execution_class: RouteExecutionClass::AsyncConfigRoute,
             operator_access,
             config_activity_phase: None,
@@ -343,6 +412,7 @@ impl HttpRouteSpec {
             path,
             method,
             body_mode,
+            handler: None,
             execution_class: RouteExecutionClass::SnapshotRoute,
             operator_access,
             config_activity_phase: None,
@@ -360,6 +430,7 @@ impl HttpRouteSpec {
             path,
             method,
             body_mode,
+            handler: None,
             execution_class: RouteExecutionClass::SlowDiagnosticRoute,
             operator_access,
             config_activity_phase: None,
@@ -377,6 +448,7 @@ impl HttpRouteSpec {
             path,
             method,
             body_mode,
+            handler: None,
             execution_class: RouteExecutionClass::LocalDiagnosticRoute,
             operator_access,
             config_activity_phase: None,
@@ -390,11 +462,17 @@ impl HttpRouteSpec {
             path,
             method,
             body_mode: RouteBodyMode::None,
+            handler: None,
             execution_class: RouteExecutionClass::RejectedRoute,
             operator_access: OperatorRouteAccess::Hidden,
             config_activity_phase: None,
             reject_during_voice_exclusive: false,
         }
+    }
+
+    pub(crate) const fn with_handler(mut self, handler: RouteHandler) -> Self {
+        self.handler = Some(handler);
+        self
     }
 
     #[cfg_attr(
@@ -408,6 +486,10 @@ impl HttpRouteSpec {
     #[cfg(test)]
     pub(crate) const fn rejects_during_voice_exclusive(self) -> bool {
         self.reject_during_voice_exclusive
+    }
+
+    pub(crate) fn handler(self) -> Option<RouteHandler> {
+        self.handler
     }
 
     #[cfg_attr(
@@ -671,7 +753,8 @@ pub(crate) const ROUTE_CONFIG_RESET: &str = "/api/config_reset";
 pub(crate) const ROUTE_WEBHOOK: &str = "/api/webhook";
 
 pub(crate) const ROOT_ROUTE_SPECS: &[HttpRouteSpec] = &[
-    HttpRouteSpec::immediate(ROUTE_ROOT, RouteMethod::Get, RouteBodyMode::None),
+    HttpRouteSpec::immediate(ROUTE_ROOT, RouteMethod::Get, RouteBodyMode::None)
+        .with_handler(RouteHandler::RootGet),
     HttpRouteSpec::immediate(ROUTE_ROOT, RouteMethod::Options, RouteBodyMode::None),
 ];
 
@@ -681,13 +764,15 @@ pub(crate) const PAIRING_AND_CONFIG_ROUTE_SPECS: &[HttpRouteSpec] = &[
         RouteMethod::Get,
         RouteBodyMode::None,
         OperatorRouteAccess::AlwaysOn,
-    ),
+    )
+    .with_handler(RouteHandler::PairingCodeGet),
     HttpRouteSpec::immediate_operator(
         ROUTE_PAIRING_CODE,
         RouteMethod::Post,
         RouteBodyMode::Utf8(crate::platform::http_server::common::POST_BODY_MAX_LEN),
         OperatorRouteAccess::AlwaysOn,
     )
+    .with_handler(RouteHandler::PairingCodePost)
     .with_config_activity(crate::runtime::ConfigActivityPhase::Persisting, false),
     HttpRouteSpec::immediate(
         ROUTE_PAIRING_CODE,
@@ -699,7 +784,8 @@ pub(crate) const PAIRING_AND_CONFIG_ROUTE_SPECS: &[HttpRouteSpec] = &[
         RouteMethod::Get,
         RouteBodyMode::None,
         OperatorRouteAccess::AlwaysOn,
-    ),
+    )
+    .with_handler(RouteHandler::ConfigLlmGet),
     HttpRouteSpec::immediate(ROUTE_CONFIG_LLM, RouteMethod::Options, RouteBodyMode::None),
     HttpRouteSpec::async_config_operator(
         ROUTE_CONFIG_LLM,
@@ -707,13 +793,15 @@ pub(crate) const PAIRING_AND_CONFIG_ROUTE_SPECS: &[HttpRouteSpec] = &[
         RouteBodyMode::Utf8(crate::platform::http_server::common::POST_BODY_MAX_LEN),
         OperatorRouteAccess::AlwaysOn,
     )
+    .with_handler(RouteHandler::ConfigLlmPost)
     .with_config_activity(crate::runtime::ConfigActivityPhase::Persisting, true),
     HttpRouteSpec::immediate_operator(
         ROUTE_CONFIG_CHANNELS,
         RouteMethod::Get,
         RouteBodyMode::None,
         OperatorRouteAccess::AlwaysOn,
-    ),
+    )
+    .with_handler(RouteHandler::ConfigChannelsGet),
     HttpRouteSpec::immediate(
         ROUTE_CONFIG_CHANNELS,
         RouteMethod::Options,
@@ -725,13 +813,15 @@ pub(crate) const PAIRING_AND_CONFIG_ROUTE_SPECS: &[HttpRouteSpec] = &[
         RouteBodyMode::Utf8(crate::platform::http_server::common::POST_BODY_MAX_LEN),
         OperatorRouteAccess::AlwaysOn,
     )
+    .with_handler(RouteHandler::ConfigChannelsPost)
     .with_config_activity(crate::runtime::ConfigActivityPhase::Persisting, true),
     HttpRouteSpec::immediate_operator(
         ROUTE_CONFIG_SYSTEM,
         RouteMethod::Get,
         RouteBodyMode::None,
         OperatorRouteAccess::AlwaysOn,
-    ),
+    )
+    .with_handler(RouteHandler::ConfigSystemGet),
     HttpRouteSpec::immediate(
         ROUTE_CONFIG_SYSTEM,
         RouteMethod::Options,
@@ -743,13 +833,15 @@ pub(crate) const PAIRING_AND_CONFIG_ROUTE_SPECS: &[HttpRouteSpec] = &[
         RouteBodyMode::Utf8(crate::platform::http_server::common::POST_BODY_MAX_LEN),
         OperatorRouteAccess::AlwaysOn,
     )
+    .with_handler(RouteHandler::ConfigSystemPost)
     .with_config_activity(crate::runtime::ConfigActivityPhase::Persisting, true),
     HttpRouteSpec::immediate_operator(
         ROUTE_CONFIG_HARDWARE,
         RouteMethod::Get,
         RouteBodyMode::None,
         OperatorRouteAccess::AlwaysOn,
-    ),
+    )
+    .with_handler(RouteHandler::ConfigHardwareGet),
     HttpRouteSpec::immediate(
         ROUTE_CONFIG_HARDWARE,
         RouteMethod::Options,
@@ -761,13 +853,15 @@ pub(crate) const PAIRING_AND_CONFIG_ROUTE_SPECS: &[HttpRouteSpec] = &[
         RouteBodyMode::Utf8(crate::platform::http_server::common::POST_BODY_MAX_LEN),
         OperatorRouteAccess::AlwaysOn,
     )
+    .with_handler(RouteHandler::ConfigHardwarePost)
     .with_config_activity(crate::runtime::ConfigActivityPhase::Persisting, true),
     HttpRouteSpec::immediate_operator(
         ROUTE_CONFIG_AUDIO,
         RouteMethod::Get,
         RouteBodyMode::None,
         OperatorRouteAccess::AlwaysOn,
-    ),
+    )
+    .with_handler(RouteHandler::ConfigAudioGet),
     HttpRouteSpec::immediate(
         ROUTE_CONFIG_AUDIO,
         RouteMethod::Options,
@@ -779,13 +873,15 @@ pub(crate) const PAIRING_AND_CONFIG_ROUTE_SPECS: &[HttpRouteSpec] = &[
         RouteBodyMode::Utf8(crate::platform::http_server::common::POST_BODY_MAX_LEN),
         OperatorRouteAccess::AlwaysOn,
     )
+    .with_handler(RouteHandler::ConfigAudioPost)
     .with_config_activity(crate::runtime::ConfigActivityPhase::Persisting, true),
     HttpRouteSpec::immediate_operator(
         ROUTE_CONFIG_DISPLAY,
         RouteMethod::Get,
         RouteBodyMode::None,
         OperatorRouteAccess::AlwaysOn,
-    ),
+    )
+    .with_handler(RouteHandler::ConfigDisplayGet),
     HttpRouteSpec::immediate(
         ROUTE_CONFIG_DISPLAY,
         RouteMethod::Options,
@@ -797,6 +893,7 @@ pub(crate) const PAIRING_AND_CONFIG_ROUTE_SPECS: &[HttpRouteSpec] = &[
         RouteBodyMode::Utf8(crate::platform::http_server::common::POST_BODY_MAX_LEN),
         OperatorRouteAccess::AlwaysOn,
     )
+    .with_handler(RouteHandler::ConfigDisplayPost)
     .with_config_activity(crate::runtime::ConfigActivityPhase::Persisting, true),
     HttpRouteSpec::local_diagnostic_operator(
         ROUTE_WIFI_SCAN,
@@ -804,6 +901,7 @@ pub(crate) const PAIRING_AND_CONFIG_ROUTE_SPECS: &[HttpRouteSpec] = &[
         RouteBodyMode::None,
         OperatorRouteAccess::AlwaysOn,
     )
+    .with_handler(RouteHandler::WifiScanGet)
     .with_config_activity(crate::runtime::ConfigActivityPhase::Active, true),
     HttpRouteSpec::immediate(ROUTE_WIFI_SCAN, RouteMethod::Options, RouteBodyMode::None),
     HttpRouteSpec::slow_diagnostic_operator(
@@ -812,6 +910,7 @@ pub(crate) const PAIRING_AND_CONFIG_ROUTE_SPECS: &[HttpRouteSpec] = &[
         RouteBodyMode::None,
         OperatorRouteAccess::AlwaysOn,
     )
+    .with_handler(RouteHandler::HardwareDiscoveryGet)
     .with_config_activity(crate::runtime::ConfigActivityPhase::Active, true),
     HttpRouteSpec::immediate(
         ROUTE_HARDWARE_DISCOVERY,
@@ -823,7 +922,8 @@ pub(crate) const PAIRING_AND_CONFIG_ROUTE_SPECS: &[HttpRouteSpec] = &[
         RouteMethod::Get,
         RouteBodyMode::None,
         OperatorRouteAccess::AlwaysOn,
-    ),
+    )
+    .with_handler(RouteHandler::CsrfTokenGet),
     HttpRouteSpec::immediate(ROUTE_CSRF_TOKEN, RouteMethod::Options, RouteBodyMode::None),
     #[cfg(not(feature = "capability_office"))]
     HttpRouteSpec::rejected(ROUTE_CONFIG_ACCOUNTS, RouteMethod::Get),
@@ -859,7 +959,8 @@ pub(crate) const OBSERVABILITY_ROUTE_SPECS: &[HttpRouteSpec] = &[
         RouteMethod::Get,
         RouteBodyMode::None,
         OperatorRouteAccess::AlwaysOn,
-    ),
+    )
+    .with_handler(RouteHandler::HealthGet),
     HttpRouteSpec::immediate(ROUTE_HEALTH, RouteMethod::Options, RouteBodyMode::None),
     // Keep the HTTPD callback thread on lightweight summaries only.
     // Routes that inspect runtime/storage/memory state run on explicit route workers.
@@ -868,7 +969,8 @@ pub(crate) const OBSERVABILITY_ROUTE_SPECS: &[HttpRouteSpec] = &[
         RouteMethod::Get,
         RouteBodyMode::None,
         OperatorRouteAccess::Windowed,
-    ),
+    )
+    .with_handler(RouteHandler::OperatorStatusGet),
     HttpRouteSpec::immediate(
         ROUTE_OPERATOR_STATUS,
         RouteMethod::Options,
@@ -879,7 +981,8 @@ pub(crate) const OBSERVABILITY_ROUTE_SPECS: &[HttpRouteSpec] = &[
         RouteMethod::Post,
         RouteBodyMode::None,
         OperatorRouteAccess::AlwaysOn,
-    ),
+    )
+    .with_handler(RouteHandler::OperatorWindowPost),
     HttpRouteSpec::immediate(
         ROUTE_OPERATOR_WINDOW,
         RouteMethod::Options,
@@ -891,28 +994,32 @@ pub(crate) const OBSERVABILITY_ROUTE_SPECS: &[HttpRouteSpec] = &[
         RouteMethod::Get,
         RouteBodyMode::None,
         OperatorRouteAccess::AlwaysOn,
-    ),
+    )
+    .with_handler(RouteHandler::MetricsGet),
     #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
     HttpRouteSpec::slow_diagnostic_operator(
         ROUTE_METRICS,
         RouteMethod::Get,
         RouteBodyMode::None,
         OperatorRouteAccess::Windowed,
-    ),
+    )
+    .with_handler(RouteHandler::MetricsGet),
     HttpRouteSpec::immediate(ROUTE_METRICS, RouteMethod::Options, RouteBodyMode::None),
     HttpRouteSpec::immediate_operator(
         ROUTE_RESOURCE,
         RouteMethod::Get,
         RouteBodyMode::None,
         OperatorRouteAccess::AlwaysOn,
-    ),
+    )
+    .with_handler(RouteHandler::ResourceGet),
     HttpRouteSpec::immediate(ROUTE_RESOURCE, RouteMethod::Options, RouteBodyMode::None),
     HttpRouteSpec::slow_diagnostic_operator(
         ROUTE_DIAGNOSE,
         RouteMethod::Get,
         RouteBodyMode::None,
         OperatorRouteAccess::Windowed,
-    ),
+    )
+    .with_handler(RouteHandler::DiagnoseGet),
     HttpRouteSpec::immediate(ROUTE_DIAGNOSE, RouteMethod::Options, RouteBodyMode::None),
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
     HttpRouteSpec::immediate_operator(
@@ -920,21 +1027,24 @@ pub(crate) const OBSERVABILITY_ROUTE_SPECS: &[HttpRouteSpec] = &[
         RouteMethod::Get,
         RouteBodyMode::None,
         OperatorRouteAccess::AlwaysOn,
-    ),
+    )
+    .with_handler(RouteHandler::SystemInfoGet),
     #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
     HttpRouteSpec::slow_diagnostic_operator(
         ROUTE_SYSTEM_INFO,
         RouteMethod::Get,
         RouteBodyMode::None,
         OperatorRouteAccess::AlwaysOn,
-    ),
+    )
+    .with_handler(RouteHandler::SystemInfoGet),
     HttpRouteSpec::immediate(ROUTE_SYSTEM_INFO, RouteMethod::Options, RouteBodyMode::None),
     HttpRouteSpec::immediate_operator(
         ROUTE_CHANNEL_CONNECTIVITY,
         RouteMethod::Get,
         RouteBodyMode::None,
         OperatorRouteAccess::AlwaysOn,
-    ),
+    )
+    .with_handler(RouteHandler::ChannelConnectivityGet),
     HttpRouteSpec::immediate(
         ROUTE_CHANNEL_CONNECTIVITY,
         RouteMethod::Options,
@@ -945,7 +1055,8 @@ pub(crate) const OBSERVABILITY_ROUTE_SPECS: &[HttpRouteSpec] = &[
         RouteMethod::Post,
         RouteBodyMode::None,
         OperatorRouteAccess::Windowed,
-    ),
+    )
+    .with_handler(RouteHandler::ChannelConnectivityRefreshPost),
     HttpRouteSpec::immediate(
         ROUTE_CHANNEL_CONNECTIVITY_REFRESH,
         RouteMethod::Options,
@@ -959,27 +1070,47 @@ pub(crate) const MEMORY_AND_SKILL_ROUTE_SPECS: &[HttpRouteSpec] = &[
         RouteMethod::Get,
         RouteBodyMode::None,
         OperatorRouteAccess::AlwaysOn,
-    ),
+    )
+    .with_handler(RouteHandler::ToolsGet),
     HttpRouteSpec::immediate(ROUTE_TOOLS, RouteMethod::Options, RouteBodyMode::None),
-    HttpRouteSpec::slow_diagnostic_operator(
+    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
+    HttpRouteSpec::snapshot_operator(
         ROUTE_SESSIONS,
         RouteMethod::Get,
         RouteBodyMode::None,
-        OperatorRouteAccess::Windowed,
-    ),
+        OperatorRouteAccess::AlwaysOn,
+    )
+    .with_handler(RouteHandler::SessionsGet),
+    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32", test)))]
+    HttpRouteSpec::immediate_operator(
+        ROUTE_SESSIONS,
+        RouteMethod::Get,
+        RouteBodyMode::None,
+        OperatorRouteAccess::AlwaysOn,
+    )
+    .with_handler(RouteHandler::SessionsGet),
+    HttpRouteSpec::streaming_operator(
+        ROUTE_SESSIONS,
+        RouteMethod::Post,
+        RouteBodyMode::Utf8(crate::platform::http_server::common::POST_BODY_MAX_LEN),
+        OperatorRouteAccess::AlwaysOn,
+    )
+    .with_handler(RouteHandler::SessionsPost),
     HttpRouteSpec::slow_diagnostic_operator(
         ROUTE_SESSIONS,
         RouteMethod::Delete,
         RouteBodyMode::None,
         OperatorRouteAccess::Windowed,
-    ),
+    )
+    .with_handler(RouteHandler::SessionsDelete),
     HttpRouteSpec::immediate(ROUTE_SESSIONS, RouteMethod::Options, RouteBodyMode::None),
     HttpRouteSpec::slow_diagnostic_operator(
         ROUTE_MEMORY_STATUS,
         RouteMethod::Get,
         RouteBodyMode::None,
         OperatorRouteAccess::Windowed,
-    ),
+    )
+    .with_handler(RouteHandler::MemoryStatusGet),
     HttpRouteSpec::immediate(
         ROUTE_MEMORY_STATUS,
         RouteMethod::Options,
@@ -990,7 +1121,8 @@ pub(crate) const MEMORY_AND_SKILL_ROUTE_SPECS: &[HttpRouteSpec] = &[
         RouteMethod::Post,
         RouteBodyMode::Utf8(crate::platform::http_server::common::POST_BODY_MAX_LEN),
         OperatorRouteAccess::Windowed,
-    ),
+    )
+    .with_handler(RouteHandler::MemoryMaintenancePost),
     HttpRouteSpec::immediate(
         ROUTE_MEMORY_MAINTENANCE,
         RouteMethod::Options,
@@ -1001,13 +1133,15 @@ pub(crate) const MEMORY_AND_SKILL_ROUTE_SPECS: &[HttpRouteSpec] = &[
         RouteMethod::Get,
         RouteBodyMode::None,
         OperatorRouteAccess::Windowed,
-    ),
+    )
+    .with_handler(RouteHandler::CapabilityPackagesGet),
     HttpRouteSpec::slow_diagnostic_operator(
         ROUTE_CAPABILITY_PACKAGES,
         RouteMethod::Post,
         RouteBodyMode::Utf8(crate::capability_package::MAX_CAPABILITY_PACKAGE_HTTP_BODY_LEN),
         OperatorRouteAccess::Windowed,
-    ),
+    )
+    .with_handler(RouteHandler::CapabilityPackagesPost),
     HttpRouteSpec::immediate(
         ROUTE_CAPABILITY_PACKAGES,
         RouteMethod::Options,
@@ -1019,33 +1153,38 @@ pub(crate) const MEMORY_AND_SKILL_ROUTE_SPECS: &[HttpRouteSpec] = &[
         RouteMethod::Get,
         RouteBodyMode::None,
         OperatorRouteAccess::Windowed,
-    ),
+    )
+    .with_handler(RouteHandler::SkillsGet),
     #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32", test)))]
     HttpRouteSpec::slow_diagnostic_operator(
         ROUTE_SKILLS,
         RouteMethod::Get,
         RouteBodyMode::None,
         OperatorRouteAccess::Windowed,
-    ),
+    )
+    .with_handler(RouteHandler::SkillsGet),
     HttpRouteSpec::slow_diagnostic_operator(
         ROUTE_SKILLS,
         RouteMethod::Post,
         RouteBodyMode::Utf8(crate::platform::http_server::common::POST_BODY_MAX_LEN),
         OperatorRouteAccess::Windowed,
-    ),
+    )
+    .with_handler(RouteHandler::SkillsPost),
     HttpRouteSpec::slow_diagnostic_operator(
         ROUTE_SKILLS,
         RouteMethod::Delete,
         RouteBodyMode::None,
         OperatorRouteAccess::Windowed,
-    ),
+    )
+    .with_handler(RouteHandler::SkillsDelete),
     HttpRouteSpec::immediate(ROUTE_SKILLS, RouteMethod::Options, RouteBodyMode::None),
     HttpRouteSpec::slow_diagnostic_operator(
         ROUTE_SKILLS_IMPORT,
         RouteMethod::Post,
         RouteBodyMode::Utf8(crate::platform::http_server::common::POST_BODY_MAX_LEN),
         OperatorRouteAccess::Windowed,
-    ),
+    )
+    .with_handler(RouteHandler::SkillsImportPost),
     HttpRouteSpec::immediate(
         ROUTE_SKILLS_IMPORT,
         RouteMethod::Options,
@@ -1060,6 +1199,7 @@ pub(crate) const ACTION_ROUTE_SPECS: &[HttpRouteSpec] = &[
         RouteBodyMode::None,
         OperatorRouteAccess::AlwaysOn,
     )
+    .with_handler(RouteHandler::RestartPost)
     .with_config_activity(crate::runtime::ConfigActivityPhase::Stopping, true),
     HttpRouteSpec::immediate(ROUTE_RESTART, RouteMethod::Options, RouteBodyMode::None),
     HttpRouteSpec::async_config_operator(
@@ -1068,6 +1208,7 @@ pub(crate) const ACTION_ROUTE_SPECS: &[HttpRouteSpec] = &[
         RouteBodyMode::None,
         OperatorRouteAccess::AlwaysOn,
     )
+    .with_handler(RouteHandler::ConfigResetPost)
     .with_config_activity(crate::runtime::ConfigActivityPhase::Persisting, true),
     HttpRouteSpec::immediate(
         ROUTE_CONFIG_RESET,
@@ -1078,7 +1219,8 @@ pub(crate) const ACTION_ROUTE_SPECS: &[HttpRouteSpec] = &[
         ROUTE_WEBHOOK,
         RouteMethod::Post,
         RouteBodyMode::Utf8(crate::platform::http_server::common::POST_BODY_MAX_LEN),
-    ),
+    )
+    .with_handler(RouteHandler::WebhookPost),
     HttpRouteSpec::immediate(ROUTE_WEBHOOK, RouteMethod::Options, RouteBodyMode::None),
 ];
 
@@ -1131,6 +1273,32 @@ mod tests {
         assert!(matches!(spec.body_mode, RouteBodyMode::Utf8(_)));
         assert_eq!(spec.execution_class, RouteExecutionClass::AsyncConfigRoute);
         assert_eq!(spec.operator_access, OperatorRouteAccess::AlwaysOn);
+        assert_eq!(spec.handler(), Some(RouteHandler::ConfigChannelsPost));
+    }
+
+    #[test]
+    fn route_catalog_specs_are_dispatch_handler_truth() {
+        for group in route_spec_groups() {
+            for spec in *group {
+                if spec.method == RouteMethod::Options
+                    || spec.execution_class == RouteExecutionClass::RejectedRoute
+                {
+                    assert!(
+                        spec.handler().is_none(),
+                        "{} {} must not carry a dispatch handler",
+                        spec.method.as_str(),
+                        spec.path
+                    );
+                    continue;
+                }
+                assert!(
+                    spec.handler().is_some(),
+                    "{} {} must declare its dispatch handler in the catalog",
+                    spec.method.as_str(),
+                    spec.path
+                );
+            }
+        }
     }
 
     #[test]
@@ -1148,6 +1316,20 @@ mod tests {
         let spec = route_spec_for("GET", ROUTE_TOOLS).expect("route spec");
         assert_eq!(spec.execution_class, RouteExecutionClass::ImmediateRoute);
         assert_eq!(spec.operator_access, OperatorRouteAccess::AlwaysOn);
+    }
+
+    #[test]
+    fn sessions_routes_are_product_chat_surface() {
+        let get = route_spec_for("GET", ROUTE_SESSIONS).expect("sessions get route");
+        assert_eq!(get.execution_class, RouteExecutionClass::SnapshotRoute);
+        assert_eq!(get.operator_access, OperatorRouteAccess::AlwaysOn);
+        assert_eq!(get.handler(), Some(RouteHandler::SessionsGet));
+
+        let post = route_spec_for("POST", ROUTE_SESSIONS).expect("sessions post route");
+        assert!(matches!(post.body_mode, RouteBodyMode::Utf8(_)));
+        assert_eq!(post.execution_class, RouteExecutionClass::StreamingRoute);
+        assert_eq!(post.operator_access, OperatorRouteAccess::AlwaysOn);
+        assert_eq!(post.handler(), Some(RouteHandler::SessionsPost));
     }
 
     #[test]
@@ -1183,7 +1365,6 @@ mod tests {
     fn storage_touching_routes_never_run_on_httpd_callback() {
         for (method, path) in [
             ("POST", ROUTE_CHANNEL_CONNECTIVITY_REFRESH),
-            ("GET", ROUTE_SESSIONS),
             ("DELETE", ROUTE_SESSIONS),
             ("GET", ROUTE_MEMORY_STATUS),
             ("POST", ROUTE_MEMORY_MAINTENANCE),
@@ -1511,6 +1692,9 @@ mod tests {
             assert!(!contract.complete_stage.is_empty());
         }
         assert!(RouteExecutionClass::ImmediateRoute
+            .worker_contract()
+            .is_none());
+        assert!(RouteExecutionClass::StreamingRoute
             .worker_contract()
             .is_none());
         assert!(RouteExecutionClass::RejectedRoute

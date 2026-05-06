@@ -3,16 +3,9 @@
 
 use super::auth;
 use super::catalog::{
-    self, OperatorRouteAccess, RouteBodyMode, RouteExecutionClass, ROUTE_CAPABILITY_PACKAGES,
-    ROUTE_CHANNEL_CONNECTIVITY, ROUTE_CHANNEL_CONNECTIVITY_REFRESH, ROUTE_CONFIG_ACCOUNTS,
-    ROUTE_CONFIG_ACCOUNTS_PREFIX, ROUTE_CONFIG_AUDIO, ROUTE_CONFIG_CAPABILITIES,
-    ROUTE_CONFIG_CAPABILITIES_PREFIX, ROUTE_CONFIG_CHANNELS, ROUTE_CONFIG_DISPLAY,
-    ROUTE_CONFIG_HARDWARE, ROUTE_CONFIG_LLM, ROUTE_CONFIG_PROVIDERS, ROUTE_CONFIG_RESET,
-    ROUTE_CONFIG_SYSTEM, ROUTE_CSRF_TOKEN, ROUTE_DIAGNOSE, ROUTE_HARDWARE_DISCOVERY, ROUTE_HEALTH,
-    ROUTE_MEMORY_MAINTENANCE, ROUTE_MEMORY_STATUS, ROUTE_METRICS, ROUTE_OPERATOR_STATUS,
-    ROUTE_OPERATOR_WINDOW, ROUTE_PAIRING_CODE, ROUTE_RESOURCE, ROUTE_RESTART, ROUTE_ROOT,
-    ROUTE_SESSIONS, ROUTE_SKILLS, ROUTE_SKILLS_IMPORT, ROUTE_SYSTEM_INFO, ROUTE_TOOLS,
-    ROUTE_WEBHOOK, ROUTE_WIFI_SCAN,
+    self, OperatorRouteAccess, RouteBodyMode, RouteExecutionClass, RouteHandler,
+    ROUTE_CONFIG_ACCOUNTS, ROUTE_CONFIG_ACCOUNTS_PREFIX, ROUTE_CONFIG_CAPABILITIES,
+    ROUTE_CONFIG_CAPABILITIES_PREFIX, ROUTE_CONFIG_PROVIDERS, ROUTE_ROOT,
 };
 use super::types::{IncomingRequest, OutgoingResponse, RestartAction, RouterEnv};
 use crate::error::{Error, Result};
@@ -33,19 +26,25 @@ fn path_only(uri: &str) -> &str {
 /// Extract `chat_id` query parameter from URI (case-insensitive key match).
 #[inline(never)]
 fn chat_id_from_uri(uri: &str) -> Option<String> {
-    common::query_param_from_uri(uri, "chat_id").map(str::to_string)
+    common::query_param_from_uri(uri, "chat_id").map(crate::util::percent_decode_query)
 }
 
-/// Extract pagination parameters from URI: page (default 1) and limit (default 20).
 #[inline(never)]
-fn pagination_from_uri(uri: &str) -> (usize, usize) {
-    let page = common::query_param_from_uri(uri, "page")
+fn cursor_from_uri(uri: &str) -> Option<String> {
+    common::query_param_from_uri(uri, "cursor").map(crate::util::percent_decode_query)
+}
+
+#[inline(never)]
+fn before_from_uri(uri: &str) -> Option<String> {
+    common::query_param_from_uri(uri, "before").map(crate::util::percent_decode_query)
+}
+
+/// Extract bounded limit parameter from URI.
+#[inline(never)]
+fn limit_from_uri(uri: &str, default: usize) -> usize {
+    common::query_param_from_uri(uri, "limit")
         .and_then(|value| value.parse().ok())
-        .unwrap_or(1);
-    let limit = common::query_param_from_uri(uri, "limit")
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(20);
-    (page, limit)
+        .unwrap_or(default)
 }
 
 /// Extract format parameter from URI (e.g., ?format=prometheus).
@@ -152,6 +151,7 @@ fn api_to_out(r: ApiResponse) -> OutgoingResponse {
         status_text: r.status_text,
         headers: CORS_HEADERS,
         body: r.body,
+        stream: None,
         restart: RestartAction::None,
     }
 }
@@ -562,6 +562,7 @@ fn dispatch_impl(
             status_text: "OK",
             headers: CORS_OPTIONS_HEADERS,
             body: OPTIONS_BODY.to_vec(),
+            stream: None,
             restart: RestartAction::None,
         });
     }
@@ -605,8 +606,9 @@ fn dispatch_impl(
         return Ok(response);
     }
 
-    match (method, path) {
-        ("GET", ROUTE_ROOT) => {
+    let route_handler = route_spec.and_then(|spec| spec.handler());
+    match route_handler {
+        Some(RouteHandler::RootGet) => {
             let body =
                 handlers::root::body(ctx).map_err(|e| err_other("http_router_dispatch", e))?;
             Ok(OutgoingResponse::json(
@@ -616,7 +618,7 @@ fn dispatch_impl(
                 body.into_bytes(),
             ))
         }
-        ("GET", ROUTE_PAIRING_CODE) => {
+        Some(RouteHandler::PairingCodeGet) => {
             let body = handlers::pairing::body(ctx);
             Ok(OutgoingResponse::json(
                 200,
@@ -625,12 +627,12 @@ fn dispatch_impl(
                 body.into_bytes(),
             ))
         }
-        ("POST", ROUTE_PAIRING_CODE) => {
+        Some(RouteHandler::PairingCodePost) => {
             let body_str = read_route_body(&incoming.body, route_body_mode)?;
             let r = handlers::pairing::post_body(ctx, body_str);
             Ok(api_to_out(r))
         }
-        ("POST", ROUTE_CONFIG_LLM) => dispatch_api_body_route(
+        Some(RouteHandler::ConfigLlmPost) => dispatch_api_body_route(
             guard_pairing_csrf(store, uri, &incoming.headers),
             &incoming.body,
             uri,
@@ -641,21 +643,21 @@ fn dispatch_impl(
                     .map_err(|e| err_other("http_router_dispatch", e))
             },
         ),
-        ("GET", ROUTE_CONFIG_LLM) => {
+        Some(RouteHandler::ConfigLlmGet) => {
             dispatch_guarded_route(guard_pairing(store, uri, &incoming.headers), || {
                 let body = handlers::config::get_llm_body(ctx)
                     .map_err(|e| err_other("http_router_dispatch", e))?;
                 Ok(json_ok(body))
             })
         }
-        ("GET", ROUTE_CONFIG_CHANNELS) => {
+        Some(RouteHandler::ConfigChannelsGet) => {
             dispatch_guarded_route(guard_pairing(store, uri, &incoming.headers), || {
                 let body = handlers::config::get_channels_body(ctx)
                     .map_err(|e| err_other("http_router_dispatch", e))?;
                 Ok(json_ok(body))
             })
         }
-        ("POST", ROUTE_CONFIG_CHANNELS) => dispatch_api_body_route(
+        Some(RouteHandler::ConfigChannelsPost) => dispatch_api_body_route(
             guard_pairing_csrf(store, uri, &incoming.headers),
             &incoming.body,
             uri,
@@ -666,14 +668,14 @@ fn dispatch_impl(
                     .map_err(|e| err_other("http_router_dispatch", e))
             },
         ),
-        ("GET", ROUTE_CONFIG_SYSTEM) => {
+        Some(RouteHandler::ConfigSystemGet) => {
             dispatch_guarded_route(guard_pairing(store, uri, &incoming.headers), || {
                 let body = handlers::config::get_system_body(ctx)
                     .map_err(|e| err_other("http_router_dispatch", e))?;
                 Ok(json_ok(body))
             })
         }
-        ("POST", ROUTE_CONFIG_SYSTEM) => dispatch_api_body_route(
+        Some(RouteHandler::ConfigSystemPost) => dispatch_api_body_route(
             guard_pairing_csrf(store, uri, &incoming.headers),
             &incoming.body,
             uri,
@@ -684,14 +686,14 @@ fn dispatch_impl(
                     .map_err(|e| err_other("http_router_dispatch", e))
             },
         ),
-        ("GET", ROUTE_CONFIG_HARDWARE) => {
+        Some(RouteHandler::ConfigHardwareGet) => {
             dispatch_guarded_route(guard_pairing(store, uri, &incoming.headers), || {
                 let body = handlers::config::get_hardware_body(ctx)
                     .map_err(|e| err_other("http_router_dispatch", e))?;
                 Ok(json_ok(body))
             })
         }
-        ("POST", ROUTE_CONFIG_HARDWARE) => dispatch_api_body_route(
+        Some(RouteHandler::ConfigHardwarePost) => dispatch_api_body_route(
             guard_pairing_csrf(store, uri, &incoming.headers),
             &incoming.body,
             uri,
@@ -702,14 +704,14 @@ fn dispatch_impl(
                     .map_err(|e| err_other("http_router_dispatch", e))
             },
         ),
-        ("GET", ROUTE_CONFIG_AUDIO) => {
+        Some(RouteHandler::ConfigAudioGet) => {
             dispatch_guarded_route(guard_pairing(store, uri, &incoming.headers), || {
                 let body = handlers::config::get_audio_body(ctx)
                     .map_err(|e| err_other("http_router_dispatch", e))?;
                 Ok(json_ok(body))
             })
         }
-        ("POST", ROUTE_CONFIG_AUDIO) => dispatch_api_body_route(
+        Some(RouteHandler::ConfigAudioPost) => dispatch_api_body_route(
             guard_pairing_csrf(store, uri, &incoming.headers),
             &incoming.body,
             uri,
@@ -720,14 +722,14 @@ fn dispatch_impl(
                     .map_err(|e| err_other("http_router_dispatch", e))
             },
         ),
-        ("GET", ROUTE_CONFIG_DISPLAY) => {
+        Some(RouteHandler::ConfigDisplayGet) => {
             dispatch_guarded_route(guard_pairing(store, uri, &incoming.headers), || {
                 let body = handlers::config::get_display_body(ctx)
                     .map_err(|e| err_other("http_router_dispatch", e))?;
                 Ok(json_ok(body))
             })
         }
-        ("POST", ROUTE_CONFIG_DISPLAY) => dispatch_api_body_route(
+        Some(RouteHandler::ConfigDisplayPost) => dispatch_api_body_route(
             guard_pairing_csrf(store, uri, &incoming.headers),
             &incoming.body,
             uri,
@@ -738,7 +740,7 @@ fn dispatch_impl(
                     .map_err(|e| err_other("http_router_dispatch", e))
             },
         ),
-        ("GET", ROUTE_WIFI_SCAN) => match handlers::wifi_scan::get_body(ctx) {
+        Some(RouteHandler::WifiScanGet) => match handlers::wifi_scan::get_body(ctx) {
             Ok(body) => Ok(OutgoingResponse::json(
                 200,
                 "OK",
@@ -758,7 +760,7 @@ fn dispatch_impl(
                 ))
             }
         },
-        ("GET", ROUTE_HARDWARE_DISCOVERY) => {
+        Some(RouteHandler::HardwareDiscoveryGet) => {
             if let Some(r) = auth::require_pairing_code(store, uri, &incoming.headers) {
                 return Ok(api_to_out(r));
             }
@@ -793,7 +795,7 @@ fn dispatch_impl(
                 }
             }
         }
-        ("GET", ROUTE_HEALTH) => {
+        Some(RouteHandler::HealthGet) => {
             if let Some(r) = auth::require_activated(store) {
                 return Ok(api_to_out(r));
             }
@@ -809,7 +811,7 @@ fn dispatch_impl(
                 ))),
             }
         }
-        ("GET", ROUTE_OPERATOR_STATUS) => {
+        Some(RouteHandler::OperatorStatusGet) => {
             if let Some(r) = auth::require_activated(store) {
                 return Ok(api_to_out(r));
             }
@@ -822,7 +824,7 @@ fn dispatch_impl(
                 body.into_bytes(),
             ))
         }
-        ("GET", ROUTE_METRICS) => {
+        Some(RouteHandler::MetricsGet) => {
             if let Some(r) = auth::require_activated(store) {
                 return Ok(api_to_out(r));
             }
@@ -847,7 +849,7 @@ fn dispatch_impl(
                 ))
             }
         }
-        ("GET", ROUTE_RESOURCE) => {
+        Some(RouteHandler::ResourceGet) => {
             if let Some(r) = auth::require_activated(store) {
                 return Ok(api_to_out(r));
             }
@@ -860,7 +862,7 @@ fn dispatch_impl(
                 body.into_bytes(),
             ))
         }
-        ("GET", ROUTE_TOOLS) => {
+        Some(RouteHandler::ToolsGet) => {
             if let Some(r) = auth::require_activated(store) {
                 return Ok(api_to_out(r));
             }
@@ -873,7 +875,7 @@ fn dispatch_impl(
                 body.into_bytes(),
             ))
         }
-        ("GET", ROUTE_CSRF_TOKEN) => {
+        Some(RouteHandler::CsrfTokenGet) => {
             let body = handlers::csrf_token::body(ctx)
                 .map_err(|e| err_other("http_router_dispatch", e))?;
             Ok(OutgoingResponse::json(
@@ -883,7 +885,7 @@ fn dispatch_impl(
                 body.into_bytes(),
             ))
         }
-        ("GET", ROUTE_DIAGNOSE) => {
+        Some(RouteHandler::DiagnoseGet) => {
             if let Some(r) = auth::require_activated(store) {
                 return Ok(api_to_out(r));
             }
@@ -896,7 +898,7 @@ fn dispatch_impl(
                 body.into_bytes(),
             ))
         }
-        ("GET", ROUTE_SYSTEM_INFO) => {
+        Some(RouteHandler::SystemInfoGet) => {
             if let Some(r) = auth::require_activated(store) {
                 return Ok(api_to_out(r));
             }
@@ -909,7 +911,7 @@ fn dispatch_impl(
                 body.into_bytes(),
             ))
         }
-        ("POST", ROUTE_OPERATOR_WINDOW) => {
+        Some(RouteHandler::OperatorWindowPost) => {
             if let Some(r) = auth::require_activated(store) {
                 return Ok(api_to_out(r));
             }
@@ -925,7 +927,7 @@ fn dispatch_impl(
                 body.into_bytes(),
             ))
         }
-        ("GET", ROUTE_CHANNEL_CONNECTIVITY) => {
+        Some(RouteHandler::ChannelConnectivityGet) => {
             if let Some(r) = auth::require_activated(store) {
                 return Ok(api_to_out(r));
             }
@@ -942,7 +944,7 @@ fn dispatch_impl(
                 )),
             }
         }
-        ("POST", ROUTE_CHANNEL_CONNECTIVITY_REFRESH) => {
+        Some(RouteHandler::ChannelConnectivityRefreshPost) => {
             if let Some(r) = auth::require_activated(store) {
                 return Ok(api_to_out(r));
             }
@@ -962,16 +964,19 @@ fn dispatch_impl(
                 )),
             }
         }
-        ("GET", ROUTE_SESSIONS) => {
+        Some(RouteHandler::SessionsGet) => {
             if let Some(r) = auth::require_activated(store) {
                 return Ok(api_to_out(r));
             }
             let chat_id = common::name_from_uri(uri).or_else(|| chat_id_from_uri(uri));
             let result = match chat_id {
-                Some(id) => handlers::sessions::detail(ctx, &id),
+                Some(id) => {
+                    let before = before_from_uri(uri);
+                    handlers::sessions::detail(ctx, &id, before.as_deref(), limit_from_uri(uri, 20))
+                }
                 None => {
-                    let (page, limit) = pagination_from_uri(uri);
-                    handlers::sessions::body(ctx, page, limit)
+                    let cursor = cursor_from_uri(uri);
+                    handlers::sessions::body(ctx, cursor.as_deref(), limit_from_uri(uri, 20))
                 }
             };
             match result {
@@ -993,7 +998,21 @@ fn dispatch_impl(
                 ))),
             }
         }
-        ("DELETE", ROUTE_SESSIONS) => {
+        Some(RouteHandler::SessionsPost) => {
+            if let Some(o) = guard_pairing_csrf(store, uri, &incoming.headers) {
+                return Ok(o);
+            }
+            let Some(env) = env else {
+                return Ok(internal_error_key_response(
+                    500,
+                    "Internal Server Error",
+                    api_contract::COMMON_OPERATION_FAILED,
+                    "sessions_post_env",
+                ));
+            };
+            Ok(handlers::sessions::post_stream(ctx, env, &incoming))
+        }
+        Some(RouteHandler::SessionsDelete) => {
             if let Some(o) = guard_pairing_csrf(store, uri, &incoming.headers) {
                 return Ok(o);
             }
@@ -1035,7 +1054,7 @@ fn dispatch_impl(
                 ))),
             }
         }
-        ("GET", ROUTE_MEMORY_STATUS) => {
+        Some(RouteHandler::MemoryStatusGet) => {
             if let Some(r) = auth::require_activated(store) {
                 return Ok(api_to_out(r));
             }
@@ -1048,7 +1067,7 @@ fn dispatch_impl(
                 body.into_bytes(),
             ))
         }
-        ("POST", ROUTE_MEMORY_MAINTENANCE) => {
+        Some(RouteHandler::MemoryMaintenancePost) => {
             if let Some(o) = guard_pairing_csrf(store, uri, &incoming.headers) {
                 return Ok(o);
             }
@@ -1056,7 +1075,7 @@ fn dispatch_impl(
             let r = handlers::memory_maintenance::post(ctx, body_str);
             Ok(api_to_out(r))
         }
-        ("GET", ROUTE_CAPABILITY_PACKAGES) => {
+        Some(RouteHandler::CapabilityPackagesGet) => {
             if let Some(r) = auth::require_activated(store) {
                 return Ok(api_to_out(r));
             }
@@ -1069,7 +1088,7 @@ fn dispatch_impl(
                 body.into_bytes(),
             ))
         }
-        ("POST", ROUTE_CAPABILITY_PACKAGES) => {
+        Some(RouteHandler::CapabilityPackagesPost) => {
             if let Some(o) = guard_pairing_csrf(store, uri, &incoming.headers) {
                 return Ok(o);
             }
@@ -1077,7 +1096,7 @@ fn dispatch_impl(
             let r = handlers::capability_packages::post(ctx, body_str);
             Ok(api_to_out(r))
         }
-        ("GET", ROUTE_SKILLS) => {
+        Some(RouteHandler::SkillsGet) => {
             if let Some(r) = auth::require_activated(store) {
                 return Ok(api_to_out(r));
             }
@@ -1098,7 +1117,7 @@ fn dispatch_impl(
                 Err(r) => Ok(api_to_out(r)),
             }
         }
-        ("POST", ROUTE_SKILLS) => {
+        Some(RouteHandler::SkillsPost) => {
             if let Some(o) = guard_pairing_csrf(store, uri, &incoming.headers) {
                 return Ok(o);
             }
@@ -1106,7 +1125,7 @@ fn dispatch_impl(
             let r = handlers::skills::post(ctx, body_str);
             Ok(api_to_out(r))
         }
-        ("DELETE", ROUTE_SKILLS) => {
+        Some(RouteHandler::SkillsDelete) => {
             if let Some(o) = guard_pairing_csrf(store, uri, &incoming.headers) {
                 return Ok(o);
             }
@@ -1121,7 +1140,7 @@ fn dispatch_impl(
             let r = handlers::skills::delete(ctx, &name);
             Ok(api_to_out(r))
         }
-        ("POST", ROUTE_SKILLS_IMPORT) => {
+        Some(RouteHandler::SkillsImportPost) => {
             if let Some(o) = guard_pairing_csrf(store, uri, &incoming.headers) {
                 return Ok(o);
             }
@@ -1130,7 +1149,7 @@ fn dispatch_impl(
                 .map_err(|e| err_other("http_router_dispatch", e))?;
             Ok(api_to_out(r))
         }
-        ("POST", ROUTE_RESTART) => {
+        Some(RouteHandler::RestartPost) => {
             if let Some(o) = guard_pairing_csrf(store, uri, &incoming.headers) {
                 return Ok(o);
             }
@@ -1142,7 +1161,7 @@ fn dispatch_impl(
             }
             Ok(out)
         }
-        ("POST", ROUTE_CONFIG_RESET) => {
+        Some(RouteHandler::ConfigResetPost) => {
             if let Some(o) = guard_pairing_csrf(store, uri, &incoming.headers) {
                 return Ok(o);
             }
@@ -1150,7 +1169,7 @@ fn dispatch_impl(
                 .map_err(|e| err_other("http_router_dispatch", e))?;
             Ok(api_to_out(r))
         }
-        ("POST", ROUTE_WEBHOOK) => {
+        Some(RouteHandler::WebhookPost) => {
             if let Some(o) = guard_pairing_csrf(store, uri, &incoming.headers) {
                 return Ok(o);
             }
@@ -1168,7 +1187,7 @@ fn dispatch_impl(
                 .map_err(|e| err_other("http_router_dispatch", e))?;
             Ok(api_to_out(r))
         }
-        _ => Ok(OutgoingResponse::json(
+        None => Ok(OutgoingResponse::json(
             404,
             "Not Found",
             CORS_HEADERS,
@@ -1182,16 +1201,6 @@ mod tests {
     use super::dispatch;
     use crate::bus::new_inbound_channel;
     use crate::config;
-    use crate::platform::http_server::handlers::{
-        build_default_test_handler_context, default_test_handler_context_guard, HandlerContext,
-    };
-    use crate::platform::http_server::router::{IncomingBody, IncomingRequest, RouterEnv};
-    use crate::runtime::{OperatorMaintenanceAction, OperatorMaintenanceRequest};
-    use serde_json::Value;
-    use std::sync::OnceLock;
-    #[cfg(feature = "capability_office")]
-    use std::sync::{Arc, Mutex};
-
     #[cfg(all(
         feature = "capability_office",
         not(any(target_arch = "xtensa", target_arch = "riscv32"))
@@ -1205,11 +1214,19 @@ mod tests {
         OfficeAccount, OfficeAccountIdentityClass, OfficeCapability, OfficeCredential,
         OfficeHttpClient, OfficeProbeAdapter, OfficeProbeDisposition, OfficeProbeResult,
     };
+    use crate::platform::http_server::handlers::{
+        build_default_test_handler_context, default_test_handler_context_guard, HandlerContext,
+    };
+    use crate::platform::http_server::router::{IncomingBody, IncomingRequest, RouterEnv};
+    use crate::runtime::{OperatorMaintenanceAction, OperatorMaintenanceRequest};
+    use serde_json::Value;
+    use std::collections::HashMap;
     #[cfg(all(
         feature = "capability_office",
         not(any(target_arch = "xtensa", target_arch = "riscv32"))
     ))]
     use std::sync::MutexGuard;
+    use std::sync::{Arc, Mutex, OnceLock};
 
     fn build_router_env() -> RouterEnv {
         let (inbound_tx, _inbound_rx, _inbound_depth) =
@@ -1224,6 +1241,109 @@ mod tests {
             .expect("set pairing code");
         CSRF_INIT.get_or_init(|| crate::platform::csrf::init().expect("init csrf"));
         ctx
+    }
+
+    #[derive(Default)]
+    struct TestSessionStore {
+        records: Mutex<HashMap<String, Vec<crate::memory::SessionMessageRecord>>>,
+    }
+
+    impl TestSessionStore {
+        fn seed_records(
+            &self,
+            chat_id: &str,
+            records: Vec<(&'static str, &'static str, &'static str)>,
+        ) {
+            let records = records
+                .into_iter()
+                .map(
+                    |(message_id, role, content)| crate::memory::SessionMessageRecord {
+                        message_id: message_id.to_string(),
+                        role: role.to_string(),
+                        content: content.to_string(),
+                    },
+                )
+                .collect::<Vec<_>>();
+            self.records
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .insert(chat_id.to_string(), records);
+        }
+    }
+
+    impl crate::memory::SessionStore for TestSessionStore {
+        fn append(&self, chat_id: &str, role: &str, content: &str) -> crate::Result<()> {
+            let mut guard = self
+                .records
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            let entry = guard.entry(chat_id.to_string()).or_default();
+            let message_id = format!("msg_{}", entry.len().saturating_add(1));
+            entry.push(crate::memory::SessionMessageRecord {
+                message_id,
+                role: role.to_string(),
+                content: content.to_string(),
+            });
+            Ok(())
+        }
+
+        fn load_recent(
+            &self,
+            chat_id: &str,
+            n: usize,
+        ) -> crate::Result<Vec<crate::memory::SessionMessage>> {
+            let records = self.load_recent_records(chat_id, n)?;
+            Ok(records
+                .into_iter()
+                .map(|record| record.into_message())
+                .collect())
+        }
+
+        fn load_recent_records(
+            &self,
+            chat_id: &str,
+            n: usize,
+        ) -> crate::Result<Vec<crate::memory::SessionMessageRecord>> {
+            let mut records = self
+                .records
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .get(chat_id)
+                .cloned()
+                .unwrap_or_default();
+            let start = records.len().saturating_sub(n);
+            Ok(records.split_off(start))
+        }
+
+        fn message_count(&self, chat_id: &str) -> crate::Result<usize> {
+            Ok(self
+                .records
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .get(chat_id)
+                .map(Vec::len)
+                .unwrap_or(0))
+        }
+
+        fn clear(&self, chat_id: &str) -> crate::Result<()> {
+            self.records
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .remove(chat_id);
+            Ok(())
+        }
+
+        fn list_chat_ids(&self) -> crate::Result<Vec<String>> {
+            let mut ids = self
+                .records
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>();
+            ids.sort();
+            Ok(ids)
+        }
     }
 
     #[test]
@@ -1276,6 +1396,157 @@ mod tests {
         .expect("dispatch");
 
         assert_eq!(out.status, 403);
+    }
+
+    #[test]
+    fn sessions_get_lists_product_projection() {
+        let _guard = default_test_handler_context_guard();
+        let mut ctx = build_authed_ctx();
+        let store = Arc::new(TestSessionStore::default());
+        store.seed_records(
+            "configure-ui:default",
+            vec![
+                ("msg_u1", "user", "第一轮问题"),
+                ("msg_a1", "assistant", "最终回复"),
+            ],
+        );
+        store.seed_records("other", vec![("msg_o1", "user", "其他问题")]);
+        ctx.session_store = store as Arc<dyn crate::memory::SessionStore + Send + Sync>;
+        let env = build_router_env();
+
+        let response = dispatch(&ctx, &env, plain_get("/api/sessions?limit=1"))
+            .expect("dispatch sessions list");
+
+        assert_eq!(response.status, 200);
+        let parsed: Value = serde_json::from_slice(&response.body).expect("parse sessions list");
+        assert_eq!(parsed["limit"], 1);
+        assert_eq!(parsed["next_cursor"], "1");
+        assert!(
+            parsed.get("total").is_none(),
+            "old diagnostic pagination must not leak into chat contract: {parsed}"
+        );
+        let first = &parsed["items"][0];
+        assert_eq!(first["chat_id"], "configure-ui:default");
+        assert_eq!(first["title"], "第一轮问题");
+        assert_eq!(first["message_count"], 2);
+        assert_eq!(first["last_message"]["message_id"], "msg_a1");
+        assert_eq!(first["last_message"]["role"], "assistant");
+        assert_eq!(first["last_message"]["preview"], "最终回复");
+    }
+
+    #[test]
+    fn sessions_get_returns_message_history_with_stable_ids() {
+        let _guard = default_test_handler_context_guard();
+        let mut ctx = build_authed_ctx();
+        let store = Arc::new(TestSessionStore::default());
+        store.seed_records(
+            "configure-ui:default",
+            vec![
+                ("msg_u1", "user", "第一轮问题"),
+                ("msg_a1", "assistant", "第一轮回复"),
+                ("msg_u2", "user", "第二轮问题"),
+            ],
+        );
+        ctx.session_store = store as Arc<dyn crate::memory::SessionStore + Send + Sync>;
+        let env = build_router_env();
+
+        let response = dispatch(
+            &ctx,
+            &env,
+            plain_get("/api/sessions?chat_id=configure-ui:default&limit=2"),
+        )
+        .expect("dispatch session history");
+
+        assert_eq!(response.status, 200);
+        let parsed: Value = serde_json::from_slice(&response.body).expect("parse session history");
+        assert_eq!(parsed["limit"], 2);
+        assert_eq!(parsed["next_before"], "msg_a1");
+        assert_eq!(parsed["items"][0]["message_id"], "msg_a1");
+        assert_eq!(parsed["items"][0]["role"], "assistant");
+        assert_eq!(parsed["items"][0]["content"], "第一轮回复");
+        assert_eq!(parsed["items"][1]["message_id"], "msg_u2");
+        assert_eq!(parsed["items"][1]["role"], "user");
+        assert_eq!(parsed["items"][1]["content"], "第二轮问题");
+    }
+
+    #[test]
+    fn sessions_post_creates_sse_stream_and_enqueues_chat_turn() {
+        let _guard = default_test_handler_context_guard();
+        let ctx = build_authed_ctx();
+        let (inbound_tx, inbound_rx, _inbound_depth) =
+            new_inbound_channel(crate::constants::DEFAULT_CAPACITY);
+        let env = RouterEnv::new(inbound_tx);
+        let csrf = crate::platform::csrf::get_token().expect("csrf token");
+        let request = IncomingRequest {
+            method: "POST".to_string(),
+            uri: "/api/sessions".to_string(),
+            headers: vec![
+                ("X-Pairing-Code".to_string(), "123456".to_string()),
+                ("X-CSRF-Token".to_string(), csrf),
+                ("Accept".to_string(), "text/event-stream".to_string()),
+                ("Content-Type".to_string(), "application/json".to_string()),
+            ],
+            body: IncomingBody::from_vec(
+                r#"{"chat_id":"configure-ui:default","content":"继续"}"#
+                    .as_bytes()
+                    .to_vec(),
+            ),
+        };
+
+        let response = dispatch(&ctx, &env, request).expect("dispatch session stream");
+
+        assert_eq!(response.status, 200);
+        assert!(
+            response
+                .headers
+                .iter()
+                .any(|(key, value)| key.eq_ignore_ascii_case("Content-Type")
+                    && value.eq_ignore_ascii_case("text/event-stream")),
+            "headers={:?}",
+            response.headers
+        );
+        assert!(response.stream.is_some(), "POST /api/sessions must stream");
+        let queued = inbound_rx.try_recv().expect("queued chat turn");
+        assert_eq!(
+            queued.channel.as_ref(),
+            crate::chat_stream::CHANNEL_CONFIGURE_UI_CHAT
+        );
+        assert_eq!(queued.chat_id.as_ref(), "configure-ui:default");
+        assert_eq!(queued.content, "继续");
+        assert!(queued.req_id.is_some());
+    }
+
+    #[test]
+    fn sessions_post_rejects_second_active_chat_stream_before_enqueue() {
+        let _guard = default_test_handler_context_guard();
+        let ctx = build_authed_ctx();
+        let _opened = ctx.chat_streams.try_open().expect("existing stream");
+        let (inbound_tx, inbound_rx, _inbound_depth) =
+            new_inbound_channel(crate::constants::DEFAULT_CAPACITY);
+        let env = RouterEnv::new(inbound_tx);
+        let csrf = crate::platform::csrf::get_token().expect("csrf token");
+        let request = IncomingRequest {
+            method: "POST".to_string(),
+            uri: "/api/sessions".to_string(),
+            headers: vec![
+                ("X-Pairing-Code".to_string(), "123456".to_string()),
+                ("X-CSRF-Token".to_string(), csrf),
+                ("Accept".to_string(), "text/event-stream".to_string()),
+                ("Content-Type".to_string(), "application/json".to_string()),
+            ],
+            body: IncomingBody::from_vec(
+                r#"{"chat_id":"configure-ui:default","content":"继续"}"#
+                    .as_bytes()
+                    .to_vec(),
+            ),
+        };
+
+        let response = dispatch(&ctx, &env, request).expect("dispatch busy session stream");
+
+        assert_eq!(response.status, 409);
+        let parsed: Value = serde_json::from_slice(&response.body).expect("parse error");
+        assert_eq!(parsed["error_key"], "chat.stream_busy");
+        assert!(inbound_rx.try_recv().is_err());
     }
 
     #[cfg(all(

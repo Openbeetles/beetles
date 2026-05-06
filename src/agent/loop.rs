@@ -1766,6 +1766,8 @@ pub struct AgentLoopConfig {
     pub stream_editor: Option<Arc<dyn StreamEditor + Send + Sync>>,
     /// 流式编辑器对应的通道名；仅当前消息来自该通道时才允许流式编辑。
     pub stream_editor_channel: Option<Arc<str>>,
+    /// Configure UI 本地 SSE broker；HTTP 负责写流，agent 只上报 progress/final。
+    pub chat_streams: Arc<crate::chat_stream::ChatStreamBroker>,
     /// 当前 NVS 语言；工具与降级文案按此本地化。
     pub resolve_locale: std::sync::Arc<dyn Fn() -> UiLocale + Send + Sync>,
 }
@@ -2091,7 +2093,7 @@ fn run_agent_loop_main(
                 }
             };
         log_user_turn_memory_checkpoint("agent_turn_after_finalize", &msg);
-        let handoff = deliver_turn(&outbound_tx, &msg, finalized.as_ref());
+        let handoff = deliver_turn(&outbound_tx, &msg, finalized.as_ref(), config);
         let checkpoint_ingress = msg.ingress;
         let checkpoint_channel = Arc::clone(&msg.channel);
         let checkpoint_chat_id = Arc::clone(&msg.chat_id);
@@ -3958,6 +3960,7 @@ mod tests {
             strategy: AgentRunStrategy::Embedded,
             stream_editor: None,
             stream_editor_channel: None,
+            chat_streams: Arc::new(crate::chat_stream::ChatStreamBroker::new()),
             resolve_locale: Arc::new(|| UiLocale::Zh),
         }
     }
@@ -5490,7 +5493,8 @@ mod tests {
             persona_priority_adjudication: None,
         };
 
-        let handoff = delivery_handoff::deliver_turn(&outbound_tx, &msg, &finalized);
+        let config = test_agent_loop_config();
+        let handoff = delivery_handoff::deliver_turn(&outbound_tx, &msg, &finalized, &config);
         assert!(handoff.delivered);
 
         let outbound = outbound_rx.try_recv().expect("outbound reply");
@@ -5502,6 +5506,85 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn configure_ui_stream_silent_reply_emits_terminal_error() {
+        let config = test_agent_loop_config();
+        let opened = config.chat_streams.try_open().expect("open stream");
+        let stream_id = opened.stream_id.clone();
+        let (system_inbound_tx, _system_inbound_rx, _) = crate::bus::new_inbound_channel(8);
+        let mut msg = PcMsg::new_inbound(
+            crate::chat_stream::CHANNEL_CONFIGURE_UI_CHAT,
+            "configure-ui:default",
+            "hello",
+            false,
+        )
+        .expect("message");
+        msg.req_id = Some(stream_id);
+        let turn_ledger = build_turn_ledger_start(&msg, 1);
+        let finalized = reply_finalize::FinalizedTurn {
+            delivery: DeliveryReport::default(),
+            reply: crate::agent::final_reply::CanonicalReply::new("SILENT".to_string()),
+            artifact_bundle: None,
+            is_interrupt: false,
+            reply_already_delivered: false,
+            skip_delivery: true,
+            mark_important: false,
+            streamed: false,
+            msg_start: Instant::now(),
+            turn_observation: None,
+            mental_privacy_review: MentalPrivacyReviewOutcome {
+                reply_content: "SILENT".to_string(),
+                action: crate::memory::MentalPrivacyShareAction::AllowOriginal,
+                applied: false,
+                touched_targets: Vec::new(),
+            },
+            review_input_before: "SILENT".to_string(),
+            worker_latency: WorkerLatency::default(),
+            any_tool_used: false,
+            external_content_used: false,
+            pressure: crate::orchestrator::PressureLevel::Normal,
+            reply_surface: ReplySurface::GovernedConversation,
+            prompt_recall_intent: crate::memory::PromptRecallIntent::Mixed,
+            runtime_skill_selected_ids: Vec::new(),
+            task_learning_selected_ids: Vec::new(),
+            programmable_reasoning_intent: None,
+            counterfactual_analysis: None,
+            adversarial_arena_adjudication: None,
+            subject_state: None,
+            soul_feedback_projection: None,
+            mental_privacy_adjudication: None,
+            persona_priority_adjudication: None,
+        };
+
+        reply_finalize::complete_turn(
+            LaneTurnFinalizeContext {
+                worker_lane_tag: "test",
+                config: &config,
+                system_inbound_tx: &system_inbound_tx,
+                msg: Box::new(msg),
+                msg_start: Instant::now(),
+                queue_wait_ms: 0,
+                admission_ms: 0,
+                worker_prepare_ms: 0,
+                msg_key: 1,
+                turn_ledger: Box::new(turn_ledger),
+                latency_warn_ms: u128::MAX,
+            },
+            &mut HashMap::new(),
+            &mut HashMap::new(),
+            finalized,
+            delivery_handoff::DeliveryHandoff::default(),
+        );
+
+        let error_frame = String::from_utf8(opened.receiver.recv().expect("error frame"))
+            .expect("utf8 error frame");
+        let done_frame = String::from_utf8(opened.receiver.recv().expect("done frame"))
+            .expect("utf8 done frame");
+        assert!(error_frame.contains("event: error"));
+        assert!(error_frame.contains("chat.no_response"));
+        assert!(done_frame.contains("event: done"));
     }
 
     #[test]

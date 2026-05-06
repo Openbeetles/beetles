@@ -11,6 +11,7 @@ pub(super) fn deliver_turn(
     outbound_tx: &OutboundTx,
     msg: &PcMsg,
     finalized: &super::reply_finalize::FinalizedTurn,
+    _config: &AgentLoopConfig,
 ) -> DeliveryHandoff {
     if finalized.skip_delivery {
         return DeliveryHandoff::default();
@@ -18,6 +19,10 @@ pub(super) fn deliver_turn(
 
     let outbound_start = Instant::now();
     let delivered = if finalized.reply_already_delivered {
+        crate::platform::task_wdt::feed_current_task();
+        true
+    } else if crate::chat_stream::is_configure_ui_stream_turn(msg) {
+        metrics::record_message_out();
         crate::platform::task_wdt::feed_current_task();
         true
     } else if !finalized.streamed {

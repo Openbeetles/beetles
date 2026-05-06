@@ -22,6 +22,14 @@ pub const CORS_AND_TEXT_PLAIN: &[(&str, &str)] = &[
     ("Access-Control-Allow-Private-Network", "true"),
     ("Content-Type", "text/plain"),
 ];
+/// CORS + Server-Sent Events response headers for product chat streams.
+pub const CORS_AND_EVENT_STREAM: &[(&str, &str)] = &[
+    ("Access-Control-Allow-Origin", "*"),
+    ("Access-Control-Allow-Private-Network", "true"),
+    ("Content-Type", "text/event-stream"),
+    ("Cache-Control", "no-cache"),
+    ("X-Accel-Buffering", "no"),
+];
 /// OPTIONS 预检响应：带 1 字节 body，迫使部分嵌入式栈先发送头再写 body，避免"响应头为空"。
 pub const CORS_OPTIONS_HEADERS: &[(&str, &str)] = &[
     ("Access-Control-Allow-Origin", "*"),
@@ -29,7 +37,7 @@ pub const CORS_OPTIONS_HEADERS: &[(&str, &str)] = &[
     ("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS"),
     (
         "Access-Control-Allow-Headers",
-        "Content-Type, X-Pairing-Code, X-CSRF-Token, x-csrf-token",
+        "Accept, Content-Type, X-Pairing-Code, X-CSRF-Token, x-csrf-token",
     ),
     ("Content-Type", "text/plain; charset=utf-8"),
     ("Content-Length", "1"),

@@ -186,6 +186,7 @@ struct PreparedRuntimeAssembly {
     channel_capability_registry: Arc<beetle::ChannelCapabilityRegistry>,
     capability_package_runtime_capabilities: Arc<beetle::CapabilityPackageRuntimeCapabilities>,
     network_governor: Arc<NetworkGovernor>,
+    chat_streams: Arc<beetle::ChatStreamBroker>,
     #[cfg(feature = "config_api")]
     config_api_shared_config: Option<Arc<RwLock<AppConfig>>>,
 }
@@ -212,6 +213,7 @@ struct HttpServerSpawnContext {
     system_inbound_tx: beetle::bus::SystemInboundTx,
     skill_prompt_cache: Arc<beetle::skills::SkillPromptCache>,
     inbound_tx: beetle::bus::InboundTx,
+    chat_streams: Arc<beetle::ChatStreamBroker>,
     shared_config: Arc<RwLock<AppConfig>>,
 }
 
@@ -335,6 +337,7 @@ fn spawn_http_config_server(
                 ctx.system_inbound_tx,
                 ctx.skill_prompt_cache,
                 ctx.inbound_tx,
+                ctx.chat_streams,
                 ctx.shared_config,
             );
             #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
@@ -352,6 +355,7 @@ fn spawn_http_config_server(
                 ctx.system_inbound_tx,
                 ctx.skill_prompt_cache,
                 ctx.inbound_tx,
+                ctx.chat_streams,
                 ctx.shared_config,
             );
             if let Err(e) = result {
@@ -3319,6 +3323,7 @@ fn prepare_runtime_assembly(
         Arc::clone(&platform),
         Arc::clone(&config),
     ));
+    let chat_streams = Arc::new(beetle::ChatStreamBroker::new());
 
     if !app_runtime_support::startup_self_check(runtime.memory_store.as_ref()) {
         log::error!(
@@ -3391,6 +3396,7 @@ fn prepare_runtime_assembly(
         channel_capability_registry,
         capability_package_runtime_capabilities,
         network_governor,
+        chat_streams,
         #[cfg(feature = "config_api")]
         config_api_shared_config: None,
     })
@@ -3415,6 +3421,7 @@ fn start_support_planes(assembly: &mut PreparedRuntimeAssembly) -> beetle::Resul
             system_inbound_tx: assembly.bus.system_inbound_tx.clone(),
             skill_prompt_cache: Arc::clone(&assembly.skill_prompt_cache),
             inbound_tx: assembly.bus.user_inbound_tx.clone(),
+            chat_streams: Arc::clone(&assembly.chat_streams),
             shared_config: Arc::clone(&shared_runtime_config),
         })?;
         #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
@@ -4001,6 +4008,7 @@ fn start_agent_plane(
         strategy: agent_strategy,
         stream_editor,
         stream_editor_channel,
+        chat_streams: Arc::clone(&assembly.chat_streams),
         resolve_locale: Arc::clone(&assembly.resolve_locale_ui),
     });
 

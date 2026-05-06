@@ -415,6 +415,13 @@ pub(super) fn complete_turn_boxed(
     let reply_content = std::mem::take(&mut finalized.reply.visible_text);
 
     if finalized.skip_delivery {
+        if crate::chat_stream::is_configure_ui_stream_turn(&ctx.msg) {
+            if let Some(stream_id) = ctx.msg.req_id.as_deref() {
+                ctx.config
+                    .chat_streams
+                    .emit_error(stream_id, "chat.no_response", None);
+            }
+        }
         llm_failure_count.remove(&ctx.msg_key);
         defer_tracker.remove(&ctx.msg_key);
         let total_ms = ctx.msg_start.elapsed().as_millis();
@@ -460,9 +467,17 @@ pub(super) fn complete_turn_boxed(
             .session_store
             .append(&ctx.msg.chat_id, "user", &ctx.msg.content)
     };
-    if let Err(e) = session_write_result {
+    let session_appended = session_write_result.is_ok();
+    if let Err(e) = &session_write_result {
         log::warn!("[agent_session] append failed: {}", e);
         metrics::record_error_by_stage("session_append");
+    }
+    if delivered && crate::chat_stream::is_configure_ui_stream_turn(&ctx.msg) {
+        if let Some(stream_id) = ctx.msg.req_id.as_deref() {
+            ctx.config
+                .chat_streams
+                .emit_final(stream_id, &reply_content, session_appended);
+        }
     }
     finalized.worker_latency.session_write_ms = finalized
         .worker_latency
