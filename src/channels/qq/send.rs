@@ -313,7 +313,7 @@ fn release_retryable_send_reservation(
     }
 }
 
-/// 连通性检查：供 GET /api/channel_connectivity 使用。
+/// 连通性检查：供 GET /api/channel_connectivity?channel=... 单通道探测使用。
 pub fn check_connectivity<H: ChannelHttpClient + ?Sized>(
     config: &AppConfig,
     http: &mut H,

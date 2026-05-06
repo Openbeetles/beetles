@@ -40,7 +40,9 @@ mod wss_gateway;
 
 pub use connectivity::build_unavailable_snapshot;
 pub use connectivity::{
-    build_snapshot, ChannelConnectivityItem, ChannelConnectivitySnapshot, ChannelRuntimeStatus,
+    build_channel_probe, build_snapshot, channel_supports_connectivity, ChannelConnectivityItem,
+    ChannelConnectivityProbeResponse, ChannelConnectivitySnapshot, ChannelRuntimeStatus,
+    CHANNEL_CONNECTIVITY_UNAVAILABLE_KEY,
 };
 #[cfg(all(
     feature = "dingtalk",

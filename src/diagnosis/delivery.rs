@@ -58,7 +58,7 @@ pub fn build_delivery_diagnosis(input: DeliveryDiagnosisInput<'_>) -> DiagnosisR
         ));
         recommended_next_steps.push(DiagnosisAction::new(
             "inspect_channel_connectivity",
-            "inspect channel connectivity and sender/dispatch failure counters",
+            "inspect /api/channel_connectivity?channel=<enabled_channel> and sender/dispatch failure counters",
         ));
         recommended_next_steps.push(DiagnosisAction::new(
             "inspect_operator_status",

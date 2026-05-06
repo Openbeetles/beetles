@@ -1317,10 +1317,6 @@ mod tests {
     #[test]
     fn snapshot_routes_are_not_config_or_diagnostic_workers() {
         assert_eq!(
-            execution_class_for("/api/channel_connectivity", Method::Get),
-            Some(RouteExecutionClass::ImmediateRoute)
-        );
-        assert_eq!(
             execution_class_for("/api/metrics", Method::Get),
             Some(RouteExecutionClass::ImmediateRoute)
         );
@@ -1373,7 +1369,7 @@ mod tests {
             Some(RouteExecutionClass::SlowDiagnosticRoute)
         );
         assert_eq!(
-            execution_class_for("/api/channel_connectivity/refresh", Method::Post),
+            execution_class_for("/api/channel_connectivity", Method::Get),
             Some(RouteExecutionClass::SlowDiagnosticRoute)
         );
         assert_eq!(

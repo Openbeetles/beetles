@@ -287,7 +287,7 @@ mod tests {
             "GET /api/csrf_token",
             "GET /api/metrics",
             "GET /api/resource",
-            "POST /api/channel_connectivity/refresh",
+            "GET /api/channel_connectivity",
         ] {
             assert!(
                 inventory.endpoints.iter().any(|item| item == endpoint),

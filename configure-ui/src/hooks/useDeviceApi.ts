@@ -124,8 +124,8 @@ export function useDeviceApi() {
         diagnose: () => systemApi.getDiagnose(baseUrl ?? ''),
         wifiScan: () => systemApi.getWifiScan(baseUrl ?? ''),
         info: () => systemApi.getSystemInfo(baseUrl ?? '', pairingCode ?? undefined),
-        channelConnectivity: () =>
-          systemApi.getChannelConnectivity(baseUrl ?? '', pairingCode ?? undefined),
+        channelConnectivity: (channel: string) =>
+          systemApi.getChannelConnectivity(baseUrl ?? '', channel, pairingCode ?? undefined),
         restart: () => systemApi.postRestart(baseUrl ?? '', (pairingCode ?? '').trim()),
       },
       sessions: {

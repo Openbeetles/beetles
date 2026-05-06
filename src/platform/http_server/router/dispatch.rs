@@ -39,6 +39,14 @@ fn before_from_uri(uri: &str) -> Option<String> {
     common::query_param_from_uri(uri, "before").map(crate::util::percent_decode_query)
 }
 
+#[inline(never)]
+fn channel_from_uri(uri: &str) -> Option<String> {
+    common::query_param_from_uri(uri, "channel")
+        .map(crate::util::percent_decode_query)
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
 /// Extract bounded limit parameter from URI.
 #[inline(never)]
 fn limit_from_uri(uri: &str, default: usize) -> usize {
@@ -264,14 +272,76 @@ fn internal_error_key_response(
     ))
 }
 
-fn channel_connectivity_error_response(stage: &'static str, detail: &str) -> OutgoingResponse {
-    log::warn!("{}: {}", stage, detail);
-    internal_error_key_response(
-        500,
-        "Internal Server Error",
-        "channel.snapshot_failed",
-        stage,
-    )
+fn missing_query_param_response(
+    stage: &'static str,
+    query_param: &'static str,
+) -> OutgoingResponse {
+    let mut extra = serde_json::Map::new();
+    extra.insert(
+        "query_param".to_string(),
+        serde_json::Value::String(query_param.to_string()),
+    );
+    api_to_out(ApiResponse::err_key_with_meta(
+        400,
+        "Bad Request",
+        api_contract::COMMON_MISSING_QUERY_PARAM,
+        Some(stage),
+        None,
+        None,
+        None,
+        extra,
+    ))
+}
+
+fn channel_probe_error_response(
+    stage: &'static str,
+    channel_id: Option<&str>,
+    error: handlers::channel_connectivity::ChannelConnectivityError,
+) -> OutgoingResponse {
+    let mut extra = serde_json::Map::new();
+    if let Some(channel) = channel_id {
+        extra.insert(
+            "channel".to_string(),
+            serde_json::Value::String(channel.to_string()),
+        );
+    }
+    let (status, status_text, error_key) = match &error {
+        handlers::channel_connectivity::ChannelConnectivityError::InvalidChannel => (
+            400,
+            "Bad Request",
+            api_contract::CHANNEL_CONNECTIVITY_CHANNEL_INVALID,
+        ),
+        #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+        handlers::channel_connectivity::ChannelConnectivityError::LiveProbeUnavailable(reason) => {
+            extra.insert(
+                "reason".to_string(),
+                serde_json::Value::String((*reason).to_string()),
+            );
+            (
+                503,
+                "Service Unavailable",
+                crate::channels::CHANNEL_CONNECTIVITY_UNAVAILABLE_KEY,
+            )
+        }
+        handlers::channel_connectivity::ChannelConnectivityError::Internal(detail) => {
+            log::warn!("{}: {}", stage, detail);
+            (
+                500,
+                "Internal Server Error",
+                api_contract::COMMON_OPERATION_FAILED,
+            )
+        }
+    };
+    api_to_out(ApiResponse::err_key_with_meta(
+        status,
+        status_text,
+        error_key,
+        Some(stage),
+        None,
+        None,
+        None,
+        extra,
+    ))
 }
 
 fn apply_restart_action(
@@ -931,36 +1001,26 @@ fn dispatch_impl(
             if let Some(r) = auth::require_activated(store) {
                 return Ok(api_to_out(r));
             }
-            match handlers::channel_connectivity::body(ctx, false) {
+            let channel_id = match channel_from_uri(uri) {
+                Some(channel_id) => channel_id,
+                None => {
+                    return Ok(missing_query_param_response(
+                        "channel_connectivity",
+                        "channel",
+                    ));
+                }
+            };
+            match handlers::channel_connectivity::body(ctx, &channel_id) {
                 Ok(body) => Ok(OutgoingResponse::json(
                     200,
                     "OK",
                     CORS_HEADERS,
                     body.into_bytes(),
                 )),
-                Err(msg) => Ok(channel_connectivity_error_response(
+                Err(error) => Ok(channel_probe_error_response(
                     "channel_connectivity",
-                    &msg,
-                )),
-            }
-        }
-        Some(RouteHandler::ChannelConnectivityRefreshPost) => {
-            if let Some(r) = auth::require_activated(store) {
-                return Ok(api_to_out(r));
-            }
-            if let Some(o) = guard_pairing_csrf(store, uri, &incoming.headers) {
-                return Ok(o);
-            }
-            match handlers::channel_connectivity::body(ctx, true) {
-                Ok(body) => Ok(OutgoingResponse::json(
-                    200,
-                    "OK",
-                    CORS_HEADERS,
-                    body.into_bytes(),
-                )),
-                Err(msg) => Ok(channel_connectivity_error_response(
-                    "channel_connectivity",
-                    &msg,
+                    Some(&channel_id),
+                    error,
                 )),
             }
         }
@@ -1214,6 +1274,7 @@ mod tests {
         OfficeAccount, OfficeAccountIdentityClass, OfficeCapability, OfficeCredential,
         OfficeHttpClient, OfficeProbeAdapter, OfficeProbeDisposition, OfficeProbeResult,
     };
+    use crate::platform::http_server::handlers::channel_connectivity::ChannelConnectivityError;
     use crate::platform::http_server::handlers::{
         build_default_test_handler_context, default_test_handler_context_guard, HandlerContext,
     };
@@ -1807,6 +1868,40 @@ mod tests {
     }
 
     #[test]
+    fn channel_connectivity_requires_channel_query_param() {
+        let _guard = default_test_handler_context_guard();
+        let ctx = build_authed_ctx();
+        let env = build_router_env();
+
+        let response = dispatch(&ctx, &env, plain_get("/api/channel_connectivity"))
+            .expect("dispatch channel connectivity");
+
+        assert_eq!(response.status, 400);
+        let parsed: Value = serde_json::from_slice(&response.body).expect("parse response");
+        assert_eq!(parsed["error_key"], "common.missing_query_param");
+        assert_eq!(parsed["query_param"], "channel");
+    }
+
+    #[test]
+    fn channel_connectivity_rejects_unknown_channel() {
+        let _guard = default_test_handler_context_guard();
+        let ctx = build_authed_ctx();
+        let env = build_router_env();
+
+        let response = dispatch(
+            &ctx,
+            &env,
+            plain_get("/api/channel_connectivity?channel=unknown"),
+        )
+        .expect("dispatch channel connectivity");
+
+        assert_eq!(response.status, 400);
+        let parsed: Value = serde_json::from_slice(&response.body).expect("parse response");
+        assert_eq!(parsed["error_key"], "channel.connectivity_channel_invalid");
+        assert_eq!(parsed["channel"], "unknown");
+    }
+
+    #[test]
     fn operator_maintenance_route_accepts_structured_runtime_request() {
         let _guard = default_test_handler_context_guard();
         let (system_inbound_tx, system_inbound_rx, _system_inbound_depth) =
@@ -1866,7 +1961,11 @@ mod tests {
     fn internal_route_errors_do_not_expose_message_text() {
         for response in [
             super::rejected_route_response("/api/device_snapshot"),
-            super::channel_connectivity_error_response("channel_connectivity", "serde failed"),
+            super::channel_probe_error_response(
+                "channel_connectivity",
+                Some("webhook"),
+                ChannelConnectivityError::Internal("serde failed".to_string()),
+            ),
             super::internal_error_key_response(
                 500,
                 "Internal Server Error",

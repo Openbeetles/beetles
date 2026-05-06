@@ -571,6 +571,7 @@ export const zhCN = {
       storage_access_failed: '存储访问失败',
       file_storage_failed: '文件存储失败',
       io_failed: '读写失败',
+      missing_query_param: '缺少必要参数',
       not_found: '未找到对应资源',
       invalid_response: '响应格式无效',
       http_status: '请求失败',
@@ -607,7 +608,8 @@ export const zhCN = {
       enabled_invalid: '启用通道无效',
       field_too_long: '一个或多个通道字段过长',
       tg_group_activation_invalid: 'Telegram 群组触发模式无效',
-      snapshot_failed: '无法加载通道连通性快照',
+      connectivity_channel_invalid: '通道名称无效',
+      snapshot_failed: '无法加载通道连通性结果',
     },
     llm: {
       sources_empty: '至少需要一个 LLM 源',

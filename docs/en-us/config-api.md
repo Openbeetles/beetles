@@ -25,7 +25,7 @@ Each endpoint is described in terms of purpose, request, and response.
 - Config-save routes expect the full object, not a partial patch:
   `POST /api/config/llm`, `POST /api/config/channels`, `POST /api/config/system`,
   `POST /api/config/hardware`, `POST /api/config/audio`, `POST /api/config/display`.
-- Custom frontends targeting ESP devices should serialize `/api/*` calls for the same device. First-screen loads should stay limited to activation, security, and lightweight status requests; slow diagnostics such as `/api/channel_connectivity`, `/api/wifi/scan`, and hardware discovery should be user-triggered. Do not add or depend on a catch-all `/api/device_snapshot` aggregate.
+- Custom frontends targeting ESP devices should serialize `/api/*` calls for the same device. First-screen loads should stay limited to activation, security, and lightweight status requests; slow diagnostics such as `/api/channel_connectivity?channel=...`, `/api/wifi/scan`, and hardware discovery should be user-triggered. Do not add or depend on a catch-all `/api/device_snapshot` aggregate.
 
 ### Auth levels
 
@@ -1377,30 +1377,35 @@ Common fields:
 - `programmable_reasoning`
 - `storage_media`
 
-**GET /api/channel_connectivity**
+**GET /api/channel_connectivity?channel={channel_id}**
 
-Purpose: read current channel connectivity. On ESP, the default response is a passive snapshot and does not run an external live probe; explicit refresh is handled by `POST /api/channel_connectivity/refresh`.
+Purpose: run one explicit connectivity probe for the requested channel. The `channel` query parameter is required; the server probes only that channel and does not return a full channel list.
 
-Auth: `Activated`
+Auth: `Activated`.
 
 Success response: `200 application/json`
 
 Top-level field:
 
-- `channels`
+- `channel`
 - `checked_at_unix_secs`
-- `stale`
 
-`channels` item fields:
+`channel` fields:
 
 - `id`: channel ID.
 - `configured`: whether the channel is configured.
-- `ok`: whether the latest explicit connectivity probe succeeded.
+- `ok`: whether this connectivity probe succeeded.
 - `message_key`: frontend-translatable status or error key.
 - `runtime_status`: runtime status, for example `connected`, `connecting`, `waiting_network`, or `disabled`.
 - `runtime_reason`: runtime reason key, nullable.
 
-Display guidance: when `runtime_status=connected`, a persistent WSS/message channel can be shown as online. `stale=true` or `message_key=network.channel_connectivity_unavailable` only means the passive snapshot has no live probe result and should not override a connected runtime state.
+Error responses:
+
+- Missing `channel`: `400 {"error_key":"common.missing_query_param","query_param":"channel"}`.
+- Unknown or uncompiled channel: `400 {"error_key":"channel.connectivity_channel_invalid","channel":"..."}`.
+- ESP Wi-Fi or TLS memory state currently blocks live probing: `503 {"error_key":"network.channel_connectivity_unavailable","reason":"..."}`.
+
+Display guidance: this endpoint is an explicit user-triggered diagnostic entry, not a first-screen polling request. Persistent WSS/message-channel online display should primarily use runtime status.
 
 **POST /api/operator/window**
 

@@ -25,7 +25,7 @@
 - 保存配置类接口提交完整对象，不支持只传要改的单个字段：
   `POST /api/config/llm`、`POST /api/config/channels`、`POST /api/config/system`、
   `POST /api/config/hardware`、`POST /api/config/audio`、`POST /api/config/display`。
-- ESP 设备上的自定义前端应把同一设备的 `/api/*` 请求串行化；首屏只做必要的激活、安全和轻量状态请求，`/api/channel_connectivity`、`/api/wifi/scan`、硬件发现等慢诊断接口应由用户显式触发。不要新增或依赖 `/api/device_snapshot` 这类大全局聚合接口。
+- ESP 设备上的自定义前端应把同一设备的 `/api/*` 请求串行化；首屏只做必要的激活、安全和轻量状态请求，`/api/channel_connectivity?channel=...`、`/api/wifi/scan`、硬件发现等慢诊断接口应由用户显式触发。不要新增或依赖 `/api/device_snapshot` 这类大全局聚合接口。
 
 ### 鉴权级别
 
@@ -1377,30 +1377,35 @@ ESP 嵌入式说明：`/api/tools` 在激活后保持可用。它仍要求设备
 - `programmable_reasoning`
 - `storage_media`
 
-**GET /api/channel_connectivity**
+**GET /api/channel_connectivity?channel={channel_id}**
 
-用途：读取当前通道连接状态。ESP 默认返回被动快照，不做外部 live probe；显式刷新由 `POST /api/channel_connectivity/refresh` 执行。
+用途：对指定通道执行一次显式连通性探测。必须传 `channel` 查询参数；服务端只探测该通道，不返回全量通道列表。
 
-鉴权：`已激活`
+鉴权：`已激活`。
 
 成功响应：`200 application/json`
 
 返回体顶层字段：
 
-- `channels`
+- `channel`
 - `checked_at_unix_secs`
-- `stale`
 
-`channels` 项字段：
+`channel` 字段：
 
 - `id`：通道 ID。
 - `configured`：是否已经配置。
-- `ok`：最近一次显式连通性探测是否成功。
+- `ok`：本次连通性探测是否成功。
 - `message_key`：前端可翻译的状态或错误键。
 - `runtime_status`：运行态状态，例如 `connected`、`connecting`、`waiting_network`、`disabled`。
 - `runtime_reason`：运行态原因键，可为空。
 
-展示建议：若 `runtime_status=connected`，可把常驻 WSS/消息通道显示为在线；`stale=true` 或 `message_key=network.channel_connectivity_unavailable` 只表示当前被动快照没有 live probe 结果，不应直接覆盖已在线的运行态。
+错误响应：
+
+- 缺少 `channel`：`400 {"error_key":"common.missing_query_param","query_param":"channel"}`。
+- 未知或未编译通道：`400 {"error_key":"channel.connectivity_channel_invalid","channel":"..."}`。
+- ESP 当前 Wi-Fi 或 TLS 内存状态不允许 live probe：`503 {"error_key":"network.channel_connectivity_unavailable","reason":"..."}`。
+
+展示建议：该接口是用户显式诊断入口，不属于首页自动轮询；常驻 WSS/消息通道的在线展示应优先使用运行态状态。
 
 **POST /api/operator/window**
 

@@ -177,8 +177,7 @@ for route in \
   ROUTE_CONFIG_AUDIO \
   ROUTE_CONFIG_DISPLAY \
   ROUTE_HEALTH \
-  ROUTE_RESOURCE \
-  ROUTE_CHANNEL_CONNECTIVITY; do
+  ROUTE_RESOURCE; do
   require_rust_test_pattern \
     default_config_ui_route_allowlist_stays_cached_lightweight \
     "\\(\"GET\", ${route}\\)" \
@@ -189,6 +188,7 @@ for route in \
   ROUTE_WIFI_SCAN \
   ROUTE_HARDWARE_DISCOVERY \
   ROUTE_DIAGNOSE \
+  ROUTE_CHANNEL_CONNECTIVITY \
   ROUTE_MEMORY_STATUS; do
   require_rust_test_pattern \
     default_config_ui_route_allowlist_stays_cached_lightweight \
@@ -197,7 +197,6 @@ for route in \
 done
 
 for route in \
-  ROUTE_CHANNEL_CONNECTIVITY_REFRESH \
   ROUTE_MEMORY_MAINTENANCE \
   ROUTE_SKILLS_IMPORT; do
   require_rust_test_pattern \
@@ -224,14 +223,14 @@ require_file_pattern \
   '"test:desktop-base":.*src/api/endpoints/system\.test\.ts' \
   "configure-ui test:desktop-base must run the default endpoint allowlist test"
 
-for endpoint in /api/health /api/resource /api/metrics /api/system_info /api/channel_connectivity; do
+for endpoint in /api/health /api/resource /api/metrics /api/system_info; do
   require_file_pattern \
     configure-ui/src/api/endpoints/system.test.ts \
     "\"${endpoint}\"" \
     "default endpoint allowlist test must assert ${endpoint}"
 done
 
-for endpoint in /api/wifi/scan /api/diagnose /api/hardware/discovery /api/channel_connectivity/refresh /api/config; do
+for endpoint in /api/wifi/scan /api/diagnose /api/hardware/discovery /api/channel_connectivity /api/config; do
   require_file_pattern \
     configure-ui/src/api/endpoints/system.test.ts \
     "\"${endpoint}\"" \

@@ -197,7 +197,7 @@ export async function getSystemInfo(
   return request<SystemInfoData>(baseUrl, '/api/system_info', { pairingCode })
 }
 
-/** GET /api/channel_connectivity 单通道项 */
+/** GET /api/channel_connectivity?channel=... 单通道项 */
 export interface ChannelConnectivityItem {
   id: string
   configured: boolean
@@ -217,19 +217,34 @@ export interface ChannelConnectivityItem {
   runtime_reason?: string | null
 }
 
-/** GET /api/channel_connectivity 响应 */
+/** GET /api/channel_connectivity?channel=... 响应 */
 export interface ChannelConnectivityResponse {
-  channels: ChannelConnectivityItem[]
+  channel: ChannelConnectivityItem
+  checked_at_unix_secs?: number | null
 }
 
 export async function getChannelConnectivity(
   baseUrl: string,
+  channel: string,
   pairingCode?: string,
 ): Promise<ApiResult<ChannelConnectivityResponse>> {
   if (!baseUrl?.trim()) return { ok: false, error: API_ERROR.NO_BASE_URL }
-  return request<ChannelConnectivityResponse>(baseUrl, '/api/channel_connectivity', {
-    pairingCode,
-  })
+  const normalizedChannel = channel.trim()
+  if (!normalizedChannel) {
+    return {
+      ok: false,
+      status: 400,
+      error: 'common.missing_query_param',
+      errorKey: 'common.missing_query_param',
+    }
+  }
+  return request<ChannelConnectivityResponse>(
+    baseUrl,
+    `/api/channel_connectivity?channel=${encodeURIComponent(normalizedChannel)}`,
+    {
+      pairingCode,
+    },
+  )
 }
 
 /** POST /api/restart：配对码必填，设备将重启。 */

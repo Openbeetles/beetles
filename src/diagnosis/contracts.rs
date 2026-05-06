@@ -143,7 +143,7 @@ mod tests {
             )],
             recommended_next_steps: vec![DiagnosisAction::new(
                 "inspect_channel_connectivity",
-                "check channel connectivity and last sender error",
+                "check /api/channel_connectivity?channel=<enabled_channel> and last sender error",
             )],
             evidence: vec![DiagnosisEvidence::new("dispatch_send_fail_total", "3")],
             confidence: DiagnosisConfidence::High,

@@ -283,7 +283,6 @@ pub(crate) enum RouteHandler {
     DiagnoseGet,
     SystemInfoGet,
     ChannelConnectivityGet,
-    ChannelConnectivityRefreshPost,
     ToolsGet,
     SessionsGet,
     SessionsPost,
@@ -740,7 +739,6 @@ pub(crate) const ROUTE_RESOURCE: &str = "/api/resource";
 pub(crate) const ROUTE_DIAGNOSE: &str = "/api/diagnose";
 pub(crate) const ROUTE_SYSTEM_INFO: &str = "/api/system_info";
 pub(crate) const ROUTE_CHANNEL_CONNECTIVITY: &str = "/api/channel_connectivity";
-pub(crate) const ROUTE_CHANNEL_CONNECTIVITY_REFRESH: &str = "/api/channel_connectivity/refresh";
 pub(crate) const ROUTE_TOOLS: &str = "/api/tools";
 pub(crate) const ROUTE_SESSIONS: &str = "/api/sessions";
 pub(crate) const ROUTE_MEMORY_STATUS: &str = "/api/memory/status";
@@ -1038,27 +1036,16 @@ pub(crate) const OBSERVABILITY_ROUTE_SPECS: &[HttpRouteSpec] = &[
     )
     .with_handler(RouteHandler::SystemInfoGet),
     HttpRouteSpec::immediate(ROUTE_SYSTEM_INFO, RouteMethod::Options, RouteBodyMode::None),
-    HttpRouteSpec::immediate_operator(
+    HttpRouteSpec::slow_diagnostic_operator(
         ROUTE_CHANNEL_CONNECTIVITY,
         RouteMethod::Get,
         RouteBodyMode::None,
         OperatorRouteAccess::AlwaysOn,
     )
-    .with_handler(RouteHandler::ChannelConnectivityGet),
+    .with_handler(RouteHandler::ChannelConnectivityGet)
+    .with_config_activity(crate::runtime::ConfigActivityPhase::Active, true),
     HttpRouteSpec::immediate(
         ROUTE_CHANNEL_CONNECTIVITY,
-        RouteMethod::Options,
-        RouteBodyMode::None,
-    ),
-    HttpRouteSpec::slow_diagnostic_operator(
-        ROUTE_CHANNEL_CONNECTIVITY_REFRESH,
-        RouteMethod::Post,
-        RouteBodyMode::None,
-        OperatorRouteAccess::Windowed,
-    )
-    .with_handler(RouteHandler::ChannelConnectivityRefreshPost),
-    HttpRouteSpec::immediate(
-        ROUTE_CHANNEL_CONNECTIVITY_REFRESH,
         RouteMethod::Options,
         RouteBodyMode::None,
     ),
@@ -1364,7 +1351,6 @@ mod tests {
     #[test]
     fn storage_touching_routes_never_run_on_httpd_callback() {
         for (method, path) in [
-            ("POST", ROUTE_CHANNEL_CONNECTIVITY_REFRESH),
             ("DELETE", ROUTE_SESSIONS),
             ("GET", ROUTE_MEMORY_STATUS),
             ("POST", ROUTE_MEMORY_MAINTENANCE),
@@ -1431,7 +1417,6 @@ mod tests {
                             | (RouteMethod::Get, ROUTE_RESOURCE)
                             | (RouteMethod::Get, ROUTE_TOOLS)
                             | (RouteMethod::Post, ROUTE_OPERATOR_WINDOW)
-                            | (RouteMethod::Get, ROUTE_CHANNEL_CONNECTIVITY)
                             | (RouteMethod::Post, ROUTE_WEBHOOK)
                     ),
                     "route {} {} must not run on HTTPD callback",
@@ -1509,8 +1494,12 @@ mod tests {
             reset.config_activity_phase(),
             Some(crate::runtime::ConfigActivityPhase::Persisting)
         );
-        let snapshot = route_spec_for("GET", ROUTE_CHANNEL_CONNECTIVITY).expect("snapshot");
-        assert_eq!(snapshot.config_activity_phase(), None);
+        let channel_probe =
+            route_spec_for("GET", ROUTE_CHANNEL_CONNECTIVITY).expect("channel probe");
+        assert_eq!(
+            channel_probe.config_activity_phase(),
+            Some(crate::runtime::ConfigActivityPhase::Active)
+        );
         let resource = route_spec_for("GET", ROUTE_RESOURCE).expect("resource");
         assert_eq!(resource.config_activity_phase(), None);
         let health = route_spec_for("GET", ROUTE_HEALTH).expect("health");
@@ -1534,12 +1523,13 @@ mod tests {
         assert!(!pairing.rejects_during_voice_exclusive());
         let csrf = route_spec_for("GET", ROUTE_CSRF_TOKEN).expect("csrf");
         assert!(!csrf.rejects_during_voice_exclusive());
-        let stale_snapshot = route_spec_for("GET", ROUTE_CHANNEL_CONNECTIVITY).expect("snapshot");
-        assert!(!stale_snapshot.rejects_during_voice_exclusive());
+        let channel_probe =
+            route_spec_for("GET", ROUTE_CHANNEL_CONNECTIVITY).expect("channel probe");
+        assert!(channel_probe.rejects_during_voice_exclusive());
         assert_eq!(
-            stale_snapshot.operator_access,
+            channel_probe.operator_access,
             OperatorRouteAccess::AlwaysOn,
-            "passive channel snapshots must not auto-open the operator window"
+            "missing or invalid channel query must reach the API contract before deep window gating"
         );
         let health = route_spec_for("GET", ROUTE_HEALTH).expect("health");
         assert!(!health.rejects_during_voice_exclusive());
@@ -1650,12 +1640,6 @@ mod tests {
         assert_eq!(
             route_spec_for("GET", ROUTE_CHANNEL_CONNECTIVITY)
                 .expect("channel connectivity")
-                .execution_class,
-            RouteExecutionClass::ImmediateRoute
-        );
-        assert_eq!(
-            route_spec_for("POST", ROUTE_CHANNEL_CONNECTIVITY_REFRESH)
-                .expect("channel connectivity refresh")
                 .execution_class,
             RouteExecutionClass::SlowDiagnosticRoute
         );
@@ -1961,7 +1945,6 @@ mod tests {
             ("GET", ROUTE_CONFIG_DISPLAY),
             ("GET", ROUTE_HEALTH),
             ("GET", ROUTE_RESOURCE),
-            ("GET", ROUTE_CHANNEL_CONNECTIVITY),
         ] {
             let spec = route_spec_for(method, path).expect("default UI route");
             assert_eq!(
@@ -1985,7 +1968,7 @@ mod tests {
             ("GET", ROUTE_WIFI_SCAN),
             ("GET", ROUTE_HARDWARE_DISCOVERY),
             ("GET", ROUTE_DIAGNOSE),
-            ("POST", ROUTE_CHANNEL_CONNECTIVITY_REFRESH),
+            ("GET", ROUTE_CHANNEL_CONNECTIVITY),
             ("GET", ROUTE_MEMORY_STATUS),
             ("POST", ROUTE_MEMORY_MAINTENANCE),
             ("POST", ROUTE_SKILLS_IMPORT),

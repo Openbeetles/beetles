@@ -414,7 +414,7 @@ if [[ "$scenario" == "full_machine" ]]; then
   collect_http_probe tools /api/tools "$run_dir/http/tools.json"
   collect_http_probe memory_status /api/memory/status "$run_dir/http/memory_status.json"
   collect_http_probe diagnose /api/diagnose "$run_dir/http/diagnose.json"
-  collect_http_probe channel_connectivity /api/channel_connectivity "$run_dir/http/channel_connectivity.json"
+  collect_http_probe channel_connectivity "/api/channel_connectivity?channel=webhook" "$run_dir/http/channel_connectivity.json"
 fi
 
 echo

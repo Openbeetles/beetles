@@ -20,7 +20,7 @@ use std::time::{Duration, Instant};
 const TAG: &str = "platform::http_client";
 /// 单次请求超时（毫秒）。
 const REQUEST_TIMEOUT_MS: i32 = 30_000;
-/// 读响应体时的块大小；放栈上，不宜过大以免在 httpd 等小栈任务中溢出（如 GET /api/channel_connectivity 会多次 HTTP）。
+/// 读响应体时的块大小；放栈上，不宜过大以免在 httpd 等小栈任务中溢出。
 const RESPONSE_READ_CHUNK: usize = 1024;
 /// `ESP_ERR_HTTP_EAGAIN` = `ESP_ERR_HTTP_BASE + 7` (0x7007).
 /// `esp-idf-svc` 在 HTTP body 未完成但暂时无数据时会返回它，语义是“稍后重读”。

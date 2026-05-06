@@ -572,6 +572,7 @@ export const enUS = {
       storage_access_failed: 'Storage access failed',
       file_storage_failed: 'File storage failed',
       io_failed: 'I/O failed',
+      missing_query_param: 'Required parameter is missing',
       not_found: 'Resource not found',
       invalid_response: 'Invalid response',
       http_status: 'Request failed',
@@ -608,7 +609,8 @@ export const enUS = {
       enabled_invalid: 'Enabled channel is invalid',
       field_too_long: 'One or more channel fields are too long',
       tg_group_activation_invalid: 'Telegram group activation mode is invalid',
-      snapshot_failed: 'Could not load channel connectivity snapshot',
+      connectivity_channel_invalid: 'Channel name is invalid',
+      snapshot_failed: 'Could not load channel connectivity result',
     },
     llm: {
       sources_empty: 'At least one LLM source is required',

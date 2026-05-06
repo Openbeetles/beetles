@@ -1,8 +1,5 @@
-//! 通道连通性检查：按当前启用通道做一次现场 HTTP 探测，供 GET /api/channel_connectivity 使用。
+//! 通道连通性检查：按指定通道做一次现场 HTTP 探测，供 GET /api/channel_connectivity?channel=... 使用。
 //! 不依赖 Platform，仅依赖 ChannelHttpClient 与 AppConfig。
-//!
-//! 配置面一次只启用一个 outbound channel，因此这里只对 `enabled_channel`
-//! 做真实探测；其余通道返回“当前未启用”的占位结果，避免无意义的串行外网请求。
 
 use crate::config::AppConfig;
 use crate::i18n::Locale;
@@ -47,6 +44,15 @@ pub struct ChannelConnectivitySnapshot {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub checked_at_unix_secs: Option<u64>,
     pub stale: bool,
+}
+
+/// Public API response for one requested channel connectivity probe.
+/// 指定通道连通性探测的公开 API 响应。
+#[derive(Debug, Clone, Serialize)]
+pub struct ChannelConnectivityProbeResponse {
+    pub channel: ChannelConnectivityItem,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub checked_at_unix_secs: Option<u64>,
 }
 
 /// 供各通道 check_connectivity 构建结果用。
@@ -204,10 +210,11 @@ fn disabled_item(id: &'static str) -> ChannelConnectivityItem {
     item(id, false, false, Some(CONNECTIVITY_NOT_CONFIGURED_KEY))
 }
 
-fn active_channel_item<H: crate::channels::ChannelHttpClient + ?Sized>(
+fn requested_channel_item<H: crate::channels::ChannelHttpClient + ?Sized>(
     config: &AppConfig,
     http: &mut H,
     _loc: Locale,
+    channel_id: &str,
 ) -> Option<ChannelConnectivityItem> {
     #[cfg(not(any(
         feature = "telegram",
@@ -217,7 +224,7 @@ fn active_channel_item<H: crate::channels::ChannelHttpClient + ?Sized>(
         feature = "qq_channel"
     )))]
     let _ = http;
-    match crate::normalize_compiled_enabled_channel(&config.enabled_channel) {
+    match channel_id {
         #[cfg(feature = "telegram")]
         "telegram" => Some(crate::channels::telegram::check_connectivity(config, http)),
         #[cfg(feature = "feishu")]
@@ -230,6 +237,19 @@ fn active_channel_item<H: crate::channels::ChannelHttpClient + ?Sized>(
         "qq_channel" => Some(crate::channels::qq::check_connectivity(config, http)),
         _ => None,
     }
+}
+
+fn active_channel_item<H: crate::channels::ChannelHttpClient + ?Sized>(
+    config: &AppConfig,
+    http: &mut H,
+    loc: Locale,
+) -> Option<ChannelConnectivityItem> {
+    requested_channel_item(
+        config,
+        http,
+        loc,
+        crate::normalize_compiled_enabled_channel(&config.enabled_channel),
+    )
 }
 
 fn webhook_item(config: &AppConfig) -> ChannelConnectivityItem {
@@ -268,6 +288,37 @@ pub fn build_unavailable_snapshot(config: &AppConfig, _loc: Locale) -> ChannelCo
         checked_at_unix_secs: Some(crate::util::current_unix_secs()),
         stale: true,
     }
+}
+
+/// Returns whether a channel id can be probed by the connectivity API in this build.
+/// 判断当前固件/二进制是否支持对该通道执行连通性探测。
+pub fn channel_supports_connectivity(channel_id: &str) -> bool {
+    let channel_id = channel_id.trim();
+    channel_id == "webhook"
+        || crate::connectivity_channel_entries().any(|entry| entry.id == channel_id)
+}
+
+/// Builds a single-channel connectivity probe response for the requested channel id.
+/// 根据调用方指定的通道 ID 构建单通道连通性探测响应。
+pub fn build_channel_probe<H: crate::channels::ChannelHttpClient + ?Sized>(
+    config: &AppConfig,
+    http: &mut H,
+    loc: Locale,
+    channel_id: &str,
+) -> Option<ChannelConnectivityProbeResponse> {
+    let channel_id = channel_id.trim();
+    if !channel_supports_connectivity(channel_id) {
+        return None;
+    }
+    let channel = if channel_id == "webhook" {
+        webhook_item(config)
+    } else {
+        requested_channel_item(config, http, loc, channel_id)?
+    };
+    Some(ChannelConnectivityProbeResponse {
+        channel,
+        checked_at_unix_secs: Some(crate::util::current_unix_secs()),
+    })
 }
 
 /// 按固定顺序返回通道连通性结果。
@@ -501,5 +552,27 @@ mod tests {
             .iter()
             .filter(|item| item.id != "webhook")
             .all(|item| !item.ok));
+    }
+
+    #[test]
+    fn build_channel_probe_returns_single_requested_webhook() {
+        let mut config = configured_config();
+        config.webhook_enabled = true;
+        config.webhook_token = "webhook-token".to_string();
+
+        let mut http = StubHttp;
+        let response =
+            build_channel_probe(&config, &mut http, Locale::Zh, "webhook").expect("webhook probe");
+
+        assert_eq!(response.channel.id, "webhook");
+        assert!(response.channel.configured);
+        assert!(response.channel.ok);
+    }
+
+    #[test]
+    fn channel_supports_connectivity_rejects_unknown_channel() {
+        assert!(!channel_supports_connectivity(""));
+        assert!(!channel_supports_connectivity("unknown"));
+        assert!(channel_supports_connectivity("webhook"));
     }
 }

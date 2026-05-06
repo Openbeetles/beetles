@@ -22,7 +22,7 @@ const TELEGRAM_API_BASE: &str = "https://api.telegram.org/bot";
 const TELEGRAM_MAX_MESSAGE_LEN: usize = 4096;
 const TELEGRAM_MAX_CAPTION_LEN: usize = 1024;
 
-/// 连通性检查：供 GET /api/channel_connectivity 使用。
+/// 连通性检查：供 GET /api/channel_connectivity?channel=... 单通道探测使用。
 pub fn check_connectivity<H: ChannelHttpClient + ?Sized>(
     config: &AppConfig,
     http: &mut H,

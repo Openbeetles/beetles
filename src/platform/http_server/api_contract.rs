@@ -33,6 +33,7 @@ pub const CONFIG_FIELD_TOO_LONG: &str = "config.field_too_long";
 pub const CHANNEL_ENABLED_INVALID: &str = "channel.enabled_invalid";
 pub const CHANNEL_FIELD_TOO_LONG: &str = "channel.field_too_long";
 pub const CHANNEL_TG_GROUP_ACTIVATION_INVALID: &str = "channel.tg_group_activation_invalid";
+pub const CHANNEL_CONNECTIVITY_CHANNEL_INVALID: &str = "channel.connectivity_channel_invalid";
 
 pub const LLM_SOURCES_EMPTY: &str = "llm.sources_empty";
 pub const LLM_SOURCE_FIELD_TOO_LONG: &str = "llm.source_field_too_long";
