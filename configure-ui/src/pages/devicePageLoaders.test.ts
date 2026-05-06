@@ -2,15 +2,11 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import type { ApiResult } from "../api/client.ts";
 import type {
-  ChannelConnectivityResponse,
   HealthData,
   MetricsSnapshotData,
   ResourceSnapshotData,
 } from "../api/endpoints/system.ts";
-import {
-  loadDeviceChannelConnectivity,
-  loadDeviceStatusBundle,
-} from "./devicePageLoaders.ts";
+import { loadDeviceStatusBundle } from "./devicePageLoaders.ts";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -163,46 +159,5 @@ test("loadDeviceStatusBundle normalizes thrown transport errors to config.errorN
   assert.deepEqual(result, {
     ok: false,
     error: "config.errorNetwork",
-  });
-});
-
-test("loadDeviceChannelConnectivity returns the channel list when the endpoint succeeds", async () => {
-  const channels: ChannelConnectivityResponse["channels"] = [
-    { id: "telegram", configured: true, ok: true, message_key: null },
-  ];
-
-  const result = await loadDeviceChannelConnectivity(async () => ({
-    ok: true,
-    data: { channels },
-  }));
-
-  assert.deepEqual(result, {
-    ok: true,
-    data: channels,
-  });
-});
-
-test("loadDeviceChannelConnectivity preserves the endpoint error when payload is incomplete", async () => {
-  const result = await loadDeviceChannelConnectivity(async () => ({
-    ok: true,
-    data: {} as ChannelConnectivityResponse,
-    error: "upstream unavailable",
-  }));
-
-  assert.deepEqual(result, {
-    ok: false,
-    error: "upstream unavailable",
-  });
-});
-
-test("loadDeviceChannelConnectivity falls back to a default error when payload is incomplete and the endpoint is silent", async () => {
-  const result = await loadDeviceChannelConnectivity(async () => ({
-    ok: true,
-    data: {} as ChannelConnectivityResponse,
-  }));
-
-  assert.deepEqual(result, {
-    ok: false,
-    error: "network.channel_connectivity_unavailable",
   });
 });

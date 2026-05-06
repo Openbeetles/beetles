@@ -49,8 +49,6 @@ export const OS_ICON_DASHBOARD = {
   deviceUnreachable: "/icons/device_unreachable_3d.png",
   /** 设备信息摘要 */
   deviceInfo: "/icons/device_info_3d.png",
-  /** 通道连通性（中心枢纽 / 多通道状态节点） */
-  channels: "/icons/dash_channels_3d.png",
   /** 存储占用 */
   storage: "/icons/storage_3d.png",
   /** 内存 / 堆 */

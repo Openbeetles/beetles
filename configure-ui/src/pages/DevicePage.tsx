@@ -14,7 +14,6 @@ import {
   SettingsRow,
   splitPageErrorState,
 } from "../components/form";
-import { ChannelConnectivityPanel } from "../components/ChannelConnectivityPanel";
 import { BeetleIcon } from "../components/BeetleIcon";
 import { useDeviceApi } from "../hooks/useDeviceApi";
 import { useDevice } from "../hooks/useDevice";
@@ -22,7 +21,6 @@ import { useRevealedPassword } from "../hooks/useRevealedPassword";
 import { useToast } from "../hooks/useToast";
 import {
   type SystemInfoData,
-  type ChannelConnectivityItem,
   type HealthData,
   type MetricsSnapshotData,
   type ResourceSnapshotData,
@@ -44,10 +42,7 @@ import {
   buildDeviceSummaryFields,
   pressureLabelKey,
 } from "./deviceHomeViewModel";
-import {
-  loadDeviceChannelConnectivity,
-  loadDeviceStatusBundle,
-} from "./devicePageLoaders";
+import { loadDeviceStatusBundle } from "./devicePageLoaders";
 import {
   CONFIG_PANEL_LOADING_SX,
   DASHBOARD_CARD_BODY_SX,
@@ -370,9 +365,6 @@ export function DevicePage() {
     "idle" | "checking" | "ok" | "fail"
   >("idle");
   const [systemInfo, setSystemInfo] = useState<SystemInfoData | null>(null);
-  const [channelList, setChannelList] = useState<ChannelConnectivityItem[]>([]);
-  const [channelLoading, setChannelLoading] = useState(false);
-  const [channelError, setChannelError] = useState("");
   const [healthData, setHealthData] = useState<HealthData | null>(null);
   const [resourceData, setResourceData] = useState<ResourceSnapshotData | null>(
     null,
@@ -386,7 +378,6 @@ export function DevicePage() {
   const deviceSessionKey = `${baseUrl ?? ""}\0${pairingCode ?? ""}`;
   const prevDeviceSessionKeyRef = useRef(deviceSessionKey);
   const healthLoadRequestIdRef = useRef(0);
-  const channelLoadRequestIdRef = useRef(0);
   useEffect(() => {
     if (deviceSessionKey === prevDeviceSessionKeyRef.current) return;
     prevDeviceSessionKeyRef.current = deviceSessionKey;
@@ -396,9 +387,6 @@ export function DevicePage() {
       setUrlInput(nextUrl);
       setCodeInput(nextCode);
       setSystemInfo(null);
-      setChannelList([]);
-      setChannelLoading(false);
-      setChannelError("");
       setHealthData(null);
       setResourceData(null);
       setMetricsData(null);
@@ -537,57 +525,6 @@ export function DevicePage() {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- initial device sync intentionally enters loading as soon as the session becomes reachable
     return runHealthLoad({ notify: false, clearError: false });
   }, [canAccessProtectedApis, baseUrl, runHealthLoad]);
-
-  const runChannelLoad = useCallback(
-    ({
-      notify,
-      clearError,
-    }: {
-      notify: boolean;
-      clearError: boolean;
-    }) => {
-      if (!canAccessProtectedApis || !baseUrl?.trim()) return undefined;
-      const requestId = ++channelLoadRequestIdRef.current;
-      if (clearError) setChannelError("");
-      setChannelLoading(true);
-      let active = true;
-      void loadDeviceChannelConnectivity(api.system.channelConnectivity).then(
-        (result) => {
-          if (!active || channelLoadRequestIdRef.current !== requestId) return;
-          setChannelLoading(false);
-        if (result.ok) {
-          setChannelError("");
-          setChannelList(result.data);
-          return;
-        }
-          setChannelError(result.error);
-          if (notify) {
-            showToast(
-              `${t("device.channelConnectivityLoadFailedTitle")}: ${result.error}`,
-              { variant: "error" },
-            );
-          }
-        },
-      );
-      return () => {
-        active = false;
-      };
-    },
-    [api.system, baseUrl, canAccessProtectedApis, showToast, t],
-  );
-
-  const reloadChannelConnectivity = useCallback(() => {
-    void runChannelLoad({ notify: true, clearError: true });
-  }, [runChannelLoad]);
-
-  const channelNameKey: Record<string, string> = {
-    telegram: "channelTelegram",
-    feishu: "channelFeishu",
-    dingtalk: "channelDingtalk",
-    wecom: "channelWecom",
-    qq_channel: "channelQqChannel",
-    webhook: "channelWebhook",
-  };
 
   const pressureLabel =
     pressureLabelKey(resourceData?.pressure) != null
@@ -780,11 +717,8 @@ export function DevicePage() {
           variant="outlined"
           size="small"
           startIcon={<RefreshRounded />}
-          onClick={() => {
-            reloadHealth();
-            reloadChannelConnectivity();
-          }}
-          disabled={healthLoading || channelLoading}
+          onClick={reloadHealth}
+          disabled={healthLoading}
           sx={{
             borderRadius: "var(--radius-full)",
             bgcolor: "color-mix(in srgb, var(--card) 50%, transparent)",
@@ -792,7 +726,7 @@ export function DevicePage() {
             WebkitBackdropFilter: "blur(var(--shell-chrome-blur))",
           }}
         >
-          {t("device.channelRefresh")}
+          {t("device.refreshDashboard")}
         </Button>
       </Box>
 
@@ -1045,88 +979,72 @@ export function DevicePage() {
                 pointerEvents: "auto",
               }}
             >
-            {/* Row 1: Hero (8) + Connection (4) */}
-            <Box
-              sx={{
-                gridColumn: { xs: "span 4", sm: "span 8", lg: "span 8" },
-                gridRow: { xs: "span 2", sm: "span 2", lg: "span 2" },
-              }}
-            >
-              {renderHeroCard()}
-            </Box>
-
-            <Box
-              sx={{
-                gridColumn: { xs: "span 4", sm: "span 4", lg: "span 4" },
-                gridRow: { xs: "span 2", sm: "span 2", lg: "span 2" },
-              }}
-            >
-              {renderConnectionCard()}
-            </Box>
-
-            {/* Row 2: Device Details (4) + Channels (8) */}
-            <Box
-              sx={{
-                gridColumn: { xs: "span 4", sm: "span 4", lg: "span 4" },
-                gridRow: { xs: "span 2", lg: "span 2" },
-              }}
-            >
-              <DashboardCard
-                title={t("device.sectionDeviceInfo")}
-                icon={<Os3dIcon src={OS_ICON_DASHBOARD.deviceInfo} variant="tile" />}
+              {/* Row 1: Hero (8) + Connection (4) */}
+              <Box
+                sx={{
+                  gridColumn: { xs: "span 4", sm: "span 8", lg: "span 8" },
+                  gridRow: { xs: "span 2", sm: "span 2", lg: "span 2" },
+                }}
               >
-                <Box
-                  sx={{
-                    display: "flex",
-                    flexDirection: "column",
-                    gap: 0,
-                    "& > *:not(:last-of-type)": {
-                      borderBottom: "var(--divider-row)",
-                    },
-                  }}
-                >
-                  {deviceSummaryFields.map((field) => (
-                    <StatRow
-                      key={field.id}
-                      label={t(field.labelKey)}
-                      value={renderSummaryFieldValue(
-                        field.value,
-                        field.valueKind,
-                      )}
+                {renderHeroCard()}
+              </Box>
+
+              <Box
+                sx={{
+                  gridColumn: { xs: "span 4", sm: "span 4", lg: "span 4" },
+                  gridRow: { xs: "span 2", sm: "span 2", lg: "span 2" },
+                }}
+              >
+                {renderConnectionCard()}
+              </Box>
+
+              {/* Row 2: Device details + system status */}
+              <Box
+                sx={{
+                  gridColumn: { xs: "span 4", sm: "span 4", lg: "span 4" },
+                  gridRow: { xs: "span 2", lg: "span 2" },
+                }}
+              >
+                <DashboardCard
+                  title={t("device.sectionDeviceInfo")}
+                  icon={
+                    <Os3dIcon
+                      src={OS_ICON_DASHBOARD.deviceInfo}
+                      variant="tile"
                     />
-                  ))}
-                </Box>
-              </DashboardCard>
-            </Box>
+                  }
+                >
+                  <Box
+                    sx={{
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: 0,
+                      "& > *:not(:last-of-type)": {
+                        borderBottom: "var(--divider-row)",
+                      },
+                    }}
+                  >
+                    {deviceSummaryFields.map((field) => (
+                      <StatRow
+                        key={field.id}
+                        label={t(field.labelKey)}
+                        value={renderSummaryFieldValue(
+                          field.value,
+                          field.valueKind,
+                        )}
+                      />
+                    ))}
+                  </Box>
+                </DashboardCard>
+              </Box>
 
-            <Box
-              sx={{
-                gridColumn: { xs: "span 4", sm: "span 8", lg: "span 8" },
-                gridRow: { xs: "span 2", lg: "span 2" },
-              }}
-            >
-              <DashboardCard
-                title={t("device.sectionChannelConnectivity")}
-                icon={<Os3dIcon src={OS_ICON_DASHBOARD.channels} variant="tile" />}
-              >
-                <ChannelConnectivityPanel
-                  channels={channelList}
-                  loading={channelLoading}
-                  error={channelError}
-                  onRetry={reloadChannelConnectivity}
-                  channelLabel={(id) => t(`device.${channelNameKey[id] ?? id}`)}
-                  t={t}
-                />
-              </DashboardCard>
-            </Box>
-
-            <SystemStatusPanel
-              healthData={healthData!}
-              resourceData={resourceData!}
-              metricsData={metricsData!}
-              runtimeKind={runtimeKind}
-              t={t}
-            />
+              <SystemStatusPanel
+                healthData={healthData!}
+                resourceData={resourceData!}
+                metricsData={metricsData!}
+                runtimeKind={runtimeKind}
+                t={t}
+              />
             </Box>
           </Box>
         )}

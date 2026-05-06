@@ -1,7 +1,5 @@
 import type { ApiResult } from "../api/client.ts";
 import type {
-  ChannelConnectivityItem,
-  ChannelConnectivityResponse,
   HealthData,
   MetricsSnapshotData,
   ResourceSnapshotData,
@@ -15,10 +13,6 @@ export interface DeviceStatusBundleData {
 
 export type DeviceStatusBundleResult =
   | { ok: true; data: DeviceStatusBundleData }
-  | { ok: false; error: string };
-
-export type DeviceChannelConnectivityResult =
-  | { ok: true; data: ChannelConnectivityItem[] }
   | { ok: false; error: string };
 
 export interface DeviceStatusLoaders {
@@ -47,29 +41,6 @@ export async function loadDeviceStatusBundle(
           resourceRes && resourceRes.ok && resourceRes.data ? resourceRes.data : {},
         metrics: metricsRes && metricsRes.ok && metricsRes.data ? metricsRes.data : {},
       },
-    };
-  } catch {
-    return {
-      ok: false,
-      error: "config.errorNetwork",
-    };
-  }
-}
-
-export async function loadDeviceChannelConnectivity(
-  load: () => Promise<ApiResult<ChannelConnectivityResponse>>,
-): Promise<DeviceChannelConnectivityResult> {
-  try {
-    const result = await load();
-    if (result.ok && result.data?.channels) {
-      return {
-        ok: true,
-        data: result.data.channels,
-      };
-    }
-    return {
-      ok: false,
-      error: result.error ?? "network.channel_connectivity_unavailable",
     };
   } catch {
     return {

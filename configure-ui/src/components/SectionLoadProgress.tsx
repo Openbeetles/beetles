@@ -1,7 +1,7 @@
 import Box from "@mui/material/Box";
 import LinearProgress from "@mui/material/LinearProgress";
 
-/** 与 ChannelConnectivityPanel 顶栏一致，供设备页多卡片复用 */
+/** 设备页区块加载态共用进度条。 */
 const LINEAR_SX = {
   height: 3,
   borderRadius: "var(--radius-chip)",
@@ -13,8 +13,6 @@ const LINEAR_SX = {
 
 export interface SectionLoadProgressProps {
   loading: boolean;
-  /** 兼容旧调用方保留；当前仅显示进度条。 */
-  idleHint?: string;
 }
 
 /**
