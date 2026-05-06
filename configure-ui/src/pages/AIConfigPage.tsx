@@ -8,6 +8,7 @@ import MenuItem from "@mui/material/MenuItem";
 import Select from "@mui/material/Select";
 import Stack from "@mui/material/Stack";
 import Button from "@mui/material/Button";
+import IconButton from "@mui/material/IconButton";
 import TextField from "@mui/material/TextField";
 import Tooltip from "@mui/material/Tooltip";
 import type { SelectChangeEvent } from "@mui/material/Select";
@@ -664,7 +665,16 @@ export function AIConfigPage() {
                           {t("config.llmCustomHeaders")}
                         </Box>
                         {row.custom_headers.map((header, headerIndex) => (
-                          <FormGrid key={headerIndex}>
+                          <FormGrid
+                            key={headerIndex}
+                            sx={{
+                              alignItems: "center",
+                              gridTemplateColumns: {
+                                xs: "minmax(0, 1fr) auto",
+                                md: "minmax(0, 1fr) minmax(0, 1fr) auto",
+                              },
+                            }}
+                          >
                             <TextField
                               label={t("config.llmHeaderName")}
                               value={header.name}
@@ -673,6 +683,7 @@ export function AIConfigPage() {
                               }
                               fullWidth
                               slotProps={{ htmlInput: { maxLength: MAX_LEN } }}
+                              sx={{ gridColumn: { xs: "1 / -1", md: "auto" } }}
                             />
                             <TextField
                               label={t("config.llmHeaderValue")}
@@ -688,20 +699,22 @@ export function AIConfigPage() {
                                 },
                               }}
                             />
-                            <Button
-                              variant="text"
-                              color="inherit"
-                              size="small"
-                              startIcon={<DeleteOutlined />}
-                              onClick={() => removeCustomHeader(i, headerIndex)}
-                              sx={{
-                                alignSelf: "center",
-                                justifySelf: "start",
-                                borderRadius: "var(--radius-control)",
-                              }}
-                            >
-                              {t("common.remove")}
-                            </Button>
+                            <Tooltip title={t("common.remove")}>
+                              <IconButton
+                                aria-label={t("common.remove")}
+                                onClick={() => removeCustomHeader(i, headerIndex)}
+                                size="small"
+                                sx={{
+                                  justifySelf: "end",
+                                  color: TEXT_COLOR.tertiary,
+                                  width: "var(--icon-container-md)",
+                                  height: "var(--icon-container-md)",
+                                  borderRadius: "var(--radius-control)",
+                                }}
+                              >
+                                <DeleteOutlined fontSize="small" />
+                              </IconButton>
+                            </Tooltip>
                           </FormGrid>
                         ))}
                         <Button
