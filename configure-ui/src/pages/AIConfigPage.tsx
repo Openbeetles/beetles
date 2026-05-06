@@ -656,9 +656,9 @@ export function AIConfigPage() {
                         <Box
                           component="span"
                           sx={{
-                            color: TEXT_COLOR.secondary,
-                            fontSize: "var(--font-size-body-sm)",
-                            fontWeight: 650,
+                            color: TEXT_COLOR.tertiary,
+                            fontSize: "var(--font-size-caption)",
+                            fontWeight: 600,
                           }}
                         >
                           {t("config.llmCustomHeaders")}
@@ -707,11 +707,17 @@ export function AIConfigPage() {
                         <Button
                           startIcon={<AddRounded />}
                           onClick={() => addCustomHeader(i)}
-                          variant="outlined"
+                          variant="text"
+                          color="inherit"
                           size="small"
                           sx={{
                             alignSelf: "flex-start",
                             borderRadius: "var(--radius-control)",
+                            color: "var(--primary)",
+                            fontSize: "var(--font-size-body-sm)",
+                            fontWeight: 600,
+                            minHeight: 30,
+                            px: 0.5,
                           }}
                         >
                           {t("config.addCustomHeader")}
