@@ -716,7 +716,6 @@ export const zhCN = {
       addLlmSource: '添加 LLM 源',
       llmRemoveSourceConfirmTitle: '移除 LLM 源',
       llmRemoveSourceConfirmDesc: '移除后该源将不再参与优先级顺序。确定移除？',
-      llmSourceId: '源 ID',
       llmModelKind: '模型能力',
       llmModelKindText: '文本',
       llmModelKindMultimodal: '多模态',
@@ -729,8 +728,6 @@ export const zhCN = {
       dragLlmSource: '拖拽调整优先级',
       validation: {
         llmSourcesNonEmpty: '至少保留一个 LLM 源',
-        llmSourceIdRequired: 'LLM 源 ID 必填',
-        llmSourceIdDuplicate: 'LLM 源 ID 不能重复',
         llmApiKeyRequired: 'API Key 必填',
         llmModelKindInvalid: '请选择有效的模型能力',
         llmHeaderNameRequired: 'Header 值不为空时名称必填',

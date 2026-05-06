@@ -718,7 +718,6 @@ export const enUS = {
       addLlmSource: 'Add LLM source',
       llmRemoveSourceConfirmTitle: 'Remove LLM source',
       llmRemoveSourceConfirmDesc: 'Removing will remove this source from the priority order. Continue?',
-      llmSourceId: 'Source ID',
       llmModelKind: 'Model capability',
       llmModelKindText: 'Text',
       llmModelKindMultimodal: 'Multimodal',
@@ -731,8 +730,6 @@ export const enUS = {
       dragLlmSource: 'Drag to reorder priority',
       validation: {
         llmSourcesNonEmpty: 'At least one LLM source required',
-        llmSourceIdRequired: 'LLM source ID is required',
-        llmSourceIdDuplicate: 'LLM source IDs must be unique',
         llmApiKeyRequired: 'API Key is required',
         llmModelKindInvalid: 'Select a valid model capability',
         llmHeaderNameRequired: 'Header name is required when value is set',

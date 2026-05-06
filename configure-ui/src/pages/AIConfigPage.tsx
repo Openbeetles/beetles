@@ -104,15 +104,25 @@ function generateSourceId(): string {
   return `llm_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
 }
 
+function normalizeInternalSourceId(rawId: string, usedIds: Set<string>): string {
+  let id = rawId.trim();
+  while (id.length === 0 || id.length > MAX_LEN || usedIds.has(id)) {
+    id = generateSourceId();
+  }
+  usedIds.add(id);
+  return id;
+}
+
 type SourceFormRow = LlmSource & { provider: LlmProviderValue };
 type LlmDraftState = {
   sources: SourceFormRow[];
 };
 
 function toSourceRows(sources: LlmSource[]): SourceFormRow[] {
+  const usedIds = new Set<string>();
   return sources.map((s) => ({
     ...s,
-    id: s.id.trim() || generateSourceId(),
+    id: normalizeInternalSourceId(s.id, usedIds),
     provider: normalizeProvider(s.provider),
     model_kind: normalizeModelKind(s.model_kind),
     custom_headers: s.custom_headers.map((header) => ({ ...header })),
@@ -124,14 +134,8 @@ function validateSources(
   t: (k: string) => string,
 ): string | null {
   if (rows.length === 0) return t("config.validation.llmSourcesNonEmpty");
-  const sourceIds = new Set<string>();
   for (let i = 0; i < rows.length; i++) {
     const r = rows[i];
-    const sourceId = r.id.trim();
-    if (sourceId.length === 0) return t("config.validation.llmSourceIdRequired");
-    if (sourceId.length > MAX_LEN) return t("config.validation.fieldMax64");
-    if (sourceIds.has(sourceId)) return t("config.validation.llmSourceIdDuplicate");
-    sourceIds.add(sourceId);
     if (r.provider.length > MAX_LEN) return t("config.validation.fieldMax64");
     if (r.api_key.trim().length === 0) return t("config.validation.llmApiKeyRequired");
     if (r.api_key.length > MAX_LEN) return t("config.validation.fieldMax64");
@@ -201,7 +205,10 @@ export function AIConfigPage() {
       sources: [
         ...prev.sources,
         {
-          id: generateSourceId(),
+          id: normalizeInternalSourceId(
+            "",
+            new Set(prev.sources.map((source) => source.id.trim())),
+          ),
           provider: DEFAULT_LLM_PROVIDER,
           api_key: "",
           model: defaultModelForProvider(DEFAULT_LLM_PROVIDER),
@@ -345,8 +352,9 @@ export function AIConfigPage() {
       saveFeedback.fail(err);
       return;
     }
+    const usedIds = new Set<string>();
     const llm_sources: LlmSource[] = sources.map((r) => ({
-      id: r.id.trim(),
+      id: normalizeInternalSourceId(r.id, usedIds),
       provider: r.provider.trim(),
       api_key: r.api_key.trim(),
       model: r.model.trim(),
@@ -562,12 +570,6 @@ export function AIConfigPage() {
                 >
                   <Stack spacing={2}>
                     <FormGrid>
-                      <TextField
-                        label={t("config.llmSourceId")}
-                        value={row.id}
-                        fullWidth
-                        slotProps={{ htmlInput: { maxLength: MAX_LEN, readOnly: true } }}
-                      />
                       <FormControl fullWidth>
                         <InputLabel id={`llm-provider-${i}`}>
                           {t("config.llmProvider")}
