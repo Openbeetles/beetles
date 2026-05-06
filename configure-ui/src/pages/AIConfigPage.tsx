@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import type { DragEvent } from "react";
 import { useTranslation } from "react-i18next";
 import Box from "@mui/material/Box";
 import FormControl from "@mui/material/FormControl";
@@ -8,9 +9,11 @@ import Select from "@mui/material/Select";
 import Stack from "@mui/material/Stack";
 import Button from "@mui/material/Button";
 import TextField from "@mui/material/TextField";
+import Tooltip from "@mui/material/Tooltip";
 import type { SelectChangeEvent } from "@mui/material/Select";
 import AddRounded from "@mui/icons-material/AddRounded";
 import DeleteOutlined from "@mui/icons-material/DeleteOutlined";
+import DragIndicatorRounded from "@mui/icons-material/DragIndicatorRounded";
 import SaveRounded from "@mui/icons-material/SaveRounded";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { Os3dIcon } from "../components/Os3dIcon";
@@ -32,7 +35,6 @@ import {
   PAGE_STACK_OUTER_SX,
   TEXT_COLOR,
 } from "../theme/panelStyles";
-import { LAYOUT_TOKENS } from "../config/themeTokens";
 import { useConfig } from "../hooks/useConfig";
 import { useConfigPageLoad } from "../hooks/useConfigPageLoad";
 import { useDeviceApi } from "../hooks/useDeviceApi";
@@ -40,7 +42,7 @@ import { useSaveFeedback } from "../hooks/useSaveFeedback";
 import { useSyncedState } from "../hooks/useSyncedState";
 import { useUnsaved } from "../hooks/useUnsaved";
 import { useRevealedPasswordFields } from "../hooks/useRevealedPassword";
-import type { LlmSource } from "../types/appConfig";
+import type { LlmCustomHeader, LlmModelKind, LlmSource } from "../types/appConfig";
 import {
   apiUrlAfterProviderChange,
   DEFAULT_LLM_PROVIDER,
@@ -53,6 +55,7 @@ import {
 
 const MAX_LEN = 64;
 const MAX_API_URL = 256;
+const MAX_HEADER_VALUE = 256;
 const AI_CONFIG_DIRTY_OWNER = "ai-config";
 
 /** 与 `LLM_PROVIDER_VALUES` 顺序无关；下拉项与文案一一对应，避免只改数组忘改 MenuItem。 */
@@ -68,92 +71,90 @@ const LLM_PROVIDER_LABEL_KEY: Record<LlmProviderValue, string> = {
   ollama: "config.providerOllama",
 };
 
+const LLM_MODEL_KIND_LABEL_KEY: Record<LlmModelKind, string> = {
+  text: "config.llmModelKindText",
+  multimodal: "config.llmModelKindMultimodal",
+  image_generation: "config.llmModelKindImageGeneration",
+  video_generation: "config.llmModelKindVideoGeneration",
+};
+
+const LLM_MODEL_KIND_VALUES: LlmModelKind[] = [
+  "text",
+  "multimodal",
+  "image_generation",
+  "video_generation",
+];
+
 function normalizeProvider(provider: string): LlmProviderValue {
   return (LLM_PROVIDER_VALUES as readonly string[]).includes(provider)
     ? (provider as LlmProviderValue)
     : DEFAULT_LLM_PROVIDER;
 }
 
+function normalizeModelKind(modelKind: string): LlmModelKind {
+  return (LLM_MODEL_KIND_VALUES as readonly string[]).includes(modelKind)
+    ? (modelKind as LlmModelKind)
+    : "text";
+}
+
+function generateSourceId(): string {
+  if (typeof globalThis.crypto?.randomUUID === "function") {
+    return `llm_${globalThis.crypto.randomUUID()}`;
+  }
+  return `llm_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
 type SourceFormRow = LlmSource & { provider: LlmProviderValue };
 type LlmDraftState = {
   sources: SourceFormRow[];
-  routerIndex: number | null;
-  workerIndex: number | null;
 };
 
 function toSourceRows(sources: LlmSource[]): SourceFormRow[] {
   return sources.map((s) => ({
     ...s,
+    id: s.id.trim() || generateSourceId(),
     provider: normalizeProvider(s.provider),
+    model_kind: normalizeModelKind(s.model_kind),
+    custom_headers: s.custom_headers.map((header) => ({ ...header })),
   }));
-}
-
-const LLM_SOURCE_LABEL_MAX_MODEL = 40;
-const LLM_SOURCE_LABEL_MAX_HOST = 28;
-
-function hostFromApiUrl(url: string): string {
-  const u = url.trim();
-  if (!u) return "";
-  try {
-    const parsed = new URL(u);
-    return parsed.host || u.slice(0, LLM_SOURCE_LABEL_MAX_HOST);
-  } catch {
-    return u.slice(0, LLM_SOURCE_LABEL_MAX_HOST);
-  }
-}
-
-function truncateMiddle(s: string, max: number): string {
-  if (s.length <= max) return s;
-  if (max <= 3) return "…";
-  const head = Math.ceil((max - 1) / 2);
-  const tail = max - 1 - head;
-  return `${s.slice(0, head)}…${s.slice(s.length - tail)}`;
-}
-
-/** 主用/备用下拉里区分「同 provider、不同模型/端点」的源。 */
-function formatLlmSourceSelectLabel(
-  index: number,
-  row: SourceFormRow,
-  t: (key: string) => string,
-): string {
-  const raw = row.provider.trim();
-  const provDisplay =
-    (LLM_PROVIDER_VALUES as readonly string[]).includes(raw)
-      ? t(LLM_PROVIDER_LABEL_KEY[raw as LlmProviderValue])
-      : raw || t("config.llmSource");
-  const model = row.model.trim();
-  const host = hostFromApiUrl(row.api_url);
-  let detail: string;
-  if (model) {
-    detail = truncateMiddle(model, LLM_SOURCE_LABEL_MAX_MODEL);
-  } else if (host) {
-    detail = truncateMiddle(host, LLM_SOURCE_LABEL_MAX_HOST);
-  } else {
-    detail = t("config.llmOptionNoModel");
-  }
-  return `#${index} · ${provDisplay} · ${detail}`;
 }
 
 function validateSources(
   rows: SourceFormRow[],
-  routerIndex: number | null,
-  workerIndex: number | null,
   t: (k: string) => string,
 ): string | null {
   if (rows.length === 0) return t("config.validation.llmSourcesNonEmpty");
-  const n = rows.length;
+  const sourceIds = new Set<string>();
   for (let i = 0; i < rows.length; i++) {
     const r = rows[i];
+    const sourceId = r.id.trim();
+    if (sourceId.length === 0) return t("config.validation.llmSourceIdRequired");
+    if (sourceId.length > MAX_LEN) return t("config.validation.fieldMax64");
+    if (sourceIds.has(sourceId)) return t("config.validation.llmSourceIdDuplicate");
+    sourceIds.add(sourceId);
     if (r.provider.length > MAX_LEN) return t("config.validation.fieldMax64");
+    if (r.api_key.trim().length === 0) return t("config.validation.llmApiKeyRequired");
     if (r.api_key.length > MAX_LEN) return t("config.validation.fieldMax64");
     if (r.model.length > MAX_LEN) return t("config.validation.fieldMax64");
     if (r.api_url.length > MAX_API_URL)
       return t("config.validation.apiUrlMax256");
+    if (!LLM_MODEL_KIND_VALUES.includes(r.model_kind))
+      return t("config.validation.llmModelKindInvalid");
+    const headerNames = new Set<string>();
+    for (const header of r.custom_headers) {
+      const name = header.name.trim();
+      const value = header.value.trim();
+      if (!name && value) return t("config.validation.llmHeaderNameRequired");
+      if (name.length > MAX_LEN) return t("config.validation.fieldMax64");
+      if (value.length > MAX_HEADER_VALUE)
+        return t("config.validation.llmHeaderValueMax256");
+      if (!name) continue;
+      const normalizedName = name.toLowerCase();
+      if (headerNames.has(normalizedName))
+        return t("config.validation.llmHeaderDuplicate");
+      headerNames.add(normalizedName);
+    }
   }
-  if (routerIndex != null && (routerIndex < 0 || routerIndex >= n))
-    return t("config.validation.routerIndexInRange");
-  if (workerIndex != null && (workerIndex < 0 || workerIndex >= n))
-    return t("config.validation.workerIndexInRange");
   return null;
 }
 
@@ -163,6 +164,7 @@ export function AIConfigPage() {
   const { llmConfig, loadLlmConfig, saveLlm, llmLoading, llmError } = useConfig();
   const { setDirtyFor, clearDirtyFor } = useUnsaved();
   const [removeSourceIndex, setRemoveSourceIndex] = useState<number | null>(null);
+  const [draggedSourceIndex, setDraggedSourceIndex] = useState<number | null>(null);
   const saveFeedback = useSaveFeedback(t);
   const { isRevealed, getRevealHandlers } = useRevealedPasswordFields();
 
@@ -183,18 +185,14 @@ export function AIConfigPage() {
     if (!llmConfig) {
       return {
         sources: [],
-        routerIndex: null,
-        workerIndex: null,
       };
     }
     return {
       sources: toSourceRows(llmConfig.llm_sources),
-      routerIndex: llmConfig.llm_router_source_index ?? null,
-      workerIndex: llmConfig.llm_worker_source_index ?? null,
     };
   }, [llmConfig]);
   const [draft, setDraft] = useSyncedState(syncedDraft);
-  const { sources, routerIndex, workerIndex } = draft;
+  const { sources } = draft;
 
   const addSource = () => {
     markDirty();
@@ -203,10 +201,13 @@ export function AIConfigPage() {
       sources: [
         ...prev.sources,
         {
+          id: generateSourceId(),
           provider: DEFAULT_LLM_PROVIDER,
           api_key: "",
           model: defaultModelForProvider(DEFAULT_LLM_PROVIDER),
           api_url: defaultApiUrlForProvider(DEFAULT_LLM_PROVIDER),
+          model_kind: "text",
+          custom_headers: [],
         },
       ],
     }));
@@ -235,6 +236,92 @@ export function AIConfigPage() {
     });
   };
 
+  const updateCustomHeader = (
+    sourceIndex: number,
+    headerIndex: number,
+    field: keyof LlmCustomHeader,
+    value: string,
+  ) => {
+    markDirty();
+    setDraft((prev) => {
+      const next = [...prev.sources];
+      const source = next[sourceIndex];
+      const customHeaders = [...source.custom_headers];
+      customHeaders[headerIndex] = {
+        ...customHeaders[headerIndex],
+        [field]: value,
+      };
+      next[sourceIndex] = { ...source, custom_headers: customHeaders };
+      return { ...prev, sources: next };
+    });
+  };
+
+  const addCustomHeader = (sourceIndex: number) => {
+    markDirty();
+    setDraft((prev) => {
+      const next = [...prev.sources];
+      const source = next[sourceIndex];
+      next[sourceIndex] = {
+        ...source,
+        custom_headers: [...source.custom_headers, { name: "", value: "" }],
+      };
+      return { ...prev, sources: next };
+    });
+  };
+
+  const removeCustomHeader = (sourceIndex: number, headerIndex: number) => {
+    markDirty();
+    setDraft((prev) => {
+      const next = [...prev.sources];
+      const source = next[sourceIndex];
+      next[sourceIndex] = {
+        ...source,
+        custom_headers: source.custom_headers.filter((_, i) => i !== headerIndex),
+      };
+      return { ...prev, sources: next };
+    });
+  };
+
+  const moveSource = (fromIndex: number, toIndex: number) => {
+    if (fromIndex === toIndex) return;
+    markDirty();
+    setDraft((prev) => {
+      if (
+        fromIndex < 0 ||
+        toIndex < 0 ||
+        fromIndex >= prev.sources.length ||
+        toIndex >= prev.sources.length
+      ) {
+        return prev;
+      }
+      const next = [...prev.sources];
+      const [moved] = next.splice(fromIndex, 1);
+      next.splice(toIndex, 0, moved);
+      return { ...prev, sources: next };
+    });
+  };
+
+  const handleSourceDragStart = (event: DragEvent, index: number) => {
+    setDraggedSourceIndex(index);
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("text/plain", String(index));
+  };
+
+  const handleSourceDragOver = (event: DragEvent) => {
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "move";
+  };
+
+  const handleSourceDrop = (event: DragEvent, toIndex: number) => {
+    event.preventDefault();
+    const fromRaw = event.dataTransfer.getData("text/plain");
+    const fromIndex = fromRaw ? Number.parseInt(fromRaw, 10) : draggedSourceIndex;
+    if (typeof fromIndex === "number" && Number.isInteger(fromIndex)) {
+      moveSource(fromIndex, toIndex);
+    }
+    setDraggedSourceIndex(null);
+  };
+
   const changeProvider = (i: number, newProviderRaw: string) => {
     const newP = normalizeProvider(newProviderRaw);
     markDirty();
@@ -253,22 +340,29 @@ export function AIConfigPage() {
 
   const handleSave = async () => {
     if (!llmConfig) return;
-    const err = validateSources(sources, routerIndex, workerIndex, t);
+    const err = validateSources(sources, t);
     if (err) {
       saveFeedback.fail(err);
       return;
     }
     const llm_sources: LlmSource[] = sources.map((r) => ({
+      id: r.id.trim(),
       provider: r.provider.trim(),
       api_key: r.api_key.trim(),
       model: r.model.trim(),
       api_url: r.api_url.trim(),
+      max_tokens: r.max_tokens ?? null,
+      model_kind: normalizeModelKind(r.model_kind),
+      custom_headers: r.custom_headers
+        .map((header) => ({
+          name: header.name.trim(),
+          value: header.value.trim(),
+        }))
+        .filter((header) => header.name.length > 0 || header.value.length > 0),
     }));
     saveFeedback.begin();
     const result = await saveLlm({
       llm_sources,
-      llm_router_source_index: routerIndex,
-      llm_worker_source_index: workerIndex,
     });
     saveFeedback.finishFromResult(result);
     if (result.ok) markClean();
@@ -381,188 +475,256 @@ export function AIConfigPage() {
             description={t("config.unavailableDesc")}
           />
         ) : (
-        <Stack spacing={0}>
-          {sources.map((row, i) => (
-            <FormSectionSubCollapsible
-              key={i}
-              title={`${t("config.llmSource")} ${i + 1}`}
-              defaultOpen={
-                routerIndex !== null && workerIndex !== null
-                  ? i === routerIndex || i === workerIndex
-                  : i === 0
-              }
-              action={
-                <Box
-                  component="span"
-                  role="button"
-                  tabIndex={0}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    requestRemoveSource(i);
-                  }}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" || e.key === " ") {
-                      e.preventDefault();
-                      requestRemoveSource(i);
-                    }
-                  }}
-                  sx={{
-                    display: "inline-flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    p: 0.5,
-                    color: TEXT_COLOR.tertiary,
-                    cursor: sources.length <= 1 ? "default" : "pointer",
-                    opacity: sources.length <= 1 ? 0.5 : 1,
-                    borderRadius: "var(--radius-control)",
-                    "&:focus-visible": {
-                      outline:
-                        "var(--focus-ring-width) solid color-mix(in srgb, var(--primary) 55%, transparent)",
-                      outlineOffset: "var(--focus-ring-offset)",
-                    },
-                  }}
-                  aria-label={t("common.remove")}
-                  aria-disabled={sources.length <= 1}
+          <Stack spacing={0}>
+            {sources.map((row, i) => (
+              <Box
+                key={`${row.id}-${i}`}
+                onDragOver={handleSourceDragOver}
+                onDrop={(event) => handleSourceDrop(event, i)}
+                sx={{
+                  opacity: draggedSourceIndex === i ? 0.56 : 1,
+                  transition: "opacity var(--ease-out-smooth)",
+                }}
+              >
+                <FormSectionSubCollapsible
+                  title={`${t("config.llmSource")} ${i + 1}`}
+                  defaultOpen={i === 0}
+                  action={
+                    <Stack
+                      component="span"
+                      direction="row"
+                      spacing={0.25}
+                      alignItems="center"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <Tooltip title={t("config.dragLlmSource")}>
+                        <Box
+                          component="span"
+                          role="button"
+                          tabIndex={0}
+                          draggable
+                          onDragStart={(event) => handleSourceDragStart(event, i)}
+                          onDragEnd={() => setDraggedSourceIndex(null)}
+                          sx={{
+                            display: "inline-flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            p: 0.5,
+                            color: TEXT_COLOR.tertiary,
+                            cursor: "grab",
+                            borderRadius: "var(--radius-control)",
+                            "&:focus-visible": {
+                              outline:
+                                "var(--focus-ring-width) solid color-mix(in srgb, var(--primary) 55%, transparent)",
+                              outlineOffset: "var(--focus-ring-offset)",
+                            },
+                          }}
+                          aria-label={t("config.dragLlmSource")}
+                        >
+                          <DragIndicatorRounded fontSize="small" />
+                        </Box>
+                      </Tooltip>
+                      <Tooltip title={t("common.remove")}>
+                        <Box
+                          component="span"
+                          role="button"
+                          tabIndex={0}
+                          onClick={() => requestRemoveSource(i)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" || e.key === " ") {
+                              e.preventDefault();
+                              requestRemoveSource(i);
+                            }
+                          }}
+                          sx={{
+                            display: "inline-flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            p: 0.5,
+                            color: TEXT_COLOR.tertiary,
+                            cursor: sources.length <= 1 ? "default" : "pointer",
+                            opacity: sources.length <= 1 ? 0.5 : 1,
+                            borderRadius: "var(--radius-control)",
+                            "&:focus-visible": {
+                              outline:
+                                "var(--focus-ring-width) solid color-mix(in srgb, var(--primary) 55%, transparent)",
+                              outlineOffset: "var(--focus-ring-offset)",
+                            },
+                          }}
+                          aria-label={t("common.remove")}
+                          aria-disabled={sources.length <= 1}
+                        >
+                          <DeleteOutlined fontSize="small" />
+                        </Box>
+                      </Tooltip>
+                    </Stack>
+                  }
                 >
-                  <DeleteOutlined fontSize="small" />
-                </Box>
-              }
-            >
-              <FormGrid>
-                <FormControl fullWidth>
-                  <InputLabel id={`llm-provider-${i}`}>{t("config.llmProvider")}</InputLabel>
-                  <Select
-                    labelId={`llm-provider-${i}`}
-                    label={t("config.llmProvider")}
-                    value={normalizeProvider(row.provider)}
-                    onChange={(e: SelectChangeEvent<string>) =>
-                      changeProvider(i, e.target.value)
-                    }
-                  >
-                    {LLM_PROVIDER_VALUES.map((p) => (
-                      <MenuItem key={p} value={p}>
-                        {t(LLM_PROVIDER_LABEL_KEY[p])}
-                      </MenuItem>
-                    ))}
-                  </Select>
-                </FormControl>
-                <TextField
-                  label={t("config.llmApiKey")}
-                  value={row.api_key}
-                  onChange={(e) => updateSource(i, "api_key", e.target.value)}
-                  type={isRevealed(`api_key_${i}`) ? "text" : "password"}
-                  fullWidth
-                  slotProps={{
-                    htmlInput: {
-                      maxLength: MAX_LEN,
-                      style: { fontFamily: "var(--font-mono)" },
-                      ...getRevealHandlers(`api_key_${i}`),
-                    },
-                  }}
-                />
-                <TextField
-                  label={t("config.llmModel")}
-                  value={row.model}
-                  onChange={(e) => updateSource(i, "model", e.target.value)}
-                  fullWidth
-                  placeholder={defaultModelForProvider(row.provider)}
-                  slotProps={{ htmlInput: { maxLength: MAX_LEN } }}
-                />
-                <TextField
-                  label={t("config.llmApiUrl")}
-                  value={row.api_url}
-                  onChange={(e) => updateSource(i, "api_url", e.target.value)}
-                  fullWidth
-                  placeholder={defaultApiUrlForProvider(row.provider)}
-                  slotProps={{
-                    htmlInput: {
-                      maxLength: MAX_API_URL,
-                      style: { fontFamily: "var(--font-mono)" },
-                    },
-                  }}
-                />
-              </FormGrid>
-            </FormSectionSubCollapsible>
-          ))}
-          <Button
-            startIcon={<AddRounded />}
-            onClick={addSource}
-            variant="outlined"
-            size="small"
-            sx={{
-              mt: 2,
-              alignSelf: "flex-start",
-              borderRadius: "var(--radius-control)",
-            }}
-          >
-            {t("config.addLlmSource")}
-          </Button>
-          <FormSectionSubCollapsible
-            title={t("config.llmRouterWorkerTitle")}
-            defaultOpen={true}
-          >
-            <Box
+                  <Stack spacing={2}>
+                    <FormGrid>
+                      <TextField
+                        label={t("config.llmSourceId")}
+                        value={row.id}
+                        fullWidth
+                        slotProps={{ htmlInput: { maxLength: MAX_LEN, readOnly: true } }}
+                      />
+                      <FormControl fullWidth>
+                        <InputLabel id={`llm-provider-${i}`}>
+                          {t("config.llmProvider")}
+                        </InputLabel>
+                        <Select
+                          labelId={`llm-provider-${i}`}
+                          label={t("config.llmProvider")}
+                          value={normalizeProvider(row.provider)}
+                          onChange={(e: SelectChangeEvent<string>) =>
+                            changeProvider(i, e.target.value)
+                          }
+                        >
+                          {LLM_PROVIDER_VALUES.map((p) => (
+                            <MenuItem key={p} value={p}>
+                              {t(LLM_PROVIDER_LABEL_KEY[p])}
+                            </MenuItem>
+                          ))}
+                        </Select>
+                      </FormControl>
+                      <FormControl fullWidth>
+                        <InputLabel id={`llm-model-kind-${i}`}>
+                          {t("config.llmModelKind")}
+                        </InputLabel>
+                        <Select
+                          labelId={`llm-model-kind-${i}`}
+                          label={t("config.llmModelKind")}
+                          value={normalizeModelKind(row.model_kind)}
+                          onChange={(e: SelectChangeEvent<string>) =>
+                            updateSource(i, "model_kind", normalizeModelKind(e.target.value))
+                          }
+                        >
+                          {LLM_MODEL_KIND_VALUES.map((kind) => (
+                            <MenuItem key={kind} value={kind}>
+                              {t(LLM_MODEL_KIND_LABEL_KEY[kind])}
+                            </MenuItem>
+                          ))}
+                        </Select>
+                      </FormControl>
+                      <TextField
+                        label={t("config.llmApiKey")}
+                        value={row.api_key}
+                        onChange={(e) => updateSource(i, "api_key", e.target.value)}
+                        type={isRevealed(`api_key_${i}`) ? "text" : "password"}
+                        fullWidth
+                        slotProps={{
+                          htmlInput: {
+                            maxLength: MAX_LEN,
+                            style: { fontFamily: "var(--font-mono)" },
+                            ...getRevealHandlers(`api_key_${i}`),
+                          },
+                        }}
+                      />
+                      <TextField
+                        label={t("config.llmModel")}
+                        value={row.model}
+                        onChange={(e) => updateSource(i, "model", e.target.value)}
+                        fullWidth
+                        placeholder={defaultModelForProvider(row.provider)}
+                        slotProps={{ htmlInput: { maxLength: MAX_LEN } }}
+                      />
+                      <TextField
+                        label={t("config.llmApiUrl")}
+                        value={row.api_url}
+                        onChange={(e) => updateSource(i, "api_url", e.target.value)}
+                        fullWidth
+                        placeholder={defaultApiUrlForProvider(row.provider)}
+                        slotProps={{
+                          htmlInput: {
+                            maxLength: MAX_API_URL,
+                            style: { fontFamily: "var(--font-mono)" },
+                          },
+                        }}
+                      />
+                    </FormGrid>
+                    <Stack spacing={1.25}>
+                      <Box
+                        component="span"
+                        sx={{
+                          color: TEXT_COLOR.secondary,
+                          fontSize: "var(--font-size-body-sm)",
+                          fontWeight: 650,
+                        }}
+                      >
+                        {t("config.llmCustomHeaders")}
+                      </Box>
+                      {row.custom_headers.map((header, headerIndex) => (
+                        <FormGrid key={headerIndex}>
+                          <TextField
+                            label={t("config.llmHeaderName")}
+                            value={header.name}
+                            onChange={(e) =>
+                              updateCustomHeader(i, headerIndex, "name", e.target.value)
+                            }
+                            fullWidth
+                            slotProps={{ htmlInput: { maxLength: MAX_LEN } }}
+                          />
+                          <TextField
+                            label={t("config.llmHeaderValue")}
+                            value={header.value}
+                            onChange={(e) =>
+                              updateCustomHeader(i, headerIndex, "value", e.target.value)
+                            }
+                            fullWidth
+                            slotProps={{
+                              htmlInput: {
+                                maxLength: MAX_HEADER_VALUE,
+                                style: { fontFamily: "var(--font-mono)" },
+                              },
+                            }}
+                          />
+                          <Button
+                            variant="text"
+                            color="inherit"
+                            size="small"
+                            startIcon={<DeleteOutlined />}
+                            onClick={() => removeCustomHeader(i, headerIndex)}
+                            sx={{
+                              alignSelf: "center",
+                              justifySelf: "start",
+                              borderRadius: "var(--radius-control)",
+                            }}
+                          >
+                            {t("common.remove")}
+                          </Button>
+                        </FormGrid>
+                      ))}
+                      <Button
+                        startIcon={<AddRounded />}
+                        onClick={() => addCustomHeader(i)}
+                        variant="outlined"
+                        size="small"
+                        sx={{
+                          alignSelf: "flex-start",
+                          borderRadius: "var(--radius-control)",
+                        }}
+                      >
+                        {t("config.addCustomHeader")}
+                      </Button>
+                    </Stack>
+                  </Stack>
+                </FormSectionSubCollapsible>
+              </Box>
+            ))}
+            <Button
+              startIcon={<AddRounded />}
+              onClick={addSource}
+              variant="outlined"
+              size="small"
               sx={{
-                display: "flex",
-                gap: LAYOUT_TOKENS.spacingSectionStack,
-                flexWrap: "wrap",
+                mt: 2,
+                alignSelf: "flex-start",
+                borderRadius: "var(--radius-control)",
               }}
             >
-              <TextField
-                select
-                label={t("config.llmRouterIndex")}
-                value={routerIndex === null ? "" : String(routerIndex)}
-                onChange={(e) => {
-                  markDirty();
-                  const v = e.target.value;
-                  setDraft((prev) => ({
-                    ...prev,
-                    routerIndex:
-                      v === "" ? null : Math.max(0, parseInt(v, 10) || 0),
-                  }));
-                }}
-                sx={{ minWidth: 280, flex: 1 }}
-                slotProps={{
-                  inputLabel: { shrink: true }
-                }}
-                helperText={t("config.llmRouterIndexHelp")}
-              >
-                <MenuItem value="">{t("config.llmIndexNone")}</MenuItem>
-                {sources.map((s, idx) => (
-                  <MenuItem key={idx} value={idx}>
-                    {formatLlmSourceSelectLabel(idx, s, t)}
-                  </MenuItem>
-                ))}
-              </TextField>
-              <TextField
-                select
-                label={t("config.llmWorkerIndex")}
-                value={workerIndex === null ? "" : String(workerIndex)}
-                onChange={(e) => {
-                  markDirty();
-                  const v = e.target.value;
-                  setDraft((prev) => ({
-                    ...prev,
-                    workerIndex:
-                      v === "" ? null : Math.max(0, parseInt(v, 10) || 0),
-                  }));
-                }}
-                sx={{ minWidth: 280, flex: 1 }}
-                slotProps={{
-                  inputLabel: { shrink: true }
-                }}
-                helperText={t("config.llmWorkerIndexHelp")}
-              >
-                <MenuItem value="">{t("config.llmIndexNone")}</MenuItem>
-                {sources.map((s, idx) => (
-                  <MenuItem key={idx} value={idx}>
-                    {formatLlmSourceSelectLabel(idx, s, t)}
-                  </MenuItem>
-                ))}
-              </TextField>
-            </Box>
-          </FormSectionSubCollapsible>
-        </Stack>
+              {t("config.addLlmSource")}
+            </Button>
+          </Stack>
         )}
       </SettingsSection>
     </Box>

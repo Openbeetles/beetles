@@ -1480,14 +1480,15 @@ mod tests {
         let env = build_router_env();
         let body = serde_json::json!({
             "llm_sources": [{
+                "id": "primary",
                 "provider": "openai",
                 "api_key": "segment-key",
                 "model": "gpt-4o-mini",
                 "api_url": "https://api.openai.com/v1",
-                "max_tokens": 2048
-            }],
-            "llm_router_source_index": 0,
-            "llm_worker_source_index": 0
+                "max_tokens": 2048,
+                "model_kind": "multimodal",
+                "custom_headers": []
+            }]
         });
         config::save_llm_segment(ctx.config_file_store.as_ref(), &body.to_string())
             .expect("save llm segment");
@@ -1507,8 +1508,7 @@ mod tests {
         assert_eq!(parsed["llm_sources"][0]["provider"], "openai");
         assert_eq!(parsed["llm_sources"][0]["api_key"], "segment-key");
         assert_eq!(parsed["llm_sources"][0]["model"], "gpt-4o-mini");
-        assert_eq!(parsed["llm_router_source_index"], 0);
-        assert_eq!(parsed["llm_worker_source_index"], 0);
+        assert_eq!(parsed["llm_sources"][0]["id"], "primary");
         assert!(parsed.get("locale").is_none());
         assert!(parsed.get("build_package").is_none());
     }

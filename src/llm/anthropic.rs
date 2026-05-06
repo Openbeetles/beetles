@@ -3,7 +3,7 @@
 //! Anthropic client; HTTP injected, no platform dependency.
 //! Supports both non-streaming (default) and SSE streaming modes.
 
-use crate::config::{AppConfig, LlmSource};
+use crate::config::{AppConfig, LlmHeaderEntry, LlmModelKind, LlmSource};
 use crate::error::{Error, Result};
 use crate::llm::request_body::LlmRequestBody;
 use crate::llm::types::MAX_REQUEST_BODY_LEN;
@@ -24,17 +24,21 @@ pub struct AnthropicClient {
     max_tokens: u32,
     api_base: String,
     stream: bool,
+    custom_headers: Vec<LlmHeaderEntry>,
 }
 
 impl AnthropicClient {
     pub fn new(config: &AppConfig) -> Self {
         Self::from_source(
             &LlmSource {
+                id: "env_default".to_string(),
                 provider: config.model_provider.clone(),
                 api_key: config.api_key.clone(),
                 model: config.model.clone(),
                 api_url: config.api_url.clone(),
                 max_tokens: None,
+                model_kind: LlmModelKind::Text,
+                custom_headers: Vec::new(),
             },
             false,
         )
@@ -53,6 +57,7 @@ impl AnthropicClient {
             max_tokens: source.max_tokens.unwrap_or(DEFAULT_MAX_TOKENS),
             api_base,
             stream,
+            custom_headers: source.custom_headers.clone(),
         }
     }
 }
@@ -78,11 +83,24 @@ impl LlmClient for AnthropicClient {
 
         if self.stream {
             crate::llm::retry::with_retry(2, 500, TAG, http, |http| {
-                do_request_streaming(http, &self.api_base, &self.api_key, body.as_ref(), None)
+                do_request_streaming(
+                    http,
+                    &self.api_base,
+                    &self.api_key,
+                    &self.custom_headers,
+                    body.as_ref(),
+                    None,
+                )
             })
         } else {
             crate::llm::retry::with_retry(2, 500, TAG, http, |http| {
-                do_request(http, &self.api_base, &self.api_key, body.as_ref())
+                do_request(
+                    http,
+                    &self.api_base,
+                    &self.api_key,
+                    &self.custom_headers,
+                    body.as_ref(),
+                )
             })
         }
     }
@@ -115,6 +133,7 @@ impl LlmClient for AnthropicClient {
                 http,
                 &self.api_base,
                 &self.api_key,
+                &self.custom_headers,
                 body.as_ref(),
                 progress.take(),
             )
@@ -222,17 +241,19 @@ fn do_request(
     http: &mut dyn LlmHttpClient,
     url: &str,
     api_key: &str,
+    custom_headers: &[LlmHeaderEntry],
     body: &[u8],
 ) -> Result<LlmResponse> {
     const ANTHROPIC_VERSION: &str = "2023-06-01";
     let mut cl_buf = [0u8; 20];
     let content_length = crate::util::usize_to_decimal_buf(&mut cl_buf, body.len());
-    let headers = [
+    let mut headers = vec![
         ("x-api-key", api_key),
         ("anthropic-version", ANTHROPIC_VERSION),
         ("content-type", "application/json"),
         ("content-length", content_length),
     ];
+    crate::llm::append_non_overriding_custom_headers(&mut headers, custom_headers);
     let (status, resp_body) = http
         .do_post(url, &headers, body)
         .map_err(|e| crate::llm::map_transport_error(e, "llm_request"))?;
@@ -421,18 +442,20 @@ fn do_request_streaming(
     http: &mut dyn LlmHttpClient,
     url: &str,
     api_key: &str,
+    custom_headers: &[LlmHeaderEntry],
     body: &[u8],
     on_progress: Option<crate::llm::StreamProgressFn>,
 ) -> Result<LlmResponse> {
     const ANTHROPIC_VERSION: &str = "2023-06-01";
     let mut cl_buf = [0u8; 20];
     let content_length = crate::util::usize_to_decimal_buf(&mut cl_buf, body.len());
-    let headers = [
+    let mut headers = vec![
         ("x-api-key", api_key),
         ("anthropic-version", ANTHROPIC_VERSION),
         ("content-type", "application/json"),
         ("content-length", content_length),
     ];
+    crate::llm::append_non_overriding_custom_headers(&mut headers, custom_headers);
 
     let mut accumulator = AnthropicStreamAccumulator::new();
     let mut sse_reader = crate::llm::sse::SseLineReader::new();
@@ -478,8 +501,49 @@ fn do_request_streaming(
 #[cfg(test)]
 mod tests {
     use super::{build_request_body, AnthropicClient};
-    use crate::config::LlmSource;
+    use crate::config::{LlmHeaderEntry, LlmModelKind, LlmSource};
     use crate::llm::{LlmClient, LlmHttpClient, Message, ToolChoicePolicy, ToolSpec};
+    use crate::platform::ResponseBody;
+
+    struct RecordingHttp {
+        headers: Vec<(String, String)>,
+    }
+
+    impl RecordingHttp {
+        fn new() -> Self {
+            Self {
+                headers: Vec::new(),
+            }
+        }
+
+        fn header_value(&self, name: &str) -> Option<&str> {
+            self.headers
+                .iter()
+                .find(|(key, _)| key.eq_ignore_ascii_case(name))
+                .map(|(_, value)| value.as_str())
+        }
+    }
+
+    impl LlmHttpClient for RecordingHttp {
+        fn do_post(
+            &mut self,
+            _url: &str,
+            headers: &[(&str, &str)],
+            _body: &[u8],
+        ) -> crate::Result<(u16, ResponseBody)> {
+            self.headers = headers
+                .iter()
+                .map(|(name, value)| ((*name).to_string(), (*value).to_string()))
+                .collect();
+            Ok((
+                200,
+                ResponseBody::Heap(
+                    br#"{"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn"}"#
+                        .to_vec(),
+                ),
+            ))
+        }
+    }
 
     struct TruncatedStreamingHttp;
 
@@ -516,11 +580,14 @@ mod tests {
     fn producer_empty_does_not_mask_transport_truncation() {
         let client = AnthropicClient::from_source(
             &LlmSource {
+                id: "anthropic-stream".to_string(),
                 provider: "anthropic".to_string(),
                 api_key: "k".to_string(),
                 model: "claude".to_string(),
                 api_url: "https://example.test/v1/messages".to_string(),
                 max_tokens: Some(128),
+                model_kind: LlmModelKind::Text,
+                custom_headers: Vec::<LlmHeaderEntry>::new(),
             },
             true,
         );
@@ -568,6 +635,46 @@ mod tests {
                 .and_then(|x| x.as_str()),
             Some("any")
         );
+    }
+
+    #[test]
+    fn custom_headers_are_appended_without_overriding_builtin_headers() {
+        let source: LlmSource = serde_json::from_str(
+            r#"{
+                "id":"anthropic-custom",
+                "provider":"anthropic",
+                "api_key":"source-key",
+                "model":"claude-test",
+                "api_url":"https://example.test/v1/messages",
+                "model_kind":"text",
+                "custom_headers":[
+                    {"name":"X-Provider-Trace","value":"trace-1"},
+                    {"name":"x-api-key","value":"attacker"},
+                    {"name":"content-type","value":"text/plain"}
+                ]
+            }"#,
+        )
+        .expect("source json");
+        let client = AnthropicClient::from_source(&source, false);
+        let mut http = RecordingHttp::new();
+
+        let response = LlmClient::chat(
+            &client,
+            &mut http,
+            "",
+            &[Message {
+                role: std::borrow::Cow::Borrowed("user"),
+                content: "hi".to_string(),
+            }],
+            None,
+            ToolChoicePolicy::Auto,
+        )
+        .expect("chat response");
+
+        assert_eq!(response.content, "ok");
+        assert_eq!(http.header_value("x-api-key"), Some("source-key"));
+        assert_eq!(http.header_value("content-type"), Some("application/json"));
+        assert_eq!(http.header_value("x-provider-trace"), Some("trace-1"));
     }
 
     #[test]

@@ -2,7 +2,7 @@
 //! 错误带 stage（llm_request / llm_parse）；HTTP 由 main 注入。
 //! Supports both non-streaming (default) and SSE streaming modes.
 
-use crate::config::{AppConfig, LlmSource};
+use crate::config::{AppConfig, LlmHeaderEntry, LlmModelKind, LlmSource};
 use crate::error::{Error, Result};
 use crate::llm::compat::model_compat_for_source;
 use crate::llm::request_body::LlmRequestBody;
@@ -25,17 +25,21 @@ pub struct OpenAiCompatibleClient {
     max_tokens: u32,
     stream: bool,
     compat: LlmModelCompat,
+    custom_headers: Vec<LlmHeaderEntry>,
 }
 
 impl OpenAiCompatibleClient {
     pub fn new(config: &AppConfig) -> Self {
         Self::from_source(
             &LlmSource {
+                id: "env_default".to_string(),
                 provider: config.model_provider.clone(),
                 api_key: config.api_key.clone(),
                 model: config.model.clone(),
                 api_url: config.api_url.clone(),
                 max_tokens: None,
+                model_kind: LlmModelKind::Text,
+                custom_headers: Vec::new(),
             },
             false,
         )
@@ -71,6 +75,7 @@ impl OpenAiCompatibleClient {
             max_tokens: source.max_tokens.unwrap_or(DEFAULT_MAX_TOKENS),
             stream,
             compat: model_compat_for_source(source),
+            custom_headers: source.custom_headers.clone(),
         }
     }
 }
@@ -255,6 +260,7 @@ impl LlmClient for OpenAiCompatibleClient {
                     http,
                     &self.chat_url,
                     self.auth_bearer.as_deref(),
+                    &self.custom_headers,
                     body.as_ref(),
                     None,
                 )
@@ -265,6 +271,7 @@ impl LlmClient for OpenAiCompatibleClient {
                     http,
                     &self.chat_url,
                     self.auth_bearer.as_deref(),
+                    &self.custom_headers,
                     body.as_ref(),
                 )
             })
@@ -299,6 +306,7 @@ impl LlmClient for OpenAiCompatibleClient {
                 http,
                 &self.chat_url,
                 self.auth_bearer.as_deref(),
+                &self.custom_headers,
                 body.as_ref(),
                 progress.take(),
             )
@@ -310,6 +318,7 @@ fn do_request(
     http: &mut dyn LlmHttpClient,
     url: &str,
     auth_bearer: Option<&str>,
+    custom_headers: &[LlmHeaderEntry],
     body: &[u8],
 ) -> Result<LlmResponse> {
     let mut cl_buf = [0u8; 20];
@@ -321,6 +330,7 @@ fn do_request(
     if let Some(bearer) = auth_bearer {
         headers.insert(0, ("Authorization", bearer));
     }
+    crate::llm::append_non_overriding_custom_headers(&mut headers, custom_headers);
     let (status, resp_body) = http
         .do_post(url, &headers, body)
         .map_err(|e| crate::llm::map_transport_error(e, "llm_request"))?;
@@ -547,6 +557,7 @@ fn do_request_streaming(
     http: &mut dyn LlmHttpClient,
     url: &str,
     auth_bearer: Option<&str>,
+    custom_headers: &[LlmHeaderEntry],
     body: &[u8],
     on_progress: Option<crate::llm::StreamProgressFn>,
 ) -> Result<LlmResponse> {
@@ -559,6 +570,7 @@ fn do_request_streaming(
     if let Some(bearer) = auth_bearer {
         headers.insert(0, ("Authorization", bearer));
     }
+    crate::llm::append_non_overriding_custom_headers(&mut headers, custom_headers);
 
     let mut accumulator = OpenAiStreamAccumulator::new();
     let mut sse_reader = crate::llm::sse::SseLineReader::new();
@@ -612,9 +624,51 @@ fn do_request_streaming(
 mod tests {
     use super::{build_request_body, OpenAiCompatibleClient};
     use crate::config::LlmSource;
+    use crate::config::{LlmHeaderEntry, LlmModelKind};
     use crate::llm::{
         LlmClient, LlmHttpClient, Message, ToolCallSupport, ToolChoicePolicy, ToolSpec,
     };
+    use crate::platform::ResponseBody;
+
+    struct RecordingHttp {
+        headers: Vec<(String, String)>,
+    }
+
+    impl RecordingHttp {
+        fn new() -> Self {
+            Self {
+                headers: Vec::new(),
+            }
+        }
+
+        fn header_value(&self, name: &str) -> Option<&str> {
+            self.headers
+                .iter()
+                .find(|(key, _)| key.eq_ignore_ascii_case(name))
+                .map(|(_, value)| value.as_str())
+        }
+    }
+
+    impl LlmHttpClient for RecordingHttp {
+        fn do_post(
+            &mut self,
+            _url: &str,
+            headers: &[(&str, &str)],
+            _body: &[u8],
+        ) -> crate::Result<(u16, ResponseBody)> {
+            self.headers = headers
+                .iter()
+                .map(|(name, value)| ((*name).to_string(), (*value).to_string()))
+                .collect();
+            Ok((
+                200,
+                ResponseBody::Heap(
+                    br#"{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}"#
+                        .to_vec(),
+                ),
+            ))
+        }
+    }
 
     struct TruncatedStreamingHttp;
 
@@ -652,11 +706,14 @@ mod tests {
     fn streaming_truncation_returns_llm_response_truncated() {
         let client = OpenAiCompatibleClient::from_source(
             &LlmSource {
+                id: "openai-stream".to_string(),
                 provider: "openai".to_string(),
                 api_key: "k".to_string(),
                 model: "m".to_string(),
                 api_url: "https://example.test/v1".to_string(),
                 max_tokens: Some(128),
+                model_kind: LlmModelKind::Text,
+                custom_headers: Vec::<LlmHeaderEntry>::new(),
             },
             true,
         );
@@ -704,6 +761,49 @@ mod tests {
     }
 
     #[test]
+    fn custom_headers_are_appended_without_overriding_builtin_headers() {
+        let source: LlmSource = serde_json::from_str(
+            r#"{
+                "id":"openai-custom",
+                "provider":"openai",
+                "api_key":"source-key",
+                "model":"gpt-4o-mini",
+                "api_url":"https://example.test/v1",
+                "model_kind":"text",
+                "custom_headers":[
+                    {"name":"X-Provider-Trace","value":"trace-1"},
+                    {"name":"Authorization","value":"Bearer attacker"},
+                    {"name":"Content-Type","value":"text/plain"}
+                ]
+            }"#,
+        )
+        .expect("source json");
+        let client = OpenAiCompatibleClient::from_source(&source, false);
+        let mut http = RecordingHttp::new();
+
+        let response = LlmClient::chat(
+            &client,
+            &mut http,
+            "",
+            &[Message {
+                role: std::borrow::Cow::Borrowed("user"),
+                content: "hi".to_string(),
+            }],
+            None,
+            ToolChoicePolicy::Auto,
+        )
+        .expect("chat response");
+
+        assert_eq!(response.content, "ok");
+        assert_eq!(
+            http.header_value("authorization"),
+            Some("Bearer source-key")
+        );
+        assert_eq!(http.header_value("content-type"), Some("application/json"));
+        assert_eq!(http.header_value("x-provider-trace"), Some("trace-1"));
+    }
+
+    #[test]
     fn large_request_body_uses_shared_external_preferred_buffer() {
         let content = "x".repeat(crate::platform::ByteBuffer::EXTERNAL_PREFERRED_THRESHOLD + 1);
         let body = build_request_body(
@@ -728,11 +828,14 @@ mod tests {
     fn ollama_uses_prompt_guided_tools() {
         let client = OpenAiCompatibleClient::from_source(
             &LlmSource {
+                id: "ollama".to_string(),
                 provider: "ollama".to_string(),
                 api_key: "k".to_string(),
                 model: "qwen2.5".to_string(),
                 api_url: String::new(),
                 max_tokens: None,
+                model_kind: LlmModelKind::Text,
+                custom_headers: Vec::<LlmHeaderEntry>::new(),
             },
             false,
         );

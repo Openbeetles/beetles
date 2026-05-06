@@ -792,14 +792,15 @@ mod tests {
             &ctx,
             r#"{
                 "llm_sources":[{
+                    "id":"primary",
                     "provider":"openai",
                     "api_key":"test-key",
                     "model":"gpt-test",
                     "api_url":"https://api.openai.com/v1",
-                    "max_tokens":1024
-                }],
-                "llm_router_source_index":0,
-                "llm_worker_source_index":0
+                    "max_tokens":1024,
+                    "model_kind":"text",
+                    "custom_headers":[]
+                }]
             }"#,
         )
         .expect("post_llm response");
@@ -812,8 +813,7 @@ mod tests {
         assert_eq!(config.model, "gpt-test");
         assert_eq!(config.model_provider, "openai");
         assert_eq!(config.api_url, "https://api.openai.com/v1");
-        assert_eq!(config.llm_router_source_index, Some(0));
-        assert_eq!(config.llm_worker_source_index, Some(0));
+        assert_eq!(config.llm_sources[0].id, "primary");
     }
 
     #[test]

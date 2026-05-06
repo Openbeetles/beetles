@@ -54,18 +54,7 @@ For `openai_compatible`, you will usually want to set the actual compatible endp
 
 Beetle OS can keep more than one LLM source at the same time.
 
-By default, it tries sources in the order they appear in `llm_sources`.
-
-If you set:
-
-- `llm_router_source_index`
-- `llm_worker_source_index`
-
-then Beetle OS prefers them in this order:
-
-1. `llm_router_source_index`
-2. `llm_worker_source_index`
-3. the rest of the usable list
+Beetle OS tries sources in the order they appear in `llm_sources`. Configure UI changes that priority with drag-and-drop sorting.
 
 That means you do not need to switch providers manually during normal chat use.
 
@@ -77,10 +66,13 @@ That means you do not need to switch providers manually during normal chat use.
 {
   "llm_sources": [
     {
+      "id": "deepseek-main",
       "provider": "deepseek",
       "api_key": "sk-...",
       "model": "deepseek-chat",
-      "api_url": ""
+      "api_url": "",
+      "model_kind": "text",
+      "custom_headers": []
     }
   ]
 }
@@ -92,33 +84,42 @@ That means you do not need to switch providers manually during normal chat use.
 {
   "llm_sources": [
     {
+      "id": "gemini-vision",
       "provider": "gemini",
       "api_key": "AIza...",
       "model": "gemini-1.5-flash",
-      "api_url": ""
+      "api_url": "",
+      "model_kind": "multimodal",
+      "custom_headers": []
     },
     {
+      "id": "qwen-text",
       "provider": "qwen",
       "api_key": "...",
       "model": "qwen-plus",
-      "api_url": ""
+      "api_url": "",
+      "model_kind": "text",
+      "custom_headers": []
     },
     {
+      "id": "ollama-local",
       "provider": "ollama",
       "api_key": "local",
       "model": "qwen2.5",
-      "api_url": "http://192.168.1.100:11434/v1"
+      "api_url": "http://192.168.1.100:11434/v1",
+      "model_kind": "text",
+      "custom_headers": []
     }
-  ],
-  "llm_router_source_index": 0,
-  "llm_worker_source_index": 1
+  ]
 }
 ```
 
 ## Direct Takeaways
 
 - `llm_sources` must not be empty
-- every source needs at least `provider`, `api_key`, and `model`
+- every source needs at least `id`, `provider`, `api_key`, `model`, `model_kind`, and `custom_headers`
+- vision tools only use sources with `model_kind = "multimodal"`
+- add extra HTTP headers required by third-party routers in that source's `custom_headers`
 - for local Ollama, a common endpoint is `http://<host>:11434/v1`
 - example model names are examples only; Beetle OS does not require those exact names
 

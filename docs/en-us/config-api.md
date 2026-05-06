@@ -173,8 +173,6 @@ Success response: `200 application/json`
 Fields:
 
 - `llm_sources`
-- `llm_router_source_index`
-- `llm_worker_source_index`
 
 This route does not return `locale`, `build_package`, or any other config segments.
 
@@ -214,16 +212,19 @@ Request body: `application/json`
 Fields:
 
 - `llm_sources`
-- `llm_router_source_index`
-- `llm_worker_source_index`
 
 Each item in `llm_sources` contains:
 
+- `id`
 - `provider`
 - `api_key`
 - `model`
 - `api_url`
 - `max_tokens`
+- `model_kind`
+- `custom_headers`
+
+Source order is the runtime fallback priority. Configure UI changes that order with drag-and-drop. `model_kind` accepts `text`, `multimodal`, `image_generation`, or `video_generation`. `custom_headers` is an array of `{ "name": "...", "value": "..." }`; header names must be unique within one source.
 
 Example:
 
@@ -231,15 +232,16 @@ Example:
 {
   "llm_sources": [
     {
+      "id": "llm_primary",
       "provider": "provider_name",
       "api_key": "your_key",
       "model": "model_name",
       "api_url": "https://example.com/v1/chat/completions",
-      "max_tokens": 1024
+      "max_tokens": 1024,
+      "model_kind": "text",
+      "custom_headers": []
     }
-  ],
-  "llm_router_source_index": 0,
-  "llm_worker_source_index": 0
+  ]
 }
 ```
 

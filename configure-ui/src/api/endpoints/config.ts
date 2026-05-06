@@ -92,7 +92,7 @@ export async function saveLlm(
   if (!pairingCode?.trim()) return { ok: false, error: API_ERROR.PAIRING_REQUIRED }
   return requestProtected<void>(baseUrl, '/api/config/llm', {
     method: 'POST',
-    body,
+    body: { llm_sources: body.llm_sources },
     pairingCode: pairingCode.trim(),
   })
 }

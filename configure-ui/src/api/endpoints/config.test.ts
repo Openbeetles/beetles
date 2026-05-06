@@ -6,6 +6,7 @@ import {
   getCapabilities,
   getLlm,
   getProviders,
+  saveLlm,
   getSystem,
 } from "./config.ts";
 
@@ -288,15 +289,63 @@ test("getLlm normalizes partial source responses", async () => {
     assert.deepEqual(result.data, {
       llm_sources: [
         {
+          id: "",
           provider: "openai",
           api_key: "",
           model: "",
           api_url: "",
+          max_tokens: null,
+          model_kind: "text",
+          custom_headers: [],
         },
       ],
-      llm_router_source_index: null,
-      llm_worker_source_index: null,
     });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("saveLlm posts only llm_sources", async () => {
+  const originalFetch = globalThis.fetch;
+  const bodies: unknown[] = [];
+  globalThis.fetch = (async (_input: string | URL | Request, init?: RequestInit) => {
+    bodies.push(init?.body ? JSON.parse(String(init.body)) : null);
+    return jsonResponse({});
+  }) as typeof fetch;
+
+  try {
+    const result = await saveLlm("http://device", "123456", {
+      llm_sources: [
+        {
+          id: "src-1",
+          provider: "openai",
+          api_key: "key",
+          model: "gpt-4o",
+          api_url: "https://api.openai.com/v1",
+          max_tokens: 4096,
+          model_kind: "multimodal",
+          custom_headers: [{ name: "X-Beetle", value: "alpha" }],
+        },
+      ],
+    });
+
+    assert.equal(result.ok, true);
+    assert.deepEqual(bodies, [
+      {
+        llm_sources: [
+          {
+            id: "src-1",
+            provider: "openai",
+            api_key: "key",
+            model: "gpt-4o",
+            api_url: "https://api.openai.com/v1",
+            max_tokens: 4096,
+            model_kind: "multimodal",
+            custom_headers: [{ name: "X-Beetle", value: "alpha" }],
+          },
+        ],
+      },
+    ]);
   } finally {
     globalThis.fetch = originalFetch;
   }

@@ -14,6 +14,7 @@ use crate::office::{
 use crate::platform::ConfigStore;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 
 static CHANNELS_CONFIG_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -117,10 +118,31 @@ fn validate_field_len(s: &str, max: usize, field_name: &str) -> Result<()> {
 
 /// LLM 源 api_url 长度上界。
 pub const CONFIG_LLM_API_URL_MAX: usize = 256;
+pub const CONFIG_LLM_SOURCE_ID_MAX: usize = 64;
+pub const CONFIG_LLM_HEADER_NAME_MAX: usize = 64;
+pub const CONFIG_LLM_HEADER_VALUE_MAX: usize = 256;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LlmModelKind {
+    Text,
+    Multimodal,
+    ImageGeneration,
+    VideoGeneration,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LlmHeaderEntry {
+    pub name: String,
+    pub value: String,
+}
 
 /// 单个 LLM 源配置；与原有 api_key/model/model_provider/api_url 同语义。
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LlmSource {
+    pub id: String,
     pub provider: String,
     pub api_key: String,
     pub model: String,
@@ -128,6 +150,8 @@ pub struct LlmSource {
     /// 单次响应最大 token 数；None 时由各客户端使用内置默认值（1024）。
     #[serde(default)]
     pub max_tokens: Option<u32>,
+    pub model_kind: LlmModelKind,
+    pub custom_headers: Vec<LlmHeaderEntry>,
 }
 
 /// NVS 仅存系统小键；LLM/通道存储在 storage config/llm.json、config/channels.json。
@@ -218,13 +242,6 @@ pub struct AppConfig {
     #[serde(default)]
     pub locale: Option<String>,
 
-    /// 优先使用的 `llm_sources` 下标；None 表示按列表顺序构建回退链（与 Web UI「主用源」一致）。
-    #[serde(default)]
-    pub llm_router_source_index: Option<u32>,
-    /// 主用失败后优先尝试的下标；None 表示主用后按其余有效源顺序继续（与 Web UI「备用源」一致）。
-    #[serde(default)]
-    pub llm_worker_source_index: Option<u32>,
-
     /// 硬件设备配置（从 storage config/hardware.json 加载），不序列化到 NVS。
     #[serde(skip, default)]
     pub hardware_devices: Vec<DeviceEntry>,
@@ -310,8 +327,6 @@ impl AppConfig {
             locale: option_env!("BEETLE_LOCALE")
                 .filter(|s| *s == "zh" || *s == "en")
                 .map(String::from),
-            llm_router_source_index: None,
-            llm_worker_source_index: None,
             hardware_devices: vec![],
             i2c_bus: None,
             i2c_devices: vec![],
@@ -424,8 +439,11 @@ impl AppConfig {
     pub fn merge_llm_from_json(&mut self, json: &str, errors: &mut Vec<String>) {
         match deserialize_storage_json_loose_tail::<LlmSegment>(json) {
             Ok(seg) => {
-                self.llm_router_source_index = seg.llm_router_source_index;
-                self.llm_worker_source_index = seg.llm_worker_source_index;
+                if let Err(e) = validate_llm_segment(&seg) {
+                    log::warn!("[config] merge_llm_from_json validation failed: {}", e);
+                    errors.push("llm_json_invalid".into());
+                    return;
+                }
                 if !seg.llm_sources.is_empty() {
                     self.llm_sources = seg.llm_sources.clone();
                     let first = &self.llm_sources[0];
@@ -856,11 +874,6 @@ impl AppConfig {
         validate_field_len(&c.wecom_ws_url, CONFIG_URL_MAX_LEN, "wecom_ws_url")?;
         crate::llm::ensure_legacy_llm_sources(&mut c);
         validate_llm_sources(&c.llm_sources)?;
-        validate_llm_source_indices(
-            c.llm_sources.len(),
-            c.llm_router_source_index,
-            c.llm_worker_source_index,
-        )?;
         if c.tg_group_activation != "mention" && c.tg_group_activation != "always" {
             return Err(Error::config(
                 "config",
@@ -919,12 +932,9 @@ fn normalize_optional_locale(locale: Option<&str>) -> Result<Option<&str>> {
 
 /// GET/POST /api/config/llm 读写模型。
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LlmSegment {
     pub llm_sources: Vec<LlmSource>,
-    #[serde(default)]
-    pub llm_router_source_index: Option<u32>,
-    #[serde(default)]
-    pub llm_worker_source_index: Option<u32>,
 }
 
 impl LlmSegment {
@@ -932,8 +942,6 @@ impl LlmSegment {
     pub fn from_app_config(config: &AppConfig) -> Self {
         Self {
             llm_sources: crate::llm::llm_sources_or_legacy(config),
-            llm_router_source_index: config.llm_router_source_index,
-            llm_worker_source_index: config.llm_worker_source_index,
         }
     }
 }
@@ -1621,48 +1629,62 @@ pub fn display_segment_from_app_config(config: &AppConfig) -> DisplayConfig {
         .unwrap_or_else(default_disabled_display_config)
 }
 
-/// 校验主用/备用下标在 `llm_sources` 范围内（与 Web UI 一致）。
-fn validate_llm_source_indices(len: usize, router: Option<u32>, worker: Option<u32>) -> Result<()> {
-    if let Some(i) = router {
-        if (i as usize) >= len {
-            return Err(Error::config(
-                "config",
-                format!(
-                    "llm_router_source_index {} out of range (llm_sources len {})",
-                    i, len
-                ),
-            ));
-        }
-    }
-    if let Some(i) = worker {
-        if (i as usize) >= len {
-            return Err(Error::config(
-                "config",
-                format!(
-                    "llm_worker_source_index {} out of range (llm_sources len {})",
-                    i, len
-                ),
-            ));
-        }
-    }
-    Ok(())
-}
-
 /// 私有：校验 llm_sources 非空、字段长度。供 from_json_and_validate 与 save_llm_segment 复用。
 fn validate_llm_sources(sources: &[LlmSource]) -> Result<()> {
     if sources.is_empty() {
         return Err(Error::config("config", "llm_sources must not be empty"));
     }
+    let mut ids = HashSet::new();
     for (i, s) in sources.iter().enumerate() {
         if s.api_key.len() > CONFIG_FIELD_MAX_LEN
             || s.provider.len() > CONFIG_FIELD_MAX_LEN
             || s.model.len() > CONFIG_FIELD_MAX_LEN
             || s.api_url.len() > CONFIG_LLM_API_URL_MAX
+            || s.id.len() > CONFIG_LLM_SOURCE_ID_MAX
         {
             return Err(Error::config(
                 "config",
                 format!("llm_sources[{}] field length over limit", i),
             ));
+        }
+        if s.id.trim().is_empty() {
+            return Err(Error::config(
+                "config",
+                format!("llm_sources[{}].id is required", i),
+            ));
+        }
+        if !ids.insert(s.id.trim().to_string()) {
+            return Err(Error::config(
+                "config",
+                format!("llm_sources[{}].id duplicate", i),
+            ));
+        }
+        let mut header_names = HashSet::new();
+        for (j, header) in s.custom_headers.iter().enumerate() {
+            let name = header.name.trim();
+            if name.is_empty() {
+                return Err(Error::config(
+                    "config",
+                    format!("llm_sources[{}].custom_headers[{}].name is required", i, j),
+                ));
+            }
+            if name.len() > CONFIG_LLM_HEADER_NAME_MAX
+                || header.value.len() > CONFIG_LLM_HEADER_VALUE_MAX
+            {
+                return Err(Error::config(
+                    "config",
+                    format!(
+                        "llm_sources[{}].custom_headers[{}] field length over limit",
+                        i, j
+                    ),
+                ));
+            }
+            if !header_names.insert(name.to_ascii_lowercase()) {
+                return Err(Error::config(
+                    "config",
+                    format!("llm_sources[{}].custom_headers duplicate header name", i),
+                ));
+            }
         }
     }
     Ok(())
@@ -2694,11 +2716,6 @@ fn validate_llm_segment(seg: &LlmSegment) -> Result<()> {
         }
     }
     validate_llm_sources(&seg.llm_sources)?;
-    validate_llm_source_indices(
-        seg.llm_sources.len(),
-        seg.llm_router_source_index,
-        seg.llm_worker_source_index,
-    )?;
     Ok(())
 }
 
@@ -2762,8 +2779,6 @@ pub fn save_tg_group_activation_to_channels(
 
 /// 将已通过保存校验的 LlmSegment 投影回运行时缓存。
 pub(crate) fn apply_llm_segment_to_config(config: &mut AppConfig, seg: &LlmSegment) {
-    config.llm_router_source_index = seg.llm_router_source_index;
-    config.llm_worker_source_index = seg.llm_worker_source_index;
     config.llm_sources = seg.llm_sources.clone();
     if let Some(first) = config.llm_sources.first() {
         config.api_key = first.api_key.clone();
@@ -3136,22 +3151,135 @@ mod tests {
     fn llm_segment_from_app_config_prefers_runtime_llm_sources() {
         let mut config = AppConfig::load_from_env();
         config.llm_sources = vec![LlmSource {
+            id: "primary".to_string(),
             provider: "openai".to_string(),
             api_key: "source-key".to_string(),
             model: "gpt-4o-mini".to_string(),
             api_url: "https://api.openai.com/v1".to_string(),
             max_tokens: Some(2048),
+            model_kind: LlmModelKind::Text,
+            custom_headers: vec![LlmHeaderEntry {
+                name: "X-Title".to_string(),
+                value: "Beetle".to_string(),
+            }],
         }];
-        config.llm_router_source_index = Some(0);
-        config.llm_worker_source_index = Some(0);
 
         let segment = LlmSegment::from_app_config(&config);
         assert_eq!(segment.llm_sources.len(), 1);
+        assert_eq!(segment.llm_sources[0].id, "primary");
         assert_eq!(segment.llm_sources[0].api_key, "source-key");
         assert_eq!(segment.llm_sources[0].model, "gpt-4o-mini");
         assert_eq!(segment.llm_sources[0].max_tokens, Some(2048));
-        assert_eq!(segment.llm_router_source_index, Some(0));
-        assert_eq!(segment.llm_worker_source_index, Some(0));
+        assert_eq!(segment.llm_sources[0].model_kind, LlmModelKind::Text);
+        assert_eq!(segment.llm_sources[0].custom_headers[0].name, "X-Title");
+    }
+
+    #[test]
+    fn llm_segment_rejects_unknown_model_kind() {
+        struct MemoryFileStore;
+
+        impl ConfigFileStore for MemoryFileStore {
+            fn read_config_file(&self, _rel_path: &str) -> Result<Option<Vec<u8>>> {
+                Ok(None)
+            }
+
+            fn write_config_file(&self, _rel_path: &str, _data: &[u8]) -> Result<()> {
+                Ok(())
+            }
+
+            fn remove_config_file(&self, _rel_path: &str) -> Result<()> {
+                Ok(())
+            }
+        }
+
+        let body = r#"{"llm_sources":[{
+            "id":"src-text",
+            "provider":"openai",
+            "api_key":"source-key",
+            "model":"gpt-4o-mini",
+            "api_url":"https://api.openai.com/v1",
+            "model_kind":"audio",
+            "custom_headers":[]
+        }]}"#;
+
+        let err = save_llm_segment(&MemoryFileStore, body)
+            .expect_err("unsupported model_kind must be rejected");
+        assert!(err.to_string().contains("unknown variant"));
+    }
+
+    #[test]
+    fn llm_segment_rejects_duplicate_custom_headers_case_insensitive() {
+        struct MemoryFileStore;
+
+        impl ConfigFileStore for MemoryFileStore {
+            fn read_config_file(&self, _rel_path: &str) -> Result<Option<Vec<u8>>> {
+                Ok(None)
+            }
+
+            fn write_config_file(&self, _rel_path: &str, _data: &[u8]) -> Result<()> {
+                Ok(())
+            }
+
+            fn remove_config_file(&self, _rel_path: &str) -> Result<()> {
+                Ok(())
+            }
+        }
+
+        let body = r#"{"llm_sources":[{
+            "id":"src-text",
+            "provider":"openai",
+            "api_key":"source-key",
+            "model":"gpt-4o-mini",
+            "api_url":"https://api.openai.com/v1",
+            "model_kind":"text",
+            "custom_headers":[
+                {"name":"X-Provider-Trace","value":"a"},
+                {"name":"x-provider-trace","value":"b"}
+            ]
+        }]}"#;
+
+        let err = save_llm_segment(&MemoryFileStore, body)
+            .expect_err("duplicate custom header names must be rejected");
+        assert!(err.to_string().contains("custom_headers"));
+    }
+
+    #[test]
+    fn merge_llm_from_json_rejects_semantically_invalid_storage_segment() {
+        let mut config = AppConfig::load_from_env();
+        config.api_key = "env-key".to_string();
+        config.model = "env-model".to_string();
+        config.model_provider = "openai".to_string();
+        config.api_url = "https://env.example.test/v1".to_string();
+        let mut errors = Vec::new();
+
+        config.merge_llm_from_json(
+            r#"{"llm_sources":[
+                {
+                    "id":"dup",
+                    "provider":"openai",
+                    "api_key":"source-key-1",
+                    "model":"gpt-4o-mini",
+                    "api_url":"https://api.openai.com/v1",
+                    "model_kind":"text",
+                    "custom_headers":[]
+                },
+                {
+                    "id":"dup",
+                    "provider":"openai",
+                    "api_key":"source-key-2",
+                    "model":"gpt-4o-mini",
+                    "api_url":"https://api.openai.com/v1",
+                    "model_kind":"text",
+                    "custom_headers":[]
+                }
+            ]}"#,
+            &mut errors,
+        );
+
+        assert_eq!(errors, vec!["llm_json_invalid"]);
+        assert!(config.llm_sources.is_empty());
+        assert_eq!(config.api_key, "env-key");
+        assert_eq!(config.model, "env-model");
     }
 
     #[test]
@@ -3170,6 +3298,9 @@ mod tests {
         assert_eq!(segment.llm_sources[0].model, "deepseek-chat");
         assert_eq!(segment.llm_sources[0].api_url, "https://api.deepseek.com");
         assert_eq!(segment.llm_sources[0].max_tokens, None);
+        assert_eq!(segment.llm_sources[0].id, "env_default");
+        assert_eq!(segment.llm_sources[0].model_kind, LlmModelKind::Text);
+        assert!(segment.llm_sources[0].custom_headers.is_empty());
     }
 
     #[test]

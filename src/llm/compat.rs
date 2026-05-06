@@ -59,15 +59,19 @@ pub(crate) fn model_compat_for_source(source: &LlmSource) -> LlmModelCompat {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{LlmHeaderEntry, LlmModelKind};
 
     #[test]
     fn source_compat_marks_ollama_as_prompt_guided() {
         let compat = model_compat_for_source(&LlmSource {
+            id: "ollama".to_string(),
             provider: "ollama".to_string(),
             api_key: "k".to_string(),
             model: "qwen2.5".to_string(),
             api_url: String::new(),
             max_tokens: None,
+            model_kind: LlmModelKind::Text,
+            custom_headers: Vec::<LlmHeaderEntry>::new(),
         });
         assert_eq!(compat.tool_call_support, ToolCallSupport::PromptGuided);
     }
@@ -75,11 +79,14 @@ mod tests {
     #[test]
     fn source_compat_marks_compat_ollama_endpoint_as_prompt_guided() {
         let compat = model_compat_for_source(&LlmSource {
+            id: "compat-ollama".to_string(),
             provider: "openai_compatible".to_string(),
             api_key: "k".to_string(),
             model: "qwen2.5".to_string(),
             api_url: "http://192.168.1.100:11434/v1".to_string(),
             max_tokens: None,
+            model_kind: LlmModelKind::Text,
+            custom_headers: Vec::<LlmHeaderEntry>::new(),
         });
         assert_eq!(compat.tool_call_support, ToolCallSupport::PromptGuided);
     }

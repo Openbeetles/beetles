@@ -34,40 +34,50 @@ test("normalizeChannelsConfigFromDevice keeps legacy responses usable without ca
   assert.ok(config.available_channels.includes("wecom"));
 });
 
-test("normalizeLlmConfigFromDevice keeps partial source rows renderable", () => {
+test("normalizeLlmConfigFromDevice normalizes source capability fields", () => {
   const config = normalizeLlmConfigFromDevice({
     llm_sources: [
       {
+        id: "src-openai",
         provider: "openai",
         model: "gpt-4o",
+        max_tokens: 4096,
+        model_kind: "multimodal",
+        custom_headers: [{ name: "X-Beetle", value: "alpha" }],
       },
       null,
       {
         api_key: 42,
         api_url: "https://example.test/v1",
+        model_kind: "unsupported",
+        custom_headers: [{ name: 42, value: "beta" }, null],
       },
     ],
-    llm_router_source_index: 9,
-    llm_worker_source_index: 1,
   });
 
   assert.deepEqual(config, {
     llm_sources: [
       {
+        id: "src-openai",
         provider: "openai",
         api_key: "",
         model: "gpt-4o",
         api_url: "",
+        max_tokens: 4096,
+        model_kind: "multimodal",
+        custom_headers: [{ name: "X-Beetle", value: "alpha" }],
       },
       {
+        id: "",
         provider: "",
         api_key: "",
         model: "",
         api_url: "https://example.test/v1",
+        max_tokens: null,
+        model_kind: "text",
+        custom_headers: [{ name: "", value: "beta" }],
       },
     ],
-    llm_router_source_index: null,
-    llm_worker_source_index: 1,
   });
 });
 

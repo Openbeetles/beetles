@@ -4,17 +4,30 @@
  */
 
 export interface LlmSource {
+  id: string
   provider: string
   api_key: string
   model: string
   api_url: string
+  max_tokens?: number | null
+  model_kind: LlmModelKind
+  custom_headers: LlmCustomHeader[]
+}
+
+export type LlmModelKind =
+  | 'text'
+  | 'multimodal'
+  | 'image_generation'
+  | 'video_generation'
+
+export interface LlmCustomHeader {
+  name: string
+  value: string
 }
 
 /** GET/POST /api/config/llm 读写模型。 */
 export interface LlmConfigSegment {
   llm_sources: LlmSource[]
-  llm_router_source_index?: number | null
-  llm_worker_source_index?: number | null
 }
 
 /** POST /api/config/channels 请求体。 */
@@ -69,16 +82,44 @@ function normalizeLlmSource(value: unknown): LlmSource | null {
   const record = objectRecord(value)
   if (Object.keys(record).length === 0) return null
   return {
+    id: stringValue(record.id),
     provider: stringValue(record.provider),
     api_key: stringValue(record.api_key),
     model: stringValue(record.model),
     api_url: stringValue(record.api_url),
+    max_tokens: normalizeOptionalPositiveInteger(record.max_tokens),
+    model_kind: normalizeLlmModelKind(record.model_kind),
+    custom_headers: normalizeLlmCustomHeaders(record.custom_headers),
   }
 }
 
-function normalizeSourceIndex(value: unknown, sourceCount: number): number | null {
-  if (typeof value !== 'number' || !Number.isInteger(value)) return null
-  return value >= 0 && value < sourceCount ? value : null
+function normalizeOptionalPositiveInteger(value: unknown): number | null {
+  return typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : null
+}
+
+function normalizeLlmModelKind(value: unknown): LlmModelKind {
+  switch (value) {
+    case 'multimodal':
+    case 'image_generation':
+    case 'video_generation':
+      return value
+    default:
+      return 'text'
+  }
+}
+
+function normalizeLlmCustomHeaders(value: unknown): LlmCustomHeader[] {
+  if (!Array.isArray(value)) return []
+  return value
+    .map((header) => {
+      const record = objectRecord(header)
+      if (Object.keys(record).length === 0) return null
+      return {
+        name: stringValue(record.name),
+        value: stringValue(record.value),
+      }
+    })
+    .filter((header): header is LlmCustomHeader => header !== null)
 }
 
 function normalizeAvailableChannels(value: unknown): string[] {
@@ -110,14 +151,6 @@ export function normalizeLlmConfigFromDevice(
 
   return {
     llm_sources: sources,
-    llm_router_source_index: normalizeSourceIndex(
-      record.llm_router_source_index,
-      sources.length,
-    ),
-    llm_worker_source_index: normalizeSourceIndex(
-      record.llm_worker_source_index,
-      sources.length,
-    ),
   }
 }
 

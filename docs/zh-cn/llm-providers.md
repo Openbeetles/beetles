@@ -54,18 +54,7 @@
 
 Beetle OS 支持同时配置多个来源。
 
-默认情况下，会按 `llm_sources` 里的顺序依次尝试。
-
-如果你设置了：
-
-- `llm_router_source_index`
-- `llm_worker_source_index`
-
-Beetle OS 会优先按这个顺序尝试：
-
-1. `llm_router_source_index`
-2. `llm_worker_source_index`
-3. 列表里其余可用来源
+Beetle OS 会按 `llm_sources` 里的顺序依次尝试；Configure UI 通过拖拽排序调整这个优先级。
 
 按该配置运行时会自动选择可用来源，无需在聊天过程中手动切换。
 
@@ -77,10 +66,13 @@ Beetle OS 会优先按这个顺序尝试：
 {
   "llm_sources": [
     {
+      "id": "deepseek-main",
       "provider": "deepseek",
       "api_key": "sk-...",
       "model": "deepseek-chat",
-      "api_url": ""
+      "api_url": "",
+      "model_kind": "text",
+      "custom_headers": []
     }
   ]
 }
@@ -92,33 +84,42 @@ Beetle OS 会优先按这个顺序尝试：
 {
   "llm_sources": [
     {
+      "id": "gemini-vision",
       "provider": "gemini",
       "api_key": "AIza...",
       "model": "gemini-1.5-flash",
-      "api_url": ""
+      "api_url": "",
+      "model_kind": "multimodal",
+      "custom_headers": []
     },
     {
+      "id": "qwen-text",
       "provider": "qwen",
       "api_key": "...",
       "model": "qwen-plus",
-      "api_url": ""
+      "api_url": "",
+      "model_kind": "text",
+      "custom_headers": []
     },
     {
+      "id": "ollama-local",
       "provider": "ollama",
       "api_key": "local",
       "model": "qwen2.5",
-      "api_url": "http://192.168.1.100:11434/v1"
+      "api_url": "http://192.168.1.100:11434/v1",
+      "model_kind": "text",
+      "custom_headers": []
     }
-  ],
-  "llm_router_source_index": 0,
-  "llm_worker_source_index": 1
+  ]
 }
 ```
 
 ## 配置要点
 
 - `llm_sources` 不能为空
-- 每个来源至少要有 `provider`、`api_key`、`model`
+- 每个来源至少要有 `id`、`provider`、`api_key`、`model`、`model_kind`、`custom_headers`
+- 图片理解等视觉工具只会使用 `model_kind = "multimodal"` 的来源
+- 第三方路由需要额外 HTTP header 时，写入该来源的 `custom_headers`
 - 如果你用的是本地 Ollama，常见地址是 `http://<主机>:11434/v1`
 - 示例里的模型名只是示例，不代表 Beetle OS 固定要求这些名字
 

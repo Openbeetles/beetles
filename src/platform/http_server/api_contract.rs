@@ -35,7 +35,6 @@ pub const CHANNEL_FIELD_TOO_LONG: &str = "channel.field_too_long";
 pub const CHANNEL_TG_GROUP_ACTIVATION_INVALID: &str = "channel.tg_group_activation_invalid";
 
 pub const LLM_SOURCES_EMPTY: &str = "llm.sources_empty";
-pub const LLM_INDICES_INVALID: &str = "llm.indices_invalid";
 pub const LLM_SOURCE_FIELD_TOO_LONG: &str = "llm.source_field_too_long";
 
 pub const HARDWARE_CONFIG_INVALID: &str = "hardware.config_invalid";
@@ -114,14 +113,6 @@ fn config_body_error_key(message: &str) -> &'static str {
     }
     if message == "llm_sources must not be empty" {
         return LLM_SOURCES_EMPTY;
-    }
-    if message.contains("llm_router_source_index and llm_worker_source_index must be") {
-        return LLM_INDICES_INVALID;
-    }
-    if (message.contains("llm_router_source_index") || message.contains("llm_worker_source_index"))
-        && message.contains("out of range")
-    {
-        return LLM_INDICES_INVALID;
     }
     if message.contains("llm_sources[") && message.contains("field length over limit") {
         return LLM_SOURCE_FIELD_TOO_LONG;

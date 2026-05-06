@@ -29,7 +29,6 @@ export function DeviceConfigLayout() {
        * 必须同步打开：若用 `queueMicrotask` + cleanup `cancelled`，在 React 18
        * `StrictMode` 下会先卸载再挂载，微任务被跳过，弹窗永远不出现。
        */
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- route entry must open synchronously; deferred scheduling is skipped by StrictMode remount.
       setDisclaimerOpen(true);
     }
     prevPathRef.current = pathname;

@@ -70,14 +70,6 @@ fn map_config_body(m: &str) -> Message {
     if m == "llm_sources must not be empty" {
         return Message::ConfigLlmSourcesEmpty;
     }
-    if m.contains("llm_router_source_index and llm_worker_source_index must be") {
-        return Message::ConfigLlmIndicesInvalid;
-    }
-    if (m.contains("llm_router_source_index") || m.contains("llm_worker_source_index"))
-        && m.contains("out of range")
-    {
-        return Message::ConfigLlmIndicesInvalid;
-    }
     if m.contains("llm_sources[") && m.contains("field length over limit") {
         return Message::ConfigLlmSourceFieldLen;
     }

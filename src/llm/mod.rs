@@ -42,6 +42,25 @@ fn box_client_for_source(s: &LlmSource, global_stream: bool) -> Box<dyn LlmClien
     }
 }
 
+pub(crate) fn append_non_overriding_custom_headers<'a>(
+    headers: &mut Vec<(&'a str, &'a str)>,
+    custom_headers: &'a [crate::config::LlmHeaderEntry],
+) {
+    for header in custom_headers {
+        let name = header.name.trim();
+        if name.is_empty() {
+            continue;
+        }
+        if headers
+            .iter()
+            .any(|(existing, _)| existing.eq_ignore_ascii_case(name))
+        {
+            continue;
+        }
+        headers.push((name, header.value.as_str()));
+    }
+}
+
 pub(crate) fn map_transport_error(e: Error, stage: &'static str) -> Error {
     match e {
         Error::Http { status_code, .. } => Error::Http { status_code, stage },

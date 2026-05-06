@@ -3,7 +3,7 @@
 //! analyze_image tool: analyzes image URLs or real platform camera frames via LLM vision.
 //! Supports multi-source fallback, consistent with FallbackLlmClient.
 
-use crate::config::LlmSource;
+use crate::config::{LlmModelKind, LlmSource};
 use crate::constants::MAX_REQUEST_BODY_LEN;
 use crate::error::{Error, Result};
 use crate::platform::{CameraFrameBuffer, CameraFrameFormat, PlatformCamera};
@@ -54,7 +54,12 @@ impl AnalyzeImageTool {
         let sources: Vec<LlmSource> = config
             .llm_sources
             .iter()
-            .filter(|s| !s.api_key.trim().is_empty())
+            .filter(|s| {
+                s.model_kind == LlmModelKind::Multimodal
+                    && !s.api_key.trim().is_empty()
+                    && !s.model.trim().is_empty()
+                    && !s.provider.trim().is_empty()
+            })
             .cloned()
             .collect();
         Self {
@@ -115,7 +120,7 @@ impl AnalyzeImageTool {
         };
 
         let bearer;
-        let headers: Vec<(&str, &str)> = if is_anthropic {
+        let mut headers: Vec<(&str, &str)> = if is_anthropic {
             vec![
                 ("Content-Type", "application/json"),
                 ("x-api-key", &source.api_key),
@@ -128,6 +133,7 @@ impl AnalyzeImageTool {
                 ("Authorization", &bearer),
             ]
         };
+        crate::llm::append_non_overriding_custom_headers(&mut headers, &source.custom_headers);
 
         log::info!(
             "[{}] POST {} provider={} model={} image_url_len={}",
@@ -313,7 +319,7 @@ impl AnalyzeImageTool {
         }
 
         if self.sources.is_empty() {
-            return Ok("analyze_image: no API key configured".to_string());
+            return Ok("analyze_image: no multimodal model configured".to_string());
         }
 
         let owner = LeaseOwner::new("camera_vision", "analyze_image");
@@ -358,7 +364,7 @@ impl AnalyzeImageTool {
         ctx: &mut dyn ToolContext,
     ) -> Result<String> {
         if self.sources.is_empty() {
-            return Ok("analyze_image: no API key configured".to_string());
+            return Ok("analyze_image: no multimodal model configured".to_string());
         }
 
         // 多源顺序回退，与 FallbackLlmClient 行为一致
@@ -490,7 +496,7 @@ impl Tool for AnalyzeImageTool {
 #[cfg(test)]
 mod tests {
     use super::{local_frame_fits_request_budget, AnalyzeImageTool};
-    use crate::config::{AppConfig, LlmSource};
+    use crate::config::{AppConfig, LlmHeaderEntry, LlmModelKind, LlmSource};
     use crate::platform::{
         CameraFrameBuffer, CameraFrameFormat, CameraState, CameraStatus, PlatformCamera,
         ResponseBody,
@@ -558,6 +564,7 @@ mod tests {
 
     struct MockCtx {
         posts: usize,
+        last_headers: Vec<(String, String)>,
         last_body: Vec<u8>,
     }
 
@@ -573,10 +580,14 @@ mod tests {
         fn post_with_headers(
             &mut self,
             _url: &str,
-            _headers: &[(&str, &str)],
+            headers: &[(&str, &str)],
             body: &[u8],
         ) -> crate::Result<(u16, ResponseBody)> {
             self.posts += 1;
+            self.last_headers = headers
+                .iter()
+                .map(|(name, value)| ((*name).to_string(), (*value).to_string()))
+                .collect();
             self.last_body = body.to_vec();
             Ok((
                 200,
@@ -594,11 +605,14 @@ mod tests {
     fn vision_config() -> AppConfig {
         let mut config = AppConfig::load_from_env();
         config.llm_sources = vec![LlmSource {
+            id: "vision-source".to_string(),
             provider: "openai".to_string(),
             api_key: "test-key".to_string(),
             model: "gpt-vision-test".to_string(),
             api_url: "https://example.test/v1".to_string(),
             max_tokens: None,
+            model_kind: LlmModelKind::Multimodal,
+            custom_headers: Vec::<LlmHeaderEntry>::new(),
         }];
         config
     }
@@ -628,6 +642,7 @@ mod tests {
         let tool = AnalyzeImageTool::with_camera(&vision_config(), camera);
         let mut ctx = MockCtx {
             posts: 0,
+            last_headers: Vec::new(),
             last_body: Vec::new(),
         };
 
@@ -649,6 +664,7 @@ mod tests {
         let tool = AnalyzeImageTool::with_camera(&vision_config(), camera);
         let mut ctx = MockCtx {
             posts: 0,
+            last_headers: Vec::new(),
             last_body: Vec::new(),
         };
 
@@ -665,11 +681,78 @@ mod tests {
     }
 
     #[test]
+    fn url_vision_requires_a_multimodal_source() {
+        let mut config = vision_config();
+        config.llm_sources[0].model = "text-only-model".to_string();
+        config.llm_sources[0].model_kind = LlmModelKind::Text;
+        let tool = AnalyzeImageTool::new(&config);
+        let mut ctx = MockCtx {
+            posts: 0,
+            last_headers: Vec::new(),
+            last_body: Vec::new(),
+        };
+
+        let text = tool
+            .execute(
+                r#"{"image_url":"https://example.test/image.jpg","question":"describe"}"#,
+                &mut ctx,
+            )
+            .expect("missing multimodal source is a user-facing tool result");
+
+        assert!(text.contains("no multimodal model configured"));
+        assert_eq!(ctx.posts, 0);
+    }
+
+    #[test]
+    fn url_vision_appends_custom_headers_without_overriding_builtin_headers() {
+        let mut config = AppConfig::load_from_env();
+        config.llm_sources = vec![serde_json::from_str(
+            r#"{
+                "id":"vision-source",
+                "provider":"openai",
+                "api_key":"test-key",
+                "model":"gpt-vision-test",
+                "api_url":"https://example.test/v1",
+                "model_kind":"multimodal",
+                "custom_headers":[
+                    {"name":"X-Provider-Trace","value":"trace-1"},
+                    {"name":"Authorization","value":"Bearer attacker"}
+                ]
+            }"#,
+        )
+        .expect("source json")];
+        let tool = AnalyzeImageTool::new(&config);
+        let mut ctx = MockCtx {
+            posts: 0,
+            last_headers: Vec::new(),
+            last_body: Vec::new(),
+        };
+
+        let text = tool
+            .execute(
+                r#"{"image_url":"https://example.test/image.jpg","question":"describe"}"#,
+                &mut ctx,
+            )
+            .expect("vision source should be used");
+
+        let header_value = |name: &str| {
+            ctx.last_headers
+                .iter()
+                .find(|(key, _)| key.eq_ignore_ascii_case(name))
+                .map(|(_, value)| value.as_str())
+        };
+        assert_eq!(text, "vision text");
+        assert_eq!(header_value("authorization"), Some("Bearer test-key"));
+        assert_eq!(header_value("x-provider-trace"), Some("trace-1"));
+    }
+
+    #[test]
     fn local_camera_capture_rejects_oversize_before_platform_capture() {
         let (camera, captures) = RecordingCamera::available();
         let tool = AnalyzeImageTool::with_camera(&vision_config(), camera);
         let mut ctx = MockCtx {
             posts: 0,
+            last_headers: Vec::new(),
             last_body: Vec::new(),
         };
         let args = format!(
@@ -696,6 +779,7 @@ mod tests {
         );
         let mut ctx = MockCtx {
             posts: 0,
+            last_headers: Vec::new(),
             last_body: Vec::new(),
         };
 

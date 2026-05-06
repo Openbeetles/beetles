@@ -114,7 +114,6 @@ pub enum Message {
     ConfigFieldTooLong,
     ConfigEnabledChannelInvalid,
     ConfigLlmSourcesEmpty,
-    ConfigLlmIndicesInvalid,
     ConfigLlmSourceFieldLen,
     ConfigChannelFieldLen,
     ConfigHardwareInvalid,
@@ -254,7 +253,6 @@ pub fn tr(msg: Message, loc: Locale) -> String {
             Message::ConfigFieldTooLong => zh("字段长度超出限制"),
             Message::ConfigEnabledChannelInvalid => zh("enabled_channel 取值无效"),
             Message::ConfigLlmSourcesEmpty => zh("llm_sources 不能为空"),
-            Message::ConfigLlmIndicesInvalid => zh("llm_router / llm_worker 源下标无效"),
             Message::ConfigLlmSourceFieldLen => zh("某个 LLM 源字段过长"),
             Message::ConfigChannelFieldLen => zh("通道配置字段过长"),
             Message::ConfigHardwareInvalid => zh("硬件配置无效"),
@@ -394,9 +392,6 @@ pub fn tr(msg: Message, loc: Locale) -> String {
             Message::ConfigFieldTooLong => en("A field exceeds the maximum length"),
             Message::ConfigEnabledChannelInvalid => en("enabled_channel value is invalid"),
             Message::ConfigLlmSourcesEmpty => en("llm_sources must not be empty"),
-            Message::ConfigLlmIndicesInvalid => {
-                en("llm_router_source_index / llm_worker_source_index out of range")
-            }
             Message::ConfigLlmSourceFieldLen => en("An LLM source field exceeds the length limit"),
             Message::ConfigChannelFieldLen => en("A channel field exceeds the length limit"),
             Message::ConfigHardwareInvalid => en("Invalid hardware configuration"),

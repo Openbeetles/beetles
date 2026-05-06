@@ -173,8 +173,6 @@
 字段：
 
 - `llm_sources`
-- `llm_router_source_index`
-- `llm_worker_source_index`
 
 这个接口不返回 `locale`、`build_package`，也不携带其他配置段。
 
@@ -214,16 +212,19 @@
 字段：
 
 - `llm_sources`
-- `llm_router_source_index`
-- `llm_worker_source_index`
 
 `llm_sources` 中每个来源包含这些字段：
 
+- `id`
 - `provider`
 - `api_key`
 - `model`
 - `api_url`
 - `max_tokens`
+- `model_kind`
+- `custom_headers`
+
+来源顺序就是运行时 fallback 优先级；Configure UI 通过拖拽调整顺序。`model_kind` 可取 `text`、`multimodal`、`image_generation`、`video_generation`。`custom_headers` 是 `{ "name": "...", "value": "..." }` 数组，同一个来源内 header 名称不能重复。
 
 示例：
 
@@ -231,15 +232,16 @@
 {
   "llm_sources": [
     {
+      "id": "llm_primary",
       "provider": "provider_name",
       "api_key": "your_key",
       "model": "model_name",
       "api_url": "https://example.com/v1/chat/completions",
-      "max_tokens": 1024
+      "max_tokens": 1024,
+      "model_kind": "text",
+      "custom_headers": []
     }
-  ],
-  "llm_router_source_index": 0,
-  "llm_worker_source_index": 0
+  ]
 }
 ```
 
