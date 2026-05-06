@@ -1,36 +1,5 @@
 use crate::channels::outbound_text::render_markdownish_to_plain_text;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum QqMarkdownRender {
-    Markdown { content: String, fallback: String },
-    Plain { text: String },
-}
-
-pub(super) fn render_qq_markdown(source: &str, max_len: usize) -> QqMarkdownRender {
-    let rendered = render_qq_markdown_subset(source);
-    if rendered.trim().is_empty() {
-        return QqMarkdownRender::Plain {
-            text: String::new(),
-        };
-    }
-    if rendered.len() <= max_len {
-        let fallback = render_markdownish_to_plain_text(&rendered);
-        return QqMarkdownRender::Markdown {
-            content: rendered,
-            fallback,
-        };
-    }
-
-    let plain = render_qq_plain_text(source);
-    QqMarkdownRender::Plain {
-        text: if plain.trim().is_empty() {
-            source.trim().to_string()
-        } else {
-            plain
-        },
-    }
-}
-
 pub(super) fn render_qq_plain_text(source: &str) -> String {
     render_markdownish_to_plain_text(&render_qq_markdown_subset(source))
 }
@@ -351,10 +320,10 @@ mod tests {
     }
 
     #[test]
-    fn oversized_markdown_downgrades_to_plain_text() {
+    fn oversized_text_still_renders_to_plain_text_projection() {
         let source = format!("# 标题\n{}", "甲".repeat(8));
-        let rendered = render_qq_markdown(&source, 4);
+        let rendered = render_qq_plain_text(&source);
 
-        assert!(matches!(rendered, QqMarkdownRender::Plain { .. }));
+        assert_eq!(rendered, format!("标题\n{}", "甲".repeat(8)));
     }
 }

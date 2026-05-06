@@ -67,7 +67,7 @@ fn maybe_promote_primary_plain_text(
     }
     let raw_source_text = normalize_text_source(text, content);
     let qq_inline_label_projection = if capability.id == CHANNEL_QQ_CHANNEL {
-        project_inline_label_chain_to_multiline_markdown(raw_source_text)
+        project_inline_label_chain_to_multiline_text(raw_source_text)
     } else {
         None
     };
@@ -75,14 +75,10 @@ fn maybe_promote_primary_plain_text(
         .as_deref()
         .unwrap_or(raw_source_text);
     let source_looks_markdownish = looks_like_markdownish(source_text);
-    let qq_markdown_within_text_limit = capability.id != CHANNEL_QQ_CHANNEL
+    let preprojection_within_text_limit = capability.id != CHANNEL_QQ_CHANNEL
         || source_text.len() <= capability.contract.max_text_bytes;
-    let promotable_markdownish = source_looks_markdownish && qq_markdown_within_text_limit;
-    let qq_multiline_markdown = capability.id == CHANNEL_QQ_CHANNEL
-        && supports_text_format(capability, TextFormat::Markdown)
-        && qq_markdown_within_text_limit
-        && (source_text.contains('\n') || source_text.contains('\r'));
-    if source_text.is_empty() || (!promotable_markdownish && !qq_multiline_markdown) {
+    let promotable_markdownish = source_looks_markdownish && preprojection_within_text_limit;
+    if source_text.is_empty() || !promotable_markdownish {
         return None;
     }
     if capability.id == CHANNEL_TELEGRAM && supports_text_format(capability, TextFormat::Html) {
@@ -370,7 +366,7 @@ struct InlineLabelBoundary {
     label_start: usize,
 }
 
-fn project_inline_label_chain_to_multiline_markdown(text: &str) -> Option<String> {
+fn project_inline_label_chain_to_multiline_text(text: &str) -> Option<String> {
     let trimmed = text.trim();
     if trimmed.is_empty() || trimmed.contains('\n') || trimmed.contains('\r') {
         return None;
@@ -1032,45 +1028,37 @@ mod tests {
     }
 
     #[test]
-    fn primary_markdownish_reply_on_qq_preserves_markdown_body() {
+    fn primary_markdownish_reply_on_qq_downgrades_to_plain_text() {
         let mut msg = outbound_text_msg("# Title\n- item");
         msg.channel = Arc::from("qq_channel");
         let prepared = prepare_outbound_message_for_channel(
             &msg,
-            Some(capability_entry(
-                "qq_channel",
-                TEXT_ONLY_KIND,
-                MARKDOWN_ONLY,
-            )),
+            Some(capability_entry("qq_channel", TEXT_ONLY_KIND, PLAIN_ONLY)),
         );
 
         assert!(matches!(
             prepared.msg.body,
             CanonicalMessageBody::Text(TextBody {
-                format: TextFormat::Markdown,
+                format: TextFormat::Plain,
                 ref text,
-            }) if text == "# Title\n- item"
+            }) if text == "Title\n• item"
         ));
-        assert_eq!(prepared.content, "# Title\n- item");
+        assert_eq!(prepared.content, "Title\n• item");
     }
 
     #[test]
-    fn primary_multiline_plain_reply_on_qq_promotes_to_markdown_body() {
+    fn primary_multiline_plain_reply_on_qq_stays_plain_text() {
         let mut msg = outbound_text_msg("第一段。\n\n第二段。");
         msg.channel = Arc::from("qq_channel");
         let prepared = prepare_outbound_message_for_channel(
             &msg,
-            Some(capability_entry(
-                "qq_channel",
-                TEXT_ONLY_KIND,
-                MARKDOWN_ONLY,
-            )),
+            Some(capability_entry("qq_channel", TEXT_ONLY_KIND, PLAIN_ONLY)),
         );
 
         assert!(matches!(
             prepared.msg.body,
             CanonicalMessageBody::Text(TextBody {
-                format: TextFormat::Markdown,
+                format: TextFormat::Plain,
                 ref text,
             }) if text == "第一段。\n\n第二段。"
         ));
@@ -1078,29 +1066,25 @@ mod tests {
     }
 
     #[test]
-    fn primary_inline_label_chain_on_qq_projects_to_multiline_markdown() {
+    fn primary_inline_label_chain_on_qq_projects_to_multiline_plain_text() {
         let mut msg =
             outbound_text_msg("状态--芯片: ESP32-S3 - 运行时间: 5 分钟- WiFi: 已连接 - 内存: 正常");
         msg.channel = Arc::from("qq_channel");
         let prepared = prepare_outbound_message_for_channel(
             &msg,
-            Some(capability_entry(
-                "qq_channel",
-                TEXT_ONLY_KIND,
-                MARKDOWN_ONLY,
-            )),
+            Some(capability_entry("qq_channel", TEXT_ONLY_KIND, PLAIN_ONLY)),
         );
 
         assert!(matches!(
             prepared.msg.body,
             CanonicalMessageBody::Text(TextBody {
-                format: TextFormat::Markdown,
+                format: TextFormat::Plain,
                 ref text,
-            }) if text == "状态\n- 芯片: ESP32-S3\n- 运行时间: 5 分钟\n- WiFi: 已连接\n- 内存: 正常"
+            }) if text == "状态\n• 芯片: ESP32-S3\n• 运行时间: 5 分钟\n• WiFi: 已连接\n• 内存: 正常"
         ));
         assert_eq!(
             prepared.content,
-            "状态\n- 芯片: ESP32-S3\n- 运行时间: 5 分钟\n- WiFi: 已连接\n- 内存: 正常"
+            "状态\n• 芯片: ESP32-S3\n• 运行时间: 5 分钟\n• WiFi: 已连接\n• 内存: 正常"
         );
     }
 
@@ -1110,11 +1094,7 @@ mod tests {
         msg.channel = Arc::from("qq_channel");
         let prepared = prepare_outbound_message_for_channel(
             &msg,
-            Some(capability_entry(
-                "qq_channel",
-                TEXT_ONLY_KIND,
-                MARKDOWN_ONLY,
-            )),
+            Some(capability_entry("qq_channel", TEXT_ONLY_KIND, PLAIN_ONLY)),
         );
 
         assert!(matches!(
@@ -1134,11 +1114,7 @@ mod tests {
         msg.channel = Arc::from("qq_channel");
         let prepared = prepare_outbound_message_for_channel(
             &msg,
-            Some(capability_entry(
-                "qq_channel",
-                TEXT_ONLY_KIND,
-                MARKDOWN_ONLY,
-            )),
+            Some(capability_entry("qq_channel", TEXT_ONLY_KIND, PLAIN_ONLY)),
         );
 
         assert!(matches!(
@@ -1158,11 +1134,7 @@ mod tests {
         msg.channel = Arc::from("qq_channel");
         let prepared = prepare_outbound_message_for_channel(
             &msg,
-            Some(capability_entry(
-                "qq_channel",
-                TEXT_ONLY_KIND,
-                MARKDOWN_ONLY,
-            )),
+            Some(capability_entry("qq_channel", TEXT_ONLY_KIND, PLAIN_ONLY)),
         );
 
         assert!(matches!(
@@ -1195,7 +1167,7 @@ mod tests {
     }
 
     #[test]
-    fn explicit_qq_markdown_body_is_preserved() {
+    fn explicit_qq_markdown_body_downgrades_to_plain_text() {
         let mut msg = outbound_text_msg("# Title\n- item");
         msg.channel = Arc::from("qq_channel");
         msg.body = CanonicalMessageBody::Text(TextBody {
@@ -1204,21 +1176,17 @@ mod tests {
         });
         let prepared = prepare_outbound_message_for_channel(
             &msg,
-            Some(capability_entry(
-                "qq_channel",
-                TEXT_ONLY_KIND,
-                MARKDOWN_ONLY,
-            )),
+            Some(capability_entry("qq_channel", TEXT_ONLY_KIND, PLAIN_ONLY)),
         );
 
         assert!(matches!(
             prepared.msg.body,
             CanonicalMessageBody::Text(TextBody {
-                format: TextFormat::Markdown,
+                format: TextFormat::Plain,
                 ref text,
-            }) if text == "# Title\n- item"
+            }) if text == "Title\n• item"
         ));
-        assert_eq!(prepared.content, "# Title\n- item");
+        assert_eq!(prepared.content, "Title\n• item");
     }
 
     #[test]

@@ -245,6 +245,21 @@ mod tests {
         assert_eq!(payload["tls_fragmentation_risk"].as_str(), Some("critical"));
     }
 
+    #[test]
+    fn platform_board_info_adds_version_display_and_audio_contract() {
+        let platform = crate::platform::LinuxPlatform::new();
+        let payload = crate::platform::Platform::board_info_json(&platform).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&payload).unwrap();
+
+        assert_eq!(
+            parsed["firmware_version"].as_str(),
+            Some(env!("CARGO_PKG_VERSION"))
+        );
+        assert!(parsed["display"]["available"].is_boolean());
+        assert!(parsed["audio"]["duplex_profile"].is_string());
+        assert!(parsed["audio"]["duplex_capabilities"].is_object());
+    }
+
     fn sample_resource_snapshot() -> ResourceSnapshot {
         ResourceSnapshot {
             pressure: PressureLevel::Cautious,

@@ -709,6 +709,16 @@ pub trait Platform: Send + Sync + PlatformCamera {
             serde_json::from_str(&crate::platform::board_info::board_info_json_string())
                 .map_err(|e| Error::config("board_info_json", e.to_string()))?;
         if let Some(obj) = payload.as_object_mut() {
+            obj.insert(
+                "firmware_version".to_string(),
+                serde_json::json!(env!("CARGO_PKG_VERSION")),
+            );
+            obj.insert(
+                "display".to_string(),
+                serde_json::json!({
+                    "available": self.display_available(),
+                }),
+            );
             let audio_caps = self.audio_duplex_capabilities();
             obj.insert(
                 "audio".to_string(),

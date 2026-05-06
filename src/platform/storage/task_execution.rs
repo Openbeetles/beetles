@@ -7,6 +7,7 @@ use crate::task_execution::{
     TaskRunStatus, TaskRunStore,
 };
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -157,6 +158,82 @@ where
         .map_err(|error| Error::config(stage, error.to_string()))
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum IndexedTaskRunSkip {
+    Missing,
+    LegacyInteractiveActionKind,
+}
+
+fn has_legacy_interactive_action_task_run_kind(value: &Value) -> bool {
+    value
+        .get("run")
+        .and_then(|run| run.get("kind"))
+        .and_then(Value::as_str)
+        == Some("interactive_action")
+}
+
+fn is_legacy_interactive_action_task_run_file(path: &Path) -> bool {
+    let Ok(buf) = read_file(path) else {
+        return false;
+    };
+    if buf.is_empty() {
+        return false;
+    }
+    let Ok(value) = serde_json::from_slice::<Value>(&buf) else {
+        return false;
+    };
+    has_legacy_interactive_action_task_run_kind(&value)
+}
+
+fn read_indexed_task_run(
+    run_id: &str,
+) -> Result<std::result::Result<TaskRunRecord, IndexedTaskRunSkip>> {
+    let path = run_file_path(run_id);
+    match read_optional_json::<TaskRunRecord>(&path, "task_run_read") {
+        Ok(Some(record)) => Ok(Ok(record)),
+        Ok(None) => Ok(Err(IndexedTaskRunSkip::Missing)),
+        Err(error)
+            if matches!(error, Error::Config { stage, .. } if stage == "task_run_read")
+                && is_legacy_interactive_action_task_run_file(&path) =>
+        {
+            Ok(Err(IndexedTaskRunSkip::LegacyInteractiveActionKind))
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn collect_indexed_task_runs_with_reader(
+    index: &mut HashMap<String, RunIndexEntry>,
+    entries: impl IntoIterator<Item = RunIndexEntry>,
+    limit: usize,
+    mut read_run: impl FnMut(&str) -> Result<std::result::Result<TaskRunRecord, IndexedTaskRunSkip>>,
+) -> Result<StoreOp<Vec<TaskRunRecord>>> {
+    let target = limit.max(1);
+    let mut out = Vec::new();
+    let mut dirty = false;
+    for entry in entries {
+        if out.len() >= target {
+            break;
+        }
+        match read_run(&entry.run_id)? {
+            Ok(record) => out.push(record),
+            Err(IndexedTaskRunSkip::Missing) => {
+                index.remove(&entry.run_id);
+                dirty = true;
+            }
+            Err(IndexedTaskRunSkip::LegacyInteractiveActionKind) => {
+                log::warn!(
+                    "[task_run_store] removing stale indexed task run from formal view: run_id={} legacy_kind=interactive_action",
+                    entry.run_id
+                );
+                index.remove(&entry.run_id);
+                dirty = true;
+            }
+        }
+    }
+    Ok(StoreOp::with_dirty(out, dirty))
+}
+
 fn list_dir_optional(path: &Path, stage: &'static str) -> Result<Vec<String>> {
     match list_dir(path) {
         Ok(entries) => Ok(entries),
@@ -227,13 +304,7 @@ impl TaskRunStore for StorageTaskRunStore {
         self.index.with_cached_mut(|index| {
             let mut entries = index.values().cloned().collect::<Vec<_>>();
             entries.sort_by_key(|entry| std::cmp::Reverse(entry.updated_at));
-            let mut out = Vec::new();
-            for entry in entries.into_iter().take(limit.max(1)) {
-                if let Some(record) = self.get(&entry.run_id)? {
-                    out.push(record);
-                }
-            }
-            Ok(StoreOp::clean(out))
+            collect_indexed_task_runs_with_reader(index, entries, limit, read_indexed_task_run)
         })
     }
 
@@ -254,13 +325,7 @@ impl TaskRunStore for StorageTaskRunStore {
                 .cloned()
                 .collect::<Vec<_>>();
             matches.sort_by_key(|entry| std::cmp::Reverse(entry.updated_at));
-            let mut out = Vec::new();
-            for entry in matches.into_iter().take(limit.max(1)) {
-                if let Some(record) = self.get(&entry.run_id)? {
-                    out.push(record);
-                }
-            }
-            Ok(StoreOp::clean(out))
+            collect_indexed_task_runs_with_reader(index, matches, limit, read_indexed_task_run)
         })
     }
 }
@@ -577,6 +642,119 @@ mod tests {
         let error = read_optional_json::<TaskRunRecord>(&path, "task_run_read")
             .expect_err("unreadable file must not be treated as missing");
         assert_eq!(error.stage(), "task_run_read");
+    }
+
+    #[test]
+    fn legacy_interactive_action_match_is_limited_to_run_kind_field() {
+        let legacy = serde_json::json!({
+            "run": {
+                "kind": "interactive_action"
+            }
+        });
+        assert!(has_legacy_interactive_action_task_run_kind(&legacy));
+
+        let corrupt_run_status = serde_json::json!({
+            "run": {
+                "kind": "task_execution",
+                "status": "interactive_action"
+            }
+        });
+        assert!(!has_legacy_interactive_action_task_run_kind(
+            &corrupt_run_status
+        ));
+
+        let corrupt_step_status = serde_json::json!({
+            "run": {
+                "kind": "task_execution"
+            },
+            "plan": {
+                "ordered_steps": [
+                    {
+                        "status": "interactive_action"
+                    }
+                ]
+            }
+        });
+        assert!(!has_legacy_interactive_action_task_run_kind(
+            &corrupt_step_status
+        ));
+    }
+
+    fn make_run_record_for_store_test(
+        run_id: &str,
+        status: TaskRunStatus,
+        updated_at: u64,
+    ) -> TaskRunRecord {
+        TaskRunRecord {
+            run: crate::task_execution::TaskRun {
+                run_id: run_id.to_string(),
+                kind: crate::task_execution::TaskRunKind::TaskExecution,
+                source_channel: "qq".to_string(),
+                source_chat_id: "chat-1".to_string(),
+                user_request: "test request".to_string(),
+                title: format!("run {run_id}"),
+                status,
+                current_step_id: String::new(),
+                planner_reason: String::new(),
+                final_summary: String::new(),
+                failure_reason: String::new(),
+                plan_revision: 0,
+                created_at: updated_at,
+                updated_at,
+                finished_at: 0,
+            },
+            plan: crate::task_execution::TaskPlan {
+                goal: "test".to_string(),
+                completion_definition: "done".to_string(),
+                risk_notes: Vec::new(),
+                ordered_steps: Vec::new(),
+            },
+        }
+    }
+
+    #[test]
+    fn task_run_list_skips_stale_index_entries_and_fills_limit() {
+        let valid = make_run_record_for_store_test("tr-valid", TaskRunStatus::Running, 20);
+        let stale_entry = RunIndexEntry {
+            run_id: "tr-stale".to_string(),
+            source_channel: "qq".to_string(),
+            source_chat_id: "chat-1".to_string(),
+            title: "stale".to_string(),
+            status: TaskRunStatus::Running,
+            updated_at: 30,
+        };
+        let valid_entry = RunIndexEntry {
+            run_id: valid.run.run_id.clone(),
+            source_channel: valid.run.source_channel.clone(),
+            source_chat_id: valid.run.source_chat_id.clone(),
+            title: valid.run.title.clone(),
+            status: valid.run.status,
+            updated_at: valid.run.updated_at,
+        };
+        let mut index = HashMap::from([
+            (stale_entry.run_id.clone(), stale_entry.clone()),
+            (valid_entry.run_id.clone(), valid_entry.clone()),
+        ]);
+
+        let op = collect_indexed_task_runs_with_reader(
+            &mut index,
+            vec![stale_entry, valid_entry],
+            1,
+            |run_id| {
+                if run_id == "tr-stale" {
+                    Ok(Err(IndexedTaskRunSkip::LegacyInteractiveActionKind))
+                } else {
+                    Ok(Ok(valid.clone()))
+                }
+            },
+        )
+        .expect("stale indexed run should be removed without hiding the valid run");
+
+        assert!(op.dirty);
+        assert_eq!(op.result.len(), 1);
+        assert_eq!(op.result[0].run.run_id, "tr-valid");
+        assert!(!index.contains_key("tr-stale"));
+        assert!(index.contains_key("tr-valid"));
     }
 
     #[test]

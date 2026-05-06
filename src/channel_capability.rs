@@ -89,7 +89,7 @@ const TEXT_FORMATS_DINGTALK: &[TextFormat] = &[
 #[cfg(feature = "wecom")]
 const TEXT_FORMATS_WECOM: &[TextFormat] = &[TextFormat::Plain, TextFormat::Markdown];
 #[cfg(feature = "qq_channel")]
-const TEXT_FORMATS_QQ: &[TextFormat] = &[TextFormat::Plain, TextFormat::Markdown];
+const TEXT_FORMATS_QQ: &[TextFormat] = &[TextFormat::Plain];
 
 pub const CHANNEL_TELEGRAM: &str = "telegram";
 pub const CHANNEL_FEISHU: &str = "feishu";
@@ -489,6 +489,7 @@ mod tests {
             assert!(!qq.enabled);
             assert!(qq.contract.supports_explicit_target);
             assert!(qq.contract.requires_passive_reply_anchor);
+            assert_eq!(qq.contract.supported_text_formats, TEXT_FORMATS_QQ);
         }
 
         #[cfg(not(feature = "qq_channel"))]
