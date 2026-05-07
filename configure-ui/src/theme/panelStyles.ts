@@ -74,8 +74,7 @@ export const DIALOG_FOOTER_GUTTER_WIDE_SX = {
 } as const
 
 /**
- * 弹窗内长表单滚动区：与同为 `var(--card)` 的表单项卡片区分的一层浅坑底，避免白底贴白底。
- * Scroll region behind stacked CONFIG_PANEL blocks in dialogs (add-account, etc.).
+ * 弹窗内长表单滚动区：极淡透明坑底，与上层玻璃弹窗互不干扰。
  */
 export const DIALOG_FORM_SCROLL_WELL_SX = {
   flex: 1,
@@ -86,33 +85,32 @@ export const DIALOG_FORM_SCROLL_WELL_SX = {
   px: { xs: 2, sm: 2.5 },
   py: 2.5,
   pb: 1.5,
-  bgcolor: "var(--form-group-well)",
+  bgcolor: "color-mix(in srgb, var(--foreground) 2%, transparent)",
   borderRadius: "var(--radius-card)",
-  boxShadow: "var(--os3d-micro-well-stack)",
+  boxShadow: "none",
 } as const
 
-/** 与滚动坑底分离的底栏（主按钮区），回到卡片面亮度；无顶部分割线，靠底色区分。 */
+/** 与滚动区分离的底栏（主按钮区）：透明继承弹窗玻璃底。 */
 export const DIALOG_FORM_SUBMIT_BAR_SX = {
   flexShrink: 0,
   pt: 2.5,
   px: { xs: 2, sm: 2.5 },
   pb: 1,
-  bgcolor: "var(--card)",
+  bgcolor: "color-mix(in srgb, #fff 8%, transparent)",
 } as const
 
 /**
- * 固件 / 设备配置类面板：与官网 OsPanel 一致，**边界靠 `--os3d-content-plate-stack` 多层光照**，无描边。
+ * 配置/设置面板：与仪表盘卡同一套毛玻璃材质，但稍高透明度（设置区背景更稳定）。
  */
 export const CONFIG_PANEL_SX = {
   borderRadius: "var(--radius-card)",
-  bgcolor: "var(--card)",
-  border: "1px solid color-mix(in srgb, var(--border) 18%, transparent)",
-  backgroundImage: [
-    "linear-gradient(180deg, color-mix(in srgb, var(--surface) 62%, transparent) 0%, transparent 82%)",
-    "linear-gradient(135deg, color-mix(in srgb, var(--primary) 2.5%, transparent) 0%, transparent 42%, color-mix(in srgb, var(--accent) 2%, transparent) 100%)",
-  ].join(", "),
-  boxShadow:
-    "0 18px 46px color-mix(in srgb, var(--foreground) 8%, transparent), 0 1px 2px color-mix(in srgb, var(--foreground) 5%, transparent), inset 0 1px 0 color-mix(in srgb, var(--surface) 62%, transparent)",
+  bgcolor: "var(--card-glass)",
+  border: "1px solid var(--card-glass-border)",
+  backgroundImage:
+    "linear-gradient(135deg, color-mix(in srgb, #fff 14%, transparent) 0%, color-mix(in srgb, var(--primary) 2%, transparent) 50%, transparent 100%)",
+  boxShadow: "var(--card-glass-shadow)",
+  backdropFilter: "blur(32px) saturate(1.7)",
+  WebkitBackdropFilter: "blur(32px) saturate(1.7)",
   isolation: "isolate",
 } as const
 
@@ -129,55 +127,53 @@ export const CONFIG_PANEL_LOADING_SX = {
 } as const
 
 /**
- * 设备首页仪表盘卡片：Gateway 卡与 `DashboardCard` 共用。
+ * 设备首页仪表盘卡片：毛玻璃质感（iOS 风格）。
+ * Dashboard card surface — frosted glass: semi-transparent background + backdrop blur.
  */
 export const DASHBOARD_CARD_SURFACE_SX = {
-  bgcolor: "var(--card)",
+  bgcolor: "var(--card-glass)",
   borderRadius: "var(--radius-card)",
-  border: "none",
-  backgroundImage: [
-    "linear-gradient(180deg, color-mix(in srgb, #fff 16%, transparent) 0%, color-mix(in srgb, #fff 5%, transparent) 34%, transparent 80%)",
-    "linear-gradient(180deg, color-mix(in srgb, var(--surface) 34%, transparent) 0%, transparent 70%)",
-  ].join(", "),
-  boxShadow: "var(--os3d-content-plate-stack)",
+  border: "1px solid var(--card-glass-border)",
+  backgroundImage:
+    "linear-gradient(135deg, color-mix(in srgb, #fff 12%, transparent) 0%, color-mix(in srgb, #fff 3%, transparent) 50%, transparent 100%)",
+  boxShadow: "var(--card-glass-shadow)",
+  backdropFilter: "blur(40px) saturate(1.8)",
+  WebkitBackdropFilter: "blur(40px) saturate(1.8)",
   isolation: "isolate",
   overflow: "hidden",
 } as const
 
 /**
- * 表单/设置区内部的二级模块：比主面板更紧、更清爽，读作控制面板里的独立设置簇。
+ * 表单/设置区内部的二级模块：比主面板更轻的玻璃层，保留层级但不喧宾夺主。
  */
 export const FORM_SECTION_MODULE_SX = {
   borderRadius: "var(--radius-control)",
-  bgcolor: "color-mix(in srgb, var(--card) 86%, var(--surface))",
-  backgroundImage: [
-    "linear-gradient(180deg, color-mix(in srgb, var(--surface) 58%, transparent) 0%, transparent 86%)",
-    "linear-gradient(135deg, color-mix(in srgb, var(--primary) 2.5%, transparent) 0%, transparent 58%, color-mix(in srgb, var(--accent) 2%, transparent) 100%)",
-  ].join(", "),
-  boxShadow:
-    "0 1px 2px color-mix(in srgb, var(--foreground) 5%, transparent), inset 0 1px 0 color-mix(in srgb, var(--surface) 64%, transparent)",
-  border: "1px solid color-mix(in srgb, var(--border) 18%, transparent)",
+  bgcolor: "color-mix(in srgb, var(--card-glass) 80%, transparent)",
+  backgroundImage:
+    "linear-gradient(135deg, color-mix(in srgb, #fff 10%, transparent) 0%, transparent 60%)",
+  boxShadow: "var(--card-glass-shadow)",
+  border: "1px solid color-mix(in srgb, var(--card-glass-border) 70%, transparent)",
+  backdropFilter: "blur(20px) saturate(1.5)",
+  WebkitBackdropFilter: "blur(20px) saturate(1.5)",
   overflow: "hidden",
   isolation: "isolate",
 } as const
 
-/** 二级模块头：轻抬起的标题条，强调结构分组而不是网页 sticky strip。 */
+/** 二级模块头：透明继承玻璃模块底色，仅用极淡分割线分组。 */
 export const FORM_SECTION_MODULE_HEADER_SX = {
   px: 2,
   py: 1.35,
-  bgcolor: "color-mix(in srgb, var(--card) 90%, var(--surface))",
-  backgroundImage:
-    "linear-gradient(180deg, color-mix(in srgb, var(--surface) 68%, transparent) 0%, transparent 100%)",
-  borderBottom: "1px solid color-mix(in srgb, var(--border) 14%, transparent)",
+  bgcolor: "color-mix(in srgb, #fff 8%, transparent)",
+  borderBottom: "1px solid color-mix(in srgb, var(--border) 8%, transparent)",
   boxShadow: "none",
 } as const
 
-/** 二级模块正文：保持轻微井感，让字段区和标题条有清晰前后层次。 */
+/** 二级模块正文：完全透明，让上层玻璃材质贯穿显示。 */
 export const FORM_SECTION_MODULE_BODY_SX = {
   px: 2,
   pt: 2,
   pb: 2,
-  bgcolor: "color-mix(in srgb, var(--card) 92%, var(--form-group-well))",
+  bgcolor: "transparent",
 } as const
 
 /** 表单内底部操作轨道：提交动作与保存反馈固定在同一基线。 */
@@ -207,10 +203,11 @@ export const FORM_SWITCH_ROW_SX = {
 } as const
 
 /**
- * 仪表盘卡内「浅坑」中性底（数字块、运行策略行为三栏、通道状态 pill 等）— 统一 2% 混色，避免与 2.5% 等并排发花。
+ * 仪表盘卡内「浅坑」chip 底色：白色混入（非深色 foreground），
+ * 毛玻璃卡面下用纯白叠加而非深色，避免灰感。
  */
 export const DASHBOARD_INSET_WELL_BG =
-  "color-mix(in srgb, var(--foreground) 2%, transparent)" as const
+  "color-mix(in srgb, #fff 22%, transparent)" as const
 
 /** 设备首页主网格 gap（MUI spacing，与卡片正文 padding 同阶） */
 export const DASHBOARD_HOME_GRID_GAP = 2.5
@@ -221,27 +218,26 @@ export const DASHBOARD_BLOCK_GAP = 1.5
 /** 卡片内主要区块纵向间距（运行策略：表盘区 / 行为 / 预算） */
 export const DASHBOARD_SECTION_STACK_GAP = 2
 
-/** 卡片正文区：与顶栏左右 padding 对齐；相对标题栏略「沉」入屏坑 */
+/** 卡片正文区：毛玻璃卡内无额外内陷（卡面已是透明层，再内陷反而破坏材质感） */
 export const DASHBOARD_CARD_BODY_SX = {
   p: 2.5,
   flex: 1,
   display: "flex",
   flexDirection: "column",
   minHeight: 0,
-  boxShadow: "var(--os3d-dashboard-body-recess)",
+  boxShadow: "none",
 } as const
 
-/** 仪表盘卡片顶栏（与 Gateway 首行对齐） */
+/** 仪表盘卡片顶栏 — 毛玻璃卡内轻高光条（无额外模糊，继承卡层） */
 export const DASHBOARD_CARD_HEADER_ROW_SX = {
   display: "flex",
   alignItems: "center",
   justifyContent: "space-between",
   px: 2.5,
   py: 2,
-  bgcolor: "color-mix(in srgb, var(--foreground) 1.8%, transparent)",
-  /** 与正文区分界：内阴影代替 hairline border */
-  borderBottom: "none",
-  boxShadow: "var(--os3d-dashboard-card-header-lip)",
+  bgcolor: "color-mix(in srgb, #fff 6%, transparent)",
+  borderBottom: "1px solid color-mix(in srgb, var(--border) 10%, transparent)",
+  boxShadow: "none",
 } as const
 
 /** 次级标签：降噪（相对全大写 caption），用于表盘下钻、LED 条等 */

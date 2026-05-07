@@ -893,7 +893,6 @@ fn wait_for_external_wss_suspend_with_timeout(
             return Ok(());
         }
         if Instant::now() >= deadline {
-            crate::metrics::record_plane_drain_timeout();
             return Err(Error::config(
                 "external_wss_suspend_timeout",
                 format!(
@@ -984,7 +983,6 @@ fn wait_for_external_wss_to_suspend_and_drain(
             return Ok(());
         }
         if Instant::now() >= deadline {
-            crate::metrics::record_plane_drain_timeout();
             return Err(Error::config(
                 "voice_exclusive_wss_drain_timeout",
                 format!(
@@ -1469,14 +1467,13 @@ mod tests {
     }
 
     #[test]
-    fn external_wss_suspend_timeout_records_drain_failure() {
+    fn external_wss_suspend_timeout_returns_drain_failure() {
         let _guard = crate::state::test_state_guard();
         let _lease_guard = crate::runtime::lease::lease_test_guard();
         set_external_wss_managed_present(true);
         request_external_wss_suspend();
         let _wss_lease =
             acquire_external_wss_lease_at("qq_ws", 200).expect("held external wss lease");
-        let before = crate::metrics::snapshot().plane_drain_timeout_total;
 
         let error = match wait_for_external_wss_suspend_with_timeout(
             "test",
@@ -1487,9 +1484,7 @@ mod tests {
             Err(error) => error,
         };
 
-        let after = crate::metrics::snapshot().plane_drain_timeout_total;
         assert_eq!(error.stage(), "external_wss_suspend_timeout");
-        assert!(after > before);
         set_external_wss_managed_present(false);
     }
 }

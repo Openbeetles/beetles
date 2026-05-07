@@ -5,6 +5,7 @@ import {
 
 const CHAT_ERROR_OVERRIDES: Record<string, string> = {
   "http.route_worker_memory_low": "chat.resource_pressure",
+  "runtime.config_blocked_by_voice": "chat.stream_voice_busy",
 };
 
 export function translateChatApiError(

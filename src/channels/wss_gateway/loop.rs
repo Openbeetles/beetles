@@ -151,6 +151,182 @@ enum WssSessionEndLifecycle {
     Failed(&'static str),
 }
 
+pub(crate) fn external_wss_connect_gate(
+    tag: &str,
+    lifecycle_owner: &'static str,
+    waiting_for_wall_clock: &mut bool,
+) -> bool {
+    let runtime_mode = crate::runtime::thread_registry::runtime_mode_snapshot();
+    if !runtime_mode.action_budget.allow_external_wss_connect {
+        mark_wss_lifecycle(
+            lifecycle_owner,
+            crate::runtime::PlaneLifecycleState::Suspended,
+            wss_runtime_gate_suspend_reason(runtime_mode),
+        );
+        if runtime_mode.action_budget.require_external_wss_suspended {
+            crate::network::wait_for_external_wss_resume(tag);
+        } else {
+            sleep_with_wdt(TLS_ADMISSION_RETRY_SLEEP_SECS);
+        }
+        return false;
+    }
+
+    let pressure = crate::orchestrator::refresh_heap_if_stale();
+    if should_pause_external_wss_connect_for_pressure(pressure) {
+        let sleep_secs = tls_admission_retry_sleep_secs_for_pressure(pressure);
+        log::info!(
+            "[{}] skip external WSS connect under {:?} pressure; retry in {}s",
+            tag,
+            pressure,
+            sleep_secs
+        );
+        mark_wss_lifecycle(
+            lifecycle_owner,
+            crate::runtime::PlaneLifecycleState::Suspended,
+            "critical_pressure",
+        );
+        sleep_with_wdt(sleep_secs);
+        return false;
+    }
+
+    let wall_clock_valid = crate::platform::time::wall_clock_is_trustworthy();
+    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+    {
+        let network_snapshot = crate::state::network_runtime_snapshot(
+            wall_clock_valid,
+            crate::network::EXTERNAL_WSS_OUTBOUND_SETTLE_SECS,
+        );
+        if let Some(reason) = crate::network::external_wss_network_suspend_reason(&network_snapshot)
+        {
+            mark_wss_lifecycle(
+                lifecycle_owner,
+                crate::runtime::PlaneLifecycleState::Suspended,
+                reason,
+            );
+            if reason == "wall_clock_untrusted" {
+                if !*waiting_for_wall_clock {
+                    log::info!(
+                        "[{}] defer external WSS connect until wall clock is trustworthy",
+                        tag
+                    );
+                    *waiting_for_wall_clock = true;
+                }
+                if !crate::platform::time::wait_for_wall_clock_trustworthy(Duration::from_secs(
+                    TLS_ADMISSION_RETRY_SLEEP_SECS,
+                )) {
+                    return false;
+                }
+            } else {
+                *waiting_for_wall_clock = false;
+                if reason == "wifi_not_ready" {
+                    wait_for_wifi(tag);
+                } else {
+                    log::info!(
+                        "[{}] defer external WSS connect: {} stage={:?}",
+                        tag,
+                        reason,
+                        network_snapshot.last_wifi_stage
+                    );
+                    sleep_with_wdt(TLS_ADMISSION_RETRY_SLEEP_SECS);
+                }
+                return false;
+            }
+        }
+    }
+    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    if should_defer_external_wss_for_wall_clock(wall_clock_valid) {
+        if !*waiting_for_wall_clock {
+            log::info!(
+                "[{}] defer external WSS connect until wall clock is trustworthy",
+                tag
+            );
+            *waiting_for_wall_clock = true;
+        }
+        mark_wss_lifecycle(
+            lifecycle_owner,
+            crate::runtime::PlaneLifecycleState::Suspended,
+            "wall_clock_untrusted",
+        );
+        if !crate::platform::time::wait_for_wall_clock_trustworthy(Duration::from_secs(
+            TLS_ADMISSION_RETRY_SLEEP_SECS,
+        )) {
+            return false;
+        }
+    }
+    if *waiting_for_wall_clock {
+        log::info!(
+            "[{}] wall clock trustworthy; resuming external WSS connect",
+            tag
+        );
+        *waiting_for_wall_clock = false;
+    }
+
+    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+    if crate::network::external_wss_suspend_requested() {
+        mark_wss_lifecycle(
+            lifecycle_owner,
+            crate::runtime::PlaneLifecycleState::Suspended,
+            crate::network::external_wss_suspend_reason()
+                .map(crate::network::ExternalWssSuspendReason::as_str)
+                .unwrap_or("external_wss_suspend"),
+        );
+    }
+    crate::network::wait_for_external_wss_resume(tag);
+    if !wait_for_wifi(tag) {
+        sleep_with_wdt(TLS_ADMISSION_RETRY_SLEEP_SECS);
+        return false;
+    }
+
+    let runtime_mode = crate::runtime::thread_registry::runtime_mode_snapshot();
+    if !runtime_mode.action_budget.allow_external_wss_connect {
+        mark_wss_lifecycle(
+            lifecycle_owner,
+            crate::runtime::PlaneLifecycleState::Suspended,
+            wss_runtime_gate_suspend_reason(runtime_mode),
+        );
+        if runtime_mode.action_budget.require_external_wss_suspended {
+            crate::network::wait_for_external_wss_resume(tag);
+        } else {
+            sleep_with_wdt(TLS_ADMISSION_RETRY_SLEEP_SECS);
+        }
+        return false;
+    }
+
+    true
+}
+
+pub(crate) fn external_wss_session_stop_reason(
+    tag: &str,
+    lifecycle_owner: &'static str,
+) -> Option<&'static str> {
+    let runtime_mode = crate::runtime::thread_registry::runtime_mode_snapshot();
+    let keep_existing_for_config_write = runtime_mode.current_mode
+        == crate::runtime::RuntimeMode::ConfigActive
+        && !runtime_mode.action_budget.require_external_wss_suspended;
+    if !runtime_mode.action_budget.allow_external_wss_connect && !keep_existing_for_config_write {
+        let reason = if crate::network::external_wss_suspend_requested() {
+            crate::network::external_wss_suspend_reason()
+                .map(crate::network::ExternalWssSuspendReason::as_str)
+                .unwrap_or("external_wss_suspend")
+        } else {
+            "runtime_mode_gate"
+        };
+        log::info!(
+            "[{}] disconnecting external WSS under runtime mode gate current_mode={} reason={}",
+            tag,
+            runtime_mode.current_mode.as_str(),
+            reason
+        );
+        mark_wss_lifecycle(
+            lifecycle_owner,
+            crate::runtime::PlaneLifecycleState::Draining,
+            reason,
+        );
+        return Some(reason);
+    }
+    None
+}
+
 /// 阻塞等待 WiFi STA 就绪，每 2s 轮询，最多 `WIFI_WAIT_MAX_SECS`。返回 true 表示已就绪，false 表示超时仍继续尝试。
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 fn wait_for_wifi(tag: &str) -> bool {
@@ -212,137 +388,7 @@ pub fn run_wss_gateway_loop<D, H, C, CreateHttp, Conn>(
     let mut backoff_secs = crate::orchestrator::current_budget().reconnect_backoff_secs;
     let mut waiting_for_wall_clock = false;
     loop {
-        let runtime_mode = crate::runtime::thread_registry::runtime_mode_snapshot();
-        if !runtime_mode.action_budget.allow_external_wss_connect {
-            mark_wss_lifecycle(
-                lifecycle_owner,
-                crate::runtime::PlaneLifecycleState::Suspended,
-                wss_runtime_gate_suspend_reason(runtime_mode),
-            );
-            if runtime_mode.action_budget.require_external_wss_suspended {
-                crate::network::wait_for_external_wss_resume(tag);
-            } else {
-                sleep_with_wdt(TLS_ADMISSION_RETRY_SLEEP_SECS);
-            }
-            continue;
-        }
-        let pressure = crate::orchestrator::refresh_heap_if_stale();
-        if should_pause_external_wss_connect_for_pressure(pressure) {
-            let sleep_secs = tls_admission_retry_sleep_secs_for_pressure(pressure);
-            log::info!(
-                "[{}] skip external WSS connect under {:?} pressure; retry in {}s",
-                tag,
-                pressure,
-                sleep_secs
-            );
-            mark_wss_lifecycle(
-                lifecycle_owner,
-                crate::runtime::PlaneLifecycleState::Suspended,
-                "critical_pressure",
-            );
-            sleep_with_wdt(sleep_secs);
-            continue;
-        }
-        let wall_clock_valid = crate::platform::time::wall_clock_is_trustworthy();
-        #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-        {
-            let network_snapshot = crate::state::network_runtime_snapshot(
-                wall_clock_valid,
-                crate::network::EXTERNAL_WSS_OUTBOUND_SETTLE_SECS,
-            );
-            if let Some(reason) =
-                crate::network::external_wss_network_suspend_reason(&network_snapshot)
-            {
-                mark_wss_lifecycle(
-                    lifecycle_owner,
-                    crate::runtime::PlaneLifecycleState::Suspended,
-                    reason,
-                );
-                if reason == "wall_clock_untrusted" {
-                    if !waiting_for_wall_clock {
-                        log::info!(
-                            "[{}] defer external WSS connect until wall clock is trustworthy",
-                            tag
-                        );
-                        waiting_for_wall_clock = true;
-                    }
-                    if !crate::platform::time::wait_for_wall_clock_trustworthy(Duration::from_secs(
-                        TLS_ADMISSION_RETRY_SLEEP_SECS,
-                    )) {
-                        continue;
-                    }
-                } else {
-                    waiting_for_wall_clock = false;
-                    if reason == "wifi_not_ready" {
-                        wait_for_wifi(tag);
-                    } else {
-                        log::info!(
-                            "[{}] defer external WSS connect: {} stage={:?}",
-                            tag,
-                            reason,
-                            network_snapshot.last_wifi_stage
-                        );
-                        sleep_with_wdt(TLS_ADMISSION_RETRY_SLEEP_SECS);
-                    }
-                    continue;
-                }
-            }
-        }
-        #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-        if should_defer_external_wss_for_wall_clock(wall_clock_valid) {
-            if !waiting_for_wall_clock {
-                log::info!(
-                    "[{}] defer external WSS connect until wall clock is trustworthy",
-                    tag
-                );
-                waiting_for_wall_clock = true;
-            }
-            mark_wss_lifecycle(
-                lifecycle_owner,
-                crate::runtime::PlaneLifecycleState::Suspended,
-                "wall_clock_untrusted",
-            );
-            if !crate::platform::time::wait_for_wall_clock_trustworthy(Duration::from_secs(
-                TLS_ADMISSION_RETRY_SLEEP_SECS,
-            )) {
-                continue;
-            }
-        }
-        if waiting_for_wall_clock {
-            log::info!(
-                "[{}] wall clock trustworthy; resuming external WSS connect",
-                tag
-            );
-            waiting_for_wall_clock = false;
-        }
-        #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-        if crate::network::external_wss_suspend_requested() {
-            mark_wss_lifecycle(
-                lifecycle_owner,
-                crate::runtime::PlaneLifecycleState::Suspended,
-                crate::network::external_wss_suspend_reason()
-                    .map(crate::network::ExternalWssSuspendReason::as_str)
-                    .unwrap_or("external_wss_suspend"),
-            );
-        }
-        crate::network::wait_for_external_wss_resume(tag);
-        if !wait_for_wifi(tag) {
-            sleep_with_wdt(TLS_ADMISSION_RETRY_SLEEP_SECS);
-            continue;
-        }
-
-        let runtime_mode = crate::runtime::thread_registry::runtime_mode_snapshot();
-        if !runtime_mode.action_budget.allow_external_wss_connect {
-            mark_wss_lifecycle(
-                lifecycle_owner,
-                crate::runtime::PlaneLifecycleState::Suspended,
-                wss_runtime_gate_suspend_reason(runtime_mode),
-            );
-            if runtime_mode.action_budget.require_external_wss_suspended {
-                crate::network::wait_for_external_wss_resume(tag);
-            } else {
-                sleep_with_wdt(TLS_ADMISSION_RETRY_SLEEP_SECS);
-            }
+        if !external_wss_connect_gate(tag, lifecycle_owner, &mut waiting_for_wall_clock) {
             continue;
         }
 
@@ -517,29 +563,10 @@ pub fn run_wss_gateway_loop<D, H, C, CreateHttp, Conn>(
 
         while !session_ended {
             crate::platform::task_wdt::feed_current_task();
-            #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-            {
-                let runtime_mode = crate::runtime::thread_registry::runtime_mode_snapshot();
-                let keep_existing_for_config_write = runtime_mode.current_mode
-                    == crate::runtime::RuntimeMode::ConfigActive
-                    && !runtime_mode.action_budget.require_external_wss_suspended;
-                if !runtime_mode.action_budget.allow_external_wss_connect
-                    && !keep_existing_for_config_write
-                {
-                    log::info!(
-                        "[{}] disconnecting external WSS under runtime mode gate current_mode={}",
-                        tag,
-                        runtime_mode.current_mode.as_str()
-                    );
-                    mark_wss_lifecycle(
-                        lifecycle_owner,
-                        crate::runtime::PlaneLifecycleState::Draining,
-                        "runtime_mode_gate",
-                    );
-                    session_end_lifecycle = WssSessionEndLifecycle::Stopping("runtime_mode_gate");
-                    session_ended = true;
-                    continue;
-                }
+            if let Some(reason) = external_wss_session_stop_reason(tag, lifecycle_owner) {
+                session_end_lifecycle = WssSessionEndLifecycle::Stopping(reason);
+                session_ended = true;
+                continue;
             }
 
             let recv_wait = {

@@ -1,7 +1,9 @@
 import {
   API_ERROR,
+  buildProtectedApiSessionKey,
   fetchCsrfToken,
   getCsrfToken,
+  notifyProtectedApiAuthState,
   requestProtected,
   type ApiResult,
 } from '../client.ts'
@@ -60,17 +62,24 @@ export type ChatSessionStreamEvent =
   | { type: 'delta'; delta: string; accumulated?: string; messageId?: string; data: unknown }
   | { type: 'snapshot'; content?: string; messages?: ChatSessionMessage[]; data: unknown }
   | { type: 'final'; messageId?: string; content?: string; data: unknown }
-  | { type: 'error'; error: string; errorKey?: string; upstreamError?: string; data: unknown }
+  | { type: 'error'; error: string; errorKey?: string; errorStage?: string; data: unknown }
   | { type: 'done'; data: unknown }
 
 export type ChatSessionStreamHandler = (event: ChatSessionStreamEvent) => void
+
+export interface ChatSessionStreamOptions {
+  signal?: AbortSignal
+  timeoutMs?: number
+}
 
 interface SseParseResult {
   terminal: 'final' | 'error' | null
   error?: string
   errorKey?: string
-  upstreamError?: string
+  errorStage?: string
 }
+
+const CHAT_STREAM_TIMEOUT_MS = 120_000
 
 function buildUrl(baseUrl: string, path: string): string {
   return `${baseUrl.replace(/\/$/, '')}${path}`
@@ -152,15 +161,15 @@ function normalizeSseEvent(eventName: string, dataText: string): ChatSessionStre
         messageId: readString(data, 'message_id'),
         content: readString(data, 'content') ?? readString(data, 'accumulated'),
         data,
-      }
+    }
     case 'error': {
       const errorKey = readString(data, 'error_key')
-      const upstreamError = readString(data, 'upstream_error')
+      const errorStage = readString(data, 'error_stage')
       return {
         type: 'error',
         error: errorKey ?? readString(data, 'error') ?? 'common.error',
         errorKey,
-        upstreamError,
+        errorStage,
         data,
       }
     }
@@ -189,6 +198,7 @@ function parseSseBlock(block: string): ChatSessionStreamEvent | null {
 async function parseSseStream(
   response: Response,
   onEvent: ChatSessionStreamHandler,
+  signal: AbortSignal,
 ): Promise<SseParseResult> {
   const result: SseParseResult = { terminal: null }
   if (!response.body) return result
@@ -204,12 +214,12 @@ async function parseSseStream(
       result.terminal = 'error'
       result.error = event.error
       result.errorKey = event.errorKey
-      result.upstreamError = event.upstreamError
+      result.errorStage = event.errorStage
     }
   }
   try {
     for (;;) {
-      const { done, value } = await reader.read()
+      const { done, value } = await readSseChunk(reader, signal)
       if (done) break
       buffer += decoder.decode(value, { stream: true })
       const parts = buffer.split(/\r?\n\r?\n/)
@@ -227,6 +237,31 @@ async function parseSseStream(
     reader.releaseLock()
   }
   return result
+}
+
+async function readSseChunk(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  signal: AbortSignal,
+): Promise<ReadableStreamReadResult<Uint8Array>> {
+  if (signal.aborted) throw new DOMException('Aborted', 'AbortError')
+  let cleanup: () => void = () => undefined
+  try {
+    const result = await Promise.race([
+      reader.read(),
+      new Promise<ReadableStreamReadResult<Uint8Array>>((_, reject) => {
+        const abort = () => {
+          void reader.cancel().catch(() => undefined)
+          reject(new DOMException('Aborted', 'AbortError'))
+        }
+        signal.addEventListener('abort', abort, { once: true })
+        cleanup = () => signal.removeEventListener('abort', abort)
+      }),
+    ])
+    if (signal.aborted) throw new DOMException('Aborted', 'AbortError')
+    return result
+  } finally {
+    cleanup()
+  }
 }
 
 async function parseErrorResponse(response: Response): Promise<ApiResult<void>> {
@@ -249,67 +284,111 @@ async function parseErrorResponse(response: Response): Promise<ApiResult<void>> 
   }
 }
 
+function notifyPairingAuthFailure(
+  baseUrl: string,
+  pairingCode: string,
+  method: 'GET' | 'POST' | 'DELETE',
+  path: string,
+  errorKey?: string,
+): void {
+  if (!pairingCode.trim()) return
+  if (errorKey === 'auth.pairing_invalid' || errorKey === 'auth.pairing_required') {
+    notifyProtectedApiAuthState({
+      state: errorKey === 'auth.pairing_invalid' ? 'invalid' : 'required',
+      method,
+      path,
+      sessionKey: buildProtectedApiSessionKey(baseUrl, pairingCode),
+    })
+  }
+}
+
+function linkAbortSignal(controller: AbortController, signal?: AbortSignal): () => void {
+  if (!signal) return () => undefined
+  if (signal.aborted) {
+    controller.abort()
+    return () => undefined
+  }
+  const abort = () => controller.abort()
+  signal.addEventListener('abort', abort, { once: true })
+  return () => signal.removeEventListener('abort', abort)
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === 'AbortError'
+}
+
 async function streamSessionMessageInternal(
   baseUrl: string,
   pairingCode: string,
   body: ChatSessionPostBody,
   onEvent: ChatSessionStreamHandler,
   csrfRetryCount: number,
+  options: ChatSessionStreamOptions,
 ): Promise<ApiResult<void>> {
   const csrf = getCsrfToken() ?? (await fetchCsrfToken(baseUrl))
   if (!csrf) return { ok: false, error: 'auth.csrf_required', errorKey: 'auth.csrf_required' }
 
-  const response = await fetch(buildUrl(baseUrl, '/api/sessions'), {
-    method: 'POST',
-    headers: {
-      Accept: 'text/event-stream',
-      'Content-Type': 'application/json',
-      'X-Pairing-Code': pairingCode.trim(),
-      'X-CSRF-Token': csrf,
-    },
-    body: JSON.stringify(body),
-  })
+  const controller = new AbortController()
+  const unlinkAbortSignal = linkAbortSignal(controller, options.signal)
+  const timeout = globalThis.setTimeout(() => controller.abort(), options.timeoutMs ?? CHAT_STREAM_TIMEOUT_MS)
+  try {
+    const response = await fetch(buildUrl(baseUrl, '/api/sessions'), {
+      method: 'POST',
+      signal: controller.signal,
+      headers: {
+        Accept: 'text/event-stream',
+        'Content-Type': 'application/json',
+        'X-Pairing-Code': pairingCode.trim(),
+        'X-CSRF-Token': csrf,
+      },
+      body: JSON.stringify(body),
+    })
 
-  if (!response.ok) {
-    const result = await parseErrorResponse(response)
-    if (
-      response.status === 403 &&
-      (result.errorKey === 'auth.csrf_invalid' || result.errorKey === 'auth.csrf_required') &&
-      csrfRetryCount < 1
-    ) {
-      const refreshedToken = await fetchCsrfToken(baseUrl)
-      if (refreshedToken) {
-        return streamSessionMessageInternal(
-          baseUrl,
-          pairingCode,
-          body,
-          onEvent,
-          csrfRetryCount + 1,
-        )
+    if (!response.ok) {
+      const result = await parseErrorResponse(response)
+      notifyPairingAuthFailure(baseUrl, pairingCode, 'POST', '/api/sessions', result.errorKey)
+      if (
+        response.status === 403 &&
+        (result.errorKey === 'auth.csrf_invalid' || result.errorKey === 'auth.csrf_required') &&
+        csrfRetryCount < 1
+      ) {
+        const refreshedToken = await fetchCsrfToken(baseUrl)
+        if (refreshedToken) {
+          return streamSessionMessageInternal(
+            baseUrl,
+            pairingCode,
+            body,
+            onEvent,
+            csrfRetryCount + 1,
+            options,
+          )
+        }
+      }
+      return result
+    }
+
+    const streamResult = await parseSseStream(response, onEvent, controller.signal)
+    if (streamResult.terminal === 'error') {
+      return {
+        ok: false,
+        status: response.status,
+        error: streamResult.error ?? streamResult.errorKey ?? 'common.error',
+        errorKey: streamResult.errorKey,
       }
     }
-    return result
-  }
-
-  const streamResult = await parseSseStream(response, onEvent)
-  if (streamResult.terminal === 'error') {
-    return {
-      ok: false,
-      status: response.status,
-      error: streamResult.error ?? streamResult.errorKey ?? 'common.error',
-      errorKey: streamResult.errorKey,
-      upstreamError: streamResult.upstreamError,
+    if (streamResult.terminal !== 'final') {
+      return {
+        ok: false,
+        status: response.status,
+        error: 'chat.stream_incomplete',
+        errorKey: 'chat.stream_incomplete',
+      }
     }
+    return { ok: true, status: response.status }
+  } finally {
+    unlinkAbortSignal()
+    globalThis.clearTimeout(timeout)
   }
-  if (streamResult.terminal !== 'final') {
-    return {
-      ok: false,
-      status: response.status,
-      error: 'chat.stream_incomplete',
-      errorKey: 'chat.stream_incomplete',
-    }
-  }
-  return { ok: true, status: response.status }
 }
 
 export async function listSessions(
@@ -347,6 +426,7 @@ export async function streamSessionMessage(
   pairingCode: string,
   body: ChatSessionPostBody,
   onEvent: ChatSessionStreamHandler,
+  options: ChatSessionStreamOptions = {},
 ): Promise<ApiResult<void>> {
   if (!baseUrl?.trim()) return { ok: false, error: API_ERROR.NO_BASE_URL }
   if (!pairingCode?.trim()) return { ok: false, error: API_ERROR.PAIRING_REQUIRED }
@@ -354,8 +434,15 @@ export async function streamSessionMessage(
     return { ok: false, error: 'chat.content_required', errorKey: 'chat.content_required' }
   }
   try {
-    return await streamSessionMessageInternal(baseUrl, pairingCode, body, onEvent, 0)
-  } catch {
+    return await streamSessionMessageInternal(baseUrl, pairingCode, body, onEvent, 0, options)
+  } catch (error) {
+    if (isAbortError(error)) {
+      return {
+        ok: false,
+        error: 'chat.stream_timeout',
+        errorKey: 'chat.stream_timeout',
+      }
+    }
     return {
       ok: false,
       error: 'network.request_failed',

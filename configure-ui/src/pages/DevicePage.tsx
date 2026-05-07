@@ -60,6 +60,7 @@ import {
   deriveDeviceAccessStage,
   normalizeDeviceUrl,
 } from "./deviceAccessFlow";
+import { enabledChannelLabelKey } from "../types/appConfig";
 
 const DEVICE_PAGE_DIRTY_OWNER = "device-page-connection";
 
@@ -534,6 +535,8 @@ export function DevicePage() {
     audioProfileLabelKey(healthData?.audio?.duplex_profile) != null
       ? t(audioProfileLabelKey(healthData?.audio?.duplex_profile) as string)
       : t("common.na");
+  const currentChannelId = healthData?.current_channel?.id ?? "";
+  const currentChannelLabel = t(enabledChannelLabelKey(currentChannelId));
   const audioCapabilityRows = [
     {
       label: t("device.audioCapabilityMicrophoneInput"),
@@ -753,6 +756,14 @@ export function DevicePage() {
                   ? "var(--semantic-success)"
                   : "var(--semantic-warning)",
               active: true,
+            },
+            {
+              label: t("device.systemStatusCurrentChannel"),
+              value: currentChannelLabel,
+              color: currentChannelId
+                ? "var(--semantic-success)"
+                : "var(--text-tertiary)",
+              active: Boolean(currentChannelId),
             },
             {
               label: t("device.systemStatusDisplayAvailable"),
@@ -1042,6 +1053,7 @@ export function DevicePage() {
                 healthData={healthData!}
                 resourceData={resourceData!}
                 metricsData={metricsData!}
+                systemInfo={systemInfo}
                 runtimeKind={runtimeKind}
                 t={t}
               />

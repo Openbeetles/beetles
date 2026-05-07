@@ -83,6 +83,8 @@ pub const SESSION_SUMMARY_MAX_LEN: usize = 1024;
 // ---------- 可靠性：超时与退避（须小于 TWDT 超时，避免静默复位） ----------
 /// Agent 入站 recv 超时（秒）；超时后喂狗再继续等待。
 pub const INBOUND_RECV_TIMEOUT_SECS: u64 = 30;
+/// Configure UI chat SSE 单次等待 agent 进度/终止帧的最长秒数。
+pub const CHAT_STREAM_RECV_TIMEOUT_SECS: u64 = 120;
 /// Agent 同一消息重试时退避基数（毫秒）；第 n 次重试 sleep(base * 2^n)，上限 AGENT_RETRY_MAX_MS。
 pub const AGENT_RETRY_BASE_MS: u64 = 100;
 /// Agent 重试退避上限（毫秒）。

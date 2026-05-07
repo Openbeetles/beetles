@@ -27,6 +27,8 @@ I (62000) beetle::util: [thread] started name=write_back core_target=Some(Core1)
 I (63000) beetle::util: [thread] started name=write_back core_target=Some(Core1) role=Background surface=StdThreadCompat native_std_sync_forbidden=false
 I (64000) beetle::util: [thread] started name=write_back core_target=Some(Core1) role=Background surface=StdThreadCompat native_std_sync_forbidden=false
 I (65000) beetle::util: [thread] started name=write_back core_target=Some(Core1) role=Background surface=StdThreadCompat native_std_sync_forbidden=false
+I (66000) beetle::chat_stream: [chat_stream] event=final stream_id=chat_stream_1 session_appended=true message_id_present=true
+I (67000) beetle::chat_stream: [chat_stream] event=error stream_id=chat_stream_2 error_key=chat.stream_timeout error_stage=
 LOGEOF
 
 "$ROOT/scripts/esp_soak_analyze.sh" --output-dir "$OUT" "$LOG" >/dev/null
@@ -37,6 +39,7 @@ METRICS="$(find "$OUT" -name metrics.csv -print -quit)"
 
 grep -q 'pending_write_back_starvation' "$REGRESSIONS"
 grep -q 'write_back_worker_churn' "$REGRESSIONS"
+grep -q 'chat_stream_error' "$REGRESSIONS"
 grep -q 'storage_contention_cautious' "$REGRESSIONS"
 grep -q 'storage_contention_critical' "$REGRESSIONS"
 grep -q 'heap_largest_below_floor' "$REGRESSIONS"
@@ -47,6 +50,8 @@ grep -q 'storage_ops,storage_wait_last_us,storage_wait_total_us,storage_hold_las
 ! grep -q 'spiffs_' "$METRICS"
 grep -q 'Write-back starvation lines: 1' "$SUMMARY"
 grep -q 'Write-back worker thread starts: 4' "$SUMMARY"
+grep -q 'Chat stream final events: 1' "$SUMMARY"
+grep -q 'Chat stream error events: 1' "$SUMMARY"
 grep -q 'Storage contention risk lines: 1' "$SUMMARY"
 grep -q 'Storage contention blocker lines: 1' "$SUMMARY"
 grep -q 'Heap largest below floor risk lines: 4' "$SUMMARY"

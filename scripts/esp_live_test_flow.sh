@@ -9,6 +9,7 @@ Usage:
 Scenarios:
   boot_idle       Flash update, hard-reset, capture boot/idle serial log.
   qq_text        Flash update, hard-reset, capture while 10 QQ text/Markdown messages are sent.
+  chat_stream    Flash update, hard-reset, run /api/sessions SSE chat smoke, capture serial log.
 
 Options:
   --port DEVICE              Serial port. Defaults to ESPFLASH_PORT or auto-detect.
@@ -19,6 +20,10 @@ Options:
   --expected-messages COUNT  Required inbound count for qq_text. Default: 10.
   --flash-mode MODE          update or full-erase. Default: update.
   --qq-acceptance-file FILE  Required semantic acceptance evidence for qq_text.
+  --device-url URL           Required for chat_stream. Defaults to BEETLE_DEVICE_URL.
+  --pairing-code CODE        Required for chat_stream. Defaults to BEETLE_PAIRING_CODE.
+  --chat-message TEXT        Message for chat_stream smoke.
+  --chat-timeout SECONDS     HTTP stream timeout for chat_stream. Default: 90.
   --output-dir DIR           Evidence root. Default: target/esp-live.
   -h, --help                 Show this help.
 
@@ -70,6 +75,10 @@ duration="180"
 expected_messages="10"
 flash_mode="update"
 qq_acceptance_file=""
+device_url="${BEETLE_DEVICE_URL:-}"
+pairing_code="${BEETLE_PAIRING_CODE:-}"
+chat_message="Beetle P1-2 stream smoke. Reply with OK."
+chat_timeout="90"
 output_dir="$REPO_ROOT/target/esp-live"
 
 while [[ $# -gt 0 ]]; do
@@ -120,6 +129,26 @@ while [[ $# -gt 0 ]]; do
       [[ $# -gt 0 ]] || { echo "Error: --qq-acceptance-file requires a value." >&2; exit 2; }
       qq_acceptance_file="$1"
       ;;
+    --device-url)
+      shift
+      [[ $# -gt 0 ]] || { echo "Error: --device-url requires a value." >&2; exit 2; }
+      device_url="$1"
+      ;;
+    --pairing-code)
+      shift
+      [[ $# -gt 0 ]] || { echo "Error: --pairing-code requires a value." >&2; exit 2; }
+      pairing_code="$1"
+      ;;
+    --chat-message)
+      shift
+      [[ $# -gt 0 ]] || { echo "Error: --chat-message requires a value." >&2; exit 2; }
+      chat_message="$1"
+      ;;
+    --chat-timeout)
+      shift
+      [[ $# -gt 0 ]] || { echo "Error: --chat-timeout requires a value." >&2; exit 2; }
+      chat_timeout="$1"
+      ;;
     --output-dir)
       shift
       [[ $# -gt 0 ]] || { echo "Error: --output-dir requires a value." >&2; exit 2; }
@@ -144,7 +173,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 case "$scenario" in
-  boot_idle|qq_text) ;;
+  boot_idle|qq_text|chat_stream) ;;
   "")
     echo "Error: --scenario is required." >&2
     usage
@@ -162,6 +191,15 @@ esac
   echo "Error: --expected-messages must be an integer." >&2
   exit 2
 }
+[[ "$chat_timeout" =~ ^[0-9]+$ ]] || {
+  echo "Error: --chat-timeout must be an integer." >&2
+  exit 2
+}
+if [[ "$scenario" == "chat_stream" ]]; then
+  [[ "$duration" -gt 0 ]] || { echo "Error: chat_stream requires --duration > 0." >&2; exit 2; }
+  [[ -n "$device_url" ]] || { echo "Error: chat_stream requires --device-url or BEETLE_DEVICE_URL." >&2; exit 2; }
+  [[ -n "$pairing_code" ]] || { echo "Error: chat_stream requires --pairing-code or BEETLE_PAIRING_CODE." >&2; exit 2; }
+fi
 case "$flash_mode" in
   update|full-erase) ;;
   *)
@@ -405,6 +443,81 @@ require_qq_acceptance() {
   done
 }
 
+json_escape() {
+  local value="$1"
+  value="${value//\\/\\\\}"
+  value="${value//\"/\\\"}"
+  value="${value//$'\n'/ }"
+  printf '%s\n' "$value"
+}
+
+fetch_csrf_token() {
+  local url="$1"
+  local output="$2"
+  curl -fsS --max-time 15 "$url/api/csrf_token" > "$output"
+  sed -n 's/.*"csrf_token"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$output" | tail -n 1
+}
+
+run_chat_stream_smoke() {
+  local url="${device_url%/}"
+  local csrf_response="$run_dir/chat_csrf.json"
+  local stream_response="$run_dir/chat_stream.sse"
+  local history_response="$run_dir/chat_history.json"
+  local csrf escaped_message body
+
+  csrf="$(fetch_csrf_token "$url" "$csrf_response")"
+  [[ -n "$csrf" ]] || {
+    echo "Gate failed: chat_stream could not fetch CSRF token from $url" >&2
+    exit 1
+  }
+  escaped_message="$(json_escape "$chat_message")"
+  body="{\"chat_id\":\"configure-ui:default\",\"content\":\"$escaped_message\"}"
+
+  curl -fsS -N --max-time "$chat_timeout" \
+    -X POST "$url/api/sessions" \
+    -H 'Accept: text/event-stream' \
+    -H 'Content-Type: application/json' \
+    -H "X-Pairing-Code: $pairing_code" \
+    -H "X-CSRF-Token: $csrf" \
+    --data "$body" \
+    > "$stream_response"
+
+  require_matches '^event: queued$' "$stream_response" \
+    "chat_stream did not emit queued SSE event"
+  require_matches '^event: final$' "$stream_response" \
+    "chat_stream did not emit final SSE event"
+  require_matches '^event: done$' "$stream_response" \
+    "chat_stream did not emit done SSE event"
+  fail_if_matches '^event: error$' "$stream_response" \
+    "chat_stream emitted error SSE event"
+
+  curl -fsS --max-time 15 \
+    -H "X-Pairing-Code: $pairing_code" \
+    "$url/api/sessions?chat_id=configure-ui:default&limit=4" \
+    > "$history_response"
+  require_matches '"items"[[:space:]]*:' "$history_response" \
+    "chat_stream history response missing items"
+  require_matches '"message_id"[[:space:]]*:' "$history_response" \
+    "chat_stream history response missing stable message_id"
+  require_matches '"content"[[:space:]]*:' "$history_response" \
+    "chat_stream history response missing content"
+}
+
+require_chat_stream_smoke() {
+  [[ -f "$run_dir/chat_stream.sse" ]] || {
+    echo "Gate failed: chat_stream SSE evidence not found: $run_dir/chat_stream.sse" >&2
+    exit 1
+  }
+  [[ -f "$run_dir/chat_history.json" ]] || {
+    echo "Gate failed: chat_stream history evidence not found: $run_dir/chat_history.json" >&2
+    exit 1
+  }
+  require_matches '^event: final$' "$run_dir/chat_stream.sse" \
+    "chat_stream final event missing from saved evidence"
+  require_matches '^event: done$' "$run_dir/chat_stream.sse" \
+    "chat_stream done event missing from saved evidence"
+}
+
 fail_on_unexpected_monitor_stderr() {
   local stderr_file="$1"
   local filtered_file="$2"
@@ -462,6 +575,13 @@ run_gates() {
       exit 1
     fi
   fi
+  if [[ "$scenario" == "chat_stream" ]]; then
+    require_chat_stream_smoke
+    require_matches '\[chat_stream\] event=final' "$log_file" \
+      "chat_stream final event was not captured in serial log"
+    fail_if_matches '\[chat_stream\] event=error' "$log_file" \
+      "chat_stream error event found in serial log"
+  fi
 }
 
 selected_port="$(detect_port)"
@@ -489,6 +609,12 @@ mkdir -p "$run_dir"
   echo "selected_port=$selected_port"
   echo "monitor_stderr=$monitor_stderr"
   echo "monitor_unexpected_stderr=$monitor_unexpected_stderr"
+  if [[ "$scenario" == "chat_stream" ]]; then
+    echo "device_url=$device_url"
+    echo "chat_timeout=$chat_timeout"
+    echo "chat_stream_sse=$run_dir/chat_stream.sse"
+    echo "chat_history_response=$run_dir/chat_history.json"
+  fi
   if [[ -n "$qq_acceptance_file" ]]; then
     echo "qq_acceptance_file=$qq_acceptance_file"
   fi
@@ -516,6 +642,16 @@ cat >> "$run_dir/commands.md" <<EOF
 espflash monitor --port $selected_port --chip $chip --monitor-baud $baud --non-interactive --after hard-reset
 scripts/esp_soak_analyze.sh --output-dir $run_dir/analysis $log_file
 EOF
+if [[ "$scenario" == "chat_stream" ]]; then
+  cat >> "$run_dir/commands.md" <<EOF
+curl -fsS -N --max-time $chat_timeout -X POST $device_url/api/sessions \\
+  -H 'Accept: text/event-stream' \\
+  -H 'Content-Type: application/json' \\
+  -H 'X-Pairing-Code: <redacted>' \\
+  -H 'X-CSRF-Token: <from /api/csrf_token>' \\
+  --data '{"chat_id":"configure-ui:default","content":"<chat smoke message>"}'
+EOF
+fi
 
 echo "ESP live flow:"
 echo "  scenario: $scenario"
@@ -549,6 +685,9 @@ assert_port_free "$selected_port"
 echo
 echo "Step 4/5: hard-reset monitor from boot."
 echo "For qq_text, send the QQ test messages only after '[qq_ws] hello ok' appears."
+if [[ "$scenario" == "chat_stream" ]]; then
+  echo "For chat_stream, the flow waits for WiFi readiness, then posts /api/sessions SSE via curl."
+fi
 if [[ "$scenario" == "qq_text" ]]; then
   print_qq_acceptance_plan "$board"
   write_qq_acceptance_template "$qq_acceptance_file"
@@ -559,10 +698,19 @@ if [[ "$duration" -eq 0 ]]; then
 else
   espflash monitor --port "$selected_port" --chip "$chip" --monitor-baud "$baud" --non-interactive --after hard-reset 2>"$monitor_stderr" | tee "$log_file" &
   monitor_pid="$!"
+  chat_stream_done=0
   for (( elapsed = 0; elapsed < duration; elapsed++ )); do
     sleep 1
     if [[ "$scenario" == "qq_text" ]] && qq_text_completion_reached "$log_file"; then
       echo "qq_text expected message/reply metrics reached; ending capture early."
+      break
+    fi
+    if [[ "$scenario" == "chat_stream" && "$chat_stream_done" -eq 0 ]] \
+      && grep -E 'WiFi ready \(SoftAP bootstrap active|STA connected|sta ip:' "$log_file" >/dev/null 2>&1; then
+      echo "chat_stream WiFi readiness reached; running /api/sessions SSE smoke."
+      run_chat_stream_smoke
+      chat_stream_done=1
+      echo "chat_stream SSE smoke reached final/done and history readback; ending capture early."
       break
     fi
   done

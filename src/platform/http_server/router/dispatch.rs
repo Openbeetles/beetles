@@ -1025,8 +1025,8 @@ fn dispatch_impl(
             }
         }
         Some(RouteHandler::SessionsGet) => {
-            if let Some(r) = auth::require_activated(store) {
-                return Ok(api_to_out(r));
+            if let Some(o) = guard_pairing(store, uri, &incoming.headers) {
+                return Ok(o);
             }
             let chat_id = common::name_from_uri(uri).or_else(|| chat_id_from_uri(uri));
             let result = match chat_id {
@@ -1475,7 +1475,7 @@ mod tests {
         ctx.session_store = store as Arc<dyn crate::memory::SessionStore + Send + Sync>;
         let env = build_router_env();
 
-        let response = dispatch(&ctx, &env, plain_get("/api/sessions?limit=1"))
+        let response = dispatch(&ctx, &env, authed_get("/api/sessions?limit=1"))
             .expect("dispatch sessions list");
 
         assert_eq!(response.status, 200);
@@ -1514,7 +1514,7 @@ mod tests {
         let response = dispatch(
             &ctx,
             &env,
-            plain_get("/api/sessions?chat_id=configure-ui:default&limit=2"),
+            authed_get("/api/sessions?chat_id=configure-ui:default&limit=2"),
         )
         .expect("dispatch session history");
 
@@ -1528,6 +1528,24 @@ mod tests {
         assert_eq!(parsed["items"][1]["message_id"], "msg_u2");
         assert_eq!(parsed["items"][1]["role"], "user");
         assert_eq!(parsed["items"][1]["content"], "第二轮问题");
+    }
+
+    #[test]
+    fn sessions_get_requires_pairing_code_for_chat_history() {
+        let _guard = default_test_handler_context_guard();
+        let ctx = build_authed_ctx();
+        let env = build_router_env();
+
+        let response = dispatch(
+            &ctx,
+            &env,
+            plain_get("/api/sessions?chat_id=configure-ui:default"),
+        )
+        .expect("dispatch sessions without pairing");
+
+        assert_eq!(response.status, 401);
+        let parsed: Value = serde_json::from_slice(&response.body).expect("parse error");
+        assert_eq!(parsed["error_key"], "auth.pairing_invalid");
     }
 
     #[test]
@@ -1580,7 +1598,9 @@ mod tests {
     #[test]
     fn sessions_post_rejects_second_active_chat_stream_before_enqueue() {
         let _guard = default_test_handler_context_guard();
-        let ctx = build_authed_ctx();
+        let mut ctx = build_authed_ctx();
+        ctx.chat_streams =
+            Arc::new(crate::chat_stream::ChatStreamBroker::new_with_max_active_for_test(1));
         let _opened = ctx.chat_streams.try_open().expect("existing stream");
         let (inbound_tx, inbound_rx, _inbound_depth) =
             new_inbound_channel(crate::constants::DEFAULT_CAPACITY);
@@ -1697,10 +1717,6 @@ mod tests {
         }
     }
 
-    #[cfg(all(
-        feature = "capability_office",
-        not(any(target_arch = "xtensa", target_arch = "riscv32"))
-    ))]
     fn authed_get(uri: &str) -> IncomingRequest {
         IncomingRequest {
             method: "GET".to_string(),

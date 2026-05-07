@@ -849,6 +849,7 @@ impl StorageSessionStore {
                 }
             }
         }
+        resolved.sort();
 
         let mut guard = self.chat_ids.lock().unwrap_or_else(|e| e.into_inner());
         let cached = guard.get_or_insert_with(|| resolved.clone());
@@ -861,6 +862,7 @@ impl StorageSessionStore {
             let exists = ids.iter().any(|id| id == chat_id);
             if !exists && ids.len() < MAX_LIST_CHAT_IDS {
                 ids.push(chat_id.to_string());
+                ids.sort();
             }
         }
     }

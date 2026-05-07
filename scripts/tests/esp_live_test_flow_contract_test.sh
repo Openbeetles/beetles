@@ -48,6 +48,10 @@ assert_contains "$FLOW" 'update|full-erase)' \
   "live flow must allow full erase only as an explicit flash mode"
 assert_contains "$FLOW" '--qq-acceptance-file FILE' \
   "qq_text flow must accept an explicit semantic acceptance evidence file"
+assert_contains "$FLOW" '--device-url URL' \
+  "chat_stream flow must accept a device URL for HTTP smoke"
+assert_contains "$FLOW" '--pairing-code CODE' \
+  "chat_stream flow must accept a pairing code for HTTP smoke"
 assert_contains "$FLOW" 'TARGET=esp ESPFLASH_PORT="$selected_port" "$REPO_ROOT/build.sh" --flash-update --no-monitor' \
   "live flow must flash through build.sh update mode without opening build.sh monitor"
 assert_contains "$FLOW" 'BOARD="$board" TARGET=esp ESPFLASH_PORT="$selected_port" "$REPO_ROOT/build.sh" --flash-update --no-monitor' \
@@ -84,6 +88,20 @@ assert_contains "$FLOW" 'WiFi ready \(SoftAP bootstrap active|STA connected|sta 
   "boot_idle must accept SoftAP readiness without requiring STA credentials"
 assert_contains "$FLOW" 'if [[ "$scenario" == "qq_text" ]]; then' \
   "qq_text-specific gates must remain isolated from fresh boot_idle"
+assert_contains "$FLOW" 'run_chat_stream_smoke' \
+  "chat_stream flow must run the /api/sessions SSE smoke"
+assert_contains "$FLOW" 'curl -fsS -N --max-time "$chat_timeout"' \
+  "chat_stream flow must use curl streaming mode with an HTTP timeout"
+assert_contains "$FLOW" '-X POST "$url/api/sessions"' \
+  "chat_stream flow must post to /api/sessions instead of inventing /api/chat"
+assert_contains "$FLOW" "require_matches '^event: final$'" \
+  "chat_stream flow must require the final SSE event"
+assert_contains "$FLOW" "require_matches '^event: done$'" \
+  "chat_stream flow must require the done SSE event"
+assert_contains "$FLOW" 'chat_history_response=$run_dir/chat_history.json' \
+  "chat_stream flow metadata must preserve history readback evidence"
+assert_contains "$FLOW" '\[chat_stream\] event=final' \
+  "chat_stream live gate must require serial final evidence for analyzer alignment"
 assert_contains "$FLOW" "require_matches 'STA connected|sta ip:'" \
   "qq_text must require STA readiness before manual QQ testing"
 assert_contains "$FLOW" "require_matches '\\[qq_ws\\] hello ok'" \

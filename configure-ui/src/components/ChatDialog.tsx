@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import Box from "@mui/material/Box";
+import Button from "@mui/material/Button";
 import Dialog from "@mui/material/Dialog";
 import IconButton from "@mui/material/IconButton";
 import InputAdornment from "@mui/material/InputAdornment";
@@ -161,12 +162,17 @@ export function ChatDialog({ open, onClose, onMinimize }: ChatDialogProps) {
   ]);
   const [messagesByChatId, setMessagesByChatId] = useState<Record<string, ChatMessageView[]>>({});
   const [sessionsLoaded, setSessionsLoaded] = useState(false);
+  const [sessionNextCursor, setSessionNextCursor] = useState<string | null>(null);
+  const [messageNextBeforeByChatId, setMessageNextBeforeByChatId] = useState<Record<string, string | null>>({});
   const [listLoading, setListLoading] = useState(false);
+  const [listMoreLoading, setListMoreLoading] = useState(false);
   const [messagesLoading, setMessagesLoading] = useState(false);
+  const [messagesMoreLoading, setMessagesMoreLoading] = useState(false);
   const [errorText, setErrorText] = useState<string | null>(null);
   const [isStreaming, setIsStreaming] = useState(false);
   const listRequestSeq = useRef(0);
   const detailRequestSeq = useRef(0);
+  const streamAbortRef = useRef<AbortController | null>(null);
   const activeConversation = useMemo(
     () =>
       conversations.find((conversation) => conversation.id === activeId) ??
@@ -177,6 +183,19 @@ export function ChatDialog({ open, onClose, onMinimize }: ChatDialogProps) {
   const activeMessages = activeConversation
     ? (messagesByChatId[activeConversation.id] ?? [])
     : [];
+
+  const handleClose = () => {
+    streamAbortRef.current?.abort();
+    streamAbortRef.current = null;
+    setIsStreaming(false);
+    onClose();
+  };
+
+  useEffect(() => {
+    if (open) return;
+    streamAbortRef.current?.abort();
+    streamAbortRef.current = null;
+  }, [open]);
 
   useEffect(() => {
     if (!open || !canAccessProtectedApis) return;
@@ -194,6 +213,7 @@ export function ChatDialog({ open, onClose, onMinimize }: ChatDialogProps) {
       if (!result.ok || !Array.isArray(sessionItems)) {
         setErrorText(translateChatApiError(t, result.error, "chat.loadFailed"));
         setConversations([createEmptyConversation(t("chat.defaultSessionTitle"))]);
+        setSessionNextCursor(null);
         setActiveId(DEFAULT_CHAT_ID);
         return;
       }
@@ -211,6 +231,7 @@ export function ChatDialog({ open, onClose, onMinimize }: ChatDialogProps) {
           ? currentId
           : nextConversations[0]?.id ?? DEFAULT_CHAT_ID,
       );
+      setSessionNextCursor(result.data?.next_cursor ?? null);
       setSessionsLoaded(true);
     };
 
@@ -238,6 +259,10 @@ export function ChatDialog({ open, onClose, onMinimize }: ChatDialogProps) {
       setMessagesByChatId((current) => ({
         ...current,
         [chatId]: messageItems.map(messageFromSession),
+      }));
+      setMessageNextBeforeByChatId((current) => ({
+        ...current,
+        [chatId]: result.data?.next_before ?? null,
       }));
     };
 
@@ -373,25 +398,84 @@ export function ChatDialog({ open, onClose, onMinimize }: ChatDialogProps) {
     }
   };
 
+  const loadMoreSessions = async () => {
+    if (!sessionNextCursor || listMoreLoading || !canAccessProtectedApis) return;
+    setListMoreLoading(true);
+    const result = await api.sessions.list({
+      cursor: sessionNextCursor,
+      limit: SESSION_LIST_LIMIT,
+    });
+    setListMoreLoading(false);
+    const sessionItems = result.data?.items;
+    if (!result.ok || !Array.isArray(sessionItems)) {
+      setErrorText(translateChatApiError(t, result.error, "chat.loadFailed"));
+      return;
+    }
+    setConversations((current) => {
+      const existingIds = new Set(current.map((conversation) => conversation.id));
+      const appended = sessionItems
+        .map((session) => conversationFromSession(session, t("chat.defaultSessionTitle")))
+        .filter((conversation) => !existingIds.has(conversation.id));
+      return [...current, ...appended];
+    });
+    setSessionNextCursor(result.data?.next_cursor ?? null);
+  };
+
+  const loadOlderMessages = async () => {
+    if (!activeChatId || messagesMoreLoading || !canAccessProtectedApis) return;
+    const before = messageNextBeforeByChatId[activeChatId];
+    if (!before) return;
+    setMessagesMoreLoading(true);
+    const result = await api.sessions.getMessages({
+      chatId: activeChatId,
+      before,
+      limit: SESSION_MESSAGE_LIMIT,
+    });
+    setMessagesMoreLoading(false);
+    const messageItems = result.data?.items;
+    if (!result.ok || !Array.isArray(messageItems)) {
+      setErrorText(translateChatApiError(t, result.error, "chat.loadFailed"));
+      return;
+    }
+    setMessagesByChatId((current) => ({
+      ...current,
+      [activeChatId]: [
+        ...messageItems.map(messageFromSession),
+        ...(current[activeChatId] ?? []),
+      ],
+    }));
+    setMessageNextBeforeByChatId((current) => ({
+      ...current,
+      [activeChatId]: result.data?.next_before ?? null,
+    }));
+  };
+
   const sendDraft = async () => {
     const text = draft.trim();
     if (!text || !activeConversation || isStreaming || !canAccessProtectedApis) return;
     const chatId = activeConversation.id;
     const assistantId = `local-assistant-${Date.now()}`;
     const accumulatedRef = { current: "" };
+    const abortController = new AbortController();
 
     upsertConversation(chatId, text);
     appendLocalExchange(chatId, text, assistantId);
     setDraft("");
     setErrorText(null);
     setIsStreaming(true);
+    streamAbortRef.current = abortController;
 
     const result = await api.sessions.streamMessage(
       { chat_id: chatId, content: text },
       (event) => applyStreamEvent(chatId, assistantId, event, accumulatedRef),
+      { signal: abortController.signal },
     );
 
+    if (streamAbortRef.current === abortController) {
+      streamAbortRef.current = null;
+    }
     setIsStreaming(false);
+    if (abortController.signal.aborted) return;
     if (!result.ok) {
       const error = translateChatApiError(t, result.error, "chat.sendFailed");
       setErrorText(error);
@@ -413,7 +497,7 @@ export function ChatDialog({ open, onClose, onMinimize }: ChatDialogProps) {
   return (
     <Dialog
       open={open}
-      onClose={onClose}
+      onClose={handleClose}
       maxWidth={false}
       fullScreen={fullScreen}
       aria-labelledby={CHAT_DIALOG_TITLE_ID}
@@ -475,7 +559,7 @@ export function ChatDialog({ open, onClose, onMinimize }: ChatDialogProps) {
               label={t("chat.close")}
               color="var(--semantic-danger)"
               ink="color-mix(in srgb, var(--semantic-danger) 62%, #491316)"
-              onClick={onClose}
+              onClick={handleClose}
             >
               <path d="M4 4L10 10" />
               <path d="M10 4L4 10" />
@@ -686,6 +770,26 @@ export function ChatDialog({ open, onClose, onMinimize }: ChatDialogProps) {
                   </Box>
                 );
               })}
+              {sessionNextCursor ? (
+                <Button
+                  variant="outlined"
+                  size="small"
+                  disabled={listMoreLoading}
+                  onClick={() => void loadMoreSessions()}
+                  sx={{
+                    alignSelf: "stretch",
+                    minHeight: 34,
+                    borderRadius: "var(--radius-control)",
+                    color: "var(--primary)",
+                    borderColor: "var(--form-outline-focus)",
+                    fontSize: "var(--font-size-caption)",
+                    fontWeight: 700,
+                    textTransform: "none",
+                  }}
+                >
+                  {listMoreLoading ? t("chat.loadingSessions") : t("chat.loadMoreSessions")}
+                </Button>
+              ) : null}
             </Stack>
           </Box>
 
@@ -716,6 +820,27 @@ export function ChatDialog({ open, onClose, onMinimize }: ChatDialogProps) {
                 >
                   {t("chat.loadingMessages")}
                 </Typography>
+              ) : null}
+              {!messagesLoading && messageNextBeforeByChatId[activeChatId ?? ""] ? (
+                <Button
+                  variant="outlined"
+                  size="small"
+                  disabled={messagesMoreLoading}
+                  onClick={() => void loadOlderMessages()}
+                  sx={{
+                    alignSelf: "center",
+                    minHeight: 34,
+                    px: 1.5,
+                    borderRadius: "var(--radius-control)",
+                    color: "var(--primary)",
+                    borderColor: "var(--form-outline-focus)",
+                    fontSize: "var(--font-size-caption)",
+                    fontWeight: 700,
+                    textTransform: "none",
+                  }}
+                >
+                  {messagesMoreLoading ? t("chat.loadingMessages") : t("chat.loadOlderMessages")}
+                </Button>
               ) : null}
               {!messagesLoading && activeMessages.length === 0 ? (
                 <Box

@@ -5,31 +5,67 @@
 ## 项目定位
 
 - **产品**：**Beetle OS**（固件侧项目名可仍为 beetle / 甲壳虫，配置页对用户的系统语义统一为 **Beetle OS**）配置前端，用于连接设备后配置 WiFi、LLM、通道（飞书/钉钉/企微/QQ/Telegram）、系统与技能等。
-- **风格**：现代、精致、带克制拟物感，偏工具型与可信赖感。不是网页式扁平，也不是厚重玩具感；目标是 **干净的 3D 壳层**：材质分层清楚、阴影精确、主副光源统一。壳层采用 **桌面 OS 隐喻**：顶栏为标题栏、**底部任务栏** 承载主导航；Beetle OS 徽标（SVG）作为 **「开始」徽标** 打开开始菜单（完整列表与连接摘要），任务栏中部为固定快捷方式（图标），右侧为连接状态托盘区。详见下文「Shell 布局」。
+- **风格**：**iOS 风格毛玻璃（Frosted Glass）**—— 清透、轻盈、现代，偏工具型与可信赖感。卡片与面板为半透明玻璃材质，背景光晕透过玻璃可见；壳层采用 **桌面 OS 隐喻**：顶栏为半透明标题栏、**底部任务栏** 承载主导航。目标是 **干净的玻璃壳层**：材质通透、阴影轻盈、色调明亮。详见下文「Shell 布局」与「毛玻璃设计语言」。
 
 ## Token 化（单源）
 
 **禁止在组件、theme 的 styleOverrides 内硬编码色值、圆角、动效时长、焦点环尺寸等。** 单源来自：
 
-- **颜色 / 语义**：`src/config/themeTokens.ts` 的 `ThemeTokens`（per mode × brand），通过 `createAppTheme` 注入到 `:root` 的 `--background`、`--foreground`、`--primary`、`--border`、`--muted`、`--card`、`--surface`、`--primary-soft`、`--primary-fg`、`--accent`、`--border-subtle`、`--overlay`、`--backdrop-overlay`、`--glass-blur`、`--shell-chrome-blur`（壳层磨砂 blur，来自 `LAYOUT_TOKENS.shellChromeBackdropBlurPx`）、`--shadow-shell-start-flyout`（开始菜单：`none`）、`--transition-duration`、`--foreground-soft` 等。顶栏/任务栏 **`--shadow-shell-titlebar` / `--shadow-shell-taskbar` 为 `none`**，不靠外投阴影分层。
+- **颜色 / 语义**：`src/config/themeTokens.ts` 的 `ThemeTokens`（per mode × brand），通过 `createAppTheme` 注入到 `:root` 的 `--background`、`--foreground`、`--primary`、`--border`、`--muted`、`--card`、`--surface`、`--primary-soft`、`--primary-fg`、`--accent`、`--border-subtle`、`--overlay`、`--backdrop-overlay`、`--glass-blur`、`--shell-chrome-blur`（壳层磨砂 blur，固定 **20px**）、`--shadow-shell-start-flyout`（开始菜单：`none`）、`--transition-duration`、`--foreground-soft` 等。顶栏/任务栏 **`--shadow-shell-titlebar` / `--shadow-shell-taskbar` 为 `none`**，不靠外投阴影分层。
+- **毛玻璃专用 token**（由 `appTheme` 按 mode/brand 动态注入，不得硬编码替代）：
+  - `--card-glass`：卡片/面板半透明底色（浅色 40% 不透明白、深色 30%）
+  - `--card-glass-border`：玻璃高光描边（浅色 `rgba(255,255,255,0.72)`，深色细亮边）
+  - `--card-glass-shadow`：轻量阴影栈（3 层：远距漫射 + 中距承托 + 顶缘内高光）
 - **文字色阶（文案/辅助信息必读）**：`:root` 同时提供 **`--text-primary`、`--text-secondary`、`--text-tertiary`**，与 `foreground` / `foreground-soft` / `muted` 对齐。页面与组件中的**正文层级、说明、helper、次要标签**应优先使用 **`var(--text-*)`** 或 `src/theme/panelStyles.ts` 中的 **`TEXT_*_SX` 预设**（如 `TEXT_BODY_TERTIARY_SX`、`TEXT_SECTION_TITLE_SX`），避免在业务代码里散落 `fontSize`/`color`。**不要用 `var(--muted)` 充当「第三级文案」的长期口径**（该变量仍服务于 palette / 旧引用；新代码以 `--text-tertiary` 为准）。
 - **布局 / 动效**：`themeTokens.ts` 的 `LAYOUT_TOKENS`（`radiusControl`、`radiusCard`、`radiusChip`、`easeEmphasized`、`easeOutSmooth`、`durationImageHoverMs`、按钮高度、padding 等），并注入 `:root` 的 `--radius-control`、`--radius-card`、`--radius-chip`、`--ease-emphasized`、`--ease-out-smooth`、`--focus-ring-width`、`--focus-ring-offset`。
 - **宽度**：`src/config/layout.ts` 的 `CONTENT_MAX_WIDTH`、`SETTINGS_DRAWER_WIDTH`、`TASKBAR_HEIGHT` 等，与 theme breakpoints 一致。
 
 组件与 theme 中一律使用 `var(--xxx)` 或从 token/常量引用，不写死 `#hex`、`12px`、`200ms` 等（除 token 定义文件本身）。
 
+## 毛玻璃设计语言（必须遵守，禁止回退）
+
+当前全站采用 **iOS 风格毛玻璃（Frosted Glass）** 设计语言。以下为强制规范：
+
+### 卡片与面板材质
+
+- **仪表盘卡**（`DASHBOARD_CARD_SURFACE_SX`）和**配置面板**（`CONFIG_PANEL_SX`）的材质三要素：
+  1. `bgcolor: "var(--card-glass)"` — 半透明底色
+  2. `border: "1px solid var(--card-glass-border)"` — 玻璃高光描边
+  3. `backdropFilter: "blur(40px) saturate(1.8)"` + `WebkitBackdropFilter` 同值
+  - **禁止**将 bgcolor 改回 `var(--card)` 实色；**禁止**移除或降低 `backdropFilter`
+
+- **表单二级模块**（`FORM_SECTION_MODULE_SX`）为轻量玻璃（`blur(20px)`）；其内部的 header（`FORM_SECTION_MODULE_HEADER_SX`）和 body（`FORM_SECTION_MODULE_BODY_SX`）必须保持透明背景，**禁止**恢复实色 `var(--card)` 背景。
+
+- **弹窗**（`MuiDialog`）、**下拉菜单**（`MuiMenu`）、**Popover** 统一毛玻璃（`blur(36–40px)`），禁止回退实色。
+
+### 卡片内 Chip / 数值块（`DASHBOARD_INSET_WELL_BG`）
+
+- 底色必须用 **白色叠加**：`color-mix(in srgb, #fff XX%, transparent)`
+- **严禁**用 `var(--foreground)` 混色——深色 foreground 在浅色玻璃面上产生明显灰块
+
+### Shell Chrome
+
+- 顶栏背景透明度约 **62%**，任务栏约 **70%**；`--shell-chrome-blur` = **20px**
+- **禁止**提高透明度至 90% 以上（否则失去毛玻璃感）
+
+### 背景与颜色基调
+
+- 浅色页面背景为近白带极淡蓝调（`#f2f7fb`），保证光晕透视效果
+- `--form-group-well`、`--divider-row`、`--outlined-border-*` 保持低混色量（≤10%），避免灰感渗透
+- `--border` 系列颜色必须保持当前轻量值，不得加深
+
 ## 视觉原则
 
 ### 必须遵守
 
-- **克制拟物**：允许明确的 3D 壳层、台座、磨砂与蜡光，但必须读起来像同一套工业材质，而不是堆效果
+- **清透轻盈**：整体基调接近 iOS，颜色层次靠透明度和模糊，而非厚重描边与实色堆叠
 - **精致**：细节克制，间距与字号统一，动效引用 `var(--transition-duration)` 或 `LAYOUT_TOKENS`
-- **阴影要分层，不要发糊**：允许多层阴影，但每层都要服务体积感；禁止大面积脏灰糊影
-- **禁止重边框**：分割用 `var(--border)` / `var(--border-subtle)` 的细线，轮廓优先靠材质明暗与薄描边共同成立
+- **阴影轻量化**：用 `--card-glass-shadow`（3 层轻影），禁止恢复大面积脏灰糊影
+- **禁止重边框**：分割用 `var(--border)` / `var(--border-subtle)` 的细线，不写死色值
 
 ### 推荐做法
 
-- 颜色只用 `var(--primary)`、`var(--border)`、`var(--card)` 等；圆角用 `var(--radius-control)` / `var(--radius-card)`；动效用 `var(--transition-duration)`、`var(--ease-emphasized)` 等
+- 颜色只用 `var(--primary)`、`var(--card-glass)`、`var(--border)` 等 token；圆角用 `var(--radius-control)` / `var(--radius-card)`；动效用 `var(--transition-duration)`、`var(--ease-emphasized)` 等
 - 导航与主体宽度用 `Container maxWidth="lg"`（即 `CONTENT_MAX_WIDTH`）
 
 ## 排版与表单（与「系统设置」一致）
@@ -39,8 +75,8 @@
 - **Settings 行**：`SettingsRow` **始终纵向**（标签在上、控件在下）；**说明/helper 不要用窄 `maxWidth`/`ch` 人为过早换行**，保持与正文同宽或自然换行。
 - **表单布局**：**禁止**为「留白」而做左右分栏拉空一栏；字段矩阵统一使用 `FormGrid`，禁止页面自定义 `fieldGridSx` / `gridTemplateColumns` 复制品。需要分组时用 `SettingsSection`、`FormSectionSub`、`FormSectionSubCollapsible`、`FormFieldStack` 等现有结构，而不是空列。
 - **二元设置行**：Switch / Checkbox 这类二元设置优先使用 `FormSwitchRow`，保持标题、说明与控件在同一基线；不要直接把裸 `FormControlLabel` 散落在复杂表单里。
-- **表单视觉基线**：0.1.0 表单采用 **Modern Workstation** 方向：中性工作站面板、轻量子模块、清晰字段井、低厚度阴影。避免旧式奶油色厚卡片、过大圆角、过多嵌套光泽；Glass Console 只适合状态/诊断面板，不作为全站表单基线。
-- **卡片**：配置区、仪表盘等允许使用 **校准过的 3D 投影栈**（如 `--os3d-content-plate-stack`），但必须配合细描边与材质高光；不要重新发明另一套重影。
+- **表单视觉基线**：表单面板使用 **毛玻璃材质**（`CONFIG_PANEL_SX`），内部二级模块头与正文保持透明，让玻璃贯穿。禁止使用旧式实色奶油卡片、过大圆角、多嵌套光泽。
+- **卡片**：仪表盘卡使用 `DASHBOARD_CARD_SURFACE_SX`（`--card-glass` + `blur(40px)`），配置面板使用 `CONFIG_PANEL_SX`（`--card-glass` + `blur(32px)`）；**禁止**使用 `--os3d-content-plate-stack` 替代玻璃材质、禁止恢复实色 `var(--card)` 背景。
 
 ## Shell 布局（桌面隐喻）
 
@@ -100,9 +136,9 @@
 以下为 `.cursor/rules/design-constraints.mdc` 的完整内容来源，AI 与开发写样式时以此为准：
 
 - **Token 化**：禁止在组件和 theme 的 styleOverrides 中硬编码色值、圆角、动效时长、焦点环等。颜色用 `var(--primary)`、`var(--border)`、`var(--card)`、`var(--foreground)` 等；**文案层级优先 `var(--text-primary)` / `var(--text-secondary)` / `var(--text-tertiary)` 或 `TEXT_*_SX`**。圆角用 `var(--radius-control)`、`var(--radius-card)`、`var(--radius-chip)`；动效用 `var(--transition-duration)`、`var(--ease-emphasized)`；焦点环用 `var(--focus-ring-width)`、`var(--focus-ring-offset)`。单源为 `src/config/themeTokens.ts`（ThemeTokens + LAYOUT_TOKENS）、`appTheme` 注入的 `:root` 变量，以及 **`panelStyles` / `listItemStyles` 中的版面与列表预设**。
-- **风格**：现代、精致、克制拟物；禁止把 3D 做成混乱的效果堆叠。
-- **阴影**：允许多层阴影栈，但必须收敛、可解释；禁止大面积、高模糊、脏灰重影。
-- **边框**：分割用 `var(--border)` 或 `var(--border-subtle)` 的细线，不写死色值；表单/面板描边优先 `var(--form-outline-rest)`。
+- **风格**：iOS 毛玻璃、清透轻盈；禁止恢复厚重实色卡片、多层拟物阴影或重边框。
+- **阴影**：统一使用 `--card-glass-shadow`（3 层轻影）；禁止大面积高模糊脏灰重影；`--os3d-content-plate-stack` 仅用于非玻璃化的遗留场景，新组件不得引入。
+- **边框**：分割用 `var(--border)` 或 `var(--border-subtle)` 的细线，不写死色值；卡片描边使用 `var(--card-glass-border)`；表单轮廓用 `var(--form-outline-rest)`。
 - **布局**：内容宽度用 `CONTENT_MAX_WIDTH` / `maxWidth="lg"`，不写死 1200 等数字；页级/滚动区用 **`PAGE_STACK_OUTER_SX` / `PAGE_SCROLL_STACK_SX`**，纵向间距用 **`LAYOUT_TOKENS`**。
 - **表单与说明**：`SettingsRow` 纵向；**禁止**左右分栏拉空；helper **不要**用窄 `maxWidth` 过早断行。
 - **列表与导航**：静态列表行用 **`listItemStyles`**；侧栏/子导航 **`ListItemButton`** 交互样式只在 **`MuiListItemButton`**，页面不写重复 selected/hover。

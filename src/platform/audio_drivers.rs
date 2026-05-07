@@ -779,7 +779,6 @@ impl SharedAudioBuffers {
         drop(reference_guard);
 
         crate::metrics::record_audio_speaker_queue_depth_last_samples(0);
-        crate::metrics::record_audio_reference_queue_depth_last_samples(0);
         self.notify_all_waiters();
     }
 }
@@ -870,7 +869,6 @@ fn push_playback_reference_frame(shared: &SharedAudioBuffers, samples: &[i16]) {
     }
     let mut guard = shared.reference.lock().unwrap_or_else(|e| e.into_inner());
     guard.push_slice_drop_oldest(samples);
-    crate::metrics::record_audio_reference_queue_depth_last_samples(guard.len());
     shared.reference_cv.notify_one();
 }
 
@@ -1104,7 +1102,6 @@ impl AudioPipelineState {
                 let mut speaker_underrun_reported = false;
                 loop {
                     crate::platform::task_wdt::feed_current_task();
-                    let loop_start = Instant::now();
                     crate::metrics::record_audio_worker_turn();
                     if worker_shared.is_stopping() {
                         break;
@@ -1217,11 +1214,6 @@ impl AudioPipelineState {
                                             .unwrap_or_else(|e| e.into_inner());
                                         guard.copy_recent_into(&mut reference_frame[..n])
                                     };
-                                    if reference_copied > 0 {
-                                        crate::metrics::record_audio_reference_frame_read();
-                                    } else {
-                                        crate::metrics::record_audio_reference_zero_read();
-                                    }
                                     if reference_copied < n {
                                         reference_frame[reference_copied..n].fill(0);
                                     }
@@ -1271,7 +1263,6 @@ impl AudioPipelineState {
                             std::thread::sleep(Duration::from_millis(idle_sleep_ms));
                         }
                     }
-                    crate::metrics::record_audio_loop_us(loop_start.elapsed().as_micros());
                     crate::platform::task_wdt::feed_current_task();
                 }
                 mark_audio_io_lifecycle(
@@ -1373,12 +1364,6 @@ impl AudioPipelineState {
             return Ok(0);
         }
         let n = guard.pop_into(out);
-        crate::metrics::record_audio_reference_queue_depth_last_samples(guard.len());
-        if n > 0 {
-            crate::metrics::record_audio_reference_frame_read();
-        } else {
-            crate::metrics::record_audio_reference_zero_read();
-        }
         Ok(n)
     }
 

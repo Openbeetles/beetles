@@ -241,10 +241,11 @@ const STORAGE_CONTENTION_SAMPLE_TTL_MS: u64 = 10_000;
 
 fn storage_contention_risk_from_metrics(
     metrics: &crate::metrics::MetricsSnapshot,
+    storage_lock_last_age_ms: u64,
 ) -> StorageContentionRisk {
     if metrics.storage_lock_ops_total == 0
         || metrics.storage_lock_hold_last_stage.is_empty()
-        || metrics.storage_lock_last_age_ms > STORAGE_CONTENTION_SAMPLE_TTL_MS
+        || storage_lock_last_age_ms > STORAGE_CONTENTION_SAMPLE_TTL_MS
     {
         return StorageContentionRisk::Healthy;
     }
@@ -355,9 +356,6 @@ pub struct ResourceAdmissionSnapshot {
 pub struct ResourceGovernanceMetricsSnapshot {
     pub runtime_spawn_failure_total: u64,
     pub http_route_reject_total: u64,
-    pub lease_conflict_total: u64,
-    pub lease_expired_replacement_total: u64,
-    pub plane_drain_timeout_total: u64,
     pub inbound_queue_full_total: u64,
     pub inbound_defer_total: u64,
     pub inbound_drop_total: u64,
@@ -436,7 +434,10 @@ impl ResourceSnapshot {
                 state.heap_largest_block.load(Ordering::Relaxed),
                 state.heap_free_spiram.load(Ordering::Relaxed),
             ),
-            storage_contention_risk: storage_contention_risk_from_metrics(&metrics),
+            storage_contention_risk: storage_contention_risk_from_metrics(
+                &metrics,
+                crate::metrics::storage_lock_last_age_ms(),
+            ),
             heap_free_internal: state.heap_free_internal.load(Ordering::Relaxed),
             heap_min_free_internal: state.heap_min_free_internal.load(Ordering::Relaxed),
             heap_free_spiram: state.heap_free_spiram.load(Ordering::Relaxed),
@@ -486,7 +487,10 @@ impl ResourceLightSnapshot {
                 state.heap_largest_block.load(Ordering::Relaxed),
                 heap_free_spiram,
             ),
-            storage_contention_risk: storage_contention_risk_from_metrics(&metrics),
+            storage_contention_risk: storage_contention_risk_from_metrics(
+                &metrics,
+                crate::metrics::storage_lock_last_age_ms(),
+            ),
             heap_free_internal: state.heap_free_internal.load(Ordering::Relaxed),
             heap_min_free_internal: state.heap_min_free_internal.load(Ordering::Relaxed),
             heap_free_spiram,
@@ -519,9 +523,6 @@ impl ResourceGovernanceMetricsSnapshot {
         Self {
             runtime_spawn_failure_total: metrics.runtime_spawn_failure_total,
             http_route_reject_total: metrics.http_route_reject_total,
-            lease_conflict_total: metrics.lease_conflict_total,
-            lease_expired_replacement_total: metrics.lease_expired_replacement_total,
-            plane_drain_timeout_total: metrics.plane_drain_timeout_total,
             inbound_queue_full_total: metrics.inbound_queue_full_total,
             inbound_defer_total: metrics.inbound_defer_total,
             inbound_drop_total: metrics.inbound_drop_total,
@@ -704,37 +705,35 @@ mod tests {
     fn storage_contention_risk_thresholds_round_trip() {
         let mut metrics = crate::metrics::snapshot();
         metrics.storage_lock_ops_total = 1;
-        metrics.storage_lock_last_age_ms = 0;
         metrics.storage_lock_wait_last_us = 0;
         metrics.storage_lock_hold_last_us = 0;
         metrics.storage_lock_hold_last_stage.clear();
         assert_eq!(
-            storage_contention_risk_from_metrics(&metrics),
+            storage_contention_risk_from_metrics(&metrics, 0),
             StorageContentionRisk::Healthy
         );
 
         metrics.storage_lock_wait_last_us = 7_500;
         assert_eq!(
-            storage_contention_risk_from_metrics(&metrics),
+            storage_contention_risk_from_metrics(&metrics, 0),
             StorageContentionRisk::Healthy,
             "wait-only samples without a completed hold stage must not look fresh"
         );
 
         metrics.storage_lock_hold_last_stage = "storage_write_json".to_string();
         assert_eq!(
-            storage_contention_risk_from_metrics(&metrics),
+            storage_contention_risk_from_metrics(&metrics, 0),
             StorageContentionRisk::Cautious
         );
 
         metrics.storage_lock_wait_last_us = 60_000;
         assert_eq!(
-            storage_contention_risk_from_metrics(&metrics),
+            storage_contention_risk_from_metrics(&metrics, 0),
             StorageContentionRisk::Critical
         );
 
-        metrics.storage_lock_last_age_ms = STORAGE_CONTENTION_SAMPLE_TTL_MS + 1;
         assert_eq!(
-            storage_contention_risk_from_metrics(&metrics),
+            storage_contention_risk_from_metrics(&metrics, STORAGE_CONTENTION_SAMPLE_TTL_MS + 1),
             StorageContentionRisk::Healthy
         );
     }

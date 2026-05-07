@@ -5,13 +5,23 @@
 //! frames for a request that is already in the normal inbound queue.
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Condvar, Mutex, Weak};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub const CHANNEL_CONFIGURE_UI_CHAT: &str = "configure_ui_chat";
 const CHAT_STREAM_QUEUE_CAPACITY: usize = 16;
-const CHAT_STREAM_MAX_ACTIVE: usize = 1;
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+const DEFAULT_CHAT_STREAM_MAX_ACTIVE: usize = 1;
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+const DEFAULT_CHAT_STREAM_MAX_ACTIVE: usize = 4;
+
+enum QueueRecv {
+    Frame(Vec<u8>),
+    Closed,
+    Timeout,
+}
 
 #[derive(Clone)]
 struct StreamEntry {
@@ -44,19 +54,23 @@ impl ChatStreamQueue {
         }
     }
 
-    fn recv(&self) -> Option<Vec<u8>> {
+    fn recv(&self, timeout: Duration) -> QueueRecv {
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
         loop {
             if let Some(frame) = state.frames.pop_front() {
-                return Some(frame.bytes);
+                return QueueRecv::Frame(frame.bytes);
             }
             if state.closed {
-                return None;
+                return QueueRecv::Closed;
             }
-            state = self
+            let (next_state, wait_result) = self
                 .ready
-                .wait(state)
+                .wait_timeout(state, timeout)
                 .unwrap_or_else(|error| error.into_inner());
+            state = next_state;
+            if wait_result.timed_out() {
+                return QueueRecv::Timeout;
+            }
         }
     }
 
@@ -121,7 +135,27 @@ pub struct ChatStreamReceiver {
 
 impl ChatStreamReceiver {
     pub fn recv(&self) -> Option<Vec<u8>> {
-        self.queue.recv()
+        self.recv_with_timeout(Duration::from_secs(
+            crate::constants::CHAT_STREAM_RECV_TIMEOUT_SECS,
+        ))
+    }
+
+    pub fn recv_with_timeout(&self, timeout: Duration) -> Option<Vec<u8>> {
+        match self.queue.recv(timeout) {
+            QueueRecv::Frame(bytes) => Some(bytes),
+            QueueRecv::Closed => None,
+            QueueRecv::Timeout => {
+                if let Some(broker) = self.broker.upgrade() {
+                    broker.emit_error(&self.stream_id, "chat.stream_timeout", None);
+                    match self.queue.recv(timeout) {
+                        QueueRecv::Frame(bytes) => Some(bytes),
+                        QueueRecv::Closed | QueueRecv::Timeout => None,
+                    }
+                } else {
+                    None
+                }
+            }
+        }
     }
 }
 
@@ -162,14 +196,25 @@ pub enum ChatStreamOpenError {
 
 /// Bounded fan-out for Configure UI chat SSE events.
 pub struct ChatStreamBroker {
-    sequence: AtomicU64,
+    sequence: AtomicU32,
+    max_active: usize,
     streams: Mutex<HashMap<String, StreamEntry>>,
 }
 
 impl ChatStreamBroker {
     pub fn new() -> Self {
         Self {
-            sequence: AtomicU64::new(1),
+            sequence: AtomicU32::new(1),
+            max_active: DEFAULT_CHAT_STREAM_MAX_ACTIVE,
+            streams: Mutex::new(HashMap::new()),
+        }
+    }
+
+    #[cfg(test)]
+    pub fn new_with_max_active_for_test(max_active: usize) -> Self {
+        Self {
+            sequence: AtomicU32::new(1),
+            max_active,
             streams: Mutex::new(HashMap::new()),
         }
     }
@@ -180,7 +225,7 @@ impl ChatStreamBroker {
                 .streams
                 .lock()
                 .unwrap_or_else(|error| error.into_inner());
-            if streams.len() >= CHAT_STREAM_MAX_ACTIVE {
+            if streams.len() >= self.max_active {
                 return Err(ChatStreamOpenError::Busy);
             }
         }
@@ -218,6 +263,11 @@ impl ChatStreamBroker {
     }
 
     pub fn emit_queued(&self, stream_id: &str, chat_id: &str) {
+        log::info!(
+            "[chat_stream] event=queued stream_id={} chat_id={}",
+            stream_id,
+            chat_id
+        );
         self.send_event(
             stream_id,
             "queued",
@@ -237,26 +287,54 @@ impl ChatStreamBroker {
                 "accumulated": accumulated,
             }),
         );
+        self.send_event(
+            stream_id,
+            "snapshot",
+            serde_json::json!({
+                "content": accumulated,
+            }),
+        );
     }
 
-    pub fn emit_final(&self, stream_id: &str, content: &str, session_appended: bool) {
+    pub fn emit_final(
+        &self,
+        stream_id: &str,
+        content: &str,
+        session_appended: bool,
+        message_id: Option<&str>,
+    ) {
+        log::info!(
+            "[chat_stream] event=final stream_id={} session_appended={} message_id_present={}",
+            stream_id,
+            session_appended,
+            message_id.is_some()
+        );
         self.send_terminal_events(
             stream_id,
             "final",
             serde_json::json!({
                 "content": content,
+                "message_id": message_id,
+                "turn_id": stream_id,
                 "session_appended": session_appended,
             }),
         );
     }
 
-    pub fn emit_error(&self, stream_id: &str, error_key: &str, upstream_error: Option<&str>) {
+    pub fn emit_error(&self, stream_id: &str, error_key: &str, error_stage: Option<&str>) {
+        log::warn!(
+            "[chat_stream] event=error stream_id={} error_key={} error_stage={}",
+            stream_id,
+            error_key,
+            error_stage.unwrap_or("")
+        );
         self.send_terminal_events(
             stream_id,
             "error",
             serde_json::json!({
                 "error_key": error_key,
-                "upstream_error": upstream_error,
+                "error_stage": error_stage,
+                "meta": {},
             }),
         );
     }
@@ -330,18 +408,21 @@ mod tests {
 
     #[test]
     fn broker_emits_delta_final_done_and_unregisters_stream() {
-        let broker = Arc::new(ChatStreamBroker::new());
+        let broker = Arc::new(ChatStreamBroker::new_with_max_active_for_test(1));
         let opened = broker.try_open().expect("open stream");
         let stream_id = opened.stream_id.clone();
 
         broker.emit_queued(&stream_id, "configure-ui:default");
         broker.emit_delta(&stream_id, "he", "he");
-        broker.emit_final(&stream_id, "hello", true);
+        broker.emit_final(&stream_id, "hello", true, Some("msg_a1"));
 
         assert!(frame_text(opened.receiver.recv().expect("queued")).contains("event: queued"));
         assert!(frame_text(opened.receiver.recv().expect("delta")).contains("event: delta"));
+        assert!(frame_text(opened.receiver.recv().expect("snapshot")).contains("event: snapshot"));
         let final_frame = frame_text(opened.receiver.recv().expect("final"));
         assert!(final_frame.contains("event: final"));
+        assert!(final_frame.contains("\"message_id\":\"msg_a1\""));
+        assert!(final_frame.contains("\"turn_id\":\"chat_stream_"));
         assert!(final_frame.contains("\"session_appended\":true"));
         assert!(frame_text(opened.receiver.recv().expect("done")).contains("event: done"));
         assert!(!broker.has_active(&stream_id));
@@ -349,14 +430,14 @@ mod tests {
 
     #[test]
     fn broker_preserves_terminal_events_when_delta_queue_is_full() {
-        let broker = Arc::new(ChatStreamBroker::new());
+        let broker = Arc::new(ChatStreamBroker::new_with_max_active_for_test(1));
         let opened = broker.try_open().expect("open stream");
         let stream_id = opened.stream_id.clone();
 
         for index in 0..(CHAT_STREAM_QUEUE_CAPACITY * 2) {
             broker.emit_delta(&stream_id, "x", &format!("delta-{index}"));
         }
-        broker.emit_final(&stream_id, "done", true);
+        broker.emit_final(&stream_id, "done", true, None);
 
         let frames = std::iter::from_fn(|| opened.receiver.recv())
             .map(frame_text)
@@ -374,8 +455,28 @@ mod tests {
 
     #[test]
     fn broker_rejects_second_active_stream() {
-        let broker = Arc::new(ChatStreamBroker::new());
+        let broker = Arc::new(ChatStreamBroker::new_with_max_active_for_test(1));
         let _opened = broker.try_open().expect("first stream");
         assert_eq!(broker.try_open().err(), Some(ChatStreamOpenError::Busy));
+    }
+
+    #[test]
+    fn receiver_timeout_emits_terminal_error_and_releases_stream() {
+        let broker = Arc::new(ChatStreamBroker::new_with_max_active_for_test(1));
+        let opened = broker.try_open().expect("open stream");
+        let stream_id = opened.stream_id.clone();
+
+        let error_frame = frame_text(
+            opened
+                .receiver
+                .recv_with_timeout(Duration::from_millis(1))
+                .expect("timeout error frame"),
+        );
+        let done_frame = frame_text(opened.receiver.recv().expect("done frame"));
+
+        assert!(error_frame.contains("event: error"));
+        assert!(error_frame.contains("chat.stream_timeout"));
+        assert!(done_frame.contains("event: done"));
+        assert!(!broker.has_active(&stream_id));
     }
 }

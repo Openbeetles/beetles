@@ -9,7 +9,9 @@ use crate::channels::inbound_backpressure::{self, EventIngressSource, InboundBac
 use crate::channels::send::{
     record_outbound_http_failure, record_outbound_http_success, QueuedOutboundMessage,
 };
-use crate::channels::wss_gateway::{WssConnection, WssEvent};
+use crate::channels::wss_gateway::{
+    external_wss_connect_gate, external_wss_session_stop_reason, WssConnection, WssEvent,
+};
 use crate::channels::ChannelHttpClient;
 use crate::config::AppConfig;
 use crate::error::{Error, Result};
@@ -424,12 +426,6 @@ fn send_json_command<C: WssConnection>(conn: &mut C, command: &Value) -> Result<
     conn.send_text(&command.to_string())
 }
 
-fn external_wss_connect_allowed() -> bool {
-    crate::runtime::thread_registry::runtime_mode_snapshot()
-        .action_budget
-        .allow_external_wss_connect
-}
-
 fn mark_wss_lifecycle(state: crate::runtime::PlaneLifecycleState, reason: &'static str) {
     let _ = crate::runtime::plane_lifecycle::mark(
         crate::runtime::PlaneId::ChannelWss,
@@ -437,21 +433,6 @@ fn mark_wss_lifecycle(state: crate::runtime::PlaneLifecycleState, reason: &'stat
         state,
         reason,
     );
-}
-
-fn external_wss_suspend_lifecycle_reason() -> &'static str {
-    crate::network::external_wss_suspend_reason()
-        .map(crate::network::ExternalWssSuspendReason::as_str)
-        .unwrap_or("external_wss_suspend")
-}
-
-#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-fn esp_network_suspend_reason() -> Option<&'static str> {
-    let snapshot = crate::state::network_runtime_snapshot(
-        crate::platform::time::wall_clock_is_trustworthy(),
-        crate::network::EXTERNAL_WSS_OUTBOUND_SETTLE_SECS,
-    );
-    crate::network::external_wss_network_suspend_reason(&snapshot)
 }
 
 pub fn run_wecom_aibot_loop<C, Connect>(
@@ -474,35 +455,11 @@ pub fn run_wecom_aibot_loop<C, Connect>(
     };
     let mut backoff_secs = crate::orchestrator::current_budget().reconnect_backoff_secs;
     let mut pending_outbound: Option<QueuedOutboundMessage> = None;
+    let mut waiting_for_wall_clock = false;
     loop {
-        if !external_wss_connect_allowed() {
-            mark_wss_lifecycle(
-                crate::runtime::PlaneLifecycleState::Suspended,
-                "runtime_mode_gate",
-            );
-            std::thread::sleep(Duration::from_secs(backoff_secs));
+        if !external_wss_connect_gate(TAG, TAG, &mut waiting_for_wall_clock) {
             continue;
         }
-        #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-        if let Some(reason) = esp_network_suspend_reason() {
-            mark_wss_lifecycle(crate::runtime::PlaneLifecycleState::Suspended, reason);
-            if reason == "wall_clock_untrusted" {
-                let _ = crate::platform::time::wait_for_wall_clock_trustworthy(
-                    Duration::from_secs(backoff_secs),
-                );
-            } else {
-                let _ = crate::platform::wifi::wait_for_network_ready();
-                std::thread::sleep(Duration::from_secs(backoff_secs));
-            }
-            continue;
-        }
-        if crate::network::external_wss_suspend_requested() {
-            mark_wss_lifecycle(
-                crate::runtime::PlaneLifecycleState::Suspended,
-                external_wss_suspend_lifecycle_reason(),
-            );
-        }
-        crate::network::wait_for_external_wss_resume(TAG);
         mark_wss_lifecycle(
             crate::runtime::PlaneLifecycleState::Starting,
             "connect_attempt",
@@ -530,17 +487,7 @@ pub fn run_wecom_aibot_loop<C, Connect>(
         );
         let mut last_ping = Instant::now();
         'session: loop {
-            if !external_wss_connect_allowed() {
-                log::info!(
-                    "[{}] disconnecting external WSS under runtime mode gate",
-                    TAG
-                );
-                let reason = if crate::network::external_wss_suspend_requested() {
-                    external_wss_suspend_lifecycle_reason()
-                } else {
-                    "runtime_mode_gate"
-                };
-                mark_wss_lifecycle(crate::runtime::PlaneLifecycleState::Suspended, reason);
+            if external_wss_session_stop_reason(TAG, TAG).is_some() {
                 break 'session;
             }
             while let Some(message) = pending_outbound

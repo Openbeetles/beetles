@@ -536,6 +536,11 @@ impl HttpRouteSpec {
         self
     }
 
+    pub(crate) const fn with_voice_exclusive_reject(mut self) -> Self {
+        self.reject_during_voice_exclusive = true;
+        self
+    }
+
     #[cfg_attr(
         not(any(target_arch = "xtensa", target_arch = "riscv32", test)),
         allow(dead_code)
@@ -1082,6 +1087,7 @@ pub(crate) const MEMORY_AND_SKILL_ROUTE_SPECS: &[HttpRouteSpec] = &[
         RouteBodyMode::Utf8(crate::platform::http_server::common::POST_BODY_MAX_LEN),
         OperatorRouteAccess::AlwaysOn,
     )
+    .with_voice_exclusive_reject()
     .with_handler(RouteHandler::SessionsPost),
     HttpRouteSpec::slow_diagnostic_operator(
         ROUTE_SESSIONS,
@@ -1316,6 +1322,7 @@ mod tests {
         assert!(matches!(post.body_mode, RouteBodyMode::Utf8(_)));
         assert_eq!(post.execution_class, RouteExecutionClass::StreamingRoute);
         assert_eq!(post.operator_access, OperatorRouteAccess::AlwaysOn);
+        assert!(post.rejects_during_voice_exclusive());
         assert_eq!(post.handler(), Some(RouteHandler::SessionsPost));
     }
 
@@ -1526,6 +1533,8 @@ mod tests {
         let channel_probe =
             route_spec_for("GET", ROUTE_CHANNEL_CONNECTIVITY).expect("channel probe");
         assert!(channel_probe.rejects_during_voice_exclusive());
+        let chat_stream = route_spec_for("POST", ROUTE_SESSIONS).expect("sessions post");
+        assert!(chat_stream.rejects_during_voice_exclusive());
         assert_eq!(
             channel_probe.operator_access,
             OperatorRouteAccess::AlwaysOn,

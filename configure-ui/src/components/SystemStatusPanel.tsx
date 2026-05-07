@@ -6,6 +6,7 @@ import type {
   HealthData,
   MetricsSnapshotData,
   ResourceSnapshotData,
+  SystemInfoData,
 } from "../api/endpoints/system";
 import type { DeviceRuntimeKind } from "../store/deviceStatusStore";
 import { Os3dIcon } from "./Os3dIcon";
@@ -18,12 +19,23 @@ import {
 } from "../theme/panelStyles";
 import {
   buildFaultAndRecoveryMetrics,
+  buildExecutionTimingFields,
+  buildHealthDetailFields,
+  buildHttpStorageStreamFields,
   buildMemoryMetrics,
+  buildProgrammableReasoningFields,
+  buildResourceGovernanceFields,
+  buildResourceRiskFields,
   buildRuntimeTelemetryFields,
   buildRuntimeStrategyView,
+  buildStorageMediaDetailFields,
+  buildTurnProtocolFields,
+  buildVoiceAudioTelemetryFields,
+  type HomeDetailField,
   type HomeMetricField,
   type RuntimeStrategyBudgetField,
   type RuntimeStrategyViewModel,
+  type StorageMediaDetailView,
 } from "../pages/deviceHomeViewModel";
 
 // Non-component exports removed to fix Fast Refresh lint error.
@@ -179,11 +191,9 @@ function StrategyBehaviorRow({
     <Box
       sx={{
         display: "grid",
-        gridTemplateColumns: { xs: "1fr", sm: "repeat(3, minmax(0, 1fr))" },
-        gap: { xs: 1, sm: 1.5 },
-        mt: 1.35,
-        pt: 1.25,
-        borderTop: "1px solid color-mix(in srgb, var(--border) 14%, transparent)",
+        gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
+        gap: 1,
+        mt: 1.5,
       }}
     >
       {behaviorKeys.map((key, index) => (
@@ -191,6 +201,10 @@ function StrategyBehaviorRow({
           key={key}
           sx={{
             minWidth: 0,
+            p: 1.25,
+            borderRadius: "var(--radius-chip)",
+            bgcolor: DASHBOARD_INSET_WELL_BG,
+            border: "1px solid color-mix(in srgb, var(--border) 16%, transparent)",
           }}
         >
           <Typography
@@ -198,21 +212,25 @@ function StrategyBehaviorRow({
             component="div"
             sx={{
               color: "var(--text-tertiary)",
-              fontWeight: 600,
+              fontWeight: 500,
+              fontSize: "var(--font-size-label)",
+              letterSpacing: "0.04em",
               lineHeight: 1.2,
-              mb: 0.3,
+              mb: 0.5,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
             }}
           >
             {t(STRATEGY_BEHAVIOR_DIM_KEYS[index])}
           </Typography>
           <Typography
-            component="p"
+            component="div"
             sx={{
-              m: 0,
-              color: "var(--foreground)",
-              fontSize: "0.8125rem",
+              color: "var(--text-primary)",
+              fontSize: "var(--font-size-caption)",
               fontWeight: 600,
-              lineHeight: 1.35,
+              lineHeight: 1.3,
               overflow: "hidden",
               textOverflow: "ellipsis",
               whiteSpace: "nowrap",
@@ -246,11 +264,9 @@ function StrategyBudgetRow({
     <Box
       sx={{
         display: "grid",
-        gridTemplateColumns: { xs: "repeat(2, minmax(0, 1fr))", sm: "repeat(4, minmax(0, 1fr))" },
-        gap: { xs: 1, sm: 1.5 },
-        mt: 1.2,
-        pt: 1.2,
-        borderTop: "1px solid color-mix(in srgb, var(--border) 14%, transparent)",
+        gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
+        gap: 1,
+        mt: 1,
       }}
     >
       {fields.map((item) => {
@@ -264,6 +280,10 @@ function StrategyBudgetRow({
             title={fullLabel}
             sx={{
               minWidth: 0,
+              p: 1.25,
+              borderRadius: "var(--radius-chip)",
+              bgcolor: DASHBOARD_INSET_WELL_BG,
+              border: "1px solid color-mix(in srgb, var(--border) 16%, transparent)",
             }}
           >
             <Typography
@@ -271,12 +291,14 @@ function StrategyBudgetRow({
               component="div"
               sx={{
                 color: "var(--text-tertiary)",
-                fontWeight: 600,
-                lineHeight: 1.15,
+                fontWeight: 500,
+                fontSize: "var(--font-size-label)",
+                letterSpacing: "0.04em",
+                lineHeight: 1.2,
                 overflow: "hidden",
                 textOverflow: "ellipsis",
                 whiteSpace: "nowrap",
-                mb: 0.35,
+                mb: 0.5,
               }}
             >
               {shortLabel}
@@ -285,18 +307,18 @@ function StrategyBudgetRow({
               sx={{
                 display: "flex",
                 alignItems: "baseline",
-                gap: 0.35,
+                gap: 0.4,
                 minWidth: 0,
               }}
             >
               <Typography
                 component="span"
                 sx={{
-                  color: "var(--foreground)",
+                  color: "var(--text-primary)",
                   fontFamily: "var(--font-mono)",
                   fontWeight: 700,
-                  fontSize: "0.9rem",
-                  lineHeight: 1.15,
+                  fontSize: "var(--font-size-data-value)",
+                  lineHeight: 1.2,
                   minWidth: 0,
                   overflow: "hidden",
                   textOverflow: "ellipsis",
@@ -312,8 +334,9 @@ function StrategyBudgetRow({
                   sx={{
                     color: "var(--text-tertiary)",
                     fontFamily: "var(--font-mono)",
-                    fontWeight: 600,
+                    fontWeight: 500,
                     flexShrink: 0,
+                    fontSize: "var(--font-size-label)",
                   }}
                 >
                   {formatted.unit}
@@ -341,58 +364,78 @@ function StrategyStatusPanel({
       sx={{
         display: "flex",
         flexDirection: "column",
-        justifyContent: "center",
+        gap: 1.5,
+        alignItems: "stretch",
         height: "100%",
       }}
     >
+      {/* Left: pressure gauge */}
       <Box
         sx={{
-          p: 1.5,
-          borderRadius: "var(--radius-chip)",
+          flexShrink: 0,
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          justifyContent: "center",
+          gap: 1.5,
+          p: 2,
+          borderRadius: "var(--radius-card)",
           bgcolor: DASHBOARD_INSET_WELL_BG,
-          border: "1px solid color-mix(in srgb, var(--border) 20%, transparent)",
-          boxShadow: "var(--os3d-chip-lift-stack)",
+          border: `1px solid color-mix(in srgb, ${accent} 18%, var(--border) 14%)`,
+          minWidth: 0,
+          width: "100%",
+          alignSelf: "auto",
         }}
       >
+        <CircularGauge
+          value={strategy.intensity}
+          max={3}
+          label={t(strategy.headlineKey)}
+          color={accent}
+          size={88}
+          strokeWidth={8}
+        />
+        {/* Intensity badge under gauge */}
         <Box
           sx={{
-            display: "flex",
-            alignItems: "flex-start",
-            justifyContent: "space-between",
-            gap: 1.5,
-            minWidth: 0,
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 0.5,
+            px: 1,
+            py: 0.4,
+            borderRadius: "var(--radius-full)",
+            bgcolor: `color-mix(in srgb, ${accent} 12%, transparent)`,
+            border: `1px solid color-mix(in srgb, ${accent} 26%, transparent)`,
           }}
         >
-          <Box sx={{ minWidth: 0 }}>
-            <Typography
-              variant="h5"
-              sx={{
-                color: "var(--foreground)",
-                fontWeight: 700,
-                letterSpacing: 0,
-                lineHeight: 1.15,
-                fontSize: { xs: "1.05rem", sm: "1.14rem" },
-              }}
-            >
-              {t(strategy.headlineKey)}
-            </Typography>
-          </Box>
+          <Box
+            sx={{
+              width: 6,
+              height: 6,
+              borderRadius: "50%",
+              bgcolor: accent,
+              boxShadow: `0 0 5px ${accent}`,
+              flexShrink: 0,
+            }}
+          />
           <Typography
             component="span"
             sx={{
               color: accent,
               fontFamily: "var(--font-mono)",
               fontWeight: 700,
-              fontSize: "0.9rem",
-              lineHeight: 1.15,
-              flexShrink: 0,
-              pt: 0.05,
+              fontSize: "var(--font-size-label)",
+              lineHeight: 1,
+              letterSpacing: "0.06em",
             }}
           >
             {strategy.intensity}/3
           </Typography>
         </Box>
+      </Box>
 
+      {/* Right: behavior + budget fields */}
+      <Box sx={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 0, justifyContent: "center" }}>
         <StrategyBehaviorRow behaviorKeys={strategy.behaviorKeys} t={t} />
         <StrategyBudgetRow fields={strategy.budgetFields} t={t} />
       </Box>
@@ -569,15 +612,109 @@ function formatLoadAverage(value: [number, number, number] | undefined): string 
   return value.map((item) => item.toFixed(2)).join(" / ");
 }
 
+function formatDetailFieldValue(field: HomeDetailField, t: TFunction): string | number {
+  switch (field.valueKind) {
+    case "boolean":
+      return field.value === true ? t("common.yes") : t("common.no");
+    case "bytes":
+      return typeof field.value === "number" ? formatBytes(field.value) : String(field.value);
+    case "milliseconds":
+      return `${field.value} ms`;
+    case "microseconds":
+      return `${field.value} us`;
+    case "load_average":
+      return formatLoadAverage(field.value as [number, number, number]);
+    case "translation_key":
+      return t(String(field.value));
+    case "text":
+    case "number":
+    default:
+      return field.value as string | number;
+  }
+}
+
 function formatEpochSeconds(value: number | undefined): string {
   if (!value || value <= 0) return "—";
   return new Date(value * 1000).toLocaleString();
+}
+
+function DetailFieldGrid({
+  fields,
+  t,
+}: {
+  fields: HomeDetailField[];
+  t: TFunction;
+}) {
+  if (fields.length === 0) return null;
+  return (
+    <Box
+      sx={{
+        display: "grid",
+        gridTemplateColumns: {
+          xs: "repeat(2, minmax(0, 1fr))",
+          sm: "repeat(auto-fit, minmax(128px, 1fr))",
+        },
+        gap: DASHBOARD_BLOCK_GAP,
+        alignContent: "start",
+      }}
+    >
+      {fields.map((item) => (
+        <DigitalCounter
+          key={item.id}
+          label={t(item.labelKey)}
+          value={formatDetailFieldValue(item, t)}
+          danger={item.danger}
+        />
+      ))}
+    </Box>
+  );
+}
+
+function StorageMediaDetailList({
+  items,
+  t,
+}: {
+  items: StorageMediaDetailView[];
+  t: TFunction;
+}) {
+  if (items.length === 0) return null;
+  return (
+    <Box sx={{ display: "flex", flexDirection: "column", gap: 1.5 }}>
+      {items.map((item) => (
+        <Box
+          key={item.id}
+          sx={{
+            p: 1.5,
+            borderRadius: "var(--radius-chip)",
+            bgcolor: DASHBOARD_INSET_WELL_BG,
+            border: "1px solid color-mix(in srgb, var(--border) 18%, transparent)",
+          }}
+        >
+          <Typography
+            variant="subtitle2"
+            sx={{
+              color: "var(--text-primary)",
+              fontWeight: 700,
+              mb: 1,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {item.title}
+          </Typography>
+          <DetailFieldGrid fields={item.fields} t={t} />
+        </Box>
+      ))}
+    </Box>
+  );
 }
 
 export interface SystemStatusPanelProps {
   healthData: HealthData;
   resourceData: ResourceSnapshotData | null;
   metricsData: MetricsSnapshotData | null;
+  systemInfo: SystemInfoData | null;
   runtimeKind: DeviceRuntimeKind;
   t: TFunction;
 }
@@ -586,6 +723,7 @@ export function SystemStatusPanel({
   healthData,
   resourceData,
   metricsData,
+  systemInfo,
   runtimeKind,
   t,
 }: SystemStatusPanelProps) {
@@ -595,6 +733,17 @@ export function SystemStatusPanel({
   const groupedFaults = buildFaultAndRecoveryMetrics(met);
   const strategy = buildRuntimeStrategyView(res);
   const runtimeTelemetry = buildRuntimeTelemetryFields(runtimeKind, res, met);
+  const healthDetailFields = [
+    ...buildHealthDetailFields(healthData),
+    ...buildResourceRiskFields(res),
+  ];
+  const resourceGovernanceFields = buildResourceGovernanceFields(res);
+  const executionTimingFields = buildExecutionTimingFields(met);
+  const turnProtocolFields = buildTurnProtocolFields(met);
+  const httpStorageStreamFields = buildHttpStorageStreamFields(met);
+  const voiceAudioTelemetryFields = buildVoiceAudioTelemetryFields(met);
+  const programmableReasoningFields = buildProgrammableReasoningFields(systemInfo);
+  const storageMediaDetails = buildStorageMediaDetailFields(systemInfo);
 
   const storageUsed = res?.storage_used_kb;
   const storageTotal = res?.storage_total_kb;
@@ -638,7 +787,15 @@ export function SystemStatusPanel({
         </DashboardCard>
       </Box>
 
-      {/* Runtime Strategy (Span 4 cols, 2 rows) */}
+      {healthDetailFields.length > 0 ? (
+        <Box sx={{ gridColumn: { xs: "span 4", sm: "span 8", lg: "span 4" }, gridRow: { xs: "span 2", lg: "span 2" } }}>
+          <DashboardCard title={t("device.systemStatusGroupHealthDetails")} icon={<Os3dIcon src={OS_ICON_DASHBOARD.healthDetails} variant="tile" />}>
+            <DetailFieldGrid fields={healthDetailFields} t={t} />
+          </DashboardCard>
+        </Box>
+      ) : null}
+
+      {/* Runtime Strategy */}
       <Box sx={{ gridColumn: { xs: "span 4", sm: "span 8", lg: "span 4" }, gridRow: { xs: "span 2", lg: "span 2" } }}>
         <DashboardCard
           title={t("device.systemStatusStrategy")}
@@ -653,6 +810,14 @@ export function SystemStatusPanel({
           )}
         </DashboardCard>
       </Box>
+
+      {resourceGovernanceFields.length > 0 ? (
+        <Box sx={{ gridColumn: { xs: "span 4", sm: "span 8", lg: "span 4" }, gridRow: { xs: "span 2", lg: "span 2" } }}>
+          <DashboardCard title={t("device.systemStatusGroupGovernance")} icon={<Os3dIcon src={OS_ICON_DASHBOARD.governance} variant="tile" />}>
+            <DetailFieldGrid fields={resourceGovernanceFields} t={t} />
+          </DashboardCard>
+        </Box>
+      ) : null}
 
       {/* Traffic & Ops */}
       <Box sx={{ gridColumn: { xs: "span 4", sm: "span 8", lg: "span 12" }, gridRow: { xs: "span 2", lg: "span 2" } }}>
@@ -769,6 +934,54 @@ export function SystemStatusPanel({
           )}
         </DashboardCard>
       </Box>
+
+      {executionTimingFields.length > 0 ? (
+        <Box sx={{ gridColumn: { xs: "span 4", sm: "span 4", lg: "span 6" }, gridRow: { xs: "span 2", lg: "span 2" } }}>
+          <DashboardCard title={t("device.systemStatusGroupExecutionTiming")} icon={<Os3dIcon src={OS_ICON_DASHBOARD.executionTiming} variant="tile" />}>
+            <DetailFieldGrid fields={executionTimingFields} t={t} />
+          </DashboardCard>
+        </Box>
+      ) : null}
+
+      {turnProtocolFields.length > 0 ? (
+        <Box sx={{ gridColumn: { xs: "span 4", sm: "span 4", lg: "span 6" }, gridRow: { xs: "span 2", lg: "span 2" } }}>
+          <DashboardCard title={t("device.systemStatusGroupTurnProtocol")} icon={<Os3dIcon src={OS_ICON_DASHBOARD.turnProtocol} variant="tile" />}>
+            <DetailFieldGrid fields={turnProtocolFields} t={t} />
+          </DashboardCard>
+        </Box>
+      ) : null}
+
+      {httpStorageStreamFields.length > 0 ? (
+        <Box sx={{ gridColumn: { xs: "span 4", sm: "span 8", lg: "span 12" }, gridRow: { xs: "span 2", lg: "span 2" } }}>
+          <DashboardCard title={t("device.systemStatusGroupHttpStorageStream")} icon={<Os3dIcon src={OS_ICON_DASHBOARD.httpStorageStream} variant="tile" />}>
+            <DetailFieldGrid fields={httpStorageStreamFields} t={t} />
+          </DashboardCard>
+        </Box>
+      ) : null}
+
+      {voiceAudioTelemetryFields.length > 0 ? (
+        <Box sx={{ gridColumn: { xs: "span 4", sm: "span 8", lg: "span 12" }, gridRow: { xs: "span 2", lg: "span 2" } }}>
+          <DashboardCard title={t("device.systemStatusGroupVoiceAudio")} icon={<Os3dIcon src={OS_ICON_DASHBOARD.voiceAudio} variant="tile" />}>
+            <DetailFieldGrid fields={voiceAudioTelemetryFields} t={t} />
+          </DashboardCard>
+        </Box>
+      ) : null}
+
+      {programmableReasoningFields.length > 0 ? (
+        <Box sx={{ gridColumn: { xs: "span 4", sm: "span 8", lg: "span 6" }, gridRow: { xs: "span 2", lg: "span 2" } }}>
+          <DashboardCard title={t("device.systemStatusGroupProgrammableReasoning")} icon={<Os3dIcon src={OS_ICON_DASHBOARD.programmableReasoning} variant="tile" />}>
+            <DetailFieldGrid fields={programmableReasoningFields} t={t} />
+          </DashboardCard>
+        </Box>
+      ) : null}
+
+      {storageMediaDetails.length > 0 ? (
+        <Box sx={{ gridColumn: { xs: "span 4", sm: "span 8", lg: "span 6" }, gridRow: { xs: "span 2", lg: "span 2" } }}>
+          <DashboardCard title={t("device.systemStatusGroupStorageMediaDetails")} icon={<Os3dIcon src={OS_ICON_DASHBOARD.storageMedia} variant="tile" />}>
+            <StorageMediaDetailList items={storageMediaDetails} t={t} />
+          </DashboardCard>
+        </Box>
+      ) : null}
     </React.Fragment>
   );
 }

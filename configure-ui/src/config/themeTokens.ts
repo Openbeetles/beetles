@@ -239,16 +239,16 @@ export const BRAND_COLORS: Record<ThemeBrand, string> = {
 export const THEME_BRAND_KEYS: ThemeBrand[] = ['logo', 'blue', 'teal', 'firmware']
 
 /**
- * 浅色模式页面画布：浅青灰（非纯白、非暖灰），清爽耐看；`card` 仍为白以托内容。
+ * 浅色模式页面画布：近白带极淡蓝色调，适合毛玻璃透视。
  */
-const LIGHT_PAGE_BACKGROUND = '#eef4f9'
+const LIGHT_PAGE_BACKGROUND = '#f2f7fb'
 
-/** 壳层 / 次级表面：比画布略亮、偏冷，仍属青灰白 */
-const LIGHT_SURFACE_COOL = '#fbfdff'
+/** 壳层 / 次级表面：接近纯白，保持极轻的冷调 */
+const LIGHT_SURFACE_COOL = '#fdfeff'
 
 /** 浅色文字层级：secondary 用于正文辅助，tertiary 用于 id / metadata，必须明显分层。 */
-const LIGHT_TEXT_SECONDARY = '#66778d'
-const LIGHT_TEXT_TERTIARY = '#95a3b5'
+const LIGHT_TEXT_SECONDARY = '#6b7c91'
+const LIGHT_TEXT_TERTIARY = '#97a8bb'
 
 /** 深色文字层级：secondary 仍可读，tertiary 退到 metadata 级，避免整页一片同亮度。 */
 const DARK_TEXT_SECONDARY = '#b2bfd0'
@@ -262,20 +262,20 @@ const tokenMap: Record<ThemeMode, Record<ThemeBrand, ThemeTokens>> = {
       card: '#ffffff',
       surface: LIGHT_SURFACE_COOL,
       muted: LIGHT_TEXT_TERTIARY,
-      border: '#dbe4ec',
+      border: '#e0eaf3',
       primary: '#3b82f6',
       primarySoft: 'rgba(59, 130, 246, 0.06)',
       primaryFg: '#ffffff',
       accent: '#60a5fa',
       imageOverlay: 'rgba(0, 0, 0, 0.50)',
       overlay: 'rgba(255, 255, 255, 0.94)',
-      appBarGlass: 'rgba(250, 252, 255, 0.82)',
+      appBarGlass: 'rgba(250, 252, 255, 0.78)',
       backdropOverlay: 'rgba(0, 0, 0, 0.28)',
       glassBlur: '24px',
       transitionDuration: '200ms',
       transitionDurationEmphasized: '220ms',
       foregroundSoft: LIGHT_TEXT_SECONDARY,
-      borderSubtle: '#edf2f6',
+      borderSubtle: '#edf3f9',
       shadowSubtle:
         '0 22px 44px -32px color-mix(in srgb, var(--foreground) 18%, transparent)',
       shadowCardHover:
@@ -288,20 +288,20 @@ const tokenMap: Record<ThemeMode, Record<ThemeBrand, ThemeTokens>> = {
       card: '#ffffff',
       surface: LIGHT_SURFACE_COOL,
       muted: LIGHT_TEXT_TERTIARY,
-      border: '#dbe4ec',
+      border: '#deedf0',
       primary: '#14b8a6',
       primarySoft: 'rgba(20, 184, 166, 0.06)',
       primaryFg: '#ffffff',
       accent: '#2dd4bf',
       imageOverlay: 'rgba(0, 0, 0, 0.50)',
       overlay: 'rgba(255, 255, 255, 0.94)',
-      appBarGlass: 'rgba(248, 252, 252, 0.82)',
+      appBarGlass: 'rgba(248, 252, 252, 0.78)',
       backdropOverlay: 'rgba(0, 0, 0, 0.28)',
       glassBlur: '24px',
       transitionDuration: '200ms',
       transitionDurationEmphasized: '220ms',
       foregroundSoft: LIGHT_TEXT_SECONDARY,
-      borderSubtle: '#edf2f6',
+      borderSubtle: '#edf4f5',
       shadowSubtle:
         '0 22px 44px -32px color-mix(in srgb, var(--foreground) 18%, transparent)',
       shadowCardHover:
@@ -312,22 +312,22 @@ const tokenMap: Record<ThemeMode, Record<ThemeBrand, ThemeTokens>> = {
       background: LIGHT_PAGE_BACKGROUND,
       foreground: '#2d3142',
       card: '#ffffff',
-      surface: '#f4f7fb',
+      surface: '#f6f9fd',
       muted: LIGHT_TEXT_TERTIARY,
-      border: '#dee6ef',
+      border: '#e0e8f2',
       primary: '#5f47d4',
       primarySoft: 'rgba(95, 71, 212, 0.08)',
       primaryFg: '#ffffff',
       accent: '#1398b6',
       imageOverlay: 'rgba(0, 0, 0, 0.50)',
       overlay: 'rgba(255, 255, 255, 0.94)',
-      appBarGlass: 'rgba(248, 250, 254, 0.84)',
+      appBarGlass: 'rgba(248, 250, 254, 0.78)',
       backdropOverlay: 'rgba(0, 0, 0, 0.28)',
       glassBlur: '24px',
       transitionDuration: '200ms',
       transitionDurationEmphasized: '220ms',
       foregroundSoft: LIGHT_TEXT_SECONDARY,
-      borderSubtle: '#e9eef5',
+      borderSubtle: '#ecf1f8',
       shadowSubtle:
         '0 22px 44px -32px color-mix(in srgb, var(--foreground) 18%, transparent)',
       shadowCardHover:
@@ -340,20 +340,20 @@ const tokenMap: Record<ThemeMode, Record<ThemeBrand, ThemeTokens>> = {
       card: '#ffffff',
       surface: LIGHT_SURFACE_COOL,
       muted: LIGHT_TEXT_TERTIARY,
-      border: '#dbe4ec',
+      border: '#eadfe0',
       primary: '#c43030',
       primarySoft: 'rgba(196, 48, 48, 0.06)',
       primaryFg: '#ffffff',
       accent: '#dc6b6b',
       imageOverlay: 'rgba(0, 0, 0, 0.50)',
       overlay: 'rgba(255, 255, 255, 0.94)',
-      appBarGlass: 'rgba(251, 250, 250, 0.82)',
+      appBarGlass: 'rgba(251, 250, 250, 0.78)',
       backdropOverlay: 'rgba(0, 0, 0, 0.28)',
       glassBlur: '24px',
       transitionDuration: '200ms',
       transitionDurationEmphasized: '220ms',
       foregroundSoft: LIGHT_TEXT_SECONDARY,
-      borderSubtle: '#edf2f6',
+      borderSubtle: '#f2eeee',
       shadowSubtle:
         '0 22px 44px -32px color-mix(in srgb, var(--foreground) 18%, transparent)',
       shadowCardHover:

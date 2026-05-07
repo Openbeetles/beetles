@@ -243,10 +243,7 @@ impl RealtimeLoopState {
         self.last_activity = now;
     }
 
-    fn drop_server_audio_for_stale_turn(&mut self, now: Instant) {
-        let _ = now;
-        crate::metrics::record_voice_stale_audio_drop();
-    }
+    fn drop_server_audio_for_stale_turn(&mut self, _now: Instant) {}
 
     fn should_accept_server_audio(&self) -> bool {
         self.server_response_generation == self.local_turn_generation

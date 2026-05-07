@@ -35,8 +35,30 @@ export interface HomeMetricField {
   value: number;
 }
 
+export interface HomeDetailField {
+  id: string;
+  labelKey: string;
+  value: string | number | boolean | [number, number, number];
+  valueKind:
+    | "text"
+    | "number"
+    | "boolean"
+    | "bytes"
+    | "milliseconds"
+    | "microseconds"
+    | "load_average"
+    | "translation_key";
+  danger?: boolean;
+}
+
 export interface RuntimeStrategyBudgetField extends HomeMetricField {
   valueKind: "bytes" | "seconds";
+}
+
+export interface StorageMediaDetailView {
+  id: string;
+  title: string;
+  fields: HomeDetailField[];
 }
 
 export interface RuntimeTelemetryField {
@@ -85,7 +107,7 @@ function summarizeStorageMedia(systemInfo: SystemInfoData | null): string | null
 }
 
 const FAULT_METRIC_DEFS = [
-  { id: "errors_agent_router", labelKey: "device.systemStatusErrRouter" },
+  { id: "errors_agent_chat", labelKey: "device.systemStatusChatErrors" },
   { id: "errors_agent_context", labelKey: "device.systemStatusErrContext" },
   { id: "errors_tool_execute", labelKey: "device.systemStatusErrToolExec" },
   { id: "errors_llm_request", labelKey: "device.systemStatusErrLlmReq" },
@@ -95,7 +117,6 @@ const FAULT_METRIC_DEFS = [
   { id: "tool_errors", labelKey: "device.systemStatusToolErrors" },
   { id: "dispatch_send_fail", labelKey: "device.systemStatusDispatchFail" },
   { id: "errors_session_append", labelKey: "device.systemStatusErrSession" },
-  { id: "errors_agent_chat", labelKey: "device.systemStatusChatErrors" },
   { id: "errors_other", labelKey: "device.systemStatusErrOther" },
 ] as const;
 
@@ -103,6 +124,160 @@ const RECOVERY_METRIC_DEFS = [
   { id: "wifi_reconnect_total", labelKey: "device.systemStatusWifiReconnect" },
   { id: "wifi_ap_restart_total", labelKey: "device.systemStatusWifiApRestart" },
 ] as const;
+
+const RESOURCE_GOVERNANCE_FIELD_DEFS = [
+  { id: "runtime_spawn_failure_total", labelKey: "device.systemStatusRuntimeSpawnFailure" },
+  { id: "http_route_reject_total", labelKey: "device.systemStatusHttpRouteReject" },
+  { id: "inbound_queue_full_total", labelKey: "device.systemStatusInboundQueueFull" },
+  { id: "inbound_defer_total", labelKey: "device.systemStatusInboundDeferred" },
+  { id: "inbound_drop_total", labelKey: "device.systemStatusInboundDropped" },
+  { id: "event_ingress_enqueued_total", labelKey: "device.systemStatusEventIngressEnqueued" },
+  { id: "event_ingress_rejected_total", labelKey: "device.systemStatusEventIngressRejected" },
+  { id: "event_ingress_purged_total", labelKey: "device.systemStatusEventIngressPurged" },
+  { id: "event_ingress_cancelled_total", labelKey: "device.systemStatusEventIngressCancelled" },
+  { id: "event_ingress_stale_drop_total", labelKey: "device.systemStatusEventIngressStaleDropped" },
+] as const;
+
+const EXECUTION_TIMING_FIELD_DEFS = [
+  { id: "llm_request_body_last_bytes", labelKey: "device.systemStatusLlmRequestBodyLast", valueKind: "bytes" },
+  { id: "llm_request_body_max_bytes", labelKey: "device.systemStatusLlmRequestBodyMax", valueKind: "bytes" },
+  { id: "request_semantics_last_ms", labelKey: "device.systemStatusRequestSemanticsMs", valueKind: "milliseconds" },
+  { id: "tool_exec_last_ms", labelKey: "device.systemStatusToolExecMs", valueKind: "milliseconds" },
+  { id: "mental_privacy_review_last_ms", labelKey: "device.systemStatusMentalPrivacyReviewMs", valueKind: "milliseconds" },
+  { id: "ttft_last_ms", labelKey: "device.systemStatusTtftMs", valueKind: "milliseconds" },
+  { id: "e2e_last_ms", labelKey: "device.systemStatusE2eMs", valueKind: "milliseconds" },
+  { id: "post_reply_last_ms", labelKey: "device.systemStatusPostReplyMs", valueKind: "milliseconds" },
+  { id: "user_queue_wait_last_ms", labelKey: "device.systemStatusUserQueueWaitMs", valueKind: "milliseconds" },
+  { id: "system_queue_wait_last_ms", labelKey: "device.systemStatusSystemQueueWaitMs", valueKind: "milliseconds" },
+  { id: "cron_e2e_last_ms", labelKey: "device.systemStatusCronE2eMs", valueKind: "milliseconds" },
+] as const;
+
+const TURN_PROTOCOL_FIELD_DEFS = [
+  { id: "react_rounds_last", labelKey: "device.systemStatusReactRoundsLast" },
+  { id: "tool_calls_last", labelKey: "device.systemStatusToolCallsLast" },
+  { id: "user_messages_done", labelKey: "device.systemStatusUserMessagesDone" },
+  { id: "system_messages_done", labelKey: "device.systemStatusSystemMessagesDone" },
+  { id: "cron_messages_done", labelKey: "device.systemStatusCronMessagesDone" },
+  { id: "tool_protocol_forced_rounds", labelKey: "device.systemStatusToolProtocolForced" },
+  { id: "tool_protocol_violation", labelKey: "device.systemStatusToolProtocolViolation", danger: true },
+  { id: "final_answer_calls", labelKey: "device.systemStatusFinalAnswerCalls" },
+  { id: "outbound_enqueue_fail", labelKey: "device.systemStatusOutboundEnqueueFail", danger: true },
+  { id: "tool_succeeded_final_drift_total", labelKey: "device.systemStatusToolSucceededFinalDrift", danger: true },
+  { id: "empty_final_blocked_total", labelKey: "device.systemStatusEmptyFinalBlocked", danger: true },
+  { id: "internal_error_copy_suppressed_total", labelKey: "device.systemStatusInternalErrorCopySuppressed" },
+  { id: "channel_http_ok", labelKey: "device.systemStatusChannelHttpOk" },
+  { id: "channel_http_fail", labelKey: "device.systemStatusChannelHttpFail", danger: true },
+  { id: "errors_tls_admission", labelKey: "device.systemStatusErrTlsAdmission", danger: true },
+] as const;
+
+const HTTP_STORAGE_STREAM_FIELD_DEFS = [
+  { id: "http_permit_wait_last_ms", labelKey: "device.systemStatusHttpPermitWaitMs", valueKind: "milliseconds" },
+  { id: "http_route_queue_wait_last_ms", labelKey: "device.systemStatusHttpRouteQueueWaitMs", valueKind: "milliseconds" },
+  { id: "http_route_handler_last_ms", labelKey: "device.systemStatusHttpRouteHandlerMs", valueKind: "milliseconds" },
+  { id: "http_route_timeout_total", labelKey: "device.systemStatusHttpRouteTimeout", danger: true },
+  { id: "storage_lock_ops_total", labelKey: "device.systemStatusStorageLockOps" },
+  { id: "storage_lock_contention_total", labelKey: "device.systemStatusStorageLockContention", danger: true },
+  { id: "storage_lock_wait_last_us", labelKey: "device.systemStatusStorageLockWaitLastUs", valueKind: "microseconds" },
+  { id: "storage_lock_hold_last_us", labelKey: "device.systemStatusStorageLockHoldLastUs", valueKind: "microseconds" },
+  { id: "storage_lock_hold_last_stage", labelKey: "device.systemStatusStorageLockHoldLastStage", valueKind: "text" },
+  { id: "stream_http_reuse_hits", labelKey: "device.systemStatusStreamHttpReuse" },
+  { id: "stream_http_creates", labelKey: "device.systemStatusStreamHttpCreates" },
+  { id: "stream_http_resets", labelKey: "device.systemStatusStreamHttpResets" },
+  { id: "stream_http_invalidates", labelKey: "device.systemStatusStreamHttpInvalidates", danger: true },
+] as const;
+
+const VOICE_AUDIO_FIELD_DEFS = [
+  { id: "voice_input_capture_last_ms", labelKey: "device.systemStatusVoiceInputCaptureMs", valueKind: "milliseconds" },
+  { id: "voice_input_stt_http_last_ms", labelKey: "device.systemStatusVoiceInputSttHttpMs", valueKind: "milliseconds" },
+  { id: "voice_output_tts_http_last_ms", labelKey: "device.systemStatusVoiceOutputTtsHttpMs", valueKind: "milliseconds" },
+  { id: "voice_output_play_last_ms", labelKey: "device.systemStatusVoiceOutputPlayMs", valueKind: "milliseconds" },
+  { id: "voice_input_fail_total", labelKey: "device.systemStatusVoiceInputFail", danger: true },
+  { id: "voice_output_fail_total", labelKey: "device.systemStatusVoiceOutputFail", danger: true },
+  { id: "voice_interrupt_request_total", labelKey: "device.systemStatusVoiceInterruptRequest" },
+  { id: "voice_interrupt_accept_total", labelKey: "device.systemStatusVoiceInterruptAccept" },
+  { id: "voice_cancel_sent_total", labelKey: "device.systemStatusVoiceCancelSent" },
+  { id: "voice_interrupt_reference_suppress_total", labelKey: "device.systemStatusVoiceInterruptReferenceSuppress" },
+  { id: "voice_no_speech_timeout_total", labelKey: "device.systemStatusVoiceNoSpeechTimeout", danger: true },
+  { id: "voice_response_wait_timeout_total", labelKey: "device.systemStatusVoiceResponseWaitTimeout", danger: true },
+  { id: "voice_post_playback_timeout_total", labelKey: "device.systemStatusVoicePostPlaybackTimeout", danger: true },
+  { id: "wake_trigger_total", labelKey: "device.systemStatusWakeTrigger" },
+  { id: "audio_worker_turns_total", labelKey: "device.systemStatusAudioWorkerTurns" },
+  { id: "audio_worker_idle_turns_total", labelKey: "device.systemStatusAudioWorkerIdleTurns" },
+  { id: "audio_mic_poll_turns_total", labelKey: "device.systemStatusAudioMicPollTurns" },
+  { id: "audio_mic_frames_total", labelKey: "device.systemStatusAudioMicFrames" },
+  { id: "audio_mic_zero_read_total", labelKey: "device.systemStatusAudioMicZeroRead", danger: true },
+  { id: "audio_mic_read_last_us", labelKey: "device.systemStatusAudioMicReadLastUs", valueKind: "microseconds" },
+  { id: "audio_speaker_write_last_us", labelKey: "device.systemStatusAudioSpeakerWriteLastUs", valueKind: "microseconds" },
+  { id: "wake_feed_calls_total", labelKey: "device.systemStatusWakeFeedCalls" },
+  { id: "wake_feed_skip_busy_total", labelKey: "device.systemStatusWakeFeedSkipBusy" },
+  { id: "wake_feed_skip_cooldown_total", labelKey: "device.systemStatusWakeFeedSkipCooldown" },
+  { id: "wake_feed_detect_total", labelKey: "device.systemStatusWakeFeedDetect" },
+  { id: "wake_feed_last_us", labelKey: "device.systemStatusWakeFeedLastUs", valueKind: "microseconds" },
+] as const;
+
+function metricFieldFromDef(
+  metrics: MetricsSnapshotData | null,
+  def: {
+    id: string;
+    labelKey: string;
+    valueKind?: HomeDetailField["valueKind"];
+    danger?: boolean;
+  },
+): HomeDetailField | null {
+  const value = metrics?.[def.id as keyof MetricsSnapshotData];
+  if (value == null) return null;
+  if (typeof value !== "number" && typeof value !== "string") return null;
+  return {
+    id: def.id,
+    labelKey: def.labelKey,
+    value,
+    valueKind: def.valueKind ?? (typeof value === "string" ? "text" : "number"),
+    danger: def.danger,
+  };
+}
+
+function numberField(
+  id: string,
+  labelKey: string,
+  value: number | undefined,
+  options?: Partial<Pick<HomeDetailField, "valueKind" | "danger">>,
+): HomeDetailField | null {
+  if (value == null) return null;
+  return {
+    id,
+    labelKey,
+    value,
+    valueKind: options?.valueKind ?? "number",
+    danger: options?.danger,
+  };
+}
+
+function textField(
+  id: string,
+  labelKey: string,
+  value: string | undefined | null,
+): HomeDetailField | null {
+  if (!value) return null;
+  return { id, labelKey, value, valueKind: "text" };
+}
+
+function booleanField(
+  id: string,
+  labelKey: string,
+  value: boolean | undefined | null,
+): HomeDetailField | null {
+  if (value == null) return null;
+  return { id, labelKey, value, valueKind: "boolean" };
+}
+
+function translationField(
+  id: string,
+  labelKey: string,
+  value: string | undefined | null,
+): HomeDetailField | null {
+  if (!value) return null;
+  return { id, labelKey, value, valueKind: "translation_key" };
+}
 
 export function buildMemoryMetrics(
   runtimeKind: DeviceRuntimeKind,
@@ -337,6 +512,211 @@ export function buildDeviceOperationalStatusKey(
     default:
       return "device.runtimeSummaryHealthy";
   }
+}
+
+function healthStatusValueKey(status: HealthData["status"] | undefined): string | null {
+  switch (status) {
+    case "ok":
+      return "device.healthStatusOk";
+    case "degraded":
+      return "device.healthStatusDegraded";
+    default:
+      return null;
+  }
+}
+
+function networkStageValueKey(stage: string | undefined): string | null {
+  switch (stage) {
+    case "ap_only":
+      return "device.networkStageApOnly";
+    case "sta_connecting":
+      return "device.networkStageStaConnecting";
+    case "sta_auth_failed":
+      return "device.networkStageStaAuthFailed";
+    case "sta_ap_not_found":
+      return "device.networkStageStaApNotFound";
+    case "sta_l2_connected":
+      return "device.networkStageStaL2Connected";
+    case "sta_waiting_dhcp":
+      return "device.networkStageStaWaitingDhcp";
+    case "sta_ip_ready":
+      return "device.networkStageStaIpReady";
+    case "sta_recovering":
+      return "device.networkStageStaRecovering";
+    case "sta_fallback_ap":
+      return "device.networkStageStaFallbackAp";
+    default:
+      return stage ?? null;
+  }
+}
+
+function riskValueKey(value: string | undefined): string | null {
+  switch (value) {
+    case "Healthy":
+    case "healthy":
+      return "device.systemStatusRiskHealthy";
+    case "Normal":
+    case "normal":
+      return "device.systemStatusPressureNormal";
+    case "Cautious":
+    case "cautious":
+      return "device.systemStatusPressureCautious";
+    case "Critical":
+    case "critical":
+      return "device.systemStatusPressureCritical";
+    default:
+      return value ?? null;
+  }
+}
+
+export function buildHealthDetailFields(
+  health: HealthData | null,
+): HomeDetailField[] {
+  return [
+    translationField(
+      "health_status",
+      "device.systemStatusHealthStatus",
+      healthStatusValueKey(health?.status),
+    ),
+    translationField(
+      "network_stage",
+      "device.systemStatusNetworkStage",
+      networkStageValueKey(health?.network_status?.stage),
+    ),
+    booleanField(
+      "wall_clock_trusted",
+      "device.systemStatusWallClockTrusted",
+      health?.network_status?.wall_clock_trusted,
+    ),
+  ].filter((item): item is HomeDetailField => item !== null);
+}
+
+export function buildResourceRiskFields(
+  resource: ResourceSnapshotData | null,
+): HomeDetailField[] {
+  return [
+    translationField(
+      "tls_fragmentation_risk",
+      "device.systemStatusTlsFragmentationRisk",
+      riskValueKey(resource?.tls_fragmentation_risk),
+    ),
+    translationField(
+      "storage_contention_risk",
+      "device.systemStatusStorageContentionRisk",
+      riskValueKey(resource?.storage_contention_risk),
+    ),
+  ].filter((item): item is HomeDetailField => item !== null);
+}
+
+export function buildResourceGovernanceFields(
+  resource: ResourceSnapshotData | null,
+): HomeDetailField[] {
+  return RESOURCE_GOVERNANCE_FIELD_DEFS.map((def) => {
+    const value =
+      resource?.governance_metrics?.[
+        def.id as keyof NonNullable<ResourceSnapshotData["governance_metrics"]>
+      ];
+    return numberField(def.id, def.labelKey, value, {
+      danger: def.id.includes("reject") || def.id.includes("failure") || def.id.includes("drop"),
+    });
+  }).filter((item): item is HomeDetailField => item !== null);
+}
+
+export function buildExecutionTimingFields(
+  metrics: MetricsSnapshotData | null,
+): HomeDetailField[] {
+  return EXECUTION_TIMING_FIELD_DEFS.map((def) =>
+    metricFieldFromDef(metrics, def),
+  ).filter((item): item is HomeDetailField => item !== null);
+}
+
+export function buildTurnProtocolFields(
+  metrics: MetricsSnapshotData | null,
+): HomeDetailField[] {
+  return TURN_PROTOCOL_FIELD_DEFS.map((def) =>
+    metricFieldFromDef(metrics, def),
+  ).filter((item): item is HomeDetailField => item !== null);
+}
+
+export function buildHttpStorageStreamFields(
+  metrics: MetricsSnapshotData | null,
+): HomeDetailField[] {
+  return HTTP_STORAGE_STREAM_FIELD_DEFS.map((def) =>
+    metricFieldFromDef(metrics, def),
+  ).filter((item): item is HomeDetailField => item !== null);
+}
+
+export function buildVoiceAudioTelemetryFields(
+  metrics: MetricsSnapshotData | null,
+): HomeDetailField[] {
+  return VOICE_AUDIO_FIELD_DEFS.map((def) =>
+    metricFieldFromDef(metrics, def),
+  ).filter((item): item is HomeDetailField => item !== null);
+}
+
+export function buildProgrammableReasoningFields(
+  systemInfo: SystemInfoData | null,
+): HomeDetailField[] {
+  const value = systemInfo?.programmable_reasoning;
+  if (!value) return [];
+  return [
+    textField("pr_stage", "device.programmableReasoningStage", value.stage),
+    booleanField(
+      "pr_execution_enabled",
+      "device.programmableReasoningExecutionEnabled",
+      value.execution_enabled,
+    ),
+    textField("pr_backend", "device.programmableReasoningBackend", value.backend),
+    booleanField("pr_linux_only", "device.programmableReasoningLinuxOnly", value.linux_only),
+    booleanField(
+      "pr_proposal_only_persistence",
+      "device.programmableReasoningProposalOnlyPersistence",
+      value.proposal_only_persistence,
+    ),
+    textField(
+      "pr_product_headline",
+      "device.programmableReasoningProductHeadline",
+      value.product_headline,
+    ),
+    numberField(
+      "pr_demo_scenario_count",
+      "device.programmableReasoningDemoScenarioCount",
+      value.demo_scenario_count,
+    ),
+    booleanField(
+      "pr_inspection_ready",
+      "device.programmableReasoningInspectionReady",
+      value.inspection_ready,
+    ),
+    booleanField("pr_replay_ready", "device.programmableReasoningReplayReady", value.replay_ready),
+  ].filter((item): item is HomeDetailField => item !== null);
+}
+
+export function buildStorageMediaDetailFields(
+  systemInfo: SystemInfoData | null,
+): StorageMediaDetailView[] {
+  return (systemInfo?.storage_media ?? []).map((media, index) => ({
+    id: media.id || `storage-${index}`,
+    title: media.label || media.id || `Storage ${index + 1}`,
+    fields: [
+      textField("id", "device.storageMediaId", media.id),
+      textField("kind", "device.storageMediaKind", media.kind),
+      booleanField("present", "device.storageMediaPresent", media.present),
+      booleanField("mounted", "device.storageMediaMounted", media.mounted),
+      textField("mount_path", "device.storageMediaMountPath", media.mount_path),
+      textField("filesystem", "device.storageMediaFilesystem", media.filesystem),
+      textField("source", "device.storageMediaSource", media.source),
+      booleanField("removable", "device.storageMediaRemovable", media.removable),
+      booleanField("is_system_root", "device.storageMediaSystemRoot", media.is_system_root),
+      booleanField("is_state_root", "device.storageMediaStateRoot", media.is_state_root),
+      numberField("capacity_bytes", "device.storageMediaCapacity", media.capacity_bytes ?? undefined, {
+        valueKind: "bytes",
+      }),
+      numberField("free_bytes", "device.storageMediaFree", media.free_bytes ?? undefined, {
+        valueKind: "bytes",
+      }),
+    ].filter((item): item is HomeDetailField => item !== null),
+  }));
 }
 
 export function buildRuntimeTelemetryFields(

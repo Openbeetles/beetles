@@ -51,14 +51,30 @@ export const OS_ICON_DASHBOARD = {
   deviceInfo: "/icons/device_info_3d.png",
   /** 存储占用 */
   storage: "/icons/storage_3d.png",
+  /** 存储介质明细 */
+  storageMedia: "/icons/storage_media_3d.png",
   /** 内存 / 堆 */
   memory: "/icons/memory_3d.png",
+  /** 健康详情 */
+  healthDetails: "/icons/health_details_3d.png",
   /** 运行策略 */
   strategy: "/icons/strategy_3d.png",
+  /** 治理与准入 */
+  governance: "/icons/admission_3d.png",
   /** 运行时 / 交换 */
   runtime: "/icons/runtime_3d.png",
+  /** 处理耗时 */
+  executionTiming: "/icons/execution_timing_3d.png",
   /** 工作流审计 / 自治任务 */
   workflow: "/icons/tool_task_3d.png",
+  /** 对话执行 */
+  turnProtocol: "/icons/conversation_execution_3d.png",
+  /** HTTP 请求与存储链路 */
+  httpStorageStream: "/icons/request_storage_3d.png",
+  /** 语音与音频 */
+  voiceAudio: "/icons/voice_audio_3d.png",
+  /** 推理能力 */
+  programmableReasoning: "/icons/reasoning_3d.png",
 } as const;
 
 export type OsDashboardIconKey = keyof typeof OS_ICON_DASHBOARD;

@@ -242,7 +242,6 @@ pub fn try_acquire_with_policy_at(
         .position(|record| record.kind == kind && record.owner == owner)
     {
         if guard.records[index].mode != mode {
-            crate::metrics::record_lease_conflict();
             return LeaseDecision::Denied(LeaseDenial {
                 kind,
                 owner,
@@ -255,7 +254,6 @@ pub fn try_acquire_with_policy_at(
     }
 
     if let Some(conflict) = first_active_conflict(&guard.records, kind, mode, now_ms) {
-        crate::metrics::record_lease_conflict();
         return LeaseDecision::Denied(LeaseDenial {
             kind,
             owner,
@@ -267,7 +265,6 @@ pub fn try_acquire_with_policy_at(
     let current = new_record(&mut guard, kind, owner, mode, ttl_ms, now_ms);
     guard.records.push(current);
     if let Some(previous) = previous_expired {
-        crate::metrics::record_lease_expired_replacement();
         LeaseDecision::ReplacedExpired { previous, current }
     } else {
         LeaseDecision::Acquired(current)
@@ -311,7 +308,6 @@ pub fn try_acquire_exclusive_once_at(
         .iter()
         .find(|record| record.kind == kind && !is_expired(record, now_ms))
     {
-        crate::metrics::record_lease_conflict();
         return LeaseDecision::Denied(LeaseDenial {
             kind,
             owner,
@@ -330,7 +326,6 @@ pub fn try_acquire_exclusive_once_at(
     );
     guard.records.push(current);
     if let Some(previous) = previous_expired {
-        crate::metrics::record_lease_expired_replacement();
         LeaseDecision::ReplacedExpired { previous, current }
     } else {
         LeaseDecision::Acquired(current)
@@ -362,7 +357,6 @@ fn deny_expired_replacement_if_forbidden(
         .iter()
         .find(|record| record.kind == kind)
         .map(|record| record.owner);
-    crate::metrics::record_lease_conflict();
     Some(LeaseDecision::Denied(LeaseDenial {
         kind,
         owner,
@@ -607,7 +601,6 @@ mod tests {
     #[test]
     fn expired_lease_can_be_replaced_by_new_owner() {
         let _guard = lease_test_guard();
-        let metrics_before = crate::metrics::snapshot();
         let old = LeaseOwner::new("config", "http_config_exec");
         let new = LeaseOwner::new("diag", "http_diag_exec");
 
@@ -633,11 +626,6 @@ mod tests {
             }
             other => panic!("expected expired replacement, got {other:?}"),
         }
-        let metrics_after = crate::metrics::snapshot();
-        assert!(
-            metrics_after.lease_expired_replacement_total
-                > metrics_before.lease_expired_replacement_total
-        );
         assert_eq!(snapshot_at(152).active_count, 1);
     }
 
@@ -676,7 +664,6 @@ mod tests {
     #[test]
     fn shared_and_exclusive_modes_conflict() {
         let _guard = lease_test_guard();
-        let metrics_before = crate::metrics::snapshot();
         let shared = LeaseOwner::new("diag", "snapshot");
         let exclusive = LeaseOwner::new("config", "http_config_exec");
 
@@ -699,8 +686,6 @@ mod tests {
             LeaseDecision::Denied(denial) => assert_eq!(denial.reason, "shared_conflict"),
             other => panic!("expected shared conflict, got {other:?}"),
         }
-        let metrics_after = crate::metrics::snapshot();
-        assert!(metrics_after.lease_conflict_total > metrics_before.lease_conflict_total);
     }
 
     #[test]

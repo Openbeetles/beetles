@@ -185,11 +185,13 @@ export function Layout({ onOpenSettings }: LayoutProps) {
     px: 2,
     py: 1.5,
     borderRadius: "var(--radius-card)",
-    border: "1px solid color-mix(in srgb, var(--border) 18%, transparent)",
-    backgroundColor: "var(--card)",
+    border: "1px solid var(--card-glass-border)",
+    backgroundColor: "var(--card-glass)",
     backgroundImage:
-      "linear-gradient(180deg, color-mix(in srgb, #fff 12%, transparent) 0%, transparent 40%)",
-    boxShadow: "var(--os3d-content-plate-stack)",
+      "linear-gradient(135deg, color-mix(in srgb, #fff 14%, transparent) 0%, transparent 55%)",
+    boxShadow: "var(--card-glass-shadow)",
+    backdropFilter: "blur(40px) saturate(1.6)",
+    WebkitBackdropFilter: "blur(40px) saturate(1.6)",
   };
 
   return (
@@ -210,9 +212,10 @@ export function Layout({ onOpenSettings }: LayoutProps) {
             zIndex: 0,
             pointerEvents: "none",
             backgroundImage: [
-              "radial-gradient(circle at 10% 0%, color-mix(in srgb, var(--primary) 14%, transparent) 0%, transparent 30%)",
-              "radial-gradient(circle at 90% 10%, color-mix(in srgb, var(--accent) 14%, transparent) 0%, transparent 26%)",
-              "linear-gradient(180deg, color-mix(in srgb, var(--surface) 30%, transparent) 0%, transparent 24%, transparent 74%, color-mix(in srgb, var(--foreground) 2.4%, transparent) 100%)",
+              "radial-gradient(circle at 12% 0%, color-mix(in srgb, var(--primary) 18%, transparent) 0%, transparent 34%)",
+              "radial-gradient(circle at 88% 8%, color-mix(in srgb, var(--accent) 16%, transparent) 0%, transparent 28%)",
+              "radial-gradient(circle at 54% 92%, color-mix(in srgb, var(--primary) 8%, transparent) 0%, transparent 22%)",
+              "linear-gradient(180deg, color-mix(in srgb, var(--surface) 38%, transparent) 0%, transparent 28%, transparent 70%, color-mix(in srgb, var(--foreground) 2%, transparent) 100%)",
             ].join(", "),
           },
         }}

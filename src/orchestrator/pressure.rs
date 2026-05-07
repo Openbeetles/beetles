@@ -69,6 +69,7 @@ pub struct ResourceBudget {
     pub messages_max: usize,
     pub response_body_max: usize,
     pub reconnect_backoff_secs: u64,
+    #[serde(skip_serializing)]
     pub llm_hint: &'static str,
 }
 

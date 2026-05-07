@@ -307,7 +307,7 @@ Field groups:
 - Feishu: `feishu_app_id`, `feishu_app_secret`, `feishu_allowed_chat_ids`
 - DingTalk: `dingtalk_client_id`, `dingtalk_client_secret`
 - WeCom: `wecom_bot_id`, `wecom_bot_secret`, `wecom_ws_url`
-- QQ Channel: `qq_channel_app_id`, `qq_channel_secret`
+- QQ: `qq_channel_app_id`, `qq_channel_secret`
 - Custom webhook: `webhook_enabled`, `webhook_token`
 
 Field notes:
@@ -882,33 +882,81 @@ Success response: `200 application/json`
 
 **GET /api/sessions**
 
-Purpose: list sessions, or read recent messages for one session.
+Purpose: list chat sessions, or read retained-window messages for one session.
 
-Auth: `Activated`
+Auth: `Pairing code`
 
 Query parameters:
 
-- List mode: `page`, `limit`
-- Single-session mode: `chat_id`
+- List mode: `cursor`, `limit` (default 20, max 50)
+- Single-session mode: `chat_id`, `before`, `limit` (default 20, max 50)
 
 List-mode success response: `200 application/json`
 
 ```json
 {
   "items": [
-    "chat-1",
-    "chat-2"
+    {
+      "chat_id": "configure-ui:default",
+      "title": "Recent chat",
+      "last_message": {
+        "message_id": "msg_a1",
+        "role": "assistant",
+        "preview": "I can continue with configuration, logs, or chat tasks."
+      },
+      "message_count": 12
+    }
   ],
-  "total": 2,
-  "page": 1,
   "limit": 20,
-  "total_pages": 1
+  "next_cursor": null
 }
 ```
 
 Single-session success response: `200 application/json`
 
-The response body is an array of recent messages.
+```json
+{
+  "items": [
+    {
+      "message_id": "msg_u1",
+      "role": "user",
+      "content": "Check device status"
+    }
+  ],
+  "limit": 20,
+  "next_before": null
+}
+```
+
+**POST /api/sessions**
+
+Purpose: append one user message to a session and read the assistant reply as an SSE stream.
+
+Auth: `Pairing code + CSRF`
+
+Request header: `Accept: text/event-stream`
+
+Request body:
+
+```json
+{
+  "chat_id": "configure-ui:default",
+  "content": "Check device status"
+}
+```
+
+Success response: `200 text/event-stream`
+
+Event types and primary fields:
+
+- `queued`: `stream_id`, `chat_id`
+- `delta`: `delta`, `accumulated`
+- `snapshot`: `content`, or `messages[]`
+- `final`: `content`, `message_id`, `turn_id`, `session_appended`
+- `error`: `error_key`, `error_stage`, `meta`
+- `done`: empty object
+
+Error events return stable `error_key` values such as `chat.stream_busy`, `chat.stream_pressure`, `chat.stream_timeout`, and `chat.inbound_queue_full`.
 
 **DELETE /api/sessions**
 
@@ -1253,6 +1301,8 @@ Top-level fields:
   - `sta_connected`
   - `wall_clock_trusted`
 - `last_error`
+- `current_channel`
+  - `id`: normalized enabled channel ID; empty string when no channel is enabled or this build does not support the saved channel.
 - `display`
 - `audio`
 

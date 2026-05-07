@@ -11,11 +11,80 @@ export interface MetricsSnapshotData {
   llm_calls?: number
   llm_errors?: number
   llm_last_ms?: number
+  llm_request_body_last_bytes?: number
+  llm_request_body_max_bytes?: number
+  request_semantics_last_ms?: number
+  tool_exec_last_ms?: number
+  mental_privacy_review_last_ms?: number
+  ttft_last_ms?: number
+  e2e_last_ms?: number
+  post_reply_last_ms?: number
+  user_queue_wait_last_ms?: number
+  system_queue_wait_last_ms?: number
+  cron_e2e_last_ms?: number
+  react_rounds_last?: number
+  tool_calls_last?: number
+  user_messages_done?: number
+  system_messages_done?: number
+  cron_messages_done?: number
   tool_calls?: number
   tool_errors?: number
+  tool_protocol_forced_rounds?: number
+  tool_protocol_violation?: number
+  final_answer_calls?: number
   dispatch_send_ok?: number
   dispatch_send_fail?: number
-  errors_agent_router?: number
+  outbound_enqueue_fail?: number
+  inbound_queue_full_total?: number
+  inbound_defer_total?: number
+  inbound_drop_total?: number
+  event_ingress_enqueued_total?: number
+  event_ingress_rejected_total?: number
+  event_ingress_purged_total?: number
+  event_ingress_cancelled_total?: number
+  event_ingress_stale_drop_total?: number
+  runtime_spawn_failure_total?: number
+  http_route_reject_total?: number
+  tool_succeeded_final_drift_total?: number
+  empty_final_blocked_total?: number
+  internal_error_copy_suppressed_total?: number
+  channel_http_ok?: number
+  channel_http_fail?: number
+  http_permit_wait_last_ms?: number
+  http_route_queue_wait_last_ms?: number
+  http_route_handler_last_ms?: number
+  http_route_timeout_total?: number
+  voice_input_capture_last_ms?: number
+  voice_input_stt_http_last_ms?: number
+  voice_output_tts_http_last_ms?: number
+  voice_output_play_last_ms?: number
+  voice_input_fail_total?: number
+  voice_output_fail_total?: number
+  voice_interrupt_request_total?: number
+  voice_interrupt_accept_total?: number
+  voice_cancel_sent_total?: number
+  voice_interrupt_reference_suppress_total?: number
+  voice_no_speech_timeout_total?: number
+  voice_response_wait_timeout_total?: number
+  voice_post_playback_timeout_total?: number
+  wake_trigger_total?: number
+  audio_worker_turns_total?: number
+  audio_worker_idle_turns_total?: number
+  audio_mic_poll_turns_total?: number
+  audio_mic_frames_total?: number
+  audio_mic_zero_read_total?: number
+  audio_mic_read_last_us?: number
+  audio_speaker_write_last_us?: number
+  wake_feed_calls_total?: number
+  wake_feed_skip_busy_total?: number
+  wake_feed_skip_cooldown_total?: number
+  wake_feed_detect_total?: number
+  wake_feed_last_us?: number
+  storage_lock_ops_total?: number
+  storage_lock_contention_total?: number
+  storage_lock_wait_last_us?: number
+  storage_lock_hold_last_us?: number
+  storage_lock_hold_last_stage?: string
   errors_agent_chat?: number
   errors_agent_context?: number
   errors_tool_execute?: number
@@ -23,11 +92,16 @@ export interface MetricsSnapshotData {
   errors_llm_parse?: number
   errors_channel_dispatch?: number
   errors_session_append?: number
+  errors_tls_admission?: number
   errors_other?: number
   last_active_epoch_secs?: number
   wifi_reconnect_total?: number
   wifi_ap_restart_total?: number
   wifi_last_failure_stage?: string
+  stream_http_reuse_hits?: number
+  stream_http_creates?: number
+  stream_http_resets?: number
+  stream_http_invalidates?: number
 }
 
 /** 与固件 `orchestrator::ResourceBudget` 一致（嵌套在 resource 内）。 */
@@ -42,9 +116,6 @@ export interface ResourceBudgetData {
 export interface ResourceGovernanceMetricsData {
   runtime_spawn_failure_total?: number
   http_route_reject_total?: number
-  lease_conflict_total?: number
-  lease_expired_replacement_total?: number
-  plane_drain_timeout_total?: number
   inbound_queue_full_total?: number
   inbound_defer_total?: number
   inbound_drop_total?: number
@@ -104,11 +175,16 @@ export interface HealthNetworkStatusData {
   wall_clock_trusted?: boolean
 }
 
+export interface HealthCurrentChannelData {
+  id?: string
+}
+
 /** 与固件 `handlers/health.rs` 的轻量生命体征契约一致。 */
 export interface HealthData {
   status?: "ok" | "degraded"
   network_status?: HealthNetworkStatusData
   last_error?: string
+  current_channel?: HealthCurrentChannelData
   display?: HealthDisplayData
   audio?: HealthAudioData
 }
@@ -156,6 +232,18 @@ export async function getWifiScan(baseUrl: string): Promise<ApiResult<WifiApEntr
 }
 
 /** GET /api/system_info 返回；需已激活（配对码已设置）。 */
+export interface SystemInfoProgrammableReasoningData {
+  stage?: string
+  execution_enabled?: boolean
+  backend?: string
+  linux_only?: boolean
+  proposal_only_persistence?: boolean
+  product_headline?: string
+  demo_scenario_count?: number
+  inspection_ready?: boolean
+  replay_ready?: boolean
+}
+
 export interface SystemInfoData {
   product_name: string
   current_time?: string
@@ -187,6 +275,7 @@ export interface SystemInfoData {
     free_bytes?: number | null
   }>
   storage_media_error?: string
+  programmable_reasoning?: SystemInfoProgrammableReasoningData
 }
 
 export async function getSystemInfo(

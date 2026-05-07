@@ -535,15 +535,17 @@ fi
 
 for metric in \
   record_runtime_spawn_failure \
-  record_http_route_reject \
-  record_lease_conflict \
-  record_lease_expired_replacement \
-  record_plane_drain_timeout; do
+  record_http_route_reject; do
   if ! rg -n "$metric" src/metrics.rs >/dev/null; then
     echo "FAIL: runtime governance metric missing from metrics.rs: $metric" >&2
     exit 1
   fi
 done
+
+if rg -n 'record_lease_conflict|record_lease_expired_replacement|record_plane_drain_timeout' src >/dev/null; then
+  echo "FAIL: lease/drain debug counters must not be exposed as runtime governance business metrics" >&2
+  exit 1
+fi
 
 for metric in \
   record_event_ingress_enqueued \
@@ -604,8 +606,8 @@ if ! rg -n 'record_event_ingress_rejected' src/app_runtime_support.rs >/dev/null
 fi
 
 if ! rg -n 'external_wss_suspend_timeout|voice_exclusive_wss_drain_timeout' src/network/mod.rs >/dev/null ||
-   ! rg -n 'record_plane_drain_timeout\(\)' src/network/mod.rs >/dev/null; then
-  echo "FAIL: external WSS drain timeout no longer records runtime governance failure metrics" >&2
+   rg -n 'record_plane_drain_timeout\(\)' src/network/mod.rs >/dev/null; then
+  echo "FAIL: external WSS drain timeout must remain a structured transport admission failure without a business metric counter" >&2
   exit 1
 fi
 

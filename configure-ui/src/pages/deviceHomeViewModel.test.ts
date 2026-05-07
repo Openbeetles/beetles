@@ -9,10 +9,19 @@ import type {
 import {
   buildDeviceOperationalStatusKey,
   buildDeviceSummaryFields,
+  buildExecutionTimingFields,
   buildFaultAndRecoveryMetrics,
+  buildHealthDetailFields,
+  buildHttpStorageStreamFields,
   buildMemoryMetrics,
+  buildProgrammableReasoningFields,
+  buildResourceGovernanceFields,
+  buildResourceRiskFields,
   buildRuntimeTelemetryFields,
   buildRuntimeStrategyView,
+  buildStorageMediaDetailFields,
+  buildTurnProtocolFields,
+  buildVoiceAudioTelemetryFields,
 } from "./deviceHomeViewModel.ts";
 
 test("buildMemoryMetrics hides Linux-only non-applicable PSRAM and largest-block placeholders", () => {
@@ -130,7 +139,7 @@ test("buildDeviceSummaryFields includes the full homepage device summary fields"
 
 test("buildFaultAndRecoveryMetrics keeps WiFi recovery events out of fault counters", () => {
   const metrics: MetricsSnapshotData = {
-    errors_agent_router: 1,
+    errors_agent_chat: 1,
     errors_llm_request: 2,
     errors_channel_dispatch: 3,
     wifi_reconnect_total: 3,
@@ -141,7 +150,7 @@ test("buildFaultAndRecoveryMetrics keeps WiFi recovery events out of fault count
 
   assert.deepEqual(
     grouped.faults.map((item) => item.id),
-    ["errors_agent_router", "errors_llm_request", "errors_channel_dispatch"],
+    ["errors_agent_chat", "errors_llm_request", "errors_channel_dispatch"],
   );
   assert.deepEqual(
     grouped.recovery.map((item) => item.id),
@@ -314,4 +323,151 @@ test("buildRuntimeTelemetryFields keeps Linux-only runtime metrics on Linux", ()
       "load_average",
     ],
   );
+});
+
+test("homepage deep detail builders expose health resource metrics and system_info fields", () => {
+  const health: HealthData = {
+    status: "degraded",
+    network_status: {
+      stage: "sta_connected",
+      sta_connected: true,
+      wall_clock_trusted: false,
+    },
+  };
+  const resource: ResourceSnapshotData = {
+    tls_fragmentation_risk: "healthy",
+    storage_contention_risk: "Critical",
+    governance_metrics: {
+      runtime_spawn_failure_total: 1,
+      http_route_reject_total: 2,
+      inbound_queue_full_total: 3,
+      inbound_defer_total: 4,
+      inbound_drop_total: 5,
+      event_ingress_enqueued_total: 6,
+      event_ingress_rejected_total: 7,
+      event_ingress_purged_total: 8,
+      event_ingress_cancelled_total: 9,
+      event_ingress_stale_drop_total: 10,
+    },
+  };
+  const metrics: MetricsSnapshotData = {
+    llm_request_body_last_bytes: 100,
+    llm_request_body_max_bytes: 200,
+    request_semantics_last_ms: 3,
+    tool_exec_last_ms: 4,
+    mental_privacy_review_last_ms: 5,
+    ttft_last_ms: 6,
+    e2e_last_ms: 7,
+    post_reply_last_ms: 8,
+    user_queue_wait_last_ms: 9,
+    system_queue_wait_last_ms: 10,
+    cron_e2e_last_ms: 11,
+    react_rounds_last: 12,
+    tool_calls_last: 13,
+    user_messages_done: 14,
+    system_messages_done: 15,
+    cron_messages_done: 16,
+    tool_protocol_forced_rounds: 17,
+    tool_protocol_violation: 18,
+    final_answer_calls: 19,
+    outbound_enqueue_fail: 20,
+    tool_succeeded_final_drift_total: 21,
+    empty_final_blocked_total: 22,
+    internal_error_copy_suppressed_total: 23,
+    channel_http_ok: 24,
+    channel_http_fail: 25,
+    http_permit_wait_last_ms: 26,
+    http_route_queue_wait_last_ms: 27,
+    http_route_handler_last_ms: 28,
+    http_route_timeout_total: 29,
+    voice_input_capture_last_ms: 30,
+    voice_input_stt_http_last_ms: 31,
+    voice_output_tts_http_last_ms: 32,
+    voice_output_play_last_ms: 33,
+    voice_input_fail_total: 34,
+    voice_output_fail_total: 35,
+    voice_interrupt_request_total: 36,
+    voice_interrupt_accept_total: 37,
+    voice_cancel_sent_total: 38,
+    voice_interrupt_reference_suppress_total: 40,
+    voice_no_speech_timeout_total: 41,
+    voice_response_wait_timeout_total: 42,
+    voice_post_playback_timeout_total: 43,
+    wake_trigger_total: 44,
+    audio_worker_turns_total: 45,
+    audio_worker_idle_turns_total: 46,
+    audio_mic_poll_turns_total: 47,
+    audio_mic_frames_total: 48,
+    audio_mic_zero_read_total: 49,
+    audio_mic_read_last_us: 51,
+    audio_speaker_write_last_us: 52,
+    wake_feed_calls_total: 56,
+    wake_feed_skip_busy_total: 57,
+    wake_feed_skip_cooldown_total: 58,
+    wake_feed_detect_total: 59,
+    wake_feed_last_us: 60,
+    storage_lock_ops_total: 61,
+    storage_lock_contention_total: 62,
+    storage_lock_wait_last_us: 63,
+    storage_lock_hold_last_us: 65,
+    storage_lock_hold_last_stage: "session_append",
+    errors_tls_admission: 68,
+    stream_http_reuse_hits: 69,
+    stream_http_creates: 70,
+    stream_http_resets: 71,
+    stream_http_invalidates: 72,
+  };
+  const systemInfo: SystemInfoData = {
+    product_name: "beetle",
+    firmware_version: "0.1.0",
+    programmable_reasoning: {
+      stage: "capability_atoms_exchange",
+      execution_enabled: true,
+      backend: "host_only",
+      linux_only: true,
+      proposal_only_persistence: false,
+      product_headline: "Programmable reasoning",
+      demo_scenario_count: 2,
+      inspection_ready: true,
+      replay_ready: false,
+    },
+    storage_media: [
+      {
+        id: "state",
+        kind: "state",
+        label: "State storage",
+        present: true,
+        mounted: true,
+        mount_path: "/state",
+        filesystem: "ext4",
+        source: "/dev/mmcblk0p2",
+        removable: false,
+        is_system_root: false,
+        is_state_root: true,
+        capacity_bytes: 1024,
+        free_bytes: 512,
+      },
+    ],
+  };
+
+  assert.deepEqual(buildHealthDetailFields(health).map((item) => item.id), [
+    "health_status",
+    "network_stage",
+    "wall_clock_trusted",
+  ]);
+  assert.deepEqual(buildResourceRiskFields(resource).map((item) => item.id), [
+    "tls_fragmentation_risk",
+    "storage_contention_risk",
+  ]);
+  assert.equal(
+    buildResourceRiskFields(resource)[0]?.value,
+    "device.systemStatusRiskHealthy",
+  );
+  assert.equal(buildResourceGovernanceFields(resource).length, 10);
+  assert.equal(buildExecutionTimingFields(metrics).length, 11);
+  assert.equal(buildTurnProtocolFields(metrics).length, 15);
+  assert.equal(buildHttpStorageStreamFields(metrics).length, 13);
+  assert.equal(buildVoiceAudioTelemetryFields(metrics).length, 26);
+  assert.equal(buildProgrammableReasoningFields(systemInfo).length, 9);
+  assert.equal(buildStorageMediaDetailFields(systemInfo)[0]?.fields.length, 12);
 });

@@ -128,6 +128,10 @@ function notifyProtectedApiAuthObserver(event: ProtectedApiAuthEvent): void {
   protectedApiAuthObserver?.(event)
 }
 
+export function notifyProtectedApiAuthState(event: ProtectedApiAuthEvent): void {
+  notifyProtectedApiAuthObserver(event)
+}
+
 export interface ApiRequestOptions {
   method?: 'GET' | 'POST' | 'DELETE'
   body?: string | object

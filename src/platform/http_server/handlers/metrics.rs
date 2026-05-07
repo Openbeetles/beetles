@@ -144,5 +144,19 @@ mod tests {
                 "metrics must not expose health/resource object: {key}"
             );
         }
+
+        for key in [
+            "lease_conflict_total",
+            "lease_expired_replacement_total",
+            "plane_drain_timeout_total",
+            "storage_lock_last_age_ms",
+            "storage_lock_wait_total_us",
+            "storage_lock_hold_total_us",
+        ] {
+            assert!(
+                parsed.get(key).is_none(),
+                "metrics must not expose internal diagnostics: {key}"
+            );
+        }
     }
 }

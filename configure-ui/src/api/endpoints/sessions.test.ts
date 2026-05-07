@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { clearCsrfToken, fetchCsrfToken } from '../client.ts'
+import { clearCsrfToken, fetchCsrfToken, setProtectedApiAuthObserver } from '../client.ts'
 import {
   getSessionMessages,
   listSessions,
@@ -208,7 +208,7 @@ test('session stream refreshes csrf and retries once on csrf failure', async () 
   }
 })
 
-test('session stream prefers public error_key over internal upstream_error', async () => {
+test('session stream prefers public error_key over internal error_stage', async () => {
   clearCsrfToken()
 
   const originalFetch = globalThis.fetch
@@ -219,7 +219,7 @@ test('session stream prefers public error_key over internal upstream_error', asy
     }
     if (url.pathname === '/api/sessions') {
       return sseResponse([
-        'event: error\ndata: {"error_key":"chat.failed","upstream_error":"llm_request"}\n\n',
+        'event: error\ndata: {"error_key":"chat.failed","error_stage":"llm_request"}\n\n',
         'event: done\ndata: {}\n\n',
       ])
     }
@@ -238,13 +238,84 @@ test('session stream prefers public error_key over internal upstream_error', asy
     assert.equal(result.ok, false)
     assert.equal(result.error, 'chat.failed')
     assert.equal(result.errorKey, 'chat.failed')
-    assert.equal(result.upstreamError, 'llm_request')
     const errorEvent = events.find((event) => event.type === 'error')
     assert.equal(errorEvent?.type === 'error' ? errorEvent.error : '', 'chat.failed')
     assert.equal(
-      errorEvent?.type === 'error' ? errorEvent.upstreamError : '',
+      errorEvent?.type === 'error' ? errorEvent.errorStage : '',
       'llm_request',
     )
+  } finally {
+    globalThis.fetch = originalFetch
+    clearCsrfToken()
+  }
+})
+
+test('session stream reports auth observer state when pairing becomes invalid', async () => {
+  clearCsrfToken()
+
+  const originalFetch = globalThis.fetch
+  const observed: string[] = []
+  setProtectedApiAuthObserver((event) => observed.push(`${event.state}:${event.path}`))
+  globalThis.fetch = (async (input: string | URL | Request) => {
+    const url = new URL(String(input))
+    if (url.pathname === '/api/csrf_token') {
+      return jsonResponse({ csrf_token: 'csrf-1' })
+    }
+    if (url.pathname === '/api/sessions') {
+      return jsonResponse(
+        { error_key: 'auth.pairing_invalid' },
+        { status: 401, statusText: 'Unauthorized' },
+      )
+    }
+    throw new Error(`unexpected fetch ${url.pathname}`)
+  }) as typeof fetch
+
+  try {
+    const result = await streamSessionMessage(
+      'http://device',
+      '123456',
+      { chat_id: 'c1', content: 'hello' },
+      () => {},
+    )
+
+    assert.equal(result.ok, false)
+    assert.equal(result.errorKey, 'auth.pairing_invalid')
+    assert.deepEqual(observed, ['invalid:/api/sessions'])
+  } finally {
+    globalThis.fetch = originalFetch
+    setProtectedApiAuthObserver(null)
+    clearCsrfToken()
+  }
+})
+
+test('session stream aborts stalled SSE reads with chat timeout key', async () => {
+  clearCsrfToken()
+
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async (input: string | URL | Request) => {
+    const url = new URL(String(input))
+    if (url.pathname === '/api/csrf_token') {
+      return jsonResponse({ csrf_token: 'csrf-1' })
+    }
+    if (url.pathname === '/api/sessions') {
+      return new Response(new ReadableStream<Uint8Array>(), {
+        headers: { 'Content-Type': 'text/event-stream' },
+      })
+    }
+    throw new Error(`unexpected fetch ${url.pathname}`)
+  }) as typeof fetch
+
+  try {
+    const result = await streamSessionMessage(
+      'http://device',
+      '123456',
+      { chat_id: 'c1', content: 'hello' },
+      () => {},
+      { timeoutMs: 1 },
+    )
+
+    assert.equal(result.ok, false)
+    assert.equal(result.errorKey, 'chat.stream_timeout')
   } finally {
     globalThis.fetch = originalFetch
     clearCsrfToken()

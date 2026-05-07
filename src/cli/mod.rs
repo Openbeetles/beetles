@@ -640,6 +640,8 @@ fn cmd_storage_stress(ctx: &CliContext, args: Vec<&str>) -> String {
 
     let fs = ctx.platform.state_fs();
     let before = crate::metrics::snapshot();
+    let before_wait_total_us = crate::metrics::storage_lock_wait_total_us();
+    let before_hold_total_us = crate::metrics::storage_lock_hold_total_us();
     let start = Instant::now();
     let mut handles = Vec::with_capacity(workers);
 
@@ -681,6 +683,8 @@ fn cmd_storage_stress(ctx: &CliContext, args: Vec<&str>) -> String {
 
     let elapsed_ms = start.elapsed().as_millis();
     let after = crate::metrics::snapshot();
+    let after_wait_total_us = crate::metrics::storage_lock_wait_total_us();
+    let after_hold_total_us = crate::metrics::storage_lock_hold_total_us();
     format!(
         "storage_stress:\n  workers: {}\n  rounds: {}\n  payload_bytes: {}\n  elapsed_ms: {}\n  lock_ops_delta: {}\n  contention_delta: {}\n  wait_total_us_delta: {}\n  hold_total_us_delta: {}\n",
         workers,
@@ -693,12 +697,8 @@ fn cmd_storage_stress(ctx: &CliContext, args: Vec<&str>) -> String {
         after
             .storage_lock_contention_total
             .saturating_sub(before.storage_lock_contention_total),
-        after
-            .storage_lock_wait_total_us
-            .saturating_sub(before.storage_lock_wait_total_us),
-        after
-            .storage_lock_hold_total_us
-            .saturating_sub(before.storage_lock_hold_total_us),
+        after_wait_total_us.saturating_sub(before_wait_total_us),
+        after_hold_total_us.saturating_sub(before_hold_total_us),
     )
 }
 

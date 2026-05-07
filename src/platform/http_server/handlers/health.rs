@@ -22,10 +22,16 @@ struct AudioHealthCapabilities {
 }
 
 #[derive(serde::Serialize)]
+struct CurrentChannelHealth {
+    id: String,
+}
+
+#[derive(serde::Serialize)]
 struct HealthBody {
     status: &'static str,
     network_status: NetworkHealthStatus,
     last_error: String,
+    current_channel: CurrentChannelHealth,
     display: DisplayHealth,
     audio: AudioHealth,
 }
@@ -52,6 +58,10 @@ pub fn body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
     } else {
         crate::platform::AudioDuplexCapabilities::unavailable()
     };
+    let current_channel_id = {
+        let config = ctx.config();
+        crate::normalize_compiled_enabled_channel(&config.enabled_channel).to_string()
+    };
     let payload = HealthBody {
         status,
         network_status: NetworkHealthStatus {
@@ -60,6 +70,9 @@ pub fn body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
             wall_clock_trustworthy: network.wall_clock_trustworthy,
         },
         last_error: last_err,
+        current_channel: CurrentChannelHealth {
+            id: current_channel_id,
+        },
         display: DisplayHealth {
             available: ctx.platform.display_available(),
         },
@@ -128,6 +141,33 @@ mod tests {
         assert!(parsed["audio"]["duplex_capabilities"]
             .get("speaker_output")
             .is_some());
+    }
+
+    #[test]
+    fn body_reports_current_channel_from_cached_config() {
+        let _guard = crate::state::test_state_guard();
+        crate::state::clear_error_state_for_tests();
+        let ctx = build_test_context();
+        let enabled_channel = crate::compiled_enabled_channel_ids()
+            .iter()
+            .copied()
+            .find(|channel| !channel.is_empty())
+            .unwrap_or("");
+        ctx.update_cached_config(|config| {
+            config.enabled_channel = enabled_channel.to_string();
+        });
+
+        let payload = body(&ctx).unwrap();
+        let parsed: Value = serde_json::from_str(&payload).unwrap();
+
+        assert_eq!(
+            parsed["current_channel"].get("id").and_then(Value::as_str),
+            Some(enabled_channel)
+        );
+        assert!(
+            parsed.get("channel_connectivity").is_none(),
+            "health must not expose channel connectivity diagnostics"
+        );
     }
 
     fn build_test_context() -> crate::platform::http_server::handlers::HandlerContext {

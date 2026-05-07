@@ -307,7 +307,7 @@
 - 飞书：`feishu_app_id`、`feishu_app_secret`、`feishu_allowed_chat_ids`
 - 钉钉：`dingtalk_client_id`、`dingtalk_client_secret`
 - 企业微信：`wecom_bot_id`、`wecom_bot_secret`、`wecom_ws_url`
-- QQ 频道：`qq_channel_app_id`、`qq_channel_secret`
+- QQ：`qq_channel_app_id`、`qq_channel_secret`
 - 自定义 Webhook：`webhook_enabled`、`webhook_token`
 
 字段说明补充：
@@ -882,33 +882,81 @@ GET /api/hardware/discovery?bus=usb&capability=audio_output
 
 **GET /api/sessions**
 
-用途：列出会话，或读取单个会话最近消息。
+用途：列出聊天会话，或读取单个会话的保留窗口消息。
 
-鉴权：`已激活`
+鉴权：`配对码`
 
 查询参数：
 
-- 列表模式：`page`、`limit`
-- 单会话模式：`chat_id`
+- 列表模式：`cursor`、`limit`（默认 20，最大 50）
+- 单会话模式：`chat_id`、`before`、`limit`（默认 20，最大 50）
 
 列表模式成功响应：`200 application/json`
 
 ```json
 {
   "items": [
-    "chat-1",
-    "chat-2"
+    {
+      "chat_id": "configure-ui:default",
+      "title": "最近对话",
+      "last_message": {
+        "message_id": "msg_a1",
+        "role": "assistant",
+        "preview": "可以继续处理配置、日志或对话任务。"
+      },
+      "message_count": 12
+    }
   ],
-  "total": 2,
-  "page": 1,
   "limit": 20,
-  "total_pages": 1
+  "next_cursor": null
 }
 ```
 
 单会话模式成功响应：`200 application/json`
 
-返回体是最近消息数组。
+```json
+{
+  "items": [
+    {
+      "message_id": "msg_u1",
+      "role": "user",
+      "content": "看一下设备状态"
+    }
+  ],
+  "limit": 20,
+  "next_before": null
+}
+```
+
+**POST /api/sessions**
+
+用途：向会话追加一条用户消息，并通过 SSE 流式读取助手回复。
+
+鉴权：`配对码 + CSRF`
+
+请求头：`Accept: text/event-stream`
+
+请求体：
+
+```json
+{
+  "chat_id": "configure-ui:default",
+  "content": "看一下设备状态"
+}
+```
+
+成功响应：`200 text/event-stream`
+
+事件类型与主要字段：
+
+- `queued`：`stream_id`、`chat_id`
+- `delta`：`delta`、`accumulated`
+- `snapshot`：`content`，或 `messages[]`
+- `final`：`content`、`message_id`、`turn_id`、`session_appended`
+- `error`：`error_key`、`error_stage`、`meta`
+- `done`：空对象
+
+失败事件返回稳定 `error_key`，例如 `chat.stream_busy`、`chat.stream_pressure`、`chat.stream_timeout`、`chat.inbound_queue_full`。
 
 **DELETE /api/sessions**
 
@@ -1253,6 +1301,8 @@ ESP 嵌入式说明：`/api/tools` 在激活后保持可用。它仍要求设备
   - `sta_connected`
   - `wall_clock_trusted`
 - `last_error`
+- `current_channel`
+  - `id`：当前归一化启用通道 ID；未启用或当前构建不支持时为空字符串。
 - `display`
 - `audio`
 

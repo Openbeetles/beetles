@@ -13,7 +13,7 @@ After you connect to a Beetle device, this page lets you:
 
 - Set or change the **pairing code** (required for saving config).
 - Configure **WiFi** (scan and connect).
-- Configure **channels**: Telegram, Feishu, DingTalk, WeCom, QQ Channel, Webhook (tokens, keys, toggles).
+- Configure **channels**: Telegram, Feishu, DingTalk, WeCom, QQ, Webhook (tokens, keys, toggles).
 - Configure **LLM**: API key, model, provider, compatible API URL (e.g. Ollama).
 - Set **proxy**, **search keys**, and related options.
 - View **system info**, **restart**, and **factory reset**.

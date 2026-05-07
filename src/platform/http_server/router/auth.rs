@@ -79,7 +79,9 @@ fn route_auth_response(
         | (RouteMethod::Post, ROUTE_SKILLS_IMPORT)
         | (RouteMethod::Post, ROUTE_RESTART)
         | (RouteMethod::Post, ROUTE_CONFIG_RESET) => require_pairing_csrf(store, uri, headers),
-        (RouteMethod::Get, ROUTE_HARDWARE_DISCOVERY) => require_pairing_code(store, uri, headers),
+        (RouteMethod::Get, ROUTE_HARDWARE_DISCOVERY) | (RouteMethod::Get, ROUTE_SESSIONS) => {
+            require_pairing_code(store, uri, headers)
+        }
         (RouteMethod::Get, ROUTE_OPERATOR_STATUS)
         | (RouteMethod::Get, ROUTE_METRICS)
         | (RouteMethod::Get, ROUTE_RESOURCE)
@@ -87,7 +89,6 @@ fn route_auth_response(
         | (RouteMethod::Get, ROUTE_DIAGNOSE)
         | (RouteMethod::Get, ROUTE_SYSTEM_INFO)
         | (RouteMethod::Get, ROUTE_CHANNEL_CONNECTIVITY)
-        | (RouteMethod::Get, ROUTE_SESSIONS)
         | (RouteMethod::Get, ROUTE_MEMORY_STATUS)
         | (RouteMethod::Get, ROUTE_CAPABILITY_PACKAGES)
         | (RouteMethod::Get, ROUTE_SKILLS) => require_activated(store),

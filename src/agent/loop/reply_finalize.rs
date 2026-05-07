@@ -474,9 +474,22 @@ pub(super) fn complete_turn_boxed(
     }
     if delivered && crate::chat_stream::is_configure_ui_stream_turn(&ctx.msg) {
         if let Some(stream_id) = ctx.msg.req_id.as_deref() {
-            ctx.config
-                .chat_streams
-                .emit_final(stream_id, &reply_content, session_appended);
+            let message_id = if session_appended {
+                ctx.config
+                    .runtime
+                    .session_store
+                    .load_recent_records(&ctx.msg.chat_id, 1)
+                    .ok()
+                    .and_then(|records| records.last().map(|record| record.message_id.clone()))
+            } else {
+                None
+            };
+            ctx.config.chat_streams.emit_final(
+                stream_id,
+                &reply_content,
+                session_appended,
+                message_id.as_deref(),
+            );
         }
     }
     finalized.worker_latency.session_write_ms = finalized

@@ -136,12 +136,14 @@ export function useDeviceApi() {
         streamMessage: (
           body: sessionsApi.ChatSessionPostBody,
           onEvent: sessionsApi.ChatSessionStreamHandler,
+          options?: sessionsApi.ChatSessionStreamOptions,
         ) =>
           sessionsApi.streamSessionMessage(
             baseUrl ?? '',
             (pairingCode ?? '').trim(),
             body,
             onEvent,
+            options,
           ),
       },
       device: {

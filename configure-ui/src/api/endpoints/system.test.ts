@@ -58,6 +58,24 @@ test("default device status endpoints stay on the lightweight first-screen allow
   }
 });
 
+test("health endpoint exposes current channel as lightweight state", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () =>
+    jsonResponse({
+      status: "ok",
+      current_channel: { id: "qq_channel" },
+    })) as typeof fetch;
+
+  try {
+    const result = await getHealth("http://device");
+
+    assert.equal(result.ok, true);
+    assert.equal(result.data?.current_channel?.id, "qq_channel");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("channel connectivity endpoint requires an explicit channel query", async () => {
   const originalFetch = globalThis.fetch;
   const calls: Array<{ path: string; search: string; method: string }> = [];

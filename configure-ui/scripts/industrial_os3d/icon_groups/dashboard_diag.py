@@ -15,7 +15,9 @@ from industrial_os3d.icon_groups.common import (
 ICON_GROUP = "dashboard_diag"
 
 OWNED_ICONS = (
+    "admission_3d.png",
     "bookmark_tabs_3d.png",
+    "conversation_execution_3d.png",
     "dash_channels_3d.png",
     "dash_connection_3d.png",
     "device_info_3d.png",
@@ -25,10 +27,16 @@ OWNED_ICONS = (
     "diag_network_3d.png",
     "diag_voice_3d.png",
     "diagnose_3d.png",
+    "execution_timing_3d.png",
     "faults_3d.png",
+    "health_details_3d.png",
     "memory_3d.png",
+    "reasoning_3d.png",
+    "request_storage_3d.png",
     "runtime_3d.png",
     "storage_3d.png",
+    "storage_media_3d.png",
+    "voice_audio_3d.png",
 )
 
 
@@ -269,6 +277,44 @@ def build_bookmark_tabs(scene: Scene, palette) -> None:
     render_line(scene, palette, [(28, 58), (40, 58)], 2.1, "accent")
 
 
+def build_admission(scene: Scene, palette) -> None:
+    shield = scene.polygon([(50, 15), (75, 26), (70, 59), (50, 80), (30, 59), (25, 26)])
+    top, bottom, side = tone(palette, "secondary")
+    scene.render_extruded(shield, top, bottom, side, depth=9, shadow_blur=12, gloss=60)
+
+    gate = scene.rounded_rect(37, 31, 63, 61, 7)
+    scene.render_flat(gate, lighten(palette.panel_top, 0.08), darken(palette.panel_bottom, 0.06))
+    for x in (42, 50, 58):
+        bar = scene.rounded_rect(x - 1.5, 35, x + 1.5, 58, 1.6)
+        scene.render_flat(bar, darken(palette.shell_bottom, 0.04), darken(palette.shell_bottom, 0.18), alpha=124)
+
+    check = scene.line([(39, 64), (47, 72), (64, 48)], 4.0)
+    scene.render_extruded(check, palette.accent_top, palette.accent_bottom, darken(palette.accent_bottom, 0.24), depth=4, shadow_blur=5)
+    node = scene.circle(69, 32, 4.0)
+    scene.render_extruded(node, palette.primary_top, palette.primary_bottom, darken(palette.primary_bottom, 0.24), depth=3, shadow_blur=4)
+
+
+def build_conversation_execution(scene: Scene, palette) -> None:
+    bubble = scene.rounded_rect(18, 25, 73, 62, 13)
+    tail = scene.polygon([(30, 60), (25, 75), (43, 62)])
+    top, bottom, side = tone(palette, "secondary")
+    scene.render_extruded(union_masks(bubble, tail), top, bottom, side, depth=8, shadow_blur=10, gloss=58)
+
+    small = scene.rounded_rect(49, 48, 83, 74, 10)
+    small_tail = scene.polygon([(74, 72), (82, 83), (68, 73)])
+    top2, bottom2, side2 = tone(palette, "primary")
+    scene.render_extruded(union_masks(small, small_tail), top2, bottom2, side2, depth=7, shadow_blur=9, gloss=54)
+
+    for x in (32, 45, 58):
+        dot = scene.circle(x, 43, 2.6)
+        scene.render_flat(dot, lighten(palette.panel_top, 0.06), darken(palette.panel_bottom, 0.04), alpha=210)
+
+    path = scene.line([(35, 64), (48, 69), (62, 61)], 2.4)
+    scene.render_flat(path, palette.accent_top, palette.accent_bottom)
+    endpoint = scene.circle(62, 61, 3.2)
+    scene.render_extruded(endpoint, palette.accent_top, palette.accent_bottom, darken(palette.accent_bottom, 0.22), depth=3, shadow_blur=4)
+
+
 def build_dash_channels(scene: Scene, palette) -> None:
     left = scene.rounded_rect(17, 31, 39, 52, 7)
     right = scene.rounded_rect(61, 27, 83, 48, 7)
@@ -376,6 +422,18 @@ def build_diagnose(scene: Scene, palette) -> None:
     render_line(scene, palette, [(26, 65), (39, 65)], 2.0, "accent")
 
 
+def build_execution_timing(scene: Scene, palette) -> None:
+    render_stopwatch(scene, palette, "amber")
+    lanes = union_masks(
+        scene.rounded_rect(20, 65, 37, 70, 2.4),
+        scene.rounded_rect(43, 65, 61, 70, 2.4),
+        scene.rounded_rect(67, 65, 82, 70, 2.4),
+    )
+    scene.render_flat(lanes, lighten(palette.panel_top, 0.06), darken(palette.panel_bottom, 0.06), alpha=150)
+    spark = scene.circle(75, 29, 4.0)
+    scene.render_extruded(spark, palette.accent_top, palette.accent_bottom, darken(palette.accent_bottom, 0.24), depth=3, shadow_blur=4)
+
+
 def build_faults(scene: Scene, palette) -> None:
     render_warning_triangle(scene, palette, [(50, 18), (83, 76), (17, 76)], "danger")
     bar = scene.rounded_rect(47, 34, 53, 55, 2.5)
@@ -388,8 +446,67 @@ def build_faults(scene: Scene, palette) -> None:
     scene.render_extruded(spark, palette.accent_top, palette.accent_bottom, darken(palette.accent_bottom, 0.24), depth=3, shadow_blur=4)
 
 
+def build_health_details(scene: Scene, palette) -> None:
+    render_dashboard_card(scene, palette, 18, 22, 82, 76, "mint")
+
+    heart = union_masks(
+        scene.circle(41, 43, 7.2),
+        scene.circle(54, 43, 7.2),
+        scene.polygon([(33, 45), (62, 45), (48, 67)]),
+    )
+    scene.render_extruded(
+        heart,
+        palette.danger_top,
+        palette.danger_bottom,
+        darken(palette.danger_bottom, 0.24),
+        depth=6,
+        shadow_blur=7,
+        gloss=50,
+    )
+    pulse = scene.line([(25, 56), (36, 56), (40, 50), (45, 62), (52, 39), (58, 56), (72, 56)], 3.0)
+    scene.render_flat(pulse, palette.accent_top, palette.accent_bottom)
+    badge = scene.circle(69, 32, 5.2)
+    scene.render_extruded(badge, palette.secondary_top, palette.secondary_bottom, darken(palette.secondary_bottom, 0.24), depth=4, shadow_blur=5)
+
+
 def build_memory(scene: Scene, palette) -> None:
     render_memory_card(scene, palette, "violet")
+
+
+def build_reasoning(scene: Scene, palette) -> None:
+    render_chip(scene, palette, 22, 23, 78, 74, role="violet", pins=5)
+    nodes = [
+        (37, 39, "primary"),
+        (54, 32, "secondary"),
+        (65, 47, "accent"),
+        (45, 60, "warm"),
+        (59, 65, "primary"),
+    ]
+    for a, b in ((0, 1), (1, 2), (0, 3), (3, 4), (2, 4)):
+        render_line(scene, palette, [(nodes[a][0], nodes[a][1]), (nodes[b][0], nodes[b][1])], 2.2, "accent")
+    for x, y, role in nodes:
+        top, bottom, side = tone(palette, role)
+        scene.render_extruded(scene.circle(x, y, 4.2), top, bottom, side, depth=4, shadow_blur=5)
+    core = scene.circle(50, 48, 6.5)
+    scene.render_flat(core, lighten(palette.panel_top, 0.12), darken(palette.panel_bottom, 0.04), alpha=180)
+
+
+def build_request_storage(scene: Scene, palette) -> None:
+    request = scene.rounded_rect(16, 23, 58, 53, 9)
+    top, bottom, side = tone(palette, "secondary")
+    scene.render_extruded(request, top, bottom, side, depth=7, shadow_blur=9, gloss=56)
+    for y, width in ((32, 24), (40, 17), (48, 22)):
+        line = scene.rounded_rect(23, y - 1.3, 23 + width, y + 1.3, 1.3)
+        scene.render_flat(line, lighten(palette.panel_top, 0.1), darken(palette.panel_bottom, 0.05), alpha=175)
+
+    arrow = scene.line([(52, 48), (64, 57), (75, 57)], 4.0)
+    head = scene.polygon([(72, 49), (84, 57), (72, 65)])
+    top2, bottom2, side2 = tone(palette, "accent")
+    scene.render_extruded(union_masks(arrow, head), top2, bottom2, side2, depth=4, shadow_blur=5)
+
+    render_storage_stack(scene, palette, "slate")
+    led = scene.circle(76, 37, 3.2)
+    scene.render_extruded(led, palette.primary_top, palette.primary_bottom, darken(palette.primary_bottom, 0.24), depth=3, shadow_blur=4)
 
 
 def build_runtime(scene: Scene, palette) -> None:
@@ -400,8 +517,36 @@ def build_storage(scene: Scene, palette) -> None:
     render_storage_stack(scene, palette, "slate")
 
 
+def build_storage_media(scene: Scene, palette) -> None:
+    card = scene.polygon([(28, 18), (66, 18), (78, 31), (78, 78), (28, 78)])
+    top, bottom, side = tone(palette, "secondary")
+    scene.render_extruded(card, top, bottom, side, depth=8, shadow_blur=10, gloss=58)
+    notch = scene.rounded_rect(57, 19, 71, 34, 3)
+    scene.render_flat(notch, darken(palette.shell_bottom, 0.06), darken(palette.shell_bottom, 0.18), alpha=138)
+    chip = scene.rounded_rect(34, 27, 53, 44, 5)
+    scene.render_extruded(chip, palette.accent_top, palette.accent_bottom, darken(palette.accent_bottom, 0.24), depth=4, shadow_blur=5)
+    for y in (54, 62, 70):
+        render_line(scene, palette, [(36, y), (67, y)], 2.4, "neutral")
+    status = scene.circle(69, 44, 3.4)
+    scene.render_extruded(status, palette.primary_top, palette.primary_bottom, darken(palette.primary_bottom, 0.24), depth=3, shadow_blur=4)
+
+
+def build_voice_audio(scene: Scene, palette) -> None:
+    render_voice_monitor(scene, palette, "coral")
+    speaker = scene.polygon([(64, 55), (74, 48), (74, 72), (64, 65)])
+    scene.render_extruded(speaker, palette.secondary_top, palette.secondary_bottom, darken(palette.secondary_bottom, 0.24), depth=5, shadow_blur=6)
+    for radius in (10, 16):
+        wave = union_masks(
+            scene.arc_band(76, 60, radius, radius - 2.6, 315, 360),
+            scene.arc_band(76, 60, radius, radius - 2.6, 0, 45),
+        )
+        scene.render_flat(wave, palette.accent_top, palette.accent_bottom)
+
+
 ICON_DEFINITIONS: list[IconSpec] = [
+    icon("admission_3d.png", "mint", build_admission),
     icon("bookmark_tabs_3d.png", "slate", build_bookmark_tabs),
+    icon("conversation_execution_3d.png", "sky", build_conversation_execution),
     icon("dash_channels_3d.png", "teal", build_dash_channels),
     icon("dash_connection_3d.png", "sky", build_dash_connection),
     icon("device_info_3d.png", "slate", build_device_info),
@@ -411,8 +556,14 @@ ICON_DEFINITIONS: list[IconSpec] = [
     icon("diag_network_3d.png", "teal", build_diag_network),
     icon("diag_voice_3d.png", "coral", build_diag_voice),
     icon("diagnose_3d.png", "slate", build_diagnose),
+    icon("execution_timing_3d.png", "amber", build_execution_timing),
     icon("faults_3d.png", "crimson", build_faults),
+    icon("health_details_3d.png", "mint", build_health_details),
     icon("memory_3d.png", "violet", build_memory),
+    icon("reasoning_3d.png", "violet", build_reasoning),
+    icon("request_storage_3d.png", "teal", build_request_storage),
     icon("runtime_3d.png", "amber", build_runtime),
     icon("storage_3d.png", "slate", build_storage),
+    icon("storage_media_3d.png", "slate", build_storage_media),
+    icon("voice_audio_3d.png", "coral", build_voice_audio),
 ]

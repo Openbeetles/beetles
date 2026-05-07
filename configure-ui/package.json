@@ -8,7 +8,7 @@
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "test:desktop-base": "node --test scripts/sync-tauri-version.test.mjs src/hooks/useSaveFeedback.test.ts src/api/endpoints/system.test.ts",
+    "test:desktop-base": "node --test scripts/sync-tauri-version.test.mjs src/hooks/useSaveFeedback.test.ts src/api/endpoints/system.test.ts src/api/endpoints/sessions.test.ts src/pages/deviceHomeViewModel.test.ts src/config/osIcons.test.ts src/components/chatErrors.test.ts src/components/layoutAccessGate.test.ts src/store/deviceStatusStore.test.ts",
     "tauri:sync-version": "node scripts/sync-tauri-version.mjs",
     "tauri:sync-version:check": "node scripts/sync-tauri-version.mjs --check",
     "pretauri": "npm run tauri:sync-version",

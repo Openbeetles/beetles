@@ -144,22 +144,22 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
             '--border': tokens.border,
             /**
              * 表单层次（派生自 border + card，随品牌/深浅切换）：
-             * 浅色下 Section 多为白 card，嵌套分组与输入框需更明显「井」与描边。
+             * 毛玻璃体系下需减少 border 混色量，避免灰感渗透。
              */
-            '--form-group-well': `color-mix(in srgb, ${tokens.border} ${mode === 'light' ? 14 : 10}%, ${tokens.card})`,
-            '--input-idle-well': `color-mix(in srgb, ${tokens.border} ${mode === 'light' ? 12 : 6}%, ${tokens.card})`,
+            '--form-group-well': `color-mix(in srgb, ${tokens.border} ${mode === 'light' ? 7 : 8}%, ${tokens.card})`,
+            '--input-idle-well': `color-mix(in srgb, ${tokens.border} ${mode === 'light' ? 6 : 5}%, ${tokens.card})`,
             '--form-outline-rest':
               mode === 'light'
-                ? 'color-mix(in srgb, var(--border) 26%, transparent)'
-                : 'color-mix(in srgb, var(--border) 20%, transparent)',
+                ? 'color-mix(in srgb, var(--border) 18%, transparent)'
+                : 'color-mix(in srgb, var(--border) 16%, transparent)',
             '--outlined-border-rest':
               mode === 'light'
-                ? 'color-mix(in srgb, var(--border) 36%, transparent)'
-                : 'color-mix(in srgb, var(--border) 28%, transparent)',
+                ? 'color-mix(in srgb, var(--border) 26%, transparent)'
+                : 'color-mix(in srgb, var(--border) 22%, transparent)',
             '--outlined-border-hover':
               mode === 'light'
-                ? 'color-mix(in srgb, var(--border) 48%, transparent)'
-                : 'color-mix(in srgb, var(--border) 42%, transparent)',
+                ? 'color-mix(in srgb, var(--border) 38%, transparent)'
+                : 'color-mix(in srgb, var(--border) 34%, transparent)',
             '--primary': tokens.primary,
             '--primary-soft': tokens.primarySoft,
             '--primary-fg': tokens.primaryFg,
@@ -198,7 +198,7 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
             '--radius-full': '9999px',
             /** 列表行、横幅底边等弱分割线与 SettingsRow 一致 */
             '--divider-row':
-              '1px solid color-mix(in srgb, var(--border) 18%, transparent)',
+              '1px solid color-mix(in srgb, var(--border) 10%, transparent)',
             '--accent-line-width': `${LAYOUT_TOKENS.accentLineWidth}px`,
             '--card-accent-line-width': `${LAYOUT_TOKENS.cardAccentLineWidth}px`,
             '--icon-size-sm': `${LAYOUT_TOKENS.iconSizeSm}px`,
@@ -218,7 +218,7 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
             '--carousel-slide-duration': `${LAYOUT_TOKENS.carouselSlideDurationMs}ms`,
             '--carousel-overlap': `${LAYOUT_TOKENS.carouselOverlapPx}px`,
             '--overlay-backdrop-blur': `${LAYOUT_TOKENS.overlayBackdropBlurPx}px`,
-            '--shell-chrome-blur': `${LAYOUT_TOKENS.shellChromeBackdropBlurPx}px`,
+            '--shell-chrome-blur': '20px',
             '--status-overlay-card-max': `${LAYOUT_TOKENS.statusOverlayCardMaxPx}px`,
             '--status-overlay-card-inset': `${LAYOUT_TOKENS.statusOverlayCardInsetPx}px`,
             '--page-header-accent-width': `${LAYOUT_TOKENS.pageHeaderAccentBarWidthPx}px`,
@@ -237,6 +237,30 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
             ...os3dRootCssVars(mode),
             /** 浮动面板（设置抽屉等）：无投影，靠左边框与主区分隔 */
             '--shadow-shell-floating': 'none',
+            /**
+             * 仪表盘卡毛玻璃（iOS 风格）：半透底 + 描边高光 + 轻阴影。
+             * Dashboard card frosted glass — semi-transparent bg, white-glass border, soft lift.
+             */
+            '--card-glass':
+              mode === 'light'
+                ? `color-mix(in srgb, ${tokens.card} 40%, transparent)`
+                : `color-mix(in srgb, ${tokens.card} 30%, transparent)`,
+            '--card-glass-border':
+              mode === 'light'
+                ? 'rgba(255, 255, 255, 0.72)'
+                : `color-mix(in srgb, #fff 13%, color-mix(in srgb, ${tokens.border} 10%, transparent))`,
+            '--card-glass-shadow':
+              mode === 'light'
+                ? [
+                    '0 12px 40px -12px rgba(0, 0, 0, 0.08)',
+                    '0 2px 8px -4px rgba(0, 0, 0, 0.04)',
+                    'inset 0 1px 0 rgba(255, 255, 255, 0.90)',
+                  ].join(', ')
+                : [
+                    '0 12px 40px -12px rgba(0, 0, 0, 0.30)',
+                    '0 2px 8px -4px rgba(0, 0, 0, 0.16)',
+                    `inset 0 1px 0 color-mix(in srgb, #fff 15%, transparent)`,
+                  ].join(', '),
             /** 任务栏条带本身不外投；立体靠 `--os3d-chrome-taskbar-stack`（见 shellChromeSurface） */
             '--shadow-shell-taskbar': 'none',
             /** 开始菜单弹出层：扁平，不外投阴影（与壳层一致） */
@@ -272,9 +296,10 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
           body: {
             backgroundColor: 'var(--background)',
             backgroundImage: [
-              'radial-gradient(circle at 10% 0%, color-mix(in srgb, var(--primary) 10%, transparent) 0%, transparent 28%)',
-              'radial-gradient(circle at 88% 10%, color-mix(in srgb, var(--accent) 9%, transparent) 0%, transparent 24%)',
-              'linear-gradient(180deg, color-mix(in srgb, var(--surface) 42%, var(--background)) 0%, var(--background) 34%, color-mix(in srgb, var(--background) 98%, var(--foreground)) 100%)',
+              'radial-gradient(circle at 12% 0%, color-mix(in srgb, var(--primary) 16%, transparent) 0%, transparent 34%)',
+              'radial-gradient(circle at 86% 8%, color-mix(in srgb, var(--accent) 14%, transparent) 0%, transparent 28%)',
+              'radial-gradient(circle at 55% 90%, color-mix(in srgb, var(--primary) 7%, transparent) 0%, transparent 22%)',
+              'linear-gradient(180deg, color-mix(in srgb, var(--surface) 52%, var(--background)) 0%, var(--background) 40%, color-mix(in srgb, var(--background) 98%, var(--foreground)) 100%)',
             ].join(', '),
             backgroundAttachment: 'fixed',
             color: 'var(--foreground)',
@@ -746,17 +771,19 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
           },
         },
       },
-      /** Select / 右键菜单等：与卡片同一套描边，无 Material 浮影 */
+      /** Select / 右键菜单等：毛玻璃浮层 */
       MuiMenu: {
         styleOverrides: {
           paper: {
             marginTop: 1,
             borderRadius: R_CARD,
-            border: '1px solid color-mix(in srgb, var(--border) 10%, transparent)',
-            boxShadow: 'var(--os3d-content-plate-stack)',
-            backgroundColor: 'color-mix(in srgb, var(--card) 92%, transparent)',
+            border: '1px solid var(--card-glass-border)',
+            boxShadow: 'var(--card-glass-shadow)',
+            backgroundColor: 'var(--card-glass)',
             backgroundImage:
-              'linear-gradient(180deg, color-mix(in srgb, #fff 16%, transparent) 0%, color-mix(in srgb, #fff 5%, transparent) 38%, transparent 84%)',
+              'linear-gradient(135deg, color-mix(in srgb, #fff 14%, transparent) 0%, transparent 55%)',
+            backdropFilter: 'blur(40px) saturate(1.7)',
+            WebkitBackdropFilter: 'blur(40px) saturate(1.7)',
             paddingTop: 8,
             paddingBottom: 8,
           },
@@ -766,11 +793,13 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
         styleOverrides: {
           paper: {
             borderRadius: R_CARD,
-            border: '1px solid color-mix(in srgb, var(--border) 10%, transparent)',
-            boxShadow: 'var(--os3d-content-plate-stack)',
-            backgroundColor: 'color-mix(in srgb, var(--card) 90%, transparent)',
+            border: '1px solid var(--card-glass-border)',
+            boxShadow: 'var(--card-glass-shadow)',
+            backgroundColor: 'var(--card-glass)',
             backgroundImage:
-              'linear-gradient(180deg, color-mix(in srgb, #fff 14%, transparent) 0%, color-mix(in srgb, #fff 4%, transparent) 40%, transparent 86%)',
+              'linear-gradient(135deg, color-mix(in srgb, #fff 12%, transparent) 0%, transparent 52%)',
+            backdropFilter: 'blur(40px) saturate(1.7)',
+            WebkitBackdropFilter: 'blur(40px) saturate(1.7)',
           },
         },
       },
@@ -778,11 +807,13 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
         styleOverrides: {
           paper: {
             borderRadius: R_CARD,
-            border: '1px solid color-mix(in srgb, var(--border) 10%, transparent)',
-            boxShadow: 'var(--os3d-content-plate-stack)',
-            backgroundColor: 'var(--card)',
+            border: '1px solid var(--card-glass-border)',
+            boxShadow: 'var(--card-glass-shadow)',
+            backgroundColor: 'var(--card-glass)',
             backgroundImage:
-              'linear-gradient(180deg, color-mix(in srgb, #fff 14%, transparent) 0%, color-mix(in srgb, #fff 4%, transparent) 38%, transparent 86%)',
+              'linear-gradient(135deg, color-mix(in srgb, #fff 14%, transparent) 0%, transparent 55%)',
+            backdropFilter: 'blur(36px) saturate(1.6)',
+            WebkitBackdropFilter: 'blur(36px) saturate(1.6)',
           },
         },
       },

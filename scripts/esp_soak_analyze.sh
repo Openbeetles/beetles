@@ -116,6 +116,8 @@ BEGIN {
   write_back_stalled_samples = 0;
   write_back_starvation_reported = 0;
   last_write_back_deferred = -1;
+  chat_stream_final_count = 0;
+  chat_stream_error_count = 0;
   metric_rows = 0;
 }
 
@@ -399,6 +401,15 @@ function storage_contention_from_metrics(wait_last, hold_last, ops, hold_stage, 
     record_issue(NR, "display_refresh_suppressed_under_pressure", "blocker", trim(line));
   }
 
+  if (lower_line ~ /\[chat_stream\].*event=final/) {
+    chat_stream_final_count++;
+  }
+
+  if (lower_line ~ /\[chat_stream\].*event=error/) {
+    chat_stream_error_count++;
+    record_issue(NR, "chat_stream_error", "blocker", trim(line));
+  }
+
   if (pressure != "" || tls_fragmentation != "" || storage_contention != "" ||
       storage_ops != "" || storage_wait_last_us != "" || storage_wait_total_us != "" ||
       storage_hold_last_us != "" || storage_hold_total_us != "" || storage_hold_last_stage != "" ||
@@ -433,6 +444,8 @@ END {
   print "- Write-back starvation lines: " write_back_starvation_count >> summary;
   print "- Write-back defer churn lines: " write_back_defer_churn_count >> summary;
   print "- Write-back worker thread starts: " write_back_thread_start_count >> summary;
+  print "- Chat stream final events: " chat_stream_final_count >> summary;
+  print "- Chat stream error events: " chat_stream_error_count >> summary;
   if (saw_critical) {
     print "- Critical pressure observed: yes" >> summary;
   } else {
