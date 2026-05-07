@@ -224,7 +224,7 @@ Each item in `llm_sources` contains:
 - `model_kind`
 - `custom_headers`
 
-Source order is the runtime fallback priority. Configure UI changes that order with drag-and-drop. `model_kind` accepts `text`, `multimodal`, `image_generation`, or `video_generation`. `custom_headers` is an array of `{ "name": "...", "value": "..." }`; header names must be unique within one source.
+`id`, `provider`, `api_key`, and `model` are required. Source order is the runtime fallback priority. Configure UI changes that order with drag-and-drop. `model_kind` accepts `text`, `multimodal`, `image_generation`, or `video_generation`. `custom_headers` is an array of `{ "name": "...", "value": "..." }`; header names must be unique within one source.
 
 Example:
 
@@ -950,13 +950,12 @@ Success response: `200 text/event-stream`
 Event types and primary fields:
 
 - `queued`: `stream_id`, `chat_id`
-- `delta`: `delta`, `accumulated`
-- `snapshot`: `content`, or `messages[]`
-- `final`: `content`, `message_id`, `turn_id`, `session_appended`
+- `delta`: `delta`, `message_id`
+- `final`: `message_id`, `turn_id`, `session_appended`
 - `error`: `error_key`, `error_stage`, `meta`
 - `done`: empty object
 
-Error events return stable `error_key` values such as `chat.stream_busy`, `chat.stream_pressure`, `chat.stream_timeout`, and `chat.inbound_queue_full`.
+Error events return stable `error_key` values such as `chat.stream_busy`, `chat.stream_pressure`, `chat.stream_timeout`, `chat.stream_backpressure`, and `chat.inbound_queue_full`.
 
 **DELETE /api/sessions**
 
@@ -1352,6 +1351,16 @@ The response is a metrics object. Common fields include:
 - `tool_errors`
 - `llm_last_ms`
 - `e2e_last_ms`
+- `voice_input_last_ms` (latest time from speech start to recognition done)
+- `voice_output_last_ms` (latest time from synthesis to playback done)
+- `wake_trigger_total`
+- `voice_interrupt_total`
+- `voice_interrupt_missed_total`
+- `voice_input_fail_total`
+- `voice_output_fail_total`
+- `voice_no_speech_timeout_total`
+- `voice_response_wait_timeout_total`
+- `voice_playback_timeout_total`
 
 **GET /api/metrics?format=prometheus**
 
@@ -1453,7 +1462,7 @@ Error responses:
 
 - Missing `channel`: `400 {"error_key":"common.missing_query_param","query_param":"channel"}`.
 - Unknown or uncompiled channel: `400 {"error_key":"channel.connectivity_channel_invalid","channel":"..."}`.
-- ESP Wi-Fi or TLS memory state currently blocks live probing: `503 {"error_key":"network.channel_connectivity_unavailable","reason":"..."}`.
+- ESP Wi-Fi or TLS memory state currently blocks live probing: `503 {"error_key":"network.channel_connectivity_unavailable","reason":"..."}`. `webhook` only checks local configuration and does not trigger live probing.
 
 Display guidance: this endpoint is an explicit user-triggered diagnostic entry, not a first-screen polling request. Persistent WSS/message-channel online display should primarily use runtime status.
 

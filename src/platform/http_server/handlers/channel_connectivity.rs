@@ -35,19 +35,25 @@ pub fn body(ctx: &HandlerContext, channel_id: &str) -> Result<String, ChannelCon
     if !crate::channels::channel_supports_connectivity(channel_id) {
         return Err(ChannelConnectivityError::InvalidChannel);
     }
+    if let Some(response) = crate::channels::build_local_channel_probe(&config, channel_id) {
+        return serde_json::to_string(&response)
+            .map_err(|e| ChannelConnectivityError::Internal(e.to_string()));
+    }
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
     {
-        let wifi_settled = crate::state::wifi_sta_settled_for_outbound(3);
-        let fragmentation_risk = crate::orchestrator::current_tls_fragmentation_risk();
-        if let Some(reason) = live_probe_block_reason(wifi_settled, fragmentation_risk) {
-            log::info!(
-                "[channel_connectivity] live probe unavailable channel={} reason={} wifi_settled={} tls_fragmentation={:?}",
-                channel_id,
-                reason,
-                wifi_settled,
-                fragmentation_risk,
-            );
-            return Err(ChannelConnectivityError::LiveProbeUnavailable(reason));
+        if crate::channels::channel_connectivity_requires_live_http(channel_id) {
+            let wifi_settled = crate::state::wifi_sta_settled_for_outbound(3);
+            let fragmentation_risk = crate::orchestrator::current_tls_fragmentation_risk();
+            if let Some(reason) = live_probe_block_reason(wifi_settled, fragmentation_risk) {
+                log::info!(
+                    "[channel_connectivity] live probe unavailable channel={} reason={} wifi_settled={} tls_fragmentation={:?}",
+                    channel_id,
+                    reason,
+                    wifi_settled,
+                    fragmentation_risk,
+                );
+                return Err(ChannelConnectivityError::LiveProbeUnavailable(reason));
+            }
         }
     }
     let mut http = crate::network::create_http_client_with_config(

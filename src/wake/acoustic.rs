@@ -158,10 +158,6 @@ impl AcousticWakeBackend {
             || ref_level <= self.config.leave_threshold
             || mic_level >= ref_level * self.config.reference_suppress_ratio;
 
-        if audio_playing && !reference_ok {
-            crate::metrics::record_voice_interrupt_reference_suppressed();
-        }
-
         let speech_like = mic_level >= dynamic_threshold
             && zcr >= self.config.zcr_min
             && zcr <= self.config.zcr_max

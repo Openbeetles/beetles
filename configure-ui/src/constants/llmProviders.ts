@@ -63,24 +63,15 @@ export function defaultModelForProvider(provider: LlmProviderValue): string {
 
 /**
  * 切换 provider 后写入的 model：
- * - 当前为空 → 填入新服务商默认模型；
- * - 当前与「旧服务商默认模型」相同（trim 后）→ 同步为新服务商默认；
- * - 否则保留用户自定义模型名。
+ * - 服务商选择是显式重选连接来源，model 必须同步为新服务商主流默认模型；
+ * - 用户如需自定义模型，应在切换后再编辑 model 字段。
  */
 export function modelAfterProviderChange(
-  currentModel: string,
-  oldProvider: LlmProviderValue,
+  _currentModel: string,
+  _oldProvider: LlmProviderValue,
   newProvider: LlmProviderValue,
 ): string {
-  const trimmed = currentModel.trim();
-  if (!trimmed) {
-    return defaultModelForProvider(newProvider);
-  }
-  const oldDefault = defaultModelForProvider(oldProvider);
-  if (oldDefault.length > 0 && trimmed === oldDefault.trim()) {
-    return defaultModelForProvider(newProvider);
-  }
-  return currentModel;
+  return defaultModelForProvider(newProvider);
 }
 
 /**

@@ -1269,7 +1269,7 @@ fn should_trigger_playback_interrupt(
     frame_ms: u32,
     now: Instant,
 ) -> bool {
-    let (rms, raw_mic_rms) = reference_adjusted_interrupt_rms(pcm, reference_pcm);
+    let (rms, _) = reference_adjusted_interrupt_rms(pcm, reference_pcm);
     if let Some(deadline) = state.interrupt_baseline_deadline {
         if now < deadline {
             state.interrupt_baseline_peak = state.interrupt_baseline_peak.max(rms);
@@ -1281,9 +1281,6 @@ fn should_trigger_playback_interrupt(
     let threshold = (audio_cfg.vad.threshold * REALTIME_INTERRUPT_THRESHOLD_MULTIPLIER)
         .max(state.interrupt_baseline_peak + REALTIME_INTERRUPT_THRESHOLD_MARGIN)
         .clamp(REALTIME_INTERRUPT_THRESHOLD_MIN, 0.95);
-    if !reference_pcm.is_empty() && raw_mic_rms >= threshold && rms < threshold {
-        crate::metrics::record_voice_interrupt_reference_suppressed();
-    }
     if rms >= threshold {
         state.interrupt_speech_ms = state.interrupt_speech_ms.saturating_add(frame_ms);
     } else {

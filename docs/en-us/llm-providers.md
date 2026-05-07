@@ -13,6 +13,8 @@ For a first working setup, keep it simple: one provider, one model, one valid AP
 4. leave `api_url` empty unless you use a custom endpoint
 5. save the config and test one chat reply
 
+When you switch provider in Configure UI, `model` is reset to the new provider's mainstream default. If you need a different model, edit `model` after switching provider.
+
 You can add multiple sources and routing preferences later.
 
 ## Supported `provider` Values

@@ -40,9 +40,10 @@ mod wss_gateway;
 
 pub use connectivity::build_unavailable_snapshot;
 pub use connectivity::{
-    build_channel_probe, build_snapshot, channel_supports_connectivity, ChannelConnectivityItem,
-    ChannelConnectivityProbeResponse, ChannelConnectivitySnapshot, ChannelRuntimeStatus,
-    CHANNEL_CONNECTIVITY_UNAVAILABLE_KEY,
+    build_channel_probe, build_local_channel_probe, build_snapshot,
+    channel_connectivity_requires_live_http, channel_supports_connectivity,
+    ChannelConnectivityItem, ChannelConnectivityProbeResponse, ChannelConnectivitySnapshot,
+    ChannelRuntimeStatus, CHANNEL_CONNECTIVITY_UNAVAILABLE_KEY,
 };
 #[cfg(all(
     feature = "dingtalk",

@@ -428,13 +428,10 @@ pub(super) fn complete_turn_boxed(
         metrics::record_e2e_ms(total_ms);
         if ctx.msg.ingress == IngressKind::System {
             let is_cron = ctx.msg.channel.as_ref() == CHANNEL_CRON;
-            metrics::record_system_message_done(is_cron);
             if is_cron {
                 let cron_e2e = super::now_unix_ms().saturating_sub(ctx.msg.enqueue_ts_ms) as u128;
                 metrics::record_cron_e2e_ms(cron_e2e);
             }
-        } else {
-            metrics::record_user_message_done();
         }
         return;
     }
@@ -880,13 +877,10 @@ pub(super) fn complete_turn_boxed(
     metrics::record_post_reply_ms(post_reply_ms);
     if ctx.msg.ingress == IngressKind::System {
         let is_cron = ctx.msg.channel.as_ref() == CHANNEL_CRON;
-        metrics::record_system_message_done(is_cron);
         if is_cron {
             let cron_e2e = super::now_unix_ms().saturating_sub(ctx.msg.enqueue_ts_ms) as u128;
             metrics::record_cron_e2e_ms(cron_e2e);
         }
-    } else {
-        metrics::record_user_message_done();
     }
     super::log_agent_latency_summary(
         ctx.worker_lane_tag,

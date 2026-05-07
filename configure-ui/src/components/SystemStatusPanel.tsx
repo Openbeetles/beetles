@@ -936,7 +936,7 @@ export function SystemStatusPanel({
       </Box>
 
       {executionTimingFields.length > 0 ? (
-        <Box sx={{ gridColumn: { xs: "span 4", sm: "span 4", lg: "span 6" }, gridRow: { xs: "span 2", lg: "span 2" } }}>
+        <Box sx={{ gridColumn: { xs: "span 4", sm: "span 2", lg: "span 3" }, gridRow: { xs: "span 2", lg: "span 2" } }}>
           <DashboardCard title={t("device.systemStatusGroupExecutionTiming")} icon={<Os3dIcon src={OS_ICON_DASHBOARD.executionTiming} variant="tile" />}>
             <DetailFieldGrid fields={executionTimingFields} t={t} />
           </DashboardCard>
@@ -944,7 +944,7 @@ export function SystemStatusPanel({
       ) : null}
 
       {turnProtocolFields.length > 0 ? (
-        <Box sx={{ gridColumn: { xs: "span 4", sm: "span 4", lg: "span 6" }, gridRow: { xs: "span 2", lg: "span 2" } }}>
+        <Box sx={{ gridColumn: { xs: "span 4", sm: "span 2", lg: "span 3" }, gridRow: { xs: "span 2", lg: "span 2" } }}>
           <DashboardCard title={t("device.systemStatusGroupTurnProtocol")} icon={<Os3dIcon src={OS_ICON_DASHBOARD.turnProtocol} variant="tile" />}>
             <DetailFieldGrid fields={turnProtocolFields} t={t} />
           </DashboardCard>
@@ -952,7 +952,7 @@ export function SystemStatusPanel({
       ) : null}
 
       {httpStorageStreamFields.length > 0 ? (
-        <Box sx={{ gridColumn: { xs: "span 4", sm: "span 8", lg: "span 12" }, gridRow: { xs: "span 2", lg: "span 2" } }}>
+        <Box sx={{ gridColumn: { xs: "span 4", sm: "span 2", lg: "span 3" }, gridRow: { xs: "span 2", lg: "span 2" } }}>
           <DashboardCard title={t("device.systemStatusGroupHttpStorageStream")} icon={<Os3dIcon src={OS_ICON_DASHBOARD.httpStorageStream} variant="tile" />}>
             <DetailFieldGrid fields={httpStorageStreamFields} t={t} />
           </DashboardCard>
@@ -960,7 +960,7 @@ export function SystemStatusPanel({
       ) : null}
 
       {voiceAudioTelemetryFields.length > 0 ? (
-        <Box sx={{ gridColumn: { xs: "span 4", sm: "span 8", lg: "span 12" }, gridRow: { xs: "span 2", lg: "span 2" } }}>
+        <Box sx={{ gridColumn: { xs: "span 4", sm: "span 2", lg: "span 3" }, gridRow: { xs: "span 2", lg: "span 2" } }}>
           <DashboardCard title={t("device.systemStatusGroupVoiceAudio")} icon={<Os3dIcon src={OS_ICON_DASHBOARD.voiceAudio} variant="tile" />}>
             <DetailFieldGrid fields={voiceAudioTelemetryFields} t={t} />
           </DashboardCard>

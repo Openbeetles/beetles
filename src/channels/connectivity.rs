@@ -298,6 +298,31 @@ pub fn channel_supports_connectivity(channel_id: &str) -> bool {
         || crate::connectivity_channel_entries().any(|entry| entry.id == channel_id)
 }
 
+/// Returns whether the requested probe needs live outbound HTTP.
+/// 返回指定通道探测是否需要实时出站 HTTP。
+pub fn channel_connectivity_requires_live_http(channel_id: &str) -> bool {
+    let channel_id = channel_id.trim();
+    channel_supports_connectivity(channel_id) && channel_id != "webhook"
+}
+
+/// Builds a probe response for local-only connectivity checks.
+/// 本地配置即可判断的通道不应触发 ESP 出站/TLS 准入。
+pub fn build_local_channel_probe(
+    config: &AppConfig,
+    channel_id: &str,
+) -> Option<ChannelConnectivityProbeResponse> {
+    let channel_id = channel_id.trim();
+    let channel = if channel_id == "webhook" {
+        webhook_item(config)
+    } else {
+        return None;
+    };
+    Some(ChannelConnectivityProbeResponse {
+        channel,
+        checked_at_unix_secs: Some(crate::util::current_unix_secs()),
+    })
+}
+
 /// Builds a single-channel connectivity probe response for the requested channel id.
 /// 根据调用方指定的通道 ID 构建单通道连通性探测响应。
 pub fn build_channel_probe<H: crate::channels::ChannelHttpClient + ?Sized>(
@@ -567,6 +592,23 @@ mod tests {
         assert_eq!(response.channel.id, "webhook");
         assert!(response.channel.configured);
         assert!(response.channel.ok);
+    }
+
+    #[test]
+    fn webhook_probe_is_local_only() {
+        let mut config = configured_config();
+        config.webhook_enabled = true;
+        config.webhook_token = "webhook-token".to_string();
+
+        let response = build_local_channel_probe(&config, "webhook").expect("webhook probe");
+
+        assert!(!channel_connectivity_requires_live_http("webhook"));
+        assert_eq!(response.channel.id, "webhook");
+        assert!(response.channel.ok);
+        assert!(
+            build_local_channel_probe(&config, "telegram").is_none(),
+            "network-backed channels must stay on the live probe path"
+        );
     }
 
     #[test]

@@ -2708,10 +2708,22 @@ fn validate_display_segment(cfg: &DisplayConfig, hardware_devices: &[DeviceEntry
 
 fn validate_llm_segment(seg: &LlmSegment) -> Result<()> {
     for (i, src) in seg.llm_sources.iter().enumerate() {
+        if src.provider.trim().is_empty() {
+            return Err(Error::config(
+                "config",
+                format!("llm_sources[{}].provider is required (cannot be empty)", i),
+            ));
+        }
         if src.api_key.trim().is_empty() {
             return Err(Error::config(
                 "config",
                 format!("llm_sources[{}].api_key is required (cannot be empty)", i),
+            ));
+        }
+        if src.model.trim().is_empty() {
+            return Err(Error::config(
+                "config",
+                format!("llm_sources[{}].model is required (cannot be empty)", i),
             ));
         }
     }
@@ -3205,6 +3217,39 @@ mod tests {
         let err = save_llm_segment(&MemoryFileStore, body)
             .expect_err("unsupported model_kind must be rejected");
         assert!(err.to_string().contains("unknown variant"));
+    }
+
+    #[test]
+    fn llm_segment_rejects_blank_model() {
+        struct MemoryFileStore;
+
+        impl ConfigFileStore for MemoryFileStore {
+            fn read_config_file(&self, _rel_path: &str) -> Result<Option<Vec<u8>>> {
+                Ok(None)
+            }
+
+            fn write_config_file(&self, _rel_path: &str, _data: &[u8]) -> Result<()> {
+                Ok(())
+            }
+
+            fn remove_config_file(&self, _rel_path: &str) -> Result<()> {
+                Ok(())
+            }
+        }
+
+        let body = r#"{"llm_sources":[{
+            "id":"src-text",
+            "provider":"openai",
+            "api_key":"source-key",
+            "model":"   ",
+            "api_url":"https://api.openai.com/v1",
+            "model_kind":"text",
+            "custom_headers":[]
+        }]}"#;
+
+        let err = save_llm_segment(&MemoryFileStore, body)
+            .expect_err("blank model must be rejected before runtime filtering");
+        assert!(err.to_string().contains("model is required"));
     }
 
     #[test]

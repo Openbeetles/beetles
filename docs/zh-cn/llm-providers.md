@@ -13,6 +13,8 @@
 4. 除非你用的是自定义地址，否则 `api_url` 先留空
 5. 保存后，通过已配置聊天通道执行一次联通验证
 
+Configure UI 切换 provider 时会把 `model` 自动改为新 provider 的默认主流模型；如果要用其他模型，在切换 provider 后再手动改 `model`。
+
 多来源配置和路由优先级建议在单源验证完成后再启用。
 
 ## 支持的 `provider`

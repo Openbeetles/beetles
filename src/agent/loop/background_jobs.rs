@@ -1634,7 +1634,6 @@ fn run_detached_background_work_wake(
         wake.revision,
         try_run_lane_background_job(http, worker_llm, config, system_inbound_tx, &record.job, 1),
     );
-    metrics::record_system_message_done(false);
 }
 
 fn schedule_volatile_background_retry(
@@ -1777,7 +1776,6 @@ fn run_volatile_background_job(
             );
         }
     }
-    metrics::record_system_message_done(false);
 }
 
 #[cold]

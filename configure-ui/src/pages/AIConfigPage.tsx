@@ -143,9 +143,11 @@ function validateSources(
   if (rows.length === 0) return t("config.validation.llmSourcesNonEmpty");
   for (let i = 0; i < rows.length; i++) {
     const r = rows[i];
+    if (r.provider.trim().length === 0) return t("config.validation.llmProviderRequired");
     if (r.provider.length > MAX_LEN) return t("config.validation.fieldMax64");
     if (r.api_key.trim().length === 0) return t("config.validation.llmApiKeyRequired");
     if (r.api_key.length > MAX_LEN) return t("config.validation.fieldMax64");
+    if (r.model.trim().length === 0) return t("config.validation.llmModelRequired");
     if (r.model.length > MAX_LEN) return t("config.validation.fieldMax64");
     if (r.api_url.length > MAX_API_URL)
       return t("config.validation.apiUrlMax256");

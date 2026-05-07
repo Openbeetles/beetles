@@ -241,11 +241,11 @@ const STORAGE_CONTENTION_SAMPLE_TTL_MS: u64 = 10_000;
 
 fn storage_contention_risk_from_metrics(
     metrics: &crate::metrics::MetricsSnapshot,
-    storage_lock_last_age_ms: u64,
+    has_recent_storage_lock_sample: bool,
 ) -> StorageContentionRisk {
     if metrics.storage_lock_ops_total == 0
         || metrics.storage_lock_hold_last_stage.is_empty()
-        || storage_lock_last_age_ms > STORAGE_CONTENTION_SAMPLE_TTL_MS
+        || !has_recent_storage_lock_sample
     {
         return StorageContentionRisk::Healthy;
     }
@@ -436,7 +436,7 @@ impl ResourceSnapshot {
             ),
             storage_contention_risk: storage_contention_risk_from_metrics(
                 &metrics,
-                crate::metrics::storage_lock_last_age_ms(),
+                crate::metrics::storage_lock_sample_is_recent(STORAGE_CONTENTION_SAMPLE_TTL_MS),
             ),
             heap_free_internal: state.heap_free_internal.load(Ordering::Relaxed),
             heap_min_free_internal: state.heap_min_free_internal.load(Ordering::Relaxed),
@@ -489,7 +489,7 @@ impl ResourceLightSnapshot {
             ),
             storage_contention_risk: storage_contention_risk_from_metrics(
                 &metrics,
-                crate::metrics::storage_lock_last_age_ms(),
+                crate::metrics::storage_lock_sample_is_recent(STORAGE_CONTENTION_SAMPLE_TTL_MS),
             ),
             heap_free_internal: state.heap_free_internal.load(Ordering::Relaxed),
             heap_min_free_internal: state.heap_min_free_internal.load(Ordering::Relaxed),
@@ -709,31 +709,31 @@ mod tests {
         metrics.storage_lock_hold_last_us = 0;
         metrics.storage_lock_hold_last_stage.clear();
         assert_eq!(
-            storage_contention_risk_from_metrics(&metrics, 0),
+            storage_contention_risk_from_metrics(&metrics, true),
             StorageContentionRisk::Healthy
         );
 
         metrics.storage_lock_wait_last_us = 7_500;
         assert_eq!(
-            storage_contention_risk_from_metrics(&metrics, 0),
+            storage_contention_risk_from_metrics(&metrics, true),
             StorageContentionRisk::Healthy,
             "wait-only samples without a completed hold stage must not look fresh"
         );
 
         metrics.storage_lock_hold_last_stage = "storage_write_json".to_string();
         assert_eq!(
-            storage_contention_risk_from_metrics(&metrics, 0),
+            storage_contention_risk_from_metrics(&metrics, true),
             StorageContentionRisk::Cautious
         );
 
         metrics.storage_lock_wait_last_us = 60_000;
         assert_eq!(
-            storage_contention_risk_from_metrics(&metrics, 0),
+            storage_contention_risk_from_metrics(&metrics, true),
             StorageContentionRisk::Critical
         );
 
         assert_eq!(
-            storage_contention_risk_from_metrics(&metrics, STORAGE_CONTENTION_SAMPLE_TTL_MS + 1),
+            storage_contention_risk_from_metrics(&metrics, false),
             StorageContentionRisk::Healthy
         );
     }

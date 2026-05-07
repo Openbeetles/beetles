@@ -155,9 +155,6 @@ const EXECUTION_TIMING_FIELD_DEFS = [
 const TURN_PROTOCOL_FIELD_DEFS = [
   { id: "react_rounds_last", labelKey: "device.systemStatusReactRoundsLast" },
   { id: "tool_calls_last", labelKey: "device.systemStatusToolCallsLast" },
-  { id: "user_messages_done", labelKey: "device.systemStatusUserMessagesDone" },
-  { id: "system_messages_done", labelKey: "device.systemStatusSystemMessagesDone" },
-  { id: "cron_messages_done", labelKey: "device.systemStatusCronMessagesDone" },
   { id: "tool_protocol_forced_rounds", labelKey: "device.systemStatusToolProtocolForced" },
   { id: "tool_protocol_violation", labelKey: "device.systemStatusToolProtocolViolation", danger: true },
   { id: "final_answer_calls", labelKey: "device.systemStatusFinalAnswerCalls" },
@@ -187,32 +184,16 @@ const HTTP_STORAGE_STREAM_FIELD_DEFS = [
 ] as const;
 
 const VOICE_AUDIO_FIELD_DEFS = [
-  { id: "voice_input_capture_last_ms", labelKey: "device.systemStatusVoiceInputCaptureMs", valueKind: "milliseconds" },
-  { id: "voice_input_stt_http_last_ms", labelKey: "device.systemStatusVoiceInputSttHttpMs", valueKind: "milliseconds" },
-  { id: "voice_output_tts_http_last_ms", labelKey: "device.systemStatusVoiceOutputTtsHttpMs", valueKind: "milliseconds" },
-  { id: "voice_output_play_last_ms", labelKey: "device.systemStatusVoiceOutputPlayMs", valueKind: "milliseconds" },
+  { id: "voice_input_last_ms", labelKey: "device.systemStatusVoiceInputLastMs", valueKind: "milliseconds" },
+  { id: "voice_output_last_ms", labelKey: "device.systemStatusVoiceOutputLastMs", valueKind: "milliseconds" },
+  { id: "wake_trigger_total", labelKey: "device.systemStatusWakeTrigger" },
+  { id: "voice_interrupt_total", labelKey: "device.systemStatusVoiceInterruptTotal" },
+  { id: "voice_interrupt_missed_total", labelKey: "device.systemStatusVoiceInterruptMissed", danger: true },
   { id: "voice_input_fail_total", labelKey: "device.systemStatusVoiceInputFail", danger: true },
   { id: "voice_output_fail_total", labelKey: "device.systemStatusVoiceOutputFail", danger: true },
-  { id: "voice_interrupt_request_total", labelKey: "device.systemStatusVoiceInterruptRequest" },
-  { id: "voice_interrupt_accept_total", labelKey: "device.systemStatusVoiceInterruptAccept" },
-  { id: "voice_cancel_sent_total", labelKey: "device.systemStatusVoiceCancelSent" },
-  { id: "voice_interrupt_reference_suppress_total", labelKey: "device.systemStatusVoiceInterruptReferenceSuppress" },
   { id: "voice_no_speech_timeout_total", labelKey: "device.systemStatusVoiceNoSpeechTimeout", danger: true },
   { id: "voice_response_wait_timeout_total", labelKey: "device.systemStatusVoiceResponseWaitTimeout", danger: true },
-  { id: "voice_post_playback_timeout_total", labelKey: "device.systemStatusVoicePostPlaybackTimeout", danger: true },
-  { id: "wake_trigger_total", labelKey: "device.systemStatusWakeTrigger" },
-  { id: "audio_worker_turns_total", labelKey: "device.systemStatusAudioWorkerTurns" },
-  { id: "audio_worker_idle_turns_total", labelKey: "device.systemStatusAudioWorkerIdleTurns" },
-  { id: "audio_mic_poll_turns_total", labelKey: "device.systemStatusAudioMicPollTurns" },
-  { id: "audio_mic_frames_total", labelKey: "device.systemStatusAudioMicFrames" },
-  { id: "audio_mic_zero_read_total", labelKey: "device.systemStatusAudioMicZeroRead", danger: true },
-  { id: "audio_mic_read_last_us", labelKey: "device.systemStatusAudioMicReadLastUs", valueKind: "microseconds" },
-  { id: "audio_speaker_write_last_us", labelKey: "device.systemStatusAudioSpeakerWriteLastUs", valueKind: "microseconds" },
-  { id: "wake_feed_calls_total", labelKey: "device.systemStatusWakeFeedCalls" },
-  { id: "wake_feed_skip_busy_total", labelKey: "device.systemStatusWakeFeedSkipBusy" },
-  { id: "wake_feed_skip_cooldown_total", labelKey: "device.systemStatusWakeFeedSkipCooldown" },
-  { id: "wake_feed_detect_total", labelKey: "device.systemStatusWakeFeedDetect" },
-  { id: "wake_feed_last_us", labelKey: "device.systemStatusWakeFeedLastUs", valueKind: "microseconds" },
+  { id: "voice_playback_timeout_total", labelKey: "device.systemStatusVoicePlaybackTimeout", danger: true },
 ] as const;
 
 function metricFieldFromDef(

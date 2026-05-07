@@ -75,16 +75,24 @@ pub fn body_prometheus(_ctx: &HandlerContext) -> Result<String, std::io::Error> 
         snap.errors_channel_dispatch
     ));
     buf.push_str(&format!(
-        "beetle_audio_worker_turns_total {}\n",
-        snap.audio_worker_turns_total
+        "beetle_voice_input_last_ms {}\n",
+        snap.voice_input_last_ms
     ));
     buf.push_str(&format!(
-        "beetle_audio_worker_idle_turns_total {}\n",
-        snap.audio_worker_idle_turns_total
+        "beetle_voice_output_last_ms {}\n",
+        snap.voice_output_last_ms
     ));
     buf.push_str(&format!(
-        "beetle_wake_feed_calls_total {}\n",
-        snap.wake_feed_calls_total
+        "beetle_voice_input_fail_total {}\n",
+        snap.voice_input_fail_total
+    ));
+    buf.push_str(&format!(
+        "beetle_voice_output_fail_total {}\n",
+        snap.voice_output_fail_total
+    ));
+    buf.push_str(&format!(
+        "beetle_wake_trigger_total {}\n",
+        snap.wake_trigger_total
     ));
     buf.push_str(&format!(
         "beetle_storage_lock_ops_total {}\n",
@@ -102,21 +110,48 @@ pub fn body_prometheus(_ctx: &HandlerContext) -> Result<String, std::io::Error> 
 mod tests {
     use super::*;
     #[test]
-    fn body_does_not_expose_speaker_queue_depth_metrics() {
+    fn body_does_not_expose_low_level_audio_metrics() {
         let ctx = crate::platform::http_server::handlers::build_default_test_handler_context();
-        let body = body(&ctx).expect("metrics body");
-        assert!(
-            !body.contains("audio_speaker_queue_depth_last_samples"),
-            "metrics body should not expose speaker depth last samples"
-        );
-        assert!(
-            !body.contains("audio_speaker_queue_depth_min_samples"),
-            "metrics body should not expose speaker depth min samples"
-        );
-        assert!(
-            !body.contains("audio_speaker_underrun_total"),
-            "metrics body should not expose speaker underrun total"
-        );
+        let payload = body(&ctx).expect("metrics body");
+        let parsed: serde_json::Value = serde_json::from_str(&payload).expect("valid metrics json");
+        let keys = parsed.as_object().expect("metrics object").keys();
+        for key in keys {
+            assert!(
+                !key.starts_with("audio_") && !key.starts_with("wake_feed_"),
+                "metrics must not expose low-level audio internals: {key}"
+            );
+        }
+    }
+
+    #[test]
+    fn body_exposes_only_user_meaningful_voice_audio_metrics() {
+        let ctx = crate::platform::http_server::handlers::build_default_test_handler_context();
+        let payload = body(&ctx).expect("metrics body");
+        let parsed: serde_json::Value = serde_json::from_str(&payload).expect("valid metrics json");
+
+        for key in [
+            "voice_input_last_ms",
+            "voice_output_last_ms",
+            "voice_input_fail_total",
+            "voice_output_fail_total",
+            "voice_interrupt_total",
+            "voice_interrupt_missed_total",
+            "voice_no_speech_timeout_total",
+            "voice_response_wait_timeout_total",
+            "voice_playback_timeout_total",
+            "wake_trigger_total",
+        ] {
+            assert!(
+                parsed.get(key).is_some(),
+                "metrics must expose user-meaningful voice/audio signal: {key}"
+            );
+        }
+
+        let prometheus = body_prometheus(&ctx).expect("prometheus metrics body");
+        assert!(prometheus.contains("beetle_voice_input_last_ms"));
+        assert!(prometheus.contains("beetle_voice_output_last_ms"));
+        assert!(!prometheus.contains("beetle_audio_"));
+        assert!(!prometheus.contains("beetle_wake_feed_"));
     }
 
     #[test]
@@ -145,18 +180,13 @@ mod tests {
             );
         }
 
-        for key in [
-            "lease_conflict_total",
-            "lease_expired_replacement_total",
-            "plane_drain_timeout_total",
-            "storage_lock_last_age_ms",
-            "storage_lock_wait_total_us",
-            "storage_lock_hold_total_us",
-        ] {
-            assert!(
-                parsed.get(key).is_none(),
-                "metrics must not expose internal diagnostics: {key}"
-            );
-        }
+        assert!(
+            parsed.get("storage_lock_wait_last_us").is_some(),
+            "metrics must keep the public storage last-wait signal"
+        );
+        assert!(
+            parsed.get("storage_lock_hold_last_us").is_some(),
+            "metrics must keep the public storage last-hold signal"
+        );
     }
 }

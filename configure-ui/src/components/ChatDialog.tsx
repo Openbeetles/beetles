@@ -343,7 +343,7 @@ export function ChatDialog({ open, onClose, onMinimize }: ChatDialogProps) {
     accumulatedRef: { current: string },
   ) => {
     if (event.type === "delta") {
-      accumulatedRef.current = event.accumulated ?? `${accumulatedRef.current}${event.delta}`;
+      accumulatedRef.current = `${accumulatedRef.current}${event.delta}`;
       updateMessage(chatId, assistantId, (message) => ({
         ...message,
         text: accumulatedRef.current,
@@ -351,39 +351,10 @@ export function ChatDialog({ open, onClose, onMinimize }: ChatDialogProps) {
       }));
       return;
     }
-    if (event.type === "snapshot") {
-      if (event.messages) {
-        const assistantSnapshot = [...event.messages]
-          .reverse()
-          .find((message) => message.role === "assistant");
-        const snapshotContent =
-          assistantSnapshot?.content ?? event.messages.at(-1)?.content ?? event.content;
-        if (snapshotContent !== undefined) {
-          accumulatedRef.current = snapshotContent;
-          updateMessage(chatId, assistantId, (message) => ({
-            ...message,
-            text: snapshotContent,
-            pending: false,
-          }));
-        }
-        return;
-      }
-      if (event.content !== undefined) {
-        accumulatedRef.current = event.content;
-        updateMessage(chatId, assistantId, (message) => ({
-          ...message,
-          text: event.content ?? "",
-          pending: false,
-        }));
-      }
-      return;
-    }
     if (event.type === "final") {
-      if (event.content !== undefined) accumulatedRef.current = event.content;
       updateMessage(chatId, assistantId, (message) => ({
         ...message,
         id: event.messageId ?? message.id,
-        text: event.content ?? message.text,
         pending: false,
       }));
       return;

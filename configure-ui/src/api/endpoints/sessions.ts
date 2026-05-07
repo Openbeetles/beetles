@@ -59,9 +59,8 @@ export interface ChatSessionPostBody {
 
 export type ChatSessionStreamEvent =
   | { type: 'queued'; data: unknown }
-  | { type: 'delta'; delta: string; accumulated?: string; messageId?: string; data: unknown }
-  | { type: 'snapshot'; content?: string; messages?: ChatSessionMessage[]; data: unknown }
-  | { type: 'final'; messageId?: string; content?: string; data: unknown }
+  | { type: 'delta'; delta: string; messageId?: string; data: unknown }
+  | { type: 'final'; messageId?: string; data: unknown }
   | { type: 'error'; error: string; errorKey?: string; errorStage?: string; data: unknown }
   | { type: 'done'; data: unknown }
 
@@ -117,19 +116,6 @@ function readString(data: unknown, key: string): string | undefined {
   return typeof value === 'string' ? value : undefined
 }
 
-function readMessages(data: unknown): ChatSessionMessage[] | undefined {
-  if (!isObject(data)) return undefined
-  const value = data.messages ?? data.items
-  if (!Array.isArray(value)) return undefined
-  return value.filter(
-    (item): item is ChatSessionMessage =>
-      isObject(item) &&
-      typeof item.message_id === 'string' &&
-      typeof item.role === 'string' &&
-      typeof item.content === 'string',
-  )
-}
-
 function normalizeSseEvent(eventName: string, dataText: string): ChatSessionStreamEvent | null {
   const data = parseSseData(dataText)
   const type = eventName.trim() || 'message'
@@ -138,28 +124,18 @@ function normalizeSseEvent(eventName: string, dataText: string): ChatSessionStre
       return { type: 'queued', data }
     case 'delta': {
       const delta = readString(data, 'delta') ?? (typeof data === 'string' ? data : '')
-      const accumulated = readString(data, 'accumulated')
       const messageId = readString(data, 'message_id')
       return {
         type: 'delta',
         delta,
-        accumulated,
         messageId,
         data,
       }
     }
-    case 'snapshot':
-      return {
-        type: 'snapshot',
-        content: readString(data, 'content') ?? readString(data, 'accumulated'),
-        messages: readMessages(data),
-        data,
-      }
     case 'final':
       return {
         type: 'final',
         messageId: readString(data, 'message_id'),
-        content: readString(data, 'content') ?? readString(data, 'accumulated'),
         data,
     }
     case 'error': {

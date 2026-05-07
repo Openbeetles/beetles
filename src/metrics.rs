@@ -35,9 +35,6 @@ static SYSTEM_QUEUE_WAIT_LAST_MS: AtomicU32 = AtomicU32::new(0);
 static CRON_E2E_LAST_MS: AtomicU32 = AtomicU32::new(0);
 static REACT_ROUNDS_LAST: AtomicU32 = AtomicU32::new(0);
 static TOOL_CALLS_LAST: AtomicU32 = AtomicU32::new(0);
-static USER_MESSAGES_DONE: AtomicU32 = AtomicU32::new(0);
-static SYSTEM_MESSAGES_DONE: AtomicU32 = AtomicU32::new(0);
-static CRON_MESSAGES_DONE: AtomicU32 = AtomicU32::new(0);
 static TOOL_CALLS: AtomicU32 = AtomicU32::new(0);
 static TOOL_ERRORS: AtomicU32 = AtomicU32::new(0);
 static TOOL_PROTOCOL_FORCED_ROUNDS: AtomicU32 = AtomicU32::new(0);
@@ -75,7 +72,6 @@ static VOICE_OUTPUT_FAIL_TOTAL: AtomicU32 = AtomicU32::new(0);
 static VOICE_INTERRUPT_REQUEST_TOTAL: AtomicU32 = AtomicU32::new(0);
 static VOICE_INTERRUPT_ACCEPT_TOTAL: AtomicU32 = AtomicU32::new(0);
 static VOICE_CANCEL_SENT_TOTAL: AtomicU32 = AtomicU32::new(0);
-static VOICE_INTERRUPT_REFERENCE_SUPPRESS_TOTAL: AtomicU32 = AtomicU32::new(0);
 static VOICE_NO_SPEECH_TIMEOUT_TOTAL: AtomicU32 = AtomicU32::new(0);
 static VOICE_RESPONSE_WAIT_TIMEOUT_TOTAL: AtomicU32 = AtomicU32::new(0);
 static VOICE_POST_PLAYBACK_TIMEOUT_TOTAL: AtomicU32 = AtomicU32::new(0);
@@ -98,9 +94,7 @@ static WAKE_WORD_FEED_LAST_US: AtomicU32 = AtomicU32::new(0);
 static STORAGE_LOCK_OPS_TOTAL: AtomicU32 = AtomicU32::new(0);
 static STORAGE_LOCK_CONTENTION_TOTAL: AtomicU32 = AtomicU32::new(0);
 static STORAGE_LOCK_WAIT_LAST_US: AtomicU32 = AtomicU32::new(0);
-static STORAGE_LOCK_WAIT_TOTAL_US: AtomicU32 = AtomicU32::new(0);
 static STORAGE_LOCK_HOLD_LAST_US: AtomicU32 = AtomicU32::new(0);
-static STORAGE_LOCK_HOLD_TOTAL_US: AtomicU32 = AtomicU32::new(0);
 static STORAGE_LOCK_HOLD_LAST_STAGE: OnceLock<Mutex<String>> = OnceLock::new();
 static STORAGE_LOCK_LAST_OBSERVED_AT: OnceLock<Mutex<Option<Instant>>> = OnceLock::new();
 
@@ -235,19 +229,6 @@ pub fn record_system_queue_wait_ms(ms: u128) {
 #[inline]
 pub fn record_cron_e2e_ms(ms: u128) {
     CRON_E2E_LAST_MS.store(ms.min(u32::MAX as u128) as u32, Ordering::Relaxed);
-}
-
-#[inline]
-pub fn record_user_message_done() {
-    USER_MESSAGES_DONE.fetch_add(1, Ordering::Relaxed);
-}
-
-#[inline]
-pub fn record_system_message_done(is_cron: bool) {
-    SYSTEM_MESSAGES_DONE.fetch_add(1, Ordering::Relaxed);
-    if is_cron {
-        CRON_MESSAGES_DONE.fetch_add(1, Ordering::Relaxed);
-    }
 }
 
 pub fn record_react_rounds(rounds: u32) {
@@ -442,11 +423,6 @@ pub fn record_voice_cancel_sent() {
 }
 
 #[inline]
-pub fn record_voice_interrupt_reference_suppressed() {
-    VOICE_INTERRUPT_REFERENCE_SUPPRESS_TOTAL.fetch_add(1, Ordering::Relaxed);
-}
-
-#[inline]
 pub fn record_voice_no_speech_timeout() {
     VOICE_NO_SPEECH_TIMEOUT_TOTAL.fetch_add(1, Ordering::Relaxed);
 }
@@ -567,7 +543,6 @@ pub fn record_storage_lock_wait_us(us: u128) {
     let clamped = us.min(u32::MAX as u128) as u32;
     STORAGE_LOCK_OPS_TOTAL.fetch_add(1, Ordering::Relaxed);
     STORAGE_LOCK_WAIT_LAST_US.store(clamped, Ordering::Relaxed);
-    STORAGE_LOCK_WAIT_TOTAL_US.fetch_add(clamped, Ordering::Relaxed);
     if clamped >= 1_000 {
         STORAGE_LOCK_CONTENTION_TOTAL.fetch_add(1, Ordering::Relaxed);
     }
@@ -581,7 +556,6 @@ pub fn record_storage_lock_hold_us(us: u128) {
 pub fn record_storage_lock_hold_us_for_stage(stage: &'static str, us: u128) {
     let clamped = us.min(u32::MAX as u128) as u32;
     STORAGE_LOCK_HOLD_LAST_US.store(clamped, Ordering::Relaxed);
-    STORAGE_LOCK_HOLD_TOTAL_US.fetch_add(clamped, Ordering::Relaxed);
     let stage_store = STORAGE_LOCK_HOLD_LAST_STAGE.get_or_init(|| Mutex::new(String::new()));
     if let Ok(mut guard) = stage_store.lock() {
         guard.clear();
@@ -593,23 +567,12 @@ pub fn record_storage_lock_hold_us_for_stage(stage: &'static str, us: u128) {
     }
 }
 
-pub(crate) fn storage_lock_wait_total_us() -> u64 {
-    STORAGE_LOCK_WAIT_TOTAL_US.load(Ordering::Relaxed) as u64
-}
-
-pub(crate) fn storage_lock_hold_total_us() -> u64 {
-    STORAGE_LOCK_HOLD_TOTAL_US.load(Ordering::Relaxed) as u64
-}
-
-/// 最近一次 storage 持锁样本距今毫秒数，仅供内部 freshness / 串口基线使用。
-/// Age in milliseconds for the latest storage hold sample; internal freshness/baseline only.
-pub(crate) fn storage_lock_last_age_ms() -> u64 {
+pub(crate) fn storage_lock_sample_is_recent(max_age_ms: u64) -> bool {
     STORAGE_LOCK_LAST_OBSERVED_AT
         .get()
         .and_then(|m| m.lock().ok())
         .and_then(|g| g.as_ref().copied())
-        .map(|instant| instant.elapsed().as_millis().min(u64::MAX as u128) as u64)
-        .unwrap_or(u64::MAX)
+        .is_some_and(|instant| instant.elapsed().as_millis() <= max_age_ms as u128)
 }
 
 #[inline]
@@ -691,6 +654,13 @@ pub fn record_stream_http_invalidate() {
 pub fn snapshot() -> MetricsSnapshot {
     let user_messages_in = USER_MESSAGES_IN.load(Ordering::Relaxed) as u64;
     let system_messages_in = SYSTEM_MESSAGES_IN.load(Ordering::Relaxed) as u64;
+    let voice_input_capture_ms = VOICE_INPUT_CAPTURE_LAST_MS.load(Ordering::Relaxed) as u64;
+    let voice_input_stt_ms = VOICE_INPUT_STT_HTTP_LAST_MS.load(Ordering::Relaxed) as u64;
+    let voice_output_tts_ms = VOICE_OUTPUT_TTS_HTTP_LAST_MS.load(Ordering::Relaxed) as u64;
+    let voice_output_play_ms = VOICE_OUTPUT_PLAY_LAST_MS.load(Ordering::Relaxed) as u64;
+    let voice_interrupt_attempt_total =
+        VOICE_INTERRUPT_REQUEST_TOTAL.load(Ordering::Relaxed) as u64;
+    let voice_interrupt_total = VOICE_INTERRUPT_ACCEPT_TOTAL.load(Ordering::Relaxed) as u64;
     MetricsSnapshot {
         messages_in: user_messages_in,
         user_messages_in,
@@ -713,9 +683,6 @@ pub fn snapshot() -> MetricsSnapshot {
         cron_e2e_last_ms: CRON_E2E_LAST_MS.load(Ordering::Relaxed) as u64,
         react_rounds_last: REACT_ROUNDS_LAST.load(Ordering::Relaxed) as u64,
         tool_calls_last: TOOL_CALLS_LAST.load(Ordering::Relaxed) as u64,
-        user_messages_done: USER_MESSAGES_DONE.load(Ordering::Relaxed) as u64,
-        system_messages_done: SYSTEM_MESSAGES_DONE.load(Ordering::Relaxed) as u64,
-        cron_messages_done: CRON_MESSAGES_DONE.load(Ordering::Relaxed) as u64,
         tool_calls: TOOL_CALLS.load(Ordering::Relaxed) as u64,
         tool_errors: TOOL_ERRORS.load(Ordering::Relaxed) as u64,
         tool_protocol_forced_rounds: TOOL_PROTOCOL_FORCED_ROUNDS.load(Ordering::Relaxed) as u64,
@@ -746,36 +713,19 @@ pub fn snapshot() -> MetricsSnapshot {
         http_route_queue_wait_last_ms: HTTP_ROUTE_QUEUE_WAIT_LAST_MS.load(Ordering::Relaxed) as u64,
         http_route_handler_last_ms: HTTP_ROUTE_HANDLER_LAST_MS.load(Ordering::Relaxed) as u64,
         http_route_timeout_total: HTTP_ROUTE_TIMEOUT_TOTAL.load(Ordering::Relaxed) as u64,
-        voice_input_capture_last_ms: VOICE_INPUT_CAPTURE_LAST_MS.load(Ordering::Relaxed) as u64,
-        voice_input_stt_http_last_ms: VOICE_INPUT_STT_HTTP_LAST_MS.load(Ordering::Relaxed) as u64,
-        voice_output_tts_http_last_ms: VOICE_OUTPUT_TTS_HTTP_LAST_MS.load(Ordering::Relaxed) as u64,
-        voice_output_play_last_ms: VOICE_OUTPUT_PLAY_LAST_MS.load(Ordering::Relaxed) as u64,
+        voice_input_last_ms: voice_input_capture_ms.saturating_add(voice_input_stt_ms),
+        voice_output_last_ms: voice_output_tts_ms.saturating_add(voice_output_play_ms),
         voice_input_fail_total: VOICE_INPUT_FAIL_TOTAL.load(Ordering::Relaxed) as u64,
         voice_output_fail_total: VOICE_OUTPUT_FAIL_TOTAL.load(Ordering::Relaxed) as u64,
-        voice_interrupt_request_total: VOICE_INTERRUPT_REQUEST_TOTAL.load(Ordering::Relaxed) as u64,
-        voice_interrupt_accept_total: VOICE_INTERRUPT_ACCEPT_TOTAL.load(Ordering::Relaxed) as u64,
-        voice_cancel_sent_total: VOICE_CANCEL_SENT_TOTAL.load(Ordering::Relaxed) as u64,
-        voice_interrupt_reference_suppress_total: VOICE_INTERRUPT_REFERENCE_SUPPRESS_TOTAL
-            .load(Ordering::Relaxed) as u64,
+        voice_interrupt_total,
+        voice_interrupt_missed_total: voice_interrupt_attempt_total
+            .saturating_sub(voice_interrupt_total),
         voice_no_speech_timeout_total: VOICE_NO_SPEECH_TIMEOUT_TOTAL.load(Ordering::Relaxed) as u64,
         voice_response_wait_timeout_total: VOICE_RESPONSE_WAIT_TIMEOUT_TOTAL.load(Ordering::Relaxed)
             as u64,
-        voice_post_playback_timeout_total: VOICE_POST_PLAYBACK_TIMEOUT_TOTAL.load(Ordering::Relaxed)
+        voice_playback_timeout_total: VOICE_POST_PLAYBACK_TIMEOUT_TOTAL.load(Ordering::Relaxed)
             as u64,
         wake_trigger_total: WAKE_WORD_TRIGGER_TOTAL.load(Ordering::Relaxed) as u64,
-        audio_worker_turns_total: AUDIO_WORKER_TURNS_TOTAL.load(Ordering::Relaxed) as u64,
-        audio_worker_idle_turns_total: AUDIO_WORKER_IDLE_TURNS_TOTAL.load(Ordering::Relaxed) as u64,
-        audio_mic_poll_turns_total: AUDIO_MIC_POLL_TURNS_TOTAL.load(Ordering::Relaxed) as u64,
-        audio_mic_frames_total: AUDIO_MIC_FRAMES_TOTAL.load(Ordering::Relaxed) as u64,
-        audio_mic_zero_read_total: AUDIO_MIC_ZERO_READ_TOTAL.load(Ordering::Relaxed) as u64,
-        audio_mic_read_last_us: AUDIO_MIC_READ_LAST_US.load(Ordering::Relaxed) as u64,
-        audio_speaker_write_last_us: AUDIO_SPEAKER_WRITE_LAST_US.load(Ordering::Relaxed) as u64,
-        wake_feed_calls_total: WAKE_WORD_FEED_CALLS_TOTAL.load(Ordering::Relaxed) as u64,
-        wake_feed_skip_busy_total: WAKE_WORD_FEED_SKIP_BUSY_TOTAL.load(Ordering::Relaxed) as u64,
-        wake_feed_skip_cooldown_total: WAKE_WORD_FEED_SKIP_COOLDOWN_TOTAL.load(Ordering::Relaxed)
-            as u64,
-        wake_feed_detect_total: WAKE_WORD_FEED_DETECT_TOTAL.load(Ordering::Relaxed) as u64,
-        wake_feed_last_us: WAKE_WORD_FEED_LAST_US.load(Ordering::Relaxed) as u64,
         storage_lock_ops_total: STORAGE_LOCK_OPS_TOTAL.load(Ordering::Relaxed) as u64,
         storage_lock_contention_total: STORAGE_LOCK_CONTENTION_TOTAL.load(Ordering::Relaxed) as u64,
         storage_lock_wait_last_us: STORAGE_LOCK_WAIT_LAST_US.load(Ordering::Relaxed) as u64,
@@ -976,9 +926,6 @@ pub struct MetricsSnapshot {
     pub cron_e2e_last_ms: u64,
     pub react_rounds_last: u64,
     pub tool_calls_last: u64,
-    pub user_messages_done: u64,
-    pub system_messages_done: u64,
-    pub cron_messages_done: u64,
     pub tool_calls: u64,
     pub tool_errors: u64,
     pub tool_protocol_forced_rounds: u64,
@@ -1006,32 +953,16 @@ pub struct MetricsSnapshot {
     pub http_route_queue_wait_last_ms: u64,
     pub http_route_handler_last_ms: u64,
     pub http_route_timeout_total: u64,
-    pub voice_input_capture_last_ms: u64,
-    pub voice_input_stt_http_last_ms: u64,
-    pub voice_output_tts_http_last_ms: u64,
-    pub voice_output_play_last_ms: u64,
+    pub voice_input_last_ms: u64,
+    pub voice_output_last_ms: u64,
     pub voice_input_fail_total: u64,
     pub voice_output_fail_total: u64,
-    pub voice_interrupt_request_total: u64,
-    pub voice_interrupt_accept_total: u64,
-    pub voice_cancel_sent_total: u64,
-    pub voice_interrupt_reference_suppress_total: u64,
+    pub voice_interrupt_total: u64,
+    pub voice_interrupt_missed_total: u64,
     pub voice_no_speech_timeout_total: u64,
     pub voice_response_wait_timeout_total: u64,
-    pub voice_post_playback_timeout_total: u64,
+    pub voice_playback_timeout_total: u64,
     pub wake_trigger_total: u64,
-    pub audio_worker_turns_total: u64,
-    pub audio_worker_idle_turns_total: u64,
-    pub audio_mic_poll_turns_total: u64,
-    pub audio_mic_frames_total: u64,
-    pub audio_mic_zero_read_total: u64,
-    pub audio_mic_read_last_us: u64,
-    pub audio_speaker_write_last_us: u64,
-    pub wake_feed_calls_total: u64,
-    pub wake_feed_skip_busy_total: u64,
-    pub wake_feed_skip_cooldown_total: u64,
-    pub wake_feed_detect_total: u64,
-    pub wake_feed_last_us: u64,
     pub storage_lock_ops_total: u64,
     pub storage_lock_contention_total: u64,
     pub storage_lock_wait_last_us: u64,
@@ -1063,12 +994,9 @@ impl MetricsSnapshot {
         use std::fmt::Write;
         // Pre-allocate: typical line ~320 bytes (incl. WiFi counters).
         let mut buf = String::with_capacity(384);
-        let storage_lock_wait_total_us = storage_lock_wait_total_us();
-        let storage_lock_hold_total_us = storage_lock_hold_total_us();
-        let storage_lock_last_age_ms = storage_lock_last_age_ms();
         let _ = write!(
             buf,
-            "metrics msg_in={} user_msg_in={} msg_out={} agent_msg_in={} sys_msg_in={} llm_calls={} llm_err={} llm_last_ms={} llm_req_body_last_b={} llm_req_body_max_b={} request_semantics_ms={} tool_exec_ms={} mental_privacy_review_ms={} ttft_last_ms={} e2e_last_ms={} post_reply_last_ms={} user_q_wait_ms={} sys_q_wait_ms={} cron_e2e_ms={} react_rounds_last={} tool_calls_last={} user_done={} sys_done={} cron_done={} tool_calls={} tool_err={} tool_protocol_forced={} tool_protocol_violation={} final_answer_calls={} dispatch_ok={} dispatch_fail={} outbound_enq_fail={} inbound_q_full={} inbound_defer={} inbound_drop={} event_ingress_enqueued_total={} event_ingress_rejected_total={} event_ingress_purged_total={} event_ingress_cancelled_total={} event_ingress_stale_drop_total={} spawn_fail={} http_route_reject={} final_drift_total={} empty_final_blocked_total={} internal_error_copy_suppressed_total={} channel_http_ok={} channel_http_fail={} http_permit_wait_ms={} http_route_queue_wait_ms={} http_route_handler_ms={} http_route_timeout_total={} voice_in_capture_ms={} voice_in_stt_http_ms={} voice_out_tts_http_ms={} voice_out_play_ms={} voice_in_fail={} voice_out_fail={} voice_interrupt_req={} voice_interrupt_accept={} voice_cancel_sent={} voice_interrupt_ref_suppress={} voice_no_speech_to={} voice_resp_wait_to={} voice_post_play_to={} wake_trigger={} audio_turns={} audio_idle={} audio_mic_poll={} audio_mic_frames={} audio_mic_zero={} audio_mic_read_last_us={} audio_spk_write_last_us={} wake_feed_calls={} wake_feed_busy_skip={} wake_feed_cooldown_skip={} wake_feed_detect={} wake_feed_last_us={} storage_ops={} storage_contention={} storage_wait_last_us={} storage_wait_total_us={} storage_hold_last_us={} storage_hold_total_us={} storage_hold_last_stage={} storage_last_age_ms={} err_chat={} err_ctx={} err_tool={} err_llm_req={} err_llm_parse={} err_dispatch={} err_session={} err_tls_admission={} err_other={} last_active_epoch={} wifi_reconn={} wifi_ap_restart={} wifi_last_fail_stage={} shttp_reuse={} shttp_create={} shttp_reset={} shttp_invalidate={}",
+            "metrics msg_in={} user_msg_in={} msg_out={} agent_msg_in={} sys_msg_in={} llm_calls={} llm_err={} llm_last_ms={} llm_req_body_last_b={} llm_req_body_max_b={} request_semantics_ms={} tool_exec_ms={} mental_privacy_review_ms={} ttft_last_ms={} e2e_last_ms={} post_reply_last_ms={} user_q_wait_ms={} sys_q_wait_ms={} cron_e2e_ms={} react_rounds_last={} tool_calls_last={} tool_calls={} tool_err={} tool_protocol_forced={} tool_protocol_violation={} final_answer_calls={} dispatch_ok={} dispatch_fail={} outbound_enq_fail={} inbound_q_full={} inbound_defer={} inbound_drop={} event_ingress_enqueued_total={} event_ingress_rejected_total={} event_ingress_purged_total={} event_ingress_cancelled_total={} event_ingress_stale_drop_total={} spawn_fail={} http_route_reject={} final_drift_total={} empty_final_blocked_total={} internal_error_copy_suppressed_total={} channel_http_ok={} channel_http_fail={} http_permit_wait_ms={} http_route_queue_wait_ms={} http_route_handler_ms={} http_route_timeout_total={} voice_in_last_ms={} voice_out_last_ms={} voice_in_fail={} voice_out_fail={} voice_interrupt={} voice_interrupt_missed={} voice_no_speech_to={} voice_resp_wait_to={} voice_playback_to={} wake_trigger={} storage_ops={} storage_contention={} storage_wait_last_us={} storage_hold_last_us={} storage_hold_last_stage={} err_chat={} err_ctx={} err_tool={} err_llm_req={} err_llm_parse={} err_dispatch={} err_session={} err_tls_admission={} err_other={} last_active_epoch={} wifi_reconn={} wifi_ap_restart={} wifi_last_fail_stage={} shttp_reuse={} shttp_create={} shttp_reset={} shttp_invalidate={}",
             self.messages_in,
             self.user_messages_in,
             self.messages_out,
@@ -1090,9 +1018,6 @@ impl MetricsSnapshot {
             self.cron_e2e_last_ms,
             self.react_rounds_last,
             self.tool_calls_last,
-            self.user_messages_done,
-            self.system_messages_done,
-            self.cron_messages_done,
             self.tool_calls,
             self.tool_errors,
             self.tool_protocol_forced_rounds,
@@ -1120,40 +1045,21 @@ impl MetricsSnapshot {
             self.http_route_queue_wait_last_ms,
             self.http_route_handler_last_ms,
             self.http_route_timeout_total,
-            self.voice_input_capture_last_ms,
-            self.voice_input_stt_http_last_ms,
-            self.voice_output_tts_http_last_ms,
-            self.voice_output_play_last_ms,
+            self.voice_input_last_ms,
+            self.voice_output_last_ms,
             self.voice_input_fail_total,
             self.voice_output_fail_total,
-            self.voice_interrupt_request_total,
-            self.voice_interrupt_accept_total,
-            self.voice_cancel_sent_total,
-            self.voice_interrupt_reference_suppress_total,
+            self.voice_interrupt_total,
+            self.voice_interrupt_missed_total,
             self.voice_no_speech_timeout_total,
             self.voice_response_wait_timeout_total,
-            self.voice_post_playback_timeout_total,
+            self.voice_playback_timeout_total,
             self.wake_trigger_total,
-            self.audio_worker_turns_total,
-            self.audio_worker_idle_turns_total,
-            self.audio_mic_poll_turns_total,
-            self.audio_mic_frames_total,
-            self.audio_mic_zero_read_total,
-            self.audio_mic_read_last_us,
-            self.audio_speaker_write_last_us,
-            self.wake_feed_calls_total,
-            self.wake_feed_skip_busy_total,
-            self.wake_feed_skip_cooldown_total,
-            self.wake_feed_detect_total,
-            self.wake_feed_last_us,
             self.storage_lock_ops_total,
             self.storage_lock_contention_total,
             self.storage_lock_wait_last_us,
-            storage_lock_wait_total_us,
             self.storage_lock_hold_last_us,
-            storage_lock_hold_total_us,
             self.storage_lock_hold_last_stage,
-            storage_lock_last_age_ms,
             self.errors_agent_chat,
             self.errors_agent_context,
             self.errors_tool_execute,

@@ -364,9 +364,6 @@ test("homepage deep detail builders expose health resource metrics and system_in
     cron_e2e_last_ms: 11,
     react_rounds_last: 12,
     tool_calls_last: 13,
-    user_messages_done: 14,
-    system_messages_done: 15,
-    cron_messages_done: 16,
     tool_protocol_forced_rounds: 17,
     tool_protocol_violation: 18,
     final_answer_calls: 19,
@@ -380,32 +377,16 @@ test("homepage deep detail builders expose health resource metrics and system_in
     http_route_queue_wait_last_ms: 27,
     http_route_handler_last_ms: 28,
     http_route_timeout_total: 29,
-    voice_input_capture_last_ms: 30,
-    voice_input_stt_http_last_ms: 31,
-    voice_output_tts_http_last_ms: 32,
-    voice_output_play_last_ms: 33,
+    voice_input_last_ms: 30,
+    voice_output_last_ms: 33,
     voice_input_fail_total: 34,
     voice_output_fail_total: 35,
-    voice_interrupt_request_total: 36,
-    voice_interrupt_accept_total: 37,
-    voice_cancel_sent_total: 38,
-    voice_interrupt_reference_suppress_total: 40,
+    voice_interrupt_total: 37,
+    voice_interrupt_missed_total: 1,
     voice_no_speech_timeout_total: 41,
     voice_response_wait_timeout_total: 42,
-    voice_post_playback_timeout_total: 43,
+    voice_playback_timeout_total: 43,
     wake_trigger_total: 44,
-    audio_worker_turns_total: 45,
-    audio_worker_idle_turns_total: 46,
-    audio_mic_poll_turns_total: 47,
-    audio_mic_frames_total: 48,
-    audio_mic_zero_read_total: 49,
-    audio_mic_read_last_us: 51,
-    audio_speaker_write_last_us: 52,
-    wake_feed_calls_total: 56,
-    wake_feed_skip_busy_total: 57,
-    wake_feed_skip_cooldown_total: 58,
-    wake_feed_detect_total: 59,
-    wake_feed_last_us: 60,
     storage_lock_ops_total: 61,
     storage_lock_contention_total: 62,
     storage_lock_wait_last_us: 63,
@@ -465,9 +446,20 @@ test("homepage deep detail builders expose health resource metrics and system_in
   );
   assert.equal(buildResourceGovernanceFields(resource).length, 10);
   assert.equal(buildExecutionTimingFields(metrics).length, 11);
-  assert.equal(buildTurnProtocolFields(metrics).length, 15);
+  assert.equal(buildTurnProtocolFields(metrics).length, 12);
   assert.equal(buildHttpStorageStreamFields(metrics).length, 13);
-  assert.equal(buildVoiceAudioTelemetryFields(metrics).length, 26);
+  assert.deepEqual(buildVoiceAudioTelemetryFields(metrics).map((item) => item.id), [
+    "voice_input_last_ms",
+    "voice_output_last_ms",
+    "wake_trigger_total",
+    "voice_interrupt_total",
+    "voice_interrupt_missed_total",
+    "voice_input_fail_total",
+    "voice_output_fail_total",
+    "voice_no_speech_timeout_total",
+    "voice_response_wait_timeout_total",
+    "voice_playback_timeout_total",
+  ]);
   assert.equal(buildProgrammableReasoningFields(systemInfo).length, 9);
   assert.equal(buildStorageMediaDetailFields(systemInfo)[0]?.fields.length, 12);
 });

@@ -3,7 +3,8 @@
 use super::HandlerContext;
 use crate::bus::{MessageTransport, PcMsg};
 use crate::memory::{SessionMessageRecord, MAX_SESSION_ENTRIES};
-use crate::platform::http_server::common::{CORS_AND_EVENT_STREAM, CORS_HEADERS};
+use crate::platform::http_server::common::CORS_AND_EVENT_STREAM;
+use crate::platform::http_server::common::CORS_HEADERS;
 use crate::platform::http_server::router::{IncomingRequest, OutgoingResponse, RouterEnv};
 use crate::state;
 use std::sync::mpsc::TrySendError;

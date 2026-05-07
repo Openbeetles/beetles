@@ -224,7 +224,7 @@
 - `model_kind`
 - `custom_headers`
 
-来源顺序就是运行时 fallback 优先级；Configure UI 通过拖拽调整顺序。`model_kind` 可取 `text`、`multimodal`、`image_generation`、`video_generation`。`custom_headers` 是 `{ "name": "...", "value": "..." }` 数组，同一个来源内 header 名称不能重复。
+`id`、`provider`、`api_key`、`model` 为必填字段。来源顺序就是运行时 fallback 优先级；Configure UI 通过拖拽调整顺序。`model_kind` 可取 `text`、`multimodal`、`image_generation`、`video_generation`。`custom_headers` 是 `{ "name": "...", "value": "..." }` 数组，同一个来源内 header 名称不能重复。
 
 示例：
 
@@ -950,13 +950,12 @@ GET /api/hardware/discovery?bus=usb&capability=audio_output
 事件类型与主要字段：
 
 - `queued`：`stream_id`、`chat_id`
-- `delta`：`delta`、`accumulated`
-- `snapshot`：`content`，或 `messages[]`
-- `final`：`content`、`message_id`、`turn_id`、`session_appended`
+- `delta`：`delta`、`message_id`
+- `final`：`message_id`、`turn_id`、`session_appended`
 - `error`：`error_key`、`error_stage`、`meta`
 - `done`：空对象
 
-失败事件返回稳定 `error_key`，例如 `chat.stream_busy`、`chat.stream_pressure`、`chat.stream_timeout`、`chat.inbound_queue_full`。
+失败事件返回稳定 `error_key`，例如 `chat.stream_busy`、`chat.stream_pressure`、`chat.stream_timeout`、`chat.stream_backpressure`、`chat.inbound_queue_full`。
 
 **DELETE /api/sessions**
 
@@ -1352,6 +1351,16 @@ ESP 嵌入式说明：`/api/tools` 在激活后保持可用。它仍要求设备
 - `tool_errors`
 - `llm_last_ms`
 - `e2e_last_ms`
+- `voice_input_last_ms`（最近一次从开始说话到识别完成的耗时）
+- `voice_output_last_ms`（最近一次从合成到播完的耗时）
+- `wake_trigger_total`
+- `voice_interrupt_total`
+- `voice_interrupt_missed_total`
+- `voice_input_fail_total`
+- `voice_output_fail_total`
+- `voice_no_speech_timeout_total`
+- `voice_response_wait_timeout_total`
+- `voice_playback_timeout_total`
 
 **GET /api/metrics?format=prometheus**
 
@@ -1453,7 +1462,7 @@ ESP 嵌入式说明：`/api/tools` 在激活后保持可用。它仍要求设备
 
 - 缺少 `channel`：`400 {"error_key":"common.missing_query_param","query_param":"channel"}`。
 - 未知或未编译通道：`400 {"error_key":"channel.connectivity_channel_invalid","channel":"..."}`。
-- ESP 当前 Wi-Fi 或 TLS 内存状态不允许 live probe：`503 {"error_key":"network.channel_connectivity_unavailable","reason":"..."}`。
+- ESP 当前 Wi-Fi 或 TLS 内存状态不允许 live probe：`503 {"error_key":"network.channel_connectivity_unavailable","reason":"..."}`。`webhook` 只检查本地配置，不触发 live probe。
 
 展示建议：该接口是用户显式诊断入口，不属于首页自动轮询；常驻 WSS/消息通道的在线展示应优先使用运行态状态。
 

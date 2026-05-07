@@ -24,9 +24,6 @@ export interface MetricsSnapshotData {
   cron_e2e_last_ms?: number
   react_rounds_last?: number
   tool_calls_last?: number
-  user_messages_done?: number
-  system_messages_done?: number
-  cron_messages_done?: number
   tool_calls?: number
   tool_errors?: number
   tool_protocol_forced_rounds?: number
@@ -54,32 +51,16 @@ export interface MetricsSnapshotData {
   http_route_queue_wait_last_ms?: number
   http_route_handler_last_ms?: number
   http_route_timeout_total?: number
-  voice_input_capture_last_ms?: number
-  voice_input_stt_http_last_ms?: number
-  voice_output_tts_http_last_ms?: number
-  voice_output_play_last_ms?: number
+  voice_input_last_ms?: number
+  voice_output_last_ms?: number
   voice_input_fail_total?: number
   voice_output_fail_total?: number
-  voice_interrupt_request_total?: number
-  voice_interrupt_accept_total?: number
-  voice_cancel_sent_total?: number
-  voice_interrupt_reference_suppress_total?: number
+  voice_interrupt_total?: number
+  voice_interrupt_missed_total?: number
   voice_no_speech_timeout_total?: number
   voice_response_wait_timeout_total?: number
-  voice_post_playback_timeout_total?: number
+  voice_playback_timeout_total?: number
   wake_trigger_total?: number
-  audio_worker_turns_total?: number
-  audio_worker_idle_turns_total?: number
-  audio_mic_poll_turns_total?: number
-  audio_mic_frames_total?: number
-  audio_mic_zero_read_total?: number
-  audio_mic_read_last_us?: number
-  audio_speaker_write_last_us?: number
-  wake_feed_calls_total?: number
-  wake_feed_skip_busy_total?: number
-  wake_feed_skip_cooldown_total?: number
-  wake_feed_detect_total?: number
-  wake_feed_last_us?: number
   storage_lock_ops_total?: number
   storage_lock_contention_total?: number
   storage_lock_wait_last_us?: number

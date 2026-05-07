@@ -106,8 +106,8 @@ test('session stream POST uses event-stream accept, pairing code, csrf, and pars
       return sseResponse([
         'event: queued\ndata: {"chat_id":"c1"}\n\n',
         'event: delta\ndata: {"delta":"hel"}\n\n',
-        'event: snapshot\ndata: {"content":"hello"}\n\n',
-        'event: final\ndata: {"message_id":"a1","content":"hello"}\n\n',
+        'event: delta\ndata: {"delta":"lo"}\n\n',
+        'event: final\ndata: {"message_id":"a1"}\n\n',
         'event: done\ndata: {}\n\n',
       ])
     }
@@ -136,11 +136,11 @@ test('session stream POST uses event-stream accept, pairing code, csrf, and pars
     assert.equal(streamCall?.body, JSON.stringify({ chat_id: 'c1', content: 'hello?' }))
     assert.deepEqual(
       events.map((event) => event.type),
-      ['queued', 'delta', 'snapshot', 'final', 'done'],
+      ['queued', 'delta', 'delta', 'final', 'done'],
     )
     assert.equal(events[1]?.type === 'delta' ? events[1].delta : '', 'hel')
-    assert.equal(events[2]?.type === 'snapshot' ? events[2].content : '', 'hello')
-    assert.equal(events[3]?.type === 'final' ? events[3].content : '', 'hello')
+    assert.equal(events[2]?.type === 'delta' ? events[2].delta : '', 'lo')
+    assert.equal(events[3]?.type === 'final' ? events[3].messageId : '', 'a1')
   } finally {
     globalThis.fetch = originalFetch
     clearCsrfToken()
@@ -168,7 +168,8 @@ test('session stream refreshes csrf and retries once on csrf failure', async () 
         return jsonResponse({ error_key: 'auth.csrf_invalid' }, { status: 403 })
       }
       return sseResponse([
-        'event: final\ndata: {"message_id":"a1","content":"retry ok"}\n\n',
+        'event: delta\ndata: {"delta":"retry ok"}\n\n',
+        'event: final\ndata: {"message_id":"a1"}\n\n',
         'event: done\ndata: {}\n\n',
       ])
     }
@@ -200,7 +201,7 @@ test('session stream refreshes csrf and retries once on csrf failure', async () 
     assert.equal(calls[3]?.headers.get('x-csrf-token'), 'new-token')
     assert.deepEqual(
       events.map((event) => event.type),
-      ['final', 'done'],
+      ['delta', 'final', 'done'],
     )
   } finally {
     globalThis.fetch = originalFetch

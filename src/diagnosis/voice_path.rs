@@ -58,20 +58,20 @@ pub fn build_voice_path_diagnosis(input: VoicePathDiagnosisInput) -> DiagnosisRe
             input.metrics.voice_output_fail_total.to_string(),
         ),
         DiagnosisEvidence::new(
-            "voice_input_stt_http_last_ms",
-            input.metrics.voice_input_stt_http_last_ms.to_string(),
+            "voice_input_last_ms",
+            input.metrics.voice_input_last_ms.to_string(),
         ),
         DiagnosisEvidence::new(
-            "voice_output_tts_http_last_ms",
-            input.metrics.voice_output_tts_http_last_ms.to_string(),
+            "voice_output_last_ms",
+            input.metrics.voice_output_last_ms.to_string(),
         ),
         DiagnosisEvidence::new(
-            "voice_interrupt_request_total",
-            input.metrics.voice_interrupt_request_total.to_string(),
+            "voice_interrupt_total",
+            input.metrics.voice_interrupt_total.to_string(),
         ),
         DiagnosisEvidence::new(
-            "voice_interrupt_accept_total",
-            input.metrics.voice_interrupt_accept_total.to_string(),
+            "voice_interrupt_missed_total",
+            input.metrics.voice_interrupt_missed_total.to_string(),
         ),
         DiagnosisEvidence::new(
             "voice_no_speech_timeout_total",
@@ -82,8 +82,8 @@ pub fn build_voice_path_diagnosis(input: VoicePathDiagnosisInput) -> DiagnosisRe
             input.metrics.voice_response_wait_timeout_total.to_string(),
         ),
         DiagnosisEvidence::new(
-            "voice_post_playback_timeout_total",
-            input.metrics.voice_post_playback_timeout_total.to_string(),
+            "voice_playback_timeout_total",
+            input.metrics.voice_playback_timeout_total.to_string(),
         ),
         DiagnosisEvidence::new(
             "wake_trigger_total",
@@ -205,14 +205,14 @@ pub fn build_voice_path_diagnosis(input: VoicePathDiagnosisInput) -> DiagnosisRe
 
     if input.metrics.voice_no_speech_timeout_total > 0
         || input.metrics.voice_response_wait_timeout_total > 0
-        || input.metrics.voice_post_playback_timeout_total > 0
+        || input.metrics.voice_playback_timeout_total > 0
     {
         findings.push(DiagnosisFinding::correlated(
             "voice session timeouts were recorded recently",
         ));
         suspected_root_causes.push(DiagnosisRootCause::new(
             "voice_session_timeouts",
-            "recent timeout counters indicate that capture, response wait, or post-playback closure is stalling",
+            "recent timeout counters indicate that listening, response wait, or playback completion is stalling",
             DiagnosisConfidence::Medium,
         ));
         recommended_next_steps.push(DiagnosisAction::new(
