@@ -16,6 +16,8 @@ mod continuity_snapshot;
 mod core_revision_ledger;
 mod execution_state;
 mod felt_significance;
+#[cfg(all(test, not(any(target_arch = "xtensa", target_arch = "riscv32"))))]
+mod harness;
 mod hygiene;
 mod inner_conflict;
 mod inner_life;

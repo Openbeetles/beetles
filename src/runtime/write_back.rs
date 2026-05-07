@@ -3256,9 +3256,8 @@ mod tests {
             (crate::constants::TLS_ADMISSION_MIN_LARGEST_BLOCK_BYTES as u32) + 6 * 1024;
         resource.active_wss_count = 1;
 
-        assert_eq!(
+        assert!(
             write_back_admission_delay_for_resource(&resource, false).is_some(),
-            true,
             "durable write-back must reserve enough internal heap for the lazy write_back worker"
         );
         assert_eq!(
