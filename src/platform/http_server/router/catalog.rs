@@ -100,6 +100,8 @@ pub(crate) struct RouteWorkerMemoryRequirements {
 const ROUTE_WORKER_NON_TLS_INTERNAL_HEADROOM: usize = 8 * 1024;
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
 const ROUTE_WORKER_NON_TLS_LARGEST_HEADROOM: usize = 3 * 1024;
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
+const ROUTE_WORKER_CONFIG_LARGEST_HEADROOM: usize = 0;
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
 pub(crate) const fn route_worker_memory_requirements(
@@ -109,6 +111,11 @@ pub(crate) const fn route_worker_memory_requirements(
         (
             crate::constants::TLS_ADMISSION_MIN_INTERNAL_BYTES,
             crate::constants::TLS_ADMISSION_MIN_LARGEST_BLOCK_BYTES,
+        )
+    } else if matches!(contract.lane, RouteWorkerLane::Config) {
+        (
+            ROUTE_WORKER_NON_TLS_INTERNAL_HEADROOM,
+            ROUTE_WORKER_CONFIG_LARGEST_HEADROOM,
         )
     } else {
         (
@@ -1186,7 +1193,7 @@ pub(crate) const MEMORY_AND_SKILL_ROUTE_SPECS: &[HttpRouteSpec] = &[
 ];
 
 pub(crate) const ACTION_ROUTE_SPECS: &[HttpRouteSpec] = &[
-    HttpRouteSpec::async_config_operator(
+    HttpRouteSpec::immediate_operator(
         ROUTE_RESTART,
         RouteMethod::Post,
         RouteBodyMode::None,
@@ -1312,6 +1319,21 @@ mod tests {
     }
 
     #[test]
+    fn restart_route_is_lightweight_stopping_action_not_config_worker() {
+        let spec = route_spec_for("POST", ROUTE_RESTART).expect("restart route");
+
+        assert_eq!(spec.execution_class, RouteExecutionClass::ImmediateRoute);
+        assert_eq!(spec.operator_access, OperatorRouteAccess::AlwaysOn);
+        assert_eq!(spec.body_mode, RouteBodyMode::None);
+        assert_eq!(spec.handler(), Some(RouteHandler::RestartPost));
+        assert_eq!(
+            spec.config_activity_phase(),
+            Some(crate::runtime::ConfigActivityPhase::Stopping)
+        );
+        assert!(spec.rejects_during_voice_exclusive());
+    }
+
+    #[test]
     fn sessions_routes_are_product_chat_surface() {
         let get = route_spec_for("GET", ROUTE_SESSIONS).expect("sessions get route");
         assert_eq!(get.execution_class, RouteExecutionClass::SnapshotRoute);
@@ -1424,6 +1446,7 @@ mod tests {
                             | (RouteMethod::Get, ROUTE_RESOURCE)
                             | (RouteMethod::Get, ROUTE_TOOLS)
                             | (RouteMethod::Post, ROUTE_OPERATOR_WINDOW)
+                            | (RouteMethod::Post, ROUTE_RESTART)
                             | (RouteMethod::Post, ROUTE_WEBHOOK)
                     ),
                     "route {} {} must not run on HTTPD callback",
@@ -1999,6 +2022,8 @@ mod tests {
 
     #[test]
     fn config_worker_budget_fits_normal_esp_config_mode_largest_block() {
+        const S3_NORMAL_CONFIG_LARGEST_BLOCK_FLOOR_BYTES: usize = 31 * 1024;
+
         let contract = RouteExecutionClass::AsyncConfigRoute
             .worker_contract()
             .expect("config worker");
@@ -2015,10 +2040,10 @@ mod tests {
             requirements.required_largest,
             contract
                 .stack_size
-                .saturating_add(ROUTE_WORKER_NON_TLS_LARGEST_HEADROOM)
+                .saturating_add(ROUTE_WORKER_CONFIG_LARGEST_HEADROOM)
         );
         assert!(
-            requirements.required_largest <= 31 * 1024,
+            requirements.required_largest <= S3_NORMAL_CONFIG_LARGEST_BLOCK_FLOOR_BYTES,
             "core config writes must remain available at the observed normal ESP largest-block floor"
         );
     }
