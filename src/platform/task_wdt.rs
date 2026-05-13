@@ -24,6 +24,7 @@ pub fn thread_policy_for_name(name: &str) -> TaskWdtThreadPolicy {
             TaskWdtThreadPolicy::Owner
         }
         "http_snapshot_exec"
+        | "http_chat_history_exec"
         | "http_config_exec"
         | "http_diag_exec"
         | "dispatch"

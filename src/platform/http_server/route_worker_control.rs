@@ -60,6 +60,7 @@ impl RouteStartCooldown {
 pub(crate) fn route_worker_spawn_contract(lane: RouteWorkerLane) -> RouteWorkerContract {
     match lane {
         RouteWorkerLane::Snapshot => RouteExecutionClass::SnapshotRoute,
+        RouteWorkerLane::ChatHistory => RouteExecutionClass::ChatHistoryRoute,
         RouteWorkerLane::Config => RouteExecutionClass::AsyncConfigRoute,
         RouteWorkerLane::Diagnostic => RouteExecutionClass::SlowDiagnosticRoute,
     }
@@ -76,7 +77,7 @@ pub(crate) fn effective_route_worker_memory_requirements(
         RouteWorkerLane::Snapshot | RouteWorkerLane::Diagnostic => {
             ESP_ROUTE_WORKER_MIN_LARGEST_BLOCK_BYTES
         }
-        RouteWorkerLane::Config => 0,
+        RouteWorkerLane::ChatHistory | RouteWorkerLane::Config => 0,
     };
     RouteWorkerMemoryRequirements {
         required_internal: direct.required_internal.max(spawn.required_internal),
@@ -124,6 +125,19 @@ mod tests {
             effective.required_largest,
             ESP_ROUTE_WORKER_MIN_LARGEST_BLOCK_BYTES
         );
+    }
+
+    #[test]
+    fn chat_history_worker_admission_does_not_inherit_snapshot_floor() {
+        let chat_history = RouteExecutionClass::ChatHistoryRoute
+            .worker_contract()
+            .expect("chat history contract");
+        let direct = route_worker_memory_requirements(chat_history);
+        let effective = effective_route_worker_memory_requirements(chat_history);
+
+        assert!(direct.required_largest < ESP_ROUTE_WORKER_MIN_LARGEST_BLOCK_BYTES);
+        assert_eq!(effective.required_largest, direct.required_largest);
+        assert_eq!(effective.required_internal, direct.required_internal);
     }
 
     #[test]

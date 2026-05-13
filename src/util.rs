@@ -938,6 +938,7 @@ pub fn is_private_url(url: &str) -> bool {
 // | config_plane_watch                    | STACK_CONFIG_PLANE_WATCH | 6 KB | 6 KB  | ← wrapper thread owns config-plane lifecycle; 4KB S3 test hit low-margin
 // | wifi_worker                           | STACK_WIFI_WORKER      | 8 KB  | n/a   | ← ESP WiFi driver + scan + STA keepalive owner
 // | http_snapshot_exec                     | STACK_HTTP_SNAPSHOT_WORKER | 24 KB | 24 KB | ← local read-only snapshots; P4 smoke exposed >20 KB use, S3 soak remains the ESP baseline gate
+// | http_chat_history_exec                 | STACK_HTTP_CHAT_HISTORY_WORKER | 24 KB | 24 KB | ← product chat history; storage-backed but not global snapshot admission floor
 // | http_config_exec                       | STACK_HTTP_CONFIG_WORKER | 28 KB | 32 KB | ← config writes must fit normal post-startup largest-block budget
 // | http_diag_exec                         | STACK_HTTP_DIAG_WORKER   | 28 KB | 32 KB | ← scan/diagnostic lane after first-screen fan-out was moved off this worker
 // | dispatch                              | STACK_DISPATCH         | 6 KB  | 6 KB  | ← 常驻逻辑只做 admission/retry/cooldown，不承接重执行链
@@ -1074,6 +1075,12 @@ pub const STACK_VOICE_REALTIME: usize = LINUX_RUSTLS_THREAD_STACK;
 /// P4 `/api/resource` 实机高水位暴露了 20KB 预算不足；common ESP 预算仍需以
 /// S3 release-size soak 作为最低准入基线，优先拆路由深度而不是继续上调通用栈。
 pub const STACK_HTTP_SNAPSHOT_WORKER: usize = 24 * 1024;
+
+/// HTTP chat history worker：承接 Configure UI 聊天历史列表/读取。
+///
+/// 它仍然离开 HTTPD callback，避免 storage/serde 压在回调线程上；但它不是全局
+/// Snapshot 观测面，不继承 32KB largest-block observation floor。
+pub const STACK_HTTP_CHAT_HISTORY_WORKER: usize = 24 * 1024;
 
 /// ESP HTTP config route worker：承接 NVS/storage/serde 配置写入，避免压在
 /// IDF HTTPD 回调线程上。配置面必须能在 post-startup 约 31-32KB largest block

@@ -42,6 +42,8 @@ pub(crate) enum RouteExecutionClass {
     StreamingRoute,
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
     SnapshotRoute,
+    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
+    ChatHistoryRoute,
     AsyncConfigRoute,
     LocalDiagnosticRoute,
     SlowDiagnosticRoute,
@@ -52,6 +54,7 @@ pub(crate) enum RouteExecutionClass {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RouteWorkerLane {
     Snapshot,
+    ChatHistory,
     Config,
     Diagnostic,
 }
@@ -61,6 +64,7 @@ impl RouteWorkerLane {
     pub(crate) const fn lease_kind(self) -> crate::runtime::lease::LeaseKind {
         match self {
             Self::Snapshot => crate::runtime::lease::LeaseKind::SnapshotHttpWorker,
+            Self::ChatHistory => crate::runtime::lease::LeaseKind::ChatHistoryHttpWorker,
             Self::Config => crate::runtime::lease::LeaseKind::ConfigHttpWorker,
             Self::Diagnostic => crate::runtime::lease::LeaseKind::DiagnosticHttpWorker,
         }
@@ -170,7 +174,11 @@ pub(crate) fn route_worker_runtime_busy_detail(
     contract: RouteWorkerContract,
     load: RouteWorkerRuntimeLoad,
 ) -> Option<String> {
-    if load.pressure != crate::orchestrator::pressure::PressureLevel::Normal {
+    let pressure_allows_worker = load.pressure
+        == crate::orchestrator::pressure::PressureLevel::Normal
+        || (contract.lane == RouteWorkerLane::ChatHistory
+            && load.pressure == crate::orchestrator::pressure::PressureLevel::Cautious);
+    if !pressure_allows_worker {
         return Some(format!(
             "route worker start deferred for {:?}: pressure={:?}",
             contract.lane, load.pressure
@@ -209,6 +217,20 @@ impl RouteExecutionClass {
                 counter_name: "http_snapshot_worker",
                 begin_stage: "http_snapshot_begin",
                 complete_stage: "http_snapshot_complete",
+            }),
+            Self::ChatHistoryRoute => Some(RouteWorkerContract {
+                lane: RouteWorkerLane::ChatHistory,
+                stack_size: crate::util::STACK_HTTP_CHAT_HISTORY_WORKER,
+                reserves_tls_headroom: false,
+                queue_capacity: 2,
+                worker_threads: 1,
+                timeout_secs: 5,
+                idle_timeout_secs: 5,
+                reject_status: 503,
+                socket_reserve: 0,
+                counter_name: "http_chat_history_worker",
+                begin_stage: "http_chat_history_begin",
+                complete_stage: "http_chat_history_complete",
             }),
             Self::AsyncConfigRoute => Some(RouteWorkerContract {
                 lane: RouteWorkerLane::Config,
@@ -420,6 +442,25 @@ impl HttpRouteSpec {
             body_mode,
             handler: None,
             execution_class: RouteExecutionClass::SnapshotRoute,
+            operator_access,
+            config_activity_phase: None,
+            reject_during_voice_exclusive: false,
+        }
+    }
+
+    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
+    pub(crate) const fn chat_history_operator(
+        path: &'static str,
+        method: RouteMethod,
+        body_mode: RouteBodyMode,
+        operator_access: OperatorRouteAccess,
+    ) -> Self {
+        Self {
+            path,
+            method,
+            body_mode,
+            handler: None,
+            execution_class: RouteExecutionClass::ChatHistoryRoute,
             operator_access,
             config_activity_phase: None,
             reject_during_voice_exclusive: false,
@@ -1073,7 +1114,7 @@ pub(crate) const MEMORY_AND_SKILL_ROUTE_SPECS: &[HttpRouteSpec] = &[
     .with_handler(RouteHandler::ToolsGet),
     HttpRouteSpec::immediate(ROUTE_TOOLS, RouteMethod::Options, RouteBodyMode::None),
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
-    HttpRouteSpec::snapshot_operator(
+    HttpRouteSpec::chat_history_operator(
         ROUTE_SESSIONS,
         RouteMethod::Get,
         RouteBodyMode::None,
@@ -1336,7 +1377,7 @@ mod tests {
     #[test]
     fn sessions_routes_are_product_chat_surface() {
         let get = route_spec_for("GET", ROUTE_SESSIONS).expect("sessions get route");
-        assert_eq!(get.execution_class, RouteExecutionClass::SnapshotRoute);
+        assert_eq!(get.execution_class, RouteExecutionClass::ChatHistoryRoute);
         assert_eq!(get.operator_access, OperatorRouteAccess::AlwaysOn);
         assert_eq!(get.handler(), Some(RouteHandler::SessionsGet));
 
@@ -1687,6 +1728,7 @@ mod tests {
     fn worker_route_classes_have_complete_contracts() {
         for class in [
             RouteExecutionClass::SnapshotRoute,
+            RouteExecutionClass::ChatHistoryRoute,
             RouteExecutionClass::AsyncConfigRoute,
             RouteExecutionClass::LocalDiagnosticRoute,
             RouteExecutionClass::SlowDiagnosticRoute,
@@ -1722,6 +1764,13 @@ mod tests {
                 .expect("snapshot worker")
                 .stack_size,
             crate::util::STACK_HTTP_SNAPSHOT_WORKER
+        );
+        assert_eq!(
+            RouteExecutionClass::ChatHistoryRoute
+                .worker_contract()
+                .expect("chat history worker")
+                .stack_size,
+            crate::util::STACK_HTTP_CHAT_HISTORY_WORKER
         );
         assert_eq!(
             RouteExecutionClass::AsyncConfigRoute
@@ -1778,6 +1827,14 @@ mod tests {
         assert!(route_worker_runtime_busy_detail(contract, pressure_busy)
             .expect("pressure should defer snapshot worker")
             .contains("pressure=Cautious"));
+
+        let chat_history = RouteExecutionClass::ChatHistoryRoute
+            .worker_contract()
+            .expect("chat history contract");
+        assert!(
+            route_worker_runtime_busy_detail(chat_history, pressure_busy).is_none(),
+            "chat history must remain available in Cautious when concrete worker memory admission still passes"
+        );
     }
 
     #[test]
@@ -1787,6 +1844,11 @@ mod tests {
                 RouteExecutionClass::SnapshotRoute,
                 RouteWorkerLane::Snapshot,
                 crate::runtime::lease::LeaseKind::SnapshotHttpWorker,
+            ),
+            (
+                RouteExecutionClass::ChatHistoryRoute,
+                RouteWorkerLane::ChatHistory,
+                crate::runtime::lease::LeaseKind::ChatHistoryHttpWorker,
             ),
             (
                 RouteExecutionClass::AsyncConfigRoute,

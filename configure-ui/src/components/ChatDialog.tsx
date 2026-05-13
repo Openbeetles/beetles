@@ -215,6 +215,7 @@ export function ChatDialog({ open, onClose, onMinimize }: ChatDialogProps) {
         setConversations([createEmptyConversation(t("chat.defaultSessionTitle"))]);
         setSessionNextCursor(null);
         setActiveId(DEFAULT_CHAT_ID);
+        setSessionsLoaded(true);
         return;
       }
 

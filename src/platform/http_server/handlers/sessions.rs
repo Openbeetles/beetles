@@ -11,6 +11,7 @@ use std::sync::mpsc::TrySendError;
 
 const SESSION_LIST_LIMIT_MAX: usize = 50;
 const SESSION_MESSAGE_LIMIT_MAX: usize = 50;
+const SESSION_SUMMARY_RECENT_LIMIT: usize = 8;
 const SESSION_TITLE_MAX_CHARS: usize = 32;
 const SESSION_PREVIEW_MAX_CHARS: usize = 80;
 
@@ -60,9 +61,14 @@ pub fn detail(
     limit: usize,
 ) -> Result<String, String> {
     let limit = limit.clamp(1, SESSION_MESSAGE_LIMIT_MAX);
+    let records_limit = if before.is_some() {
+        MAX_SESSION_ENTRIES
+    } else {
+        limit.saturating_add(1).min(MAX_SESSION_ENTRIES)
+    };
     let records = ctx
         .session_store
-        .load_recent_records(chat_id, MAX_SESSION_ENTRIES)
+        .load_recent_records(chat_id, records_limit)
         .map_err(|e| state::sanitize_error_for_log(&e))?;
     let end = before
         .and_then(|message_id| {
@@ -181,7 +187,7 @@ pub fn delete(ctx: &HandlerContext, chat_id: &str) -> Result<String, String> {
 fn session_summary(ctx: &HandlerContext, chat_id: &str) -> Result<serde_json::Value, String> {
     let records = ctx
         .session_store
-        .load_recent_records(chat_id, MAX_SESSION_ENTRIES)
+        .load_recent_records(chat_id, SESSION_SUMMARY_RECENT_LIMIT)
         .map_err(|e| state::sanitize_error_for_log(&e))?;
     let message_count = ctx
         .session_store
@@ -229,10 +235,18 @@ fn compact_preview(content: &str, max_chars: usize) -> String {
 }
 
 fn chat_stream_admission_error() -> Option<(&'static str, &'static str)> {
-    let resource = crate::orchestrator::resource_light_snapshot();
-    if resource.pressure != crate::orchestrator::PressureLevel::Normal {
-        return Some(("chat.stream_pressure", "sessions_post_pressure"));
+    match crate::orchestrator::can_call_llm_for_channel_pub(
+        crate::chat_stream::CHANNEL_CONFIGURE_UI_CHAT,
+    ) {
+        crate::orchestrator::LlmDecision::Proceed => {}
+        crate::orchestrator::LlmDecision::RetryLater { .. } => {
+            return Some(("chat.stream_pressure", "sessions_post_llm_admission"));
+        }
+        crate::orchestrator::LlmDecision::Degrade { .. } => {
+            return Some(("chat.stream_pressure", "sessions_post_pressure"));
+        }
     }
+    let resource = crate::orchestrator::resource_light_snapshot();
     if resource.storage_contention_risk != crate::orchestrator::StorageContentionRisk::Healthy {
         return Some(("chat.stream_storage_busy", "sessions_post_storage"));
     }

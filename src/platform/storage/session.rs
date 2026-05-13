@@ -1145,8 +1145,10 @@ impl SessionStore for StorageSessionStore {
                 needs_repair,
             ))
         })?;
-        let mut recent_cache = self.recent.lock().unwrap_or_else(|e| e.into_inner());
-        Self::upsert_recent_cache(&mut recent_cache, chat_id, recent.clone());
+        if cap == MAX_SESSION_ENTRIES || self.should_defer_compact_on_append() {
+            let mut recent_cache = self.recent.lock().unwrap_or_else(|e| e.into_inner());
+            Self::upsert_recent_cache(&mut recent_cache, chat_id, recent.clone());
+        }
         if needs_repair {
             return Ok(synthesize_session_message_records(
                 chat_id,
@@ -1675,6 +1677,60 @@ mod tests {
         assert_eq!(
             recent.last().expect("last recent").content,
             "overflow reply"
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn partial_record_reads_do_not_poison_compacting_append_cache() {
+        let store = StorageSessionStore::new();
+        let chat_id = format!("partial-record-cache-{}", std::process::id());
+        let (path, _) = session_path(&chat_id).expect("path");
+        let _ = std::fs::remove_file(&path);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("sessions dir");
+        }
+        let mut seeded = String::new();
+        for index in 0..MAX_SESSION_ENTRIES {
+            let message = StoredSessionMessage {
+                message_id: format!("msg_seed_{index:03}"),
+                role: "user".to_string(),
+                content: format!("seed {index:03}"),
+            };
+            seeded.push_str(&serde_json::to_string(&message).expect("seed line"));
+            seeded.push('\n');
+        }
+        write_session_body_unlocked(&path, seeded.as_bytes()).expect("seed full session");
+
+        let summary_records = store
+            .load_recent_records(&chat_id, 8)
+            .expect("partial record read");
+        assert_eq!(summary_records.len(), 8);
+
+        store
+            .append_batch(
+                &chat_id,
+                &[SessionMessage {
+                    role: "assistant".to_string(),
+                    content: "new reply".to_string(),
+                }],
+            )
+            .expect("append after partial record read");
+
+        let raw = std::fs::read(&path).expect("read after compact append");
+        let snapshot = scan_session_file(&raw);
+        assert_eq!(
+            snapshot.message_count, MAX_SESSION_ENTRIES,
+            "partial /api/sessions reads must not shrink the compacted ring"
+        );
+        assert_eq!(
+            snapshot.messages.front().expect("first compacted").content,
+            "seed 001"
+        );
+        assert_eq!(
+            snapshot.messages.back().expect("last compacted").content,
+            "new reply"
         );
 
         let _ = std::fs::remove_file(&path);

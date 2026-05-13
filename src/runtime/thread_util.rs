@@ -17,10 +17,12 @@ pub fn thread_plan(name: &str) -> ThreadPlan {
             core: Some(SpawnCore::Core0),
             role: HttpThreadRole::Io,
         },
-        "http_snapshot_exec" | "http_config_exec" | "http_diag_exec" => ThreadPlan {
-            core: Some(SpawnCore::Core1),
-            role: HttpThreadRole::Io,
-        },
+        "http_snapshot_exec" | "http_chat_history_exec" | "http_config_exec" | "http_diag_exec" => {
+            ThreadPlan {
+                core: Some(SpawnCore::Core1),
+                role: HttpThreadRole::Io,
+            }
+        }
         "agent_loop" => ThreadPlan {
             core: Some(SpawnCore::Core1),
             role: HttpThreadRole::Interactive,
@@ -53,6 +55,7 @@ pub fn stack_budget_for_thread(name: &str) -> Option<usize> {
         "startup_recovery" => Some(crate::util::STACK_STARTUP_RECOVERY),
         "config_plane_watch" => Some(crate::util::STACK_CONFIG_PLANE_WATCH),
         "http_snapshot_exec" => Some(crate::util::STACK_HTTP_SNAPSHOT_WORKER),
+        "http_chat_history_exec" => Some(crate::util::STACK_HTTP_CHAT_HISTORY_WORKER),
         "http_config_exec" => Some(crate::util::STACK_HTTP_CONFIG_WORKER),
         "http_diag_exec" => Some(crate::util::STACK_HTTP_DIAG_WORKER),
         "qq_ws" | "feishu_ws" | "wecom_aibot" | "dingtalk_stream" => {

@@ -401,6 +401,7 @@ fn route_worker_admission_reject(
 #[derive(Clone)]
 struct EspRouteExecutors {
     snapshot: EspRouteExecutor,
+    chat_history: EspRouteExecutor,
     config: EspRouteExecutor,
     diagnostic: EspRouteExecutor,
 }
@@ -409,6 +410,7 @@ impl EspRouteExecutors {
     fn new(ctx: &Arc<HandlerContext>, config_store: &Arc<dyn ConfigStore + Send + Sync>) -> Self {
         Self {
             snapshot: EspRouteExecutor::new(RouteWorkerLane::Snapshot, ctx, config_store),
+            chat_history: EspRouteExecutor::new(RouteWorkerLane::ChatHistory, ctx, config_store),
             config: EspRouteExecutor::new(RouteWorkerLane::Config, ctx, config_store),
             diagnostic: EspRouteExecutor::new(RouteWorkerLane::Diagnostic, ctx, config_store),
         }
@@ -418,6 +420,7 @@ impl EspRouteExecutors {
         let contract = class.worker_contract()?;
         match contract.lane {
             RouteWorkerLane::Snapshot => Some(&self.snapshot),
+            RouteWorkerLane::ChatHistory => Some(&self.chat_history),
             RouteWorkerLane::Config => Some(&self.config),
             RouteWorkerLane::Diagnostic => Some(&self.diagnostic),
         }
@@ -427,6 +430,7 @@ impl EspRouteExecutors {
 fn route_worker_thread_name(lane: RouteWorkerLane) -> &'static str {
     match lane {
         RouteWorkerLane::Snapshot => "http_snapshot_exec",
+        RouteWorkerLane::ChatHistory => "http_chat_history_exec",
         RouteWorkerLane::Config => "http_config_exec",
         RouteWorkerLane::Diagnostic => "http_diag_exec",
     }
@@ -435,6 +439,7 @@ fn route_worker_thread_name(lane: RouteWorkerLane) -> &'static str {
 fn route_worker_spawn_stage(lane: RouteWorkerLane) -> &'static str {
     match lane {
         RouteWorkerLane::Snapshot => "http_snapshot_exec_spawn",
+        RouteWorkerLane::ChatHistory => "http_chat_history_exec_spawn",
         RouteWorkerLane::Config => "http_config_exec_spawn",
         RouteWorkerLane::Diagnostic => "http_diag_exec_spawn",
     }
@@ -445,6 +450,7 @@ fn route_worker_lifecycle_identity(
 ) -> (crate::runtime::PlaneId, &'static str) {
     match lane {
         RouteWorkerLane::Snapshot => (crate::runtime::PlaneId::Diagnostic, "http_snapshot"),
+        RouteWorkerLane::ChatHistory => (crate::runtime::PlaneId::Diagnostic, "http_chat_history"),
         RouteWorkerLane::Config => (crate::runtime::PlaneId::ConfigRecovery, "http_config"),
         RouteWorkerLane::Diagnostic => (crate::runtime::PlaneId::Diagnostic, "http_diagnostic"),
     }
@@ -458,6 +464,7 @@ fn route_worker_lease_identity(
 ) {
     let owner = match lane {
         RouteWorkerLane::Snapshot => "http_snapshot",
+        RouteWorkerLane::ChatHistory => "http_chat_history",
         RouteWorkerLane::Config => "http_config",
         RouteWorkerLane::Diagnostic => "http_diagnostic",
     };
@@ -1396,6 +1403,16 @@ mod tests {
             std::ptr::eq(local, slow),
             "local and slow diagnostic route classes must share the Diagnostic lane executor"
         );
+        let chat_history = executors
+            .for_class(RouteExecutionClass::ChatHistoryRoute)
+            .expect("chat history executor");
+        let snapshot = executors
+            .for_class(RouteExecutionClass::SnapshotRoute)
+            .expect("snapshot executor");
+        assert!(
+            !std::ptr::eq(chat_history, snapshot),
+            "chat history must not inherit Snapshot lane cooldown or largest-block floor"
+        );
     }
 
     #[test]
@@ -1403,6 +1420,10 @@ mod tests {
         assert_eq!(
             route_worker_lifecycle_identity(RouteWorkerLane::Snapshot),
             (PlaneId::Diagnostic, "http_snapshot")
+        );
+        assert_eq!(
+            route_worker_lifecycle_identity(RouteWorkerLane::ChatHistory),
+            (PlaneId::Diagnostic, "http_chat_history")
         );
         assert_eq!(
             route_worker_lifecycle_identity(RouteWorkerLane::Config),
@@ -1421,6 +1442,13 @@ mod tests {
             (
                 crate::runtime::lease::LeaseKind::SnapshotHttpWorker,
                 crate::runtime::lease::LeaseOwner::new("http_route", "http_snapshot")
+            )
+        );
+        assert_eq!(
+            route_worker_lease_identity(RouteWorkerLane::ChatHistory),
+            (
+                crate::runtime::lease::LeaseKind::ChatHistoryHttpWorker,
+                crate::runtime::lease::LeaseOwner::new("http_route", "http_chat_history")
             )
         );
         assert_eq!(

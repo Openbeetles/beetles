@@ -194,6 +194,26 @@ const PLANE_PROFILES: &[PlaneProfile] = &[
         mode_sensitive: true,
     },
     PlaneProfile {
+        id: PlaneId::Diagnostic,
+        owner: "http_chat_history",
+        startup_phase: PlaneStartupPhase::OnDemand,
+        residency: PlaneResidency::Lazy,
+        allowed_modes: MODES_DIAGNOSTIC,
+        required_leases: &[LeaseKind::ChatHistoryHttpWorker],
+        thread_names: &["http_chat_history_exec"],
+        queue_budget: Some(PlaneQueueBudget {
+            name: "http_chat_history_exec",
+            capacity: 2,
+        }),
+        drain_timeout_secs: Some(5),
+        execution_class: ThreadExecutionClass::Config,
+        risk_class: ThreadRiskClass::Medium,
+        tls_capable: false,
+        http_capable: true,
+        wss_capable: false,
+        mode_sensitive: true,
+    },
+    PlaneProfile {
         id: PlaneId::ConfigRecovery,
         owner: "http_config",
         startup_phase: PlaneStartupPhase::OnDemand,
@@ -601,11 +621,33 @@ mod tests {
     }
 
     #[test]
+    fn chat_history_route_profile_is_separate_from_snapshot_floor() {
+        let profile = profile_for_thread("http_chat_history_exec").expect("chat history profile");
+
+        assert_eq!(profile.execution_class, ThreadExecutionClass::Config);
+        assert_eq!(profile.risk_class, ThreadRiskClass::Medium);
+        assert!(profile.http_capable);
+        assert!(!profile.tls_capable);
+        assert_eq!(profile.required_leases, &[LeaseKind::ChatHistoryHttpWorker]);
+        assert_eq!(
+            profile.queue_budget,
+            Some(PlaneQueueBudget {
+                name: "http_chat_history_exec",
+                capacity: 2,
+            })
+        );
+    }
+
+    #[test]
     fn http_worker_profiles_match_route_worker_lane_leases() {
         let cases = [
             (
                 "http_snapshot_exec",
                 crate::platform::http_server::router::catalog::RouteExecutionClass::SnapshotRoute,
+            ),
+            (
+                "http_chat_history_exec",
+                crate::platform::http_server::router::catalog::RouteExecutionClass::ChatHistoryRoute,
             ),
             (
                 "http_config_exec",
