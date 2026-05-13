@@ -116,7 +116,10 @@ pub(crate) const fn route_worker_memory_requirements(
             crate::constants::TLS_ADMISSION_MIN_INTERNAL_BYTES,
             crate::constants::TLS_ADMISSION_MIN_LARGEST_BLOCK_BYTES,
         )
-    } else if matches!(contract.lane, RouteWorkerLane::Config) {
+    } else if matches!(
+        contract.lane,
+        RouteWorkerLane::ChatHistory | RouteWorkerLane::Config
+    ) {
         (
             ROUTE_WORKER_NON_TLS_INTERNAL_HEADROOM,
             ROUTE_WORKER_CONFIG_LARGEST_HEADROOM,

@@ -522,7 +522,39 @@ fail_on_unexpected_monitor_stderr() {
   local stderr_file="$1"
   local filtered_file="$2"
   [[ -s "$stderr_file" ]] || return 0
-  grep -Ev 'BrokenPipe|Broken pipe' "$stderr_file" > "$filtered_file" || true
+  awk '
+    function flush_block() {
+      if (block == "") {
+        return
+      }
+      if (block !~ /(BrokenPipe|Broken pipe)/) {
+        printf "%s", block
+      }
+      block = ""
+      in_error_block = 0
+    }
+
+    /^Error:/ {
+      flush_block()
+      in_error_block = 1
+      block = $0 ORS
+      next
+    }
+
+    in_error_block {
+      block = block $0 ORS
+      if ($0 == "") {
+        flush_block()
+      }
+      next
+    }
+
+    { print }
+
+    END {
+      flush_block()
+    }
+  ' "$stderr_file" | grep -Ev 'BrokenPipe|Broken pipe' > "$filtered_file" || true
   if [[ -s "$filtered_file" ]]; then
     echo "Gate failed: monitor stderr contained unexpected output" >&2
     cat "$filtered_file" >&2

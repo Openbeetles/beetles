@@ -135,6 +135,10 @@ mod tests {
         let direct = route_worker_memory_requirements(chat_history);
         let effective = effective_route_worker_memory_requirements(chat_history);
 
+        assert_eq!(
+            direct.required_largest,
+            crate::util::STACK_HTTP_CHAT_HISTORY_WORKER
+        );
         assert!(direct.required_largest < ESP_ROUTE_WORKER_MIN_LARGEST_BLOCK_BYTES);
         assert_eq!(effective.required_largest, direct.required_largest);
         assert_eq!(effective.required_internal, direct.required_internal);
