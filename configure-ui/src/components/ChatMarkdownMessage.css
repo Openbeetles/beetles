@@ -1,0 +1,132 @@
+.chat-markdown-message {
+  max-width: 100%;
+  color: inherit;
+  font-size: var(--font-size-body-sm);
+  line-height: 1.58;
+  overflow-wrap: anywhere;
+}
+
+.chat-markdown-message > :first-child {
+  margin-top: 0;
+}
+
+.chat-markdown-message > :last-child {
+  margin-bottom: 0;
+}
+
+.chat-markdown-message p {
+  margin: 0.25rem 0 0.55rem;
+}
+
+.chat-markdown-message h1,
+.chat-markdown-message h2,
+.chat-markdown-message h3,
+.chat-markdown-message h4,
+.chat-markdown-message h5,
+.chat-markdown-message h6 {
+  margin: 0.5rem 0 0.35rem;
+  color: inherit;
+  font-size: 1em;
+  font-weight: 800;
+  line-height: 1.35;
+  letter-spacing: 0;
+}
+
+.chat-markdown-message ul,
+.chat-markdown-message ol {
+  margin: 0.25rem 0 0.55rem;
+  padding-left: 1.25rem;
+}
+
+.chat-markdown-message li {
+  margin: 0.15rem 0;
+}
+
+.chat-markdown-message li > p {
+  margin: 0.1rem 0;
+}
+
+.chat-markdown-message__task-item {
+  display: flex;
+  gap: 0.45rem;
+  align-items: flex-start;
+  list-style: none;
+}
+
+.chat-markdown-message__task-item input {
+  margin: 0.22rem 0 0;
+  accent-color: var(--primary);
+}
+
+.chat-markdown-message blockquote {
+  margin: 0.4rem 0 0.65rem;
+  padding: 0.3rem 0.65rem;
+  border-left: 3px solid color-mix(in srgb, var(--primary) 48%, var(--border));
+  border-radius: 0 var(--radius-control) var(--radius-control) 0;
+  background: color-mix(in srgb, var(--primary) 6%, transparent);
+  color: color-mix(in srgb, currentColor 84%, transparent);
+}
+
+.chat-markdown-message a {
+  color: var(--primary);
+  font-weight: 700;
+  text-decoration: underline;
+  text-underline-offset: 0.16em;
+}
+
+.chat-markdown-message__inline-code {
+  border-radius: 0.35rem;
+  background: color-mix(in srgb, currentColor 8%, transparent);
+  padding: 0.08rem 0.3rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.9em;
+}
+
+.chat-markdown-message pre {
+  max-width: 100%;
+  margin: 0.45rem 0 0.65rem;
+  overflow-x: auto;
+  border: 1px solid color-mix(in srgb, var(--border) 30%, transparent);
+  border-radius: var(--radius-control);
+  background: color-mix(in srgb, var(--foreground) 4%, transparent);
+  padding: 0.65rem 0.75rem;
+}
+
+.chat-markdown-message pre code {
+  background: transparent;
+  padding: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.88em;
+  white-space: pre;
+}
+
+.chat-markdown-message__table-wrap {
+  max-width: 100%;
+  margin: 0.45rem 0 0.65rem;
+  overflow-x: auto;
+}
+
+.chat-markdown-message table {
+  width: max-content;
+  min-width: 100%;
+  border-collapse: collapse;
+  font-size: 0.92em;
+}
+
+.chat-markdown-message th,
+.chat-markdown-message td {
+  border: 1px solid color-mix(in srgb, var(--border) 38%, transparent);
+  padding: 0.35rem 0.55rem;
+  vertical-align: top;
+}
+
+.chat-markdown-message th {
+  background: color-mix(in srgb, var(--primary) 8%, transparent);
+  font-weight: 800;
+}
+
+.chat-markdown-message hr {
+  margin: 0.65rem 0;
+  border: none;
+  border-top: 1px solid color-mix(in srgb, var(--border) 32%, transparent);
+}

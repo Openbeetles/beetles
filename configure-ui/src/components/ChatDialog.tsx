@@ -11,6 +11,13 @@ import Typography from "@mui/material/Typography";
 import SendRoundedIcon from "@mui/icons-material/SendRounded";
 import { useTranslation } from "react-i18next";
 import { translateChatApiError } from "./chatErrors";
+import { ChatMarkdownMessage } from "./ChatMarkdownMessage";
+import {
+  appendMarkdownStreamDelta,
+  hasVisibleMarkdownText,
+  normalizeMarkdownText,
+} from "./ChatMarkdownMessageModel";
+import "./ChatDialog.css";
 import { useDeviceApi } from "../hooks/useDeviceApi";
 import type {
   ChatSessionMessage,
@@ -44,6 +51,7 @@ interface ChatMessageView {
   timeKey?: string;
   time?: string;
   pending?: boolean;
+  streaming?: boolean;
   error?: boolean;
 }
 
@@ -70,7 +78,7 @@ function messageFromSession(message: ChatSessionMessage): ChatMessageView {
   return {
     id: message.message_id,
     author: message.role === "user" ? "user" : "beetle",
-    text: message.content,
+    text: normalizeMarkdownText(message.content),
   };
 }
 
@@ -82,6 +90,23 @@ function createEmptyConversation(title: string): ChatConversation {
     online: true,
     messageCount: 0,
   };
+}
+
+function ChatStreamActivity({ label }: { label: string }) {
+  return (
+    <span className="chat-stream-activity" role="status" aria-live="polite">
+      <span>{label}</span>
+      <span className="chat-stream-activity__dots" aria-hidden="true">
+        <span />
+        <span />
+        <span />
+      </span>
+    </span>
+  );
+}
+
+function ChatStreamCaret() {
+  return <span className="chat-stream-caret" aria-hidden="true" />;
 }
 
 function WindowControl({
@@ -173,6 +198,8 @@ export function ChatDialog({ open, onClose, onMinimize }: ChatDialogProps) {
   const listRequestSeq = useRef(0);
   const detailRequestSeq = useRef(0);
   const streamAbortRef = useRef<AbortController | null>(null);
+  const messagesScrollRef = useRef<HTMLDivElement | null>(null);
+  const suppressNextAutoScrollRef = useRef(false);
   const activeConversation = useMemo(
     () =>
       conversations.find((conversation) => conversation.id === activeId) ??
@@ -183,6 +210,18 @@ export function ChatDialog({ open, onClose, onMinimize }: ChatDialogProps) {
   const activeMessages = activeConversation
     ? (messagesByChatId[activeConversation.id] ?? [])
     : [];
+  const latestMessage = activeMessages[activeMessages.length - 1];
+  const latestMessageScrollKey = latestMessage
+    ? [
+        activeChatId,
+        activeMessages.length,
+        latestMessage.id,
+        latestMessage.text.length,
+        latestMessage.pending ? "pending" : "settled",
+        latestMessage.streaming ? "streaming" : "idle",
+        latestMessage.error ? "error" : "ok",
+      ].join(":")
+    : `${activeChatId ?? ""}:empty`;
 
   const handleClose = () => {
     streamAbortRef.current?.abort();
@@ -270,6 +309,23 @@ export function ChatDialog({ open, onClose, onMinimize }: ChatDialogProps) {
     void loadMessages();
   }, [activeChatId, api, canAccessProtectedApis, open, sessionsLoaded, t]);
 
+  useEffect(() => {
+    if (!open || messagesLoading) return;
+    if (suppressNextAutoScrollRef.current) {
+      suppressNextAutoScrollRef.current = false;
+      return;
+    }
+    const frame = window.requestAnimationFrame(() => {
+      const scrollNode = messagesScrollRef.current;
+      if (!scrollNode) return;
+      scrollNode.scrollTo({
+        top: scrollNode.scrollHeight,
+        behavior: "auto",
+      });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [latestMessageScrollKey, messagesLoading, open]);
+
   const upsertConversation = (chatId: string, userText: string) => {
     setConversations((current) => {
       const exists = current.some((conversation) => conversation.id === chatId);
@@ -330,6 +386,7 @@ export function ChatDialog({ open, onClose, onMinimize }: ChatDialogProps) {
       text: "",
       timeKey: "chat.now",
       pending: true,
+      streaming: true,
     };
     setMessagesByChatId((current) => ({
       ...current,
@@ -343,12 +400,23 @@ export function ChatDialog({ open, onClose, onMinimize }: ChatDialogProps) {
     event: ChatSessionStreamEvent,
     accumulatedRef: { current: string },
   ) => {
-    if (event.type === "delta") {
-      accumulatedRef.current = `${accumulatedRef.current}${event.delta}`;
+    if (event.type === "queued") {
       updateMessage(chatId, assistantId, (message) => ({
         ...message,
-        text: accumulatedRef.current,
-        pending: false,
+        pending: !hasVisibleMarkdownText(message.text),
+        streaming: true,
+      }));
+      return;
+    }
+    if (event.type === "delta") {
+      const accumulated = appendMarkdownStreamDelta(accumulatedRef.current, event.delta);
+      const visible = hasVisibleMarkdownText(accumulated.rendered);
+      accumulatedRef.current = accumulated.raw;
+      updateMessage(chatId, assistantId, (message) => ({
+        ...message,
+        text: accumulated.rendered,
+        pending: !visible,
+        streaming: true,
       }));
       return;
     }
@@ -356,7 +424,9 @@ export function ChatDialog({ open, onClose, onMinimize }: ChatDialogProps) {
       updateMessage(chatId, assistantId, (message) => ({
         ...message,
         id: event.messageId ?? message.id,
+        text: message.text || t("chat.noResponse"),
         pending: false,
+        streaming: false,
       }));
       return;
     }
@@ -365,6 +435,7 @@ export function ChatDialog({ open, onClose, onMinimize }: ChatDialogProps) {
         ...message,
         text: translateChatApiError(t, event.error, "chat.sendFailed"),
         pending: false,
+        streaming: false,
         error: true,
       }));
     }
@@ -408,6 +479,9 @@ export function ChatDialog({ open, onClose, onMinimize }: ChatDialogProps) {
     if (!result.ok || !Array.isArray(messageItems)) {
       setErrorText(translateChatApiError(t, result.error, "chat.loadFailed"));
       return;
+    }
+    if (messageItems.length > 0) {
+      suppressNextAutoScrollRef.current = true;
     }
     setMessagesByChatId((current) => ({
       ...current,
@@ -455,6 +529,7 @@ export function ChatDialog({ open, onClose, onMinimize }: ChatDialogProps) {
         ...message,
         text: error,
         pending: false,
+        streaming: false,
         error: true,
       }));
       return;
@@ -463,6 +538,7 @@ export function ChatDialog({ open, onClose, onMinimize }: ChatDialogProps) {
       ...message,
       text: message.text || t("chat.noResponse"),
       pending: false,
+      streaming: false,
     }));
   };
 
@@ -774,6 +850,7 @@ export function ChatDialog({ open, onClose, onMinimize }: ChatDialogProps) {
             }}
           >
             <Stack
+              ref={messagesScrollRef}
               spacing={1.15}
               sx={{
                 flex: 1,
@@ -868,7 +945,17 @@ export function ChatDialog({ open, onClose, onMinimize }: ChatDialogProps) {
               ) : null}
               {activeMessages.map((message) => {
                 const isUser = message.author === "user";
-                const text = message.text || (message.pending ? t("chat.thinking") : "");
+                const showActivity =
+                  !isUser &&
+                  !message.error &&
+                  message.pending &&
+                  !hasVisibleMarkdownText(message.text);
+                const showStreamingCaret =
+                  !isUser &&
+                  !message.error &&
+                  Boolean(message.streaming) &&
+                  hasVisibleMarkdownText(message.text);
+                const text = message.text;
                 const time =
                   message.time ?? (message.timeKey ? t(message.timeKey) : "");
                 return (
@@ -880,6 +967,12 @@ export function ChatDialog({ open, onClose, onMinimize }: ChatDialogProps) {
                     }}
                   >
                     <Box
+                      className={[
+                        "chat-message-bubble",
+                        !isUser && message.streaming ? "chat-message-bubble--streaming" : "",
+                      ]
+                        .filter(Boolean)
+                        .join(" ")}
                       sx={{
                         maxWidth: { xs: "86%", sm: "68%" },
                         px: 1.45,
@@ -901,16 +994,23 @@ export function ChatDialog({ open, onClose, onMinimize }: ChatDialogProps) {
                           : "var(--os3d-control-soft-lift-stack)",
                       }}
                     >
-                      <Typography
-                        sx={{
-                          whiteSpace: "pre-wrap",
-                          overflowWrap: "anywhere",
-                          fontSize: "var(--font-size-body-sm)",
-                          lineHeight: 1.55,
-                        }}
-                      >
-                        {text}
-                      </Typography>
+                      {showActivity ? (
+                        <ChatStreamActivity label={t("chat.thinking")} />
+                      ) : !isUser && !message.error ? (
+                        <ChatMarkdownMessage markdown={text} />
+                      ) : (
+                        <Typography
+                          sx={{
+                            whiteSpace: "pre-wrap",
+                            overflowWrap: "anywhere",
+                            fontSize: "var(--font-size-body-sm)",
+                            lineHeight: 1.55,
+                          }}
+                        >
+                          {text}
+                        </Typography>
+                      )}
+                      {showStreamingCaret ? <ChatStreamCaret /> : null}
                       <Typography
                         sx={{
                           mt: 0.45,

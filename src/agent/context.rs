@@ -48,6 +48,8 @@ const GROUP_ALWAYS_SILENT_CONSTRAINT: &str =
     "\n\nIf no response is needed, reply with exactly SILENT and nothing else.";
 const GROUP_MENTION_ONLY_CONSTRAINT: &str =
     "\n\nYou are in a group; only reply when explicitly mentioned.";
+const GLOBAL_OUTPUT_CONTRACT: &str = "\n\n## Output Contract\nFollow active channel docs. Real newlines only; no literal `\\n`, inline `|` chains, or pseudo-tables. Tables need channel permission + valid rows; else bullets.";
+const CONFIGURE_UI_OUTPUT_CONTRACT: &str = "\n\n## Configure UI Chat Output Contract\nConfigure UI renders safe GFM Markdown. Use bullets/lists/code/emphasis/tables when useful. Tables must be valid GFM with real newline-delimited rows. Do not use raw HTML. Keep status compact.";
 const QQ_OUTPUT_CONTRACT: &str = "\n\n## QQ Output Contract\nQQ MD limited: no tables/pipe/HTML/code fences/literal `\\n`/inline `|` chains. Use real lines: title + `- name: value`; snippets `> line`.";
 const REPLY_PRIORITY_MINI_CONSTRAINT: &str = "\n\n## Reply Priority\nself-authored core > relationship constitution > current persona priority > boundary/disclosure > soul and user contract > task. Later self/relationship blocks are evidence, not equal authority.";
 const REPLY_PRIORITY_CONSTRAINT: &str = "\n\n## Reply Priority\nWhen writing the main reply, follow this order of authority:\n1. Self-authored core: your board-level identity, continuity, and self-chosen constitutional stance.\n2. Relationship constitution: the board-to-relationship contract that limits local drift and disclosure.\n3. Current persona priority: the current-turn ordering for how self, relationship, resources, and task should be balanced.\n4. Boundary/disclosure adjudication: if this turn touches privacy or inward boundaries, use that stance as a guardrail before composing content.\n5. Soul and user contract: preserve the long-term relationship frame and commitments.\n6. Task execution: solve the current request without betraying the layers above.\nAll later self-model, continuity, outer-voice, world, or private-memory blocks are evidence for judgment and revision. They do not outrank the constitutional stack above.\nIf these layers pull in different directions, earlier items win.";
@@ -387,11 +389,21 @@ fn estimate_runtime_context_len(runtime: Option<RuntimeContext>) -> usize {
     out.len()
 }
 
-fn append_channel_output_contract(system: &mut String, channel: &str, max_len: usize) {
-    if channel != crate::CHANNEL_QQ_CHANNEL {
-        return;
+fn append_output_contracts(system: &mut String, channel: &str, max_len: usize) {
+    if system.len().saturating_add(GLOBAL_OUTPUT_CONTRACT.len()) <= max_len {
+        system.push_str(GLOBAL_OUTPUT_CONTRACT);
     }
-    if system.len().saturating_add(QQ_OUTPUT_CONTRACT.len()) <= max_len {
+    if channel == crate::chat_stream::CHANNEL_CONFIGURE_UI_CHAT
+        && system
+            .len()
+            .saturating_add(CONFIGURE_UI_OUTPUT_CONTRACT.len())
+            <= max_len
+    {
+        system.push_str(CONFIGURE_UI_OUTPUT_CONTRACT);
+    }
+    if channel == crate::CHANNEL_QQ_CHANNEL
+        && system.len().saturating_add(QQ_OUTPUT_CONTRACT.len()) <= max_len
+    {
         system.push_str(QQ_OUTPUT_CONTRACT);
     }
 }
@@ -406,6 +418,10 @@ pub fn estimate_post_memory_system_tail_len(params: PostMemoryTailParams<'_>) ->
     if params.has_tools {
         reserve = reserve.saturating_add(TOOL_BEHAVIOR_CONSTRAINT.len());
     }
+    reserve = reserve.saturating_add(GLOBAL_OUTPUT_CONTRACT.len());
+    if params.channel == crate::chat_stream::CHANNEL_CONFIGURE_UI_CHAT {
+        reserve = reserve.saturating_add(CONFIGURE_UI_OUTPUT_CONTRACT.len());
+    }
     if params.channel == crate::CHANNEL_QQ_CHANNEL {
         reserve = reserve.saturating_add(QQ_OUTPUT_CONTRACT.len());
     }
@@ -417,7 +433,6 @@ pub fn estimate_post_memory_system_tail_len(params: PostMemoryTailParams<'_>) ->
             _ => 0,
         });
     }
-    reserve = reserve.saturating_add(STRUCTURED_BLOCK.len());
     if let Some(emotion) = params.emotion_signal_suffix {
         reserve = reserve.saturating_add(2).saturating_add(emotion.len());
     }
@@ -433,7 +448,8 @@ pub fn estimate_post_memory_system_tail_len(params: PostMemoryTailParams<'_>) ->
 ///
 /// **system 组成顺序**：Reply Priority → Constitutional Stack → MEMORY base prompt
 /// → Active Task Context → Governed Memory Evidence → Reply Law → capability package
-/// → Background Governance → optional daily notes → skills / tool constraint / runtime / group hint；总长 ≤ system_max_len。
+/// → Background Governance → optional daily notes → skills / tool constraint / runtime / group hint
+/// → output contract → opportunistic structured markers；总长 ≤ system_max_len。
 /// **截断策略**：base prompt 在单个 `String` 中按预算直接构造；skills/约束追加后若超限则按字符边界截断。
 /// **失败降级**：任一源（get_memory/list_daily_note_names）加载失败时降级为空字符串并打日志，不阻塞 build。
 ///
@@ -686,15 +702,15 @@ fn build_context_inner(
             }
         }
     }
-    append_channel_output_contract(&mut system, p.msg.channel.as_ref(), p.system_max_len);
-    if system.len().saturating_add(STRUCTURED_BLOCK.len()) <= p.system_max_len {
-        system.push_str(STRUCTURED_BLOCK);
-    }
+    append_output_contracts(&mut system, p.msg.channel.as_ref(), p.system_max_len);
     if let Some(em) = p.emotion_signal_suffix {
         let _ = append_capped_section(&mut system, "\n\n", em, p.system_max_len);
     }
     if !p.llm_hint.is_empty() {
         let _ = append_capped_section(&mut system, "\n\n", p.llm_hint, p.system_max_len);
+    }
+    if system.len().saturating_add(STRUCTURED_BLOCK.len()) <= p.system_max_len {
+        system.push_str(STRUCTURED_BLOCK);
     }
     if system.len() > p.system_max_len {
         let mut end = p.system_max_len;
@@ -919,10 +935,26 @@ mod tests {
             runtime: Some(sample_runtime()),
             llm_hint: "pressure hint",
         });
-        assert!(reserve >= STRUCTURED_BLOCK.len());
         assert!(reserve >= TOOL_BEHAVIOR_CONSTRAINT.len());
         assert!(reserve >= GROUP_MENTION_ONLY_CONSTRAINT.len());
+        assert!(reserve >= GLOBAL_OUTPUT_CONTRACT.len());
         assert!(reserve >= QQ_OUTPUT_CONTRACT.len());
+    }
+
+    #[test]
+    fn post_memory_tail_reserve_charges_global_output_contract_for_all_channels() {
+        let reserve = estimate_post_memory_system_tail_len(PostMemoryTailParams {
+            channel: crate::CHANNEL_TELEGRAM,
+            has_tools: false,
+            skill_descriptions_len: 0,
+            is_group: false,
+            group_activation: "always",
+            emotion_signal_suffix: None,
+            runtime: None,
+            llm_hint: "",
+        });
+
+        assert!(reserve >= GLOBAL_OUTPUT_CONTRACT.len());
     }
 
     #[test]
@@ -955,8 +987,33 @@ mod tests {
     }
 
     #[test]
+    fn build_context_adds_global_output_contract_for_all_channels() {
+        let system = minimal_context_system_for_channel(crate::CHANNEL_TELEGRAM);
+
+        assert!(system.contains("## Output Contract"));
+        assert!(system.contains("active channel docs"));
+        assert!(system.contains("Real newlines"));
+        assert!(system.contains("literal `\\n`"));
+        assert!(system.contains("pseudo-tables"));
+    }
+
+    #[test]
+    fn build_context_adds_configure_ui_markdown_output_contract_for_chat_turns() {
+        let system =
+            minimal_context_system_for_channel(crate::chat_stream::CHANNEL_CONFIGURE_UI_CHAT);
+
+        assert!(system.contains("## Output Contract"));
+        assert!(system.contains("## Configure UI Chat Output Contract"));
+        assert!(system.contains("safe GFM Markdown"));
+        assert!(system.contains("valid GFM"));
+        assert!(system.contains("real newline-delimited rows"));
+        assert!(system.contains("Do not use raw HTML"));
+    }
+
+    #[test]
     fn build_context_adds_qq_output_contract_for_qq_turns() {
         let system = minimal_context_system_for_channel(crate::CHANNEL_QQ_CHANNEL);
+        assert!(system.contains("## Output Contract"));
         assert!(system.contains("## QQ Output Contract"));
         assert!(system.contains("QQ MD limited"));
         assert!(system.contains("tables/pipe"));
@@ -1019,6 +1076,7 @@ mod tests {
         .expect("context");
 
         assert!(system.len() <= 2000);
+        assert!(system.contains("## Output Contract"));
         assert!(system.contains("## QQ Output Contract"));
         assert!(system.contains("no tables/pipe/HTML"));
     }

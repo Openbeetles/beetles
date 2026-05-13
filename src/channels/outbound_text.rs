@@ -1,6 +1,5 @@
 use crate::bus::{
-    CanonicalMessageBody, CardBody, CardFormat, MessageBodyKind, OutboundKind, PcMsg, TextBody,
-    TextFormat,
+    CanonicalMessageBody, CardBody, CardFormat, MessageBodyKind, PcMsg, TextBody, TextFormat,
 };
 use crate::channel_capability::{
     ChannelCapabilityEntry, CHANNEL_FEISHU, CHANNEL_QQ_CHANNEL, CHANNEL_TELEGRAM,
@@ -25,19 +24,7 @@ pub(crate) fn prepare_outbound_message_for_channel(
     };
 
     let mut adapted = msg.clone();
-    let mut content = msg.content.clone();
-    let mut body = adapted.body.clone();
-
-    if let CanonicalMessageBody::Text(text) = &body {
-        if let Some(promoted) = maybe_promote_primary_plain_text(capability, msg, text, &content) {
-            body = promoted.body;
-            if let Some(next_content) = promoted.content {
-                content = next_content;
-            }
-        }
-    }
-
-    let normalized = normalize_body_for_channel(capability, &body, &content);
+    let normalized = normalize_body_for_channel(capability, &adapted.body, &msg.content);
     adapted.body = normalized.body;
     adapted.content = normalized.content.clone();
     PreparedOutboundMessage {
@@ -49,68 +36,6 @@ pub(crate) fn prepare_outbound_message_for_channel(
 struct NormalizedOutboundBody {
     body: CanonicalMessageBody,
     content: String,
-}
-
-struct PromotedTextBody {
-    body: CanonicalMessageBody,
-    content: Option<String>,
-}
-
-fn maybe_promote_primary_plain_text(
-    capability: ChannelCapabilityEntry,
-    msg: &PcMsg,
-    text: &TextBody,
-    content: &str,
-) -> Option<PromotedTextBody> {
-    if msg.outbound_kind != OutboundKind::Primary || text.format != TextFormat::Plain {
-        return None;
-    }
-    let raw_source_text = normalize_text_source(text, content);
-    let qq_inline_label_projection = if capability.id == CHANNEL_QQ_CHANNEL {
-        project_inline_label_chain_to_multiline_text(raw_source_text)
-    } else {
-        None
-    };
-    let source_text = qq_inline_label_projection
-        .as_deref()
-        .unwrap_or(raw_source_text);
-    let source_looks_markdownish = looks_like_markdownish(source_text);
-    let preprojection_within_text_limit = capability.id != CHANNEL_QQ_CHANNEL
-        || source_text.len() <= capability.contract.max_text_bytes;
-    let promotable_markdownish = source_looks_markdownish && preprojection_within_text_limit;
-    if source_text.is_empty() || !promotable_markdownish {
-        return None;
-    }
-    if capability.id == CHANNEL_TELEGRAM && supports_text_format(capability, TextFormat::Html) {
-        return Some(PromotedTextBody {
-            body: CanonicalMessageBody::Text(TextBody {
-                text: render_markdownish_to_telegram_html(source_text),
-                format: TextFormat::Html,
-            }),
-            content: None,
-        });
-    }
-    if supports_text_format(capability, TextFormat::Markdown) {
-        return Some(PromotedTextBody {
-            body: CanonicalMessageBody::Text(TextBody {
-                text: source_text.to_string(),
-                format: TextFormat::Markdown,
-            }),
-            content: None,
-        });
-    }
-    if capability.id == CHANNEL_FEISHU && supports_text_format(capability, TextFormat::RichText) {
-        let body = build_feishu_rich_post_body(source_text);
-        return Some(PromotedTextBody {
-            content: Some(body.text_projection()),
-            body,
-        });
-    }
-    let plain = render_markdownish_to_plain_text(source_text);
-    Some(PromotedTextBody {
-        body: CanonicalMessageBody::Text(TextBody::plain(plain.clone())),
-        content: Some(plain),
-    })
 }
 
 fn normalize_body_for_channel(
@@ -358,159 +283,6 @@ fn normalize_text_source<'a>(text: &'a TextBody, content: &'a str) -> &'a str {
     } else {
         trimmed
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct InlineLabelBoundary {
-    marker_start: usize,
-    label_start: usize,
-}
-
-fn project_inline_label_chain_to_multiline_text(text: &str) -> Option<String> {
-    let trimmed = text.trim();
-    if trimmed.is_empty() || trimmed.contains('\n') || trimmed.contains('\r') {
-        return None;
-    }
-    let boundaries = collect_inline_label_boundaries(trimmed);
-    if boundaries.len() < 3 {
-        return None;
-    }
-
-    let mut lines = Vec::with_capacity(boundaries.len() + 1);
-    let prefix = trimmed[..boundaries[0].marker_start]
-        .trim_end_matches(['-', ' '])
-        .trim();
-    if !prefix.is_empty() {
-        lines.push(prefix.to_string());
-    }
-    for (index, boundary) in boundaries.iter().enumerate() {
-        let end = boundaries
-            .get(index + 1)
-            .map(|next| next.marker_start)
-            .unwrap_or(trimmed.len());
-        let item = trimmed[boundary.label_start..end].trim();
-        if item.is_empty() {
-            return None;
-        }
-        lines.push(format!("- {item}"));
-    }
-
-    let projected = lines.join("\n");
-    (projected != trimmed).then_some(projected)
-}
-
-fn collect_inline_label_boundaries(text: &str) -> Vec<InlineLabelBoundary> {
-    let mut boundaries = Vec::new();
-    let mut idx = 0usize;
-    while let Some(rel) = text[idx..].find('-') {
-        let marker_start = idx + rel;
-        if text[..marker_start]
-            .chars()
-            .next_back()
-            .is_some_and(|ch| ch.is_ascii_alphanumeric())
-        {
-            idx = marker_start + 1;
-            continue;
-        }
-
-        let mut label_start = marker_start;
-        while text
-            .as_bytes()
-            .get(label_start)
-            .is_some_and(|byte| *byte == b'-')
-        {
-            label_start += 1;
-        }
-        while text
-            .as_bytes()
-            .get(label_start)
-            .is_some_and(|byte| byte.is_ascii_whitespace())
-        {
-            label_start += 1;
-        }
-
-        if is_inline_label_at(text, label_start) {
-            boundaries.push(InlineLabelBoundary {
-                marker_start,
-                label_start,
-            });
-            idx = label_start;
-        } else {
-            idx = marker_start + 1;
-        }
-    }
-    boundaries
-}
-
-fn is_inline_label_at(text: &str, label_start: usize) -> bool {
-    if label_start >= text.len() {
-        return false;
-    }
-    let mut chars_seen = 0usize;
-    for (offset, ch) in text[label_start..].char_indices() {
-        if ch == ':' || ch == '：' {
-            let label = text[label_start..label_start + offset].trim();
-            return is_plausible_inline_label(label);
-        }
-        chars_seen += 1;
-        if chars_seen > 18 || is_inline_label_disallowed_char(ch) {
-            return false;
-        }
-    }
-    false
-}
-
-fn is_plausible_inline_label(label: &str) -> bool {
-    let mut chars = label.chars();
-    let Some(first) = chars.next() else {
-        return false;
-    };
-    if first.is_ascii_digit() {
-        return false;
-    }
-    let mut count = 1usize;
-    if is_inline_label_disallowed_char(first) {
-        return false;
-    }
-    for ch in chars {
-        count += 1;
-        if count > 18 || is_inline_label_disallowed_char(ch) {
-            return false;
-        }
-    }
-    true
-}
-
-fn is_inline_label_disallowed_char(ch: char) -> bool {
-    matches!(
-        ch,
-        '-' | '—'
-            | '。'
-            | '，'
-            | '、'
-            | ','
-            | '.'
-            | '!'
-            | '！'
-            | '?'
-            | '？'
-            | ';'
-            | '；'
-            | '('
-            | ')'
-            | '（'
-            | '）'
-            | '['
-            | ']'
-            | '{'
-            | '}'
-            | '"'
-            | '\''
-            | '`'
-            | '/'
-            | '\\'
-            | '|'
-    )
 }
 
 fn looks_like_markdownish(text: &str) -> bool {
@@ -942,7 +714,7 @@ fn ordered_list_text(line: &str) -> Option<(String, &str)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bus::{MessageBodyKind, MessageTransport};
+    use crate::bus::{MessageBodyKind, MessageTransport, OutboundKind};
     use crate::channel_capability::{ChannelCapabilityContract, ChannelDeliveryOrderingModel};
     use std::sync::Arc;
 
@@ -1003,7 +775,7 @@ mod tests {
     }
 
     #[test]
-    fn primary_markdownish_reply_promotes_to_telegram_html() {
+    fn primary_markdownish_reply_stays_plain_for_telegram() {
         let msg = outbound_text_msg("## Build Status\n**Green**");
         let prepared = prepare_outbound_message_for_channel(
             &msg,
@@ -1014,21 +786,18 @@ mod tests {
             )),
         );
 
-        match prepared.msg.body {
+        assert!(matches!(
+            prepared.msg.body,
             CanonicalMessageBody::Text(TextBody {
-                format: TextFormat::Html,
-                text,
-            }) => {
-                assert!(text.contains("<b>Build Status</b>"));
-                assert!(text.contains("<b>Green</b>"));
-            }
-            other => panic!("expected telegram html body, got {other:?}"),
-        }
+                format: TextFormat::Plain,
+                ref text,
+            }) if text == "## Build Status\n**Green**"
+        ));
         assert_eq!(prepared.content, "## Build Status\n**Green**");
     }
 
     #[test]
-    fn primary_markdownish_reply_on_qq_downgrades_to_plain_text() {
+    fn primary_markdownish_reply_on_qq_stays_plain_text() {
         let mut msg = outbound_text_msg("# Title\n- item");
         msg.channel = Arc::from("qq_channel");
         let prepared = prepare_outbound_message_for_channel(
@@ -1041,9 +810,9 @@ mod tests {
             CanonicalMessageBody::Text(TextBody {
                 format: TextFormat::Plain,
                 ref text,
-            }) if text == "Title\n• item"
+            }) if text == "# Title\n- item"
         ));
-        assert_eq!(prepared.content, "Title\n• item");
+        assert_eq!(prepared.content, "# Title\n- item");
     }
 
     #[test]
@@ -1066,7 +835,7 @@ mod tests {
     }
 
     #[test]
-    fn primary_inline_label_chain_on_qq_projects_to_multiline_plain_text() {
+    fn primary_inline_label_chain_on_qq_stays_plain_text() {
         let mut msg =
             outbound_text_msg("状态--芯片: ESP32-S3 - 运行时间: 5 分钟- WiFi: 已连接 - 内存: 正常");
         msg.channel = Arc::from("qq_channel");
@@ -1080,16 +849,16 @@ mod tests {
             CanonicalMessageBody::Text(TextBody {
                 format: TextFormat::Plain,
                 ref text,
-            }) if text == "状态\n• 芯片: ESP32-S3\n• 运行时间: 5 分钟\n• WiFi: 已连接\n• 内存: 正常"
+            }) if text == "状态--芯片: ESP32-S3 - 运行时间: 5 分钟- WiFi: 已连接 - 内存: 正常"
         ));
         assert_eq!(
             prepared.content,
-            "状态\n• 芯片: ESP32-S3\n• 运行时间: 5 分钟\n• WiFi: 已连接\n• 内存: 正常"
+            "状态--芯片: ESP32-S3 - 运行时间: 5 分钟- WiFi: 已连接 - 内存: 正常"
         );
     }
 
     #[test]
-    fn qq_inline_label_projection_ignores_short_natural_dash_pairs() {
+    fn primary_natural_dash_pairs_on_qq_stays_plain_text() {
         let mut msg = outbound_text_msg("我看 A - B: C 只是一个例子，不需要重排。");
         msg.channel = Arc::from("qq_channel");
         let prepared = prepare_outbound_message_for_channel(
@@ -1148,7 +917,7 @@ mod tests {
     }
 
     #[test]
-    fn primary_markdownish_reply_promotes_to_wecom_markdown() {
+    fn primary_markdownish_reply_stays_plain_for_wecom() {
         let mut msg = outbound_text_msg("# Title\n- item");
         msg.channel = Arc::from("wecom");
         let prepared = prepare_outbound_message_for_channel(
@@ -1159,7 +928,7 @@ mod tests {
         assert!(matches!(
             prepared.msg.body,
             CanonicalMessageBody::Text(TextBody {
-                format: TextFormat::Markdown,
+                format: TextFormat::Plain,
                 ref text,
             }) if text == "# Title\n- item"
         ));
@@ -1190,9 +959,68 @@ mod tests {
     }
 
     #[test]
-    fn primary_markdownish_reply_promotes_to_feishu_rich_post() {
+    fn explicit_markdown_body_stays_markdown_for_markdown_capable_channel() {
+        let mut msg = outbound_text_msg("# Title\n- item");
+        msg.channel = Arc::from("wecom");
+        msg.body = CanonicalMessageBody::Text(TextBody {
+            text: "# Title\n- item".to_string(),
+            format: TextFormat::Markdown,
+        });
+
+        let prepared = prepare_outbound_message_for_channel(
+            &msg,
+            Some(capability_entry("wecom", TEXT_ONLY_KIND, MARKDOWN_ONLY)),
+        );
+
+        assert!(matches!(
+            prepared.msg.body,
+            CanonicalMessageBody::Text(TextBody {
+                format: TextFormat::Markdown,
+                ref text,
+            }) if text == "# Title\n- item"
+        ));
+        assert_eq!(prepared.content, "# Title\n- item");
+    }
+
+    #[test]
+    fn explicit_markdown_body_converts_to_telegram_html_when_markdown_is_unsupported() {
+        let mut msg = outbound_text_msg("## Build Status\n**Green**");
+        msg.body = CanonicalMessageBody::Text(TextBody {
+            text: "## Build Status\n**Green**".to_string(),
+            format: TextFormat::Markdown,
+        });
+
+        let prepared = prepare_outbound_message_for_channel(
+            &msg,
+            Some(capability_entry(
+                CHANNEL_TELEGRAM,
+                TEXT_ONLY_KIND,
+                HTML_ONLY,
+            )),
+        );
+
+        match prepared.msg.body {
+            CanonicalMessageBody::Text(TextBody {
+                format: TextFormat::Html,
+                text,
+            }) => {
+                assert!(text.contains("<b>Build Status</b>"));
+                assert!(text.contains("<b>Green</b>"));
+            }
+            other => panic!("expected telegram html body, got {other:?}"),
+        }
+        assert_eq!(prepared.content, "## Build Status\n**Green**");
+    }
+
+    #[test]
+    fn explicit_markdown_body_converts_to_feishu_rich_post_when_markdown_is_unsupported() {
         let mut msg = outbound_text_msg("# Title\n- item");
         msg.channel = Arc::from(CHANNEL_FEISHU);
+        msg.body = CanonicalMessageBody::Text(TextBody {
+            text: "# Title\n- item".to_string(),
+            format: TextFormat::Markdown,
+        });
+
         let prepared = prepare_outbound_message_for_channel(
             &msg,
             Some(capability_entry(
@@ -1214,6 +1042,29 @@ mod tests {
             other => panic!("expected feishu rich post, got {other:?}"),
         }
         assert_eq!(prepared.content, "Title\n• item");
+    }
+
+    #[test]
+    fn primary_markdownish_reply_stays_plain_for_feishu() {
+        let mut msg = outbound_text_msg("# Title\n- item");
+        msg.channel = Arc::from(CHANNEL_FEISHU);
+        let prepared = prepare_outbound_message_for_channel(
+            &msg,
+            Some(capability_entry(
+                CHANNEL_FEISHU,
+                TEXT_AND_CARD_KIND,
+                RICH_TEXT_ONLY,
+            )),
+        );
+
+        assert!(matches!(
+            prepared.msg.body,
+            CanonicalMessageBody::Text(TextBody {
+                format: TextFormat::Plain,
+                ref text,
+            }) if text == "# Title\n- item"
+        ));
+        assert_eq!(prepared.content, "# Title\n- item");
     }
 
     #[test]
