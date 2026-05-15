@@ -1,6 +1,7 @@
 //! Telegram 出站：flush、send_chat_action、get_bot_username、set_message_reaction；连通性检查。Sink 统一为 dispatch::QueuedSink。
 use crate::bus::{
     AudioBody, CanonicalMessageBody, MediaLocatorKind, TextBody, TextFormat, VideoBody,
+    PLATFORM_NATIVE_TELEGRAM_REACTION_EMOJI_KEY, PLATFORM_NATIVE_TYPE_TELEGRAM_MESSAGE_REACTION,
 };
 use crate::channels::ChannelHttpClient;
 use crate::config::AppConfig;
@@ -312,6 +313,11 @@ fn send_media_message<H: ChannelHttpClient>(
             &card.fallback_text,
             TextFormat::Plain,
         ),
+        CanonicalMessageBody::PlatformNative(native)
+            if native.platform_type == PLATFORM_NATIVE_TYPE_TELEGRAM_MESSAGE_REACTION =>
+        {
+            send_reaction_message(http, token, message, native)
+        }
         CanonicalMessageBody::PlatformNative(native) => send_text_message(
             http,
             token,
@@ -321,6 +327,27 @@ fn send_media_message<H: ChannelHttpClient>(
             TextFormat::Plain,
         ),
     }
+}
+
+fn send_reaction_message<H: ChannelHttpClient>(
+    http: &mut H,
+    token: &str,
+    message: &QueuedOutboundMessage,
+    native: &crate::bus::PlatformNativeBody,
+) -> Result<()> {
+    let message_id = message
+        .platform_message_id
+        .trim()
+        .parse::<i64>()
+        .map_err(|_| Error::config("telegram_reaction", "invalid message_id"))?;
+    let emoji = native
+        .payload_json
+        .get(PLATFORM_NATIVE_TELEGRAM_REACTION_EMOJI_KEY)
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| Error::config("telegram_reaction", "missing emoji"))?;
+    set_message_reaction(http, token, &message.chat_id, message_id, emoji)
 }
 
 /// 从 rx 取出所有待发送（一次性 drain）。
@@ -520,6 +547,16 @@ pub fn set_message_reaction<H: ChannelHttpClient>(
     message_id: i64,
     emoji: &str,
 ) -> Result<()> {
+    post_message_reaction(http, token, chat_id, message_id, emoji)
+}
+
+fn post_message_reaction<H: ChannelHttpClient>(
+    http: &mut H,
+    token: &str,
+    chat_id: &str,
+    message_id: i64,
+    emoji: &str,
+) -> Result<()> {
     let url = format!("{}{}/setMessageReaction", TELEGRAM_API_BASE, token);
     let body = serde_json::json!({
         "chat_id": chat_id,
@@ -681,7 +718,7 @@ mod tests {
     use super::*;
     use crate::bus::{
         AudioBody, CanonicalMessageBody, CardBody, CardFormat, FileBody, ImageBody, MediaAssetRef,
-        OutboundKind, TextBody, TextFormat, VideoBody,
+        OutboundKind, PlatformNativeBody, TextBody, TextFormat, VideoBody,
     };
     use crate::platform::ResponseBody;
     use std::collections::VecDeque;
@@ -909,6 +946,34 @@ mod tests {
         assert!(requests[0].0.ends_with("/sendMessage"));
         let body = parse_body(&requests[0]);
         assert_eq!(body["text"], "card fallback");
+    }
+
+    #[test]
+    fn send_media_message_renders_platform_native_reaction_with_message_anchor() {
+        let mut http = StubHttp::default();
+        let mut message =
+            queued_message(CanonicalMessageBody::PlatformNative(PlatformNativeBody {
+                platform_type: PLATFORM_NATIVE_TYPE_TELEGRAM_MESSAGE_REACTION.to_string(),
+                payload_json: serde_json::json!({"emoji":"✅"}),
+                fallback_text: "✅".to_string(),
+            }));
+        message.platform_message_id = "9".to_string();
+
+        send_media_message(&mut http, "token", &message).expect("reaction send");
+
+        let requests = http
+            .post_requests
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone();
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0].0.ends_with("/setMessageReaction"));
+        let body = parse_body(&requests[0]);
+        assert_eq!(body["chat_id"], "chat-1");
+        assert_eq!(body["message_id"], 9);
+        assert_eq!(body["reaction"][0]["type"], "emoji");
+        assert_eq!(body["reaction"][0]["emoji"], "✅");
+        assert!(body.get("target_message_id").is_none());
     }
 
     #[test]

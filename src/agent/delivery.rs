@@ -1,6 +1,7 @@
 use super::{TaskTerminalVisibilityStatus, TurnVisibilityFact};
 use crate::bus::{
     CanonicalMessageBody, IngressKind, MessageTransport, OutboundKind, OutboundTx, PcMsg,
+    PlatformNativeBody,
 };
 use crate::channel_capability::ChannelDeliveryOrderingModel;
 use crate::error::Result;
@@ -17,6 +18,10 @@ const MIN_PARTIAL_VISIBLE_CHARS: usize = 8;
 const MAX_QUEUED_PROGRESS_CHARS: usize = 120;
 const MAX_QUEUED_PARTIAL_CHARS: usize = 240;
 const MAX_APPEND_ONLY_TOOL_NAME_CHARS: usize = 32;
+const TELEGRAM_REACTION_ACCEPTED: &str = "👀";
+const TELEGRAM_REACTION_WORKING: &str = "⏳";
+const TELEGRAM_REACTION_SUCCEEDED: &str = "✅";
+const TELEGRAM_REACTION_FAILED: &str = "⚠️";
 #[cfg(test)]
 const APPEND_ONLY_PRIVATE_ACK_DELAY_MS: u64 = 5;
 #[cfg(not(test))]
@@ -123,6 +128,7 @@ struct AppendOnlyVisibilityDelivery {
 enum AppendOnlyVisibilityMode {
     PrivateAck,
     GroupHeartbeat,
+    AnchoredReaction,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -137,6 +143,8 @@ struct AppendOnlyVisibilityState {
     ack_sent: bool,
     heartbeat_sent: bool,
     first_tool_milestone_sent: bool,
+    reaction_accepted_sent: bool,
+    reaction_working_sent: bool,
     first_tool_snapshot: Option<FirstToolSnapshot>,
 }
 
@@ -738,18 +746,22 @@ impl AppendOnlyVisibilityShared {
         {
             return None;
         }
-        let mode = match entry.contract.delivery_ordering_model {
-            ChannelDeliveryOrderingModel::AppendOnly
-            | ChannelDeliveryOrderingModel::StatelessWebhook
-            | ChannelDeliveryOrderingModel::SessionSocket => {
-                if msg.is_group {
-                    AppendOnlyVisibilityMode::GroupHeartbeat
-                } else {
-                    AppendOnlyVisibilityMode::PrivateAck
+        let mode = if reaction_visibility_enabled(msg, entry) {
+            AppendOnlyVisibilityMode::AnchoredReaction
+        } else {
+            match entry.contract.delivery_ordering_model {
+                ChannelDeliveryOrderingModel::AppendOnly
+                | ChannelDeliveryOrderingModel::StatelessWebhook
+                | ChannelDeliveryOrderingModel::SessionSocket => {
+                    if msg.is_group {
+                        AppendOnlyVisibilityMode::GroupHeartbeat
+                    } else {
+                        AppendOnlyVisibilityMode::PrivateAck
+                    }
                 }
+                ChannelDeliveryOrderingModel::EditableSingleMessage
+                | ChannelDeliveryOrderingModel::AudioPlayback => return None,
             }
-            ChannelDeliveryOrderingModel::EditableSingleMessage
-            | ChannelDeliveryOrderingModel::AudioPlayback => return None,
         };
         let shared = Arc::new(Self {
             delivery: AppendOnlyVisibilityDelivery {
@@ -768,7 +780,9 @@ impl AppendOnlyVisibilityShared {
             mode,
             state: Arc::new(Mutex::new(AppendOnlyVisibilityState::default())),
         });
-        shared.register_deadline();
+        if !matches!(shared.mode, AppendOnlyVisibilityMode::AnchoredReaction) {
+            shared.register_deadline();
+        }
         Some(shared)
     }
 
@@ -799,6 +813,10 @@ impl AppendOnlyVisibilityShared {
     }
 
     fn observe_fact(&self, fact: TurnVisibilityFact<'_>) {
+        if matches!(self.mode, AppendOnlyVisibilityMode::AnchoredReaction) {
+            self.observe_reaction_fact(fact);
+            return;
+        }
         if !matches!(fact, TurnVisibilityFact::RunningTool { .. }) {
             return;
         }
@@ -834,6 +852,39 @@ impl AppendOnlyVisibilityShared {
         }
     }
 
+    fn observe_reaction_fact(&self, fact: TurnVisibilityFact<'_>) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if state.finalized || state.supplemental_emitted >= self.mode.max_supplemental_messages() {
+            return;
+        }
+        let (emoji, marks_accepted, marks_working) = match fact {
+            TurnVisibilityFact::Acknowledged if !state.reaction_accepted_sent => {
+                (TELEGRAM_REACTION_ACCEPTED, true, false)
+            }
+            TurnVisibilityFact::RunningTool { .. }
+                if state.reaction_accepted_sent && !state.reaction_working_sent =>
+            {
+                (TELEGRAM_REACTION_WORKING, false, true)
+            }
+            TurnVisibilityFact::Acknowledged
+            | TurnVisibilityFact::Reasoning { .. }
+            | TurnVisibilityFact::RunningTool { .. }
+            | TurnVisibilityFact::TaskPlanner
+            | TurnVisibilityFact::TaskStarted { .. }
+            | TurnVisibilityFact::TaskTerminal { .. }
+            | TurnVisibilityFact::Finalizing => return,
+        };
+        if send_current_chat_reaction(&self.delivery, emoji).is_ok() {
+            if marks_accepted {
+                state.reaction_accepted_sent = true;
+            }
+            if marks_working {
+                state.reaction_working_sent = true;
+            }
+            state.supplemental_emitted = state.supplemental_emitted.saturating_add(1);
+        }
+    }
+
     fn fire_deadline(&self) {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if state.finalized || state.supplemental_emitted >= self.mode.max_supplemental_messages() {
@@ -858,6 +909,7 @@ impl AppendOnlyVisibilityShared {
                 }
                 self.delivery.contract.group_heartbeat()
             }
+            AppendOnlyVisibilityMode::AnchoredReaction => return,
         };
         let Some(projection) = projection else {
             return;
@@ -900,6 +952,7 @@ impl AppendOnlyVisibilityMode {
             Self::GroupHeartbeat => {
                 std::time::Duration::from_millis(APPEND_ONLY_GROUP_HEARTBEAT_DELAY_MS)
             }
+            Self::AnchoredReaction => std::time::Duration::from_millis(0),
         }
     }
 
@@ -907,6 +960,7 @@ impl AppendOnlyVisibilityMode {
         match self {
             Self::PrivateAck => 2,
             Self::GroupHeartbeat => 1,
+            Self::AnchoredReaction => 3,
         }
     }
 
@@ -914,6 +968,7 @@ impl AppendOnlyVisibilityMode {
         match self {
             Self::PrivateAck => "private_ack",
             Self::GroupHeartbeat => "group_heartbeat",
+            Self::AnchoredReaction => "anchored_reaction",
         }
     }
 }
@@ -1200,6 +1255,112 @@ fn send_current_chat_supplemental(
     }
 }
 
+fn reaction_visibility_enabled(msg: &PcMsg, entry: crate::ChannelCapabilityEntry) -> bool {
+    msg.ingress == IngressKind::User
+        && entry.enabled
+        && entry.contract.supports_primary_reply
+        && entry.contract.supports_supplemental_reply
+        && entry.contract.supports_message_reaction
+        && !msg.platform_message_id.trim().is_empty()
+}
+
+pub(crate) fn send_terminal_reaction_if_enabled(
+    msg: &PcMsg,
+    req_id: &str,
+    outbound_tx: &OutboundTx,
+    channel_capability: Option<crate::ChannelCapabilityEntry>,
+    success: bool,
+) -> bool {
+    let Some(entry) = channel_capability else {
+        return false;
+    };
+    if !reaction_visibility_enabled(msg, entry) {
+        return false;
+    }
+    let delivery = AppendOnlyVisibilityDelivery {
+        channel: Arc::clone(&msg.channel),
+        chat_id: Arc::clone(&msg.chat_id),
+        req_id: req_id.to_string(),
+        is_group: msg.is_group,
+        source_transport: msg.source_transport,
+        platform_thread_id: msg.platform_thread_id.clone(),
+        platform_message_id: msg.platform_message_id.clone(),
+        platform_event_id: msg.platform_event_id.clone(),
+        inbound_dedup_key: msg.inbound_dedup_key.clone(),
+        outbound_tx: outbound_tx.clone(),
+        contract: AppendOnlyVisibilityContract { loc: UiLocale::Zh },
+    };
+    let emoji = if success {
+        TELEGRAM_REACTION_SUCCEEDED
+    } else {
+        TELEGRAM_REACTION_FAILED
+    };
+    send_current_chat_reaction(&delivery, emoji).is_ok()
+}
+
+fn send_current_chat_reaction(
+    delivery: &AppendOnlyVisibilityDelivery,
+    emoji: &str,
+) -> std::result::Result<(), ()> {
+    let body =
+        CanonicalMessageBody::PlatformNative(PlatformNativeBody::telegram_message_reaction(emoji));
+    let mut msg = match PcMsg::new_outbound_for_chat_with_body(
+        &delivery.channel,
+        &delivery.chat_id,
+        body,
+        emoji.to_string(),
+        Some(delivery.req_id.clone()),
+        delivery.is_group,
+    ) {
+        Ok(msg) => msg,
+        Err(error) => {
+            log::warn!(
+                "[agent_delivery] current-chat reaction rejected req_id={} channel={} chat_id={}: {}",
+                delivery.req_id,
+                delivery.channel,
+                delivery.chat_id,
+                error
+            );
+            return Err(());
+        }
+    };
+    msg = msg
+        .with_inbound_provenance(
+            delivery.source_transport,
+            delivery.platform_message_id.clone(),
+            delivery.platform_event_id.clone(),
+            delivery.inbound_dedup_key.clone(),
+        )
+        .with_platform_thread_id(delivery.platform_thread_id.clone());
+    msg.outbound_kind = OutboundKind::Supplemental;
+    match delivery.outbound_tx.try_send(msg) {
+        Ok(()) => {
+            metrics::record_message_out();
+            Ok(())
+        }
+        Err(std::sync::mpsc::TrySendError::Full(_)) => {
+            metrics::record_outbound_enqueue_fail();
+            log::warn!(
+                "[agent_delivery] current-chat reaction dropped: outbound queue full req_id={} channel={} chat_id={} outbound_kind=supplemental",
+                delivery.req_id,
+                delivery.channel,
+                delivery.chat_id
+            );
+            Err(())
+        }
+        Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+            metrics::record_outbound_enqueue_fail();
+            log::error!(
+                "[agent_delivery] current-chat reaction dropped: outbound disconnected req_id={} channel={} chat_id={} outbound_kind=supplemental",
+                delivery.req_id,
+                delivery.channel,
+                delivery.chat_id
+            );
+            Err(())
+        }
+    }
+}
+
 fn send_visible_update_explicit(
     outbound_tx: &OutboundTx,
     channel: &str,
@@ -1352,6 +1513,7 @@ mod tests {
                 supports_explicit_target: true,
                 supports_attachment: false,
                 supports_typing_or_chat_action: false,
+                supports_message_reaction: false,
                 supported_body_kinds: &[crate::bus::MessageBodyKind::Text],
                 supported_text_formats: &[crate::bus::TextFormat::Plain],
                 requires_pre_upload_for_media: false,
@@ -1366,6 +1528,24 @@ mod tests {
                     ChannelDeliveryOrderingModel::AppendOnly
                 },
             },
+        }
+    }
+
+    fn reaction_capability_entry(id: &'static str) -> ChannelCapabilityEntry {
+        let mut entry = capability_entry(id, true, true, false);
+        entry.contract.supports_message_reaction = true;
+        entry
+    }
+
+    fn assert_reaction_message(outbound: &PcMsg, expected_emoji: &str) {
+        assert_eq!(outbound.outbound_kind, OutboundKind::Supplemental);
+        assert_eq!(outbound.platform_message_id, "9");
+        match &outbound.body {
+            crate::bus::CanonicalMessageBody::PlatformNative(native) => {
+                assert_eq!(native.platform_type, "telegram_message_reaction");
+                assert_eq!(native.payload_json["emoji"], expected_emoji);
+            }
+            other => panic!("expected platform-native reaction body, got {other:?}"),
         }
     }
 
@@ -1580,6 +1760,95 @@ mod tests {
         assert_eq!(outbound.outbound_kind, OutboundKind::Supplemental);
         assert_eq!(delivery.report().append_only_heartbeat_sent, 1);
         assert_eq!(delivery.report().append_only_ack_sent, 0);
+    }
+
+    #[test]
+    fn telegram_anchored_reaction_visibility_uses_message_anchor_and_suppresses_text() {
+        let _guard = delayed_task_test_lock();
+        reset_delayed_tasks();
+        let (outbound_tx, outbound_rx, _) = new_inbound_channel(8);
+        let msg = build_msg("telegram").with_inbound_provenance(
+            crate::bus::MessageTransport::Poll,
+            "9",
+            "",
+            "telegram_message:9",
+        );
+        let mut delivery = DeliverySession::new(
+            &msg,
+            "req-reaction",
+            &outbound_tx,
+            None,
+            Some(reaction_capability_entry("telegram")),
+            MemorySystemKind::LinuxFull,
+            UiLocale::Zh,
+        );
+
+        delivery.emit_fact(TurnVisibilityFact::Acknowledged);
+        delivery.emit_fact(TurnVisibilityFact::RunningTool {
+            tool: "board_info",
+            index: 0,
+            total: 1,
+        });
+        service_due_delayed_tasks_after(APPEND_ONLY_PRIVATE_ACK_DELAY_MS + 5);
+
+        let accepted = outbound_rx.try_recv().expect("accepted reaction");
+        assert_reaction_message(&accepted, "👀");
+        let working = outbound_rx.try_recv().expect("working reaction");
+        assert_reaction_message(&working, "⏳");
+        assert!(outbound_rx.try_recv().is_err());
+        assert_eq!(delivery.report().append_only_ack_sent, 0);
+        assert_eq!(delivery.report().append_only_first_tool_milestone_sent, 0);
+    }
+
+    #[test]
+    fn telegram_without_message_anchor_keeps_append_only_text_visibility() {
+        let _guard = delayed_task_test_lock();
+        reset_delayed_tasks();
+        let (outbound_tx, outbound_rx, _) = new_inbound_channel(8);
+        let msg = build_msg("telegram");
+        let delivery = DeliverySession::new(
+            &msg,
+            "req-reaction-no-anchor",
+            &outbound_tx,
+            None,
+            Some(reaction_capability_entry("telegram")),
+            MemorySystemKind::LinuxFull,
+            UiLocale::Zh,
+        );
+
+        service_due_delayed_tasks_after(APPEND_ONLY_PRIVATE_ACK_DELAY_MS + 5);
+
+        let outbound = outbound_rx.try_recv().expect("text fallback");
+        assert_eq!(outbound.content, "已收到，正在处理");
+        assert!(matches!(
+            outbound.body,
+            crate::bus::CanonicalMessageBody::Text(_)
+        ));
+        assert_eq!(delivery.report().append_only_ack_sent, 1);
+    }
+
+    #[test]
+    fn terminal_reaction_helper_uses_anchor_and_supports_failure_state() {
+        let (outbound_tx, outbound_rx, _) = new_inbound_channel(4);
+        let msg = build_msg("telegram").with_inbound_provenance(
+            crate::bus::MessageTransport::Poll,
+            "9",
+            "",
+            "telegram_message:9",
+        );
+
+        let sent = send_terminal_reaction_if_enabled(
+            &msg,
+            "req-terminal",
+            &outbound_tx,
+            Some(reaction_capability_entry("telegram")),
+            false,
+        );
+
+        assert!(sent);
+        let outbound = outbound_rx.try_recv().expect("terminal reaction");
+        assert_reaction_message(&outbound, "⚠️");
+        assert_eq!(outbound.req_id.as_deref(), Some("req-terminal"));
     }
 
     #[test]

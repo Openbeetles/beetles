@@ -14,8 +14,6 @@ use crate::error::{Error, Result};
 use crate::i18n::{tr, Locale as UiLocale, Message as UiMessage};
 use crate::memory::{PendingRetryStore, SessionStore};
 
-use super::send::set_message_reaction;
-
 const TAG_POLL: &str = "telegram";
 
 /// Telegram 群聊激活策略写入回调，由 main 注入，避免 poll 层知道持久化后端。
@@ -488,7 +486,6 @@ pub fn poll_telegram_once<H: ChannelHttpClient>(
             let Some(body) = parse_telegram_body(&msg) else {
                 continue;
             };
-            let _ = set_message_reaction(http, token, &chat_id, msg.message_id, "👍");
             let pc = match PcMsg::new_inbound_with_body("telegram", &chat_id, body, is_group) {
                 Ok(message) => message.with_inbound_provenance(
                     MessageTransport::Poll,
@@ -569,6 +566,7 @@ mod tests {
         get_results: VecDeque<Result<(u16, ResponseBody)>>,
         post_results: VecDeque<Result<(u16, ResponseBody)>>,
         get_urls: Vec<String>,
+        post_urls: Vec<String>,
     }
 
     impl ChannelHttpClient for StubHttp {
@@ -588,6 +586,7 @@ mod tests {
         }
 
         fn http_post(&mut self, _url: &str, _body: &[u8]) -> Result<(u16, ResponseBody)> {
+            self.post_urls.push(_url.to_string());
             self.post_results
                 .pop_front()
                 .unwrap_or_else(|| Ok((200, ResponseBody::Heap(b"{}".to_vec()))))
@@ -758,6 +757,54 @@ mod tests {
         let ack = outbound_rx.try_recv().expect("activation ack");
         assert_eq!(ack.channel.as_ref(), "telegram");
         assert_eq!(ack.chat_id.as_ref(), "1234");
+    }
+
+    #[test]
+    fn poll_telegram_once_enqueues_inbound_without_immediate_reaction() {
+        let (inbound_tx, inbound_rx, _) = new_inbound_channel(4);
+        let mut http = StubHttp {
+            get_results: VecDeque::from([Ok((
+                200,
+                ResponseBody::Heap(
+                    serde_json::json!({
+                        "result": [{
+                            "update_id": 1,
+                            "message": {
+                                "message_id": 9,
+                                "message_thread_id": 77,
+                                "chat": {"id": 1234, "type": "private"},
+                                "text": "hello"
+                            }
+                        }]
+                    })
+                    .to_string()
+                    .into_bytes(),
+                ),
+            ))]),
+            ..Default::default()
+        };
+        let pending_retry = StubPendingRetryStore;
+        let resolve_locale: std::sync::Arc<dyn Fn() -> UiLocale + Send + Sync> =
+            std::sync::Arc::new(|| UiLocale::Zh);
+
+        poll_telegram_once(
+            &mut http,
+            "token",
+            None,
+            &inbound_tx,
+            &pending_retry,
+            &[String::from("1234")],
+            "always",
+            Some("beetle_bot"),
+            None,
+            &resolve_locale,
+        )
+        .expect("poll ok");
+
+        let msg = inbound_rx.try_recv().expect("inbound message");
+        assert_eq!(msg.platform_message_id, "9");
+        assert_eq!(msg.platform_thread_id, "77");
+        assert!(http.post_urls.is_empty());
     }
 
     #[test]

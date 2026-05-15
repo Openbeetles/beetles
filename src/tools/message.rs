@@ -618,6 +618,7 @@ mod tests {
                 supports_explicit_target,
                 supports_attachment: false,
                 supports_typing_or_chat_action: false,
+                supports_message_reaction: false,
                 supported_body_kinds: &[
                     crate::bus::MessageBodyKind::Text,
                     crate::bus::MessageBodyKind::Card,
@@ -653,6 +654,7 @@ mod tests {
                 supports_explicit_target: true,
                 supports_attachment: false,
                 supports_typing_or_chat_action: false,
+                supports_message_reaction: false,
                 supported_body_kinds: &[crate::bus::MessageBodyKind::Text],
                 supported_text_formats: &[
                     crate::bus::TextFormat::Plain,
@@ -682,6 +684,7 @@ mod tests {
                 supports_explicit_target: true,
                 supports_attachment: true,
                 supports_typing_or_chat_action: false,
+                supports_message_reaction: false,
                 supported_body_kinds: &[
                     crate::bus::MessageBodyKind::Text,
                     crate::bus::MessageBodyKind::Card,

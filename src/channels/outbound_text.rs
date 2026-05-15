@@ -24,6 +24,12 @@ pub(crate) fn prepare_outbound_message_for_channel(
     };
 
     let mut adapted = msg.clone();
+    if should_preserve_platform_native_supplemental(capability, &adapted) {
+        return PreparedOutboundMessage {
+            content: adapted.content.clone(),
+            msg: adapted,
+        };
+    }
     let normalized = normalize_body_for_channel(capability, &adapted.body, &msg.content);
     adapted.body = normalized.body;
     adapted.content = normalized.content.clone();
@@ -31,6 +37,24 @@ pub(crate) fn prepare_outbound_message_for_channel(
         msg: adapted,
         content: normalized.content,
     }
+}
+
+fn should_preserve_platform_native_supplemental(
+    capability: ChannelCapabilityEntry,
+    msg: &PcMsg,
+) -> bool {
+    if capability.id != CHANNEL_TELEGRAM
+        || !capability.contract.supports_message_reaction
+        || !msg.outbound_kind.is_supplemental()
+        || msg.platform_message_id.trim().is_empty()
+    {
+        return false;
+    }
+    matches!(
+        &msg.body,
+        CanonicalMessageBody::PlatformNative(native)
+            if native.is_telegram_message_reaction()
+    )
 }
 
 struct NormalizedOutboundBody {
@@ -714,7 +738,7 @@ fn ordered_list_text(line: &str) -> Option<(String, &str)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bus::{MessageBodyKind, MessageTransport, OutboundKind};
+    use crate::bus::{MessageBodyKind, MessageTransport, OutboundKind, PlatformNativeBody};
     use crate::channel_capability::{ChannelCapabilityContract, ChannelDeliveryOrderingModel};
     use std::sync::Arc;
 
@@ -742,6 +766,7 @@ mod tests {
                 supports_explicit_target: true,
                 supports_attachment: body_kinds.iter().any(|kind| *kind != MessageBodyKind::Text),
                 supports_typing_or_chat_action: false,
+                supports_message_reaction: false,
                 supported_body_kinds: body_kinds,
                 supported_text_formats: text_formats,
                 requires_pre_upload_for_media: false,
@@ -753,6 +778,12 @@ mod tests {
                 delivery_ordering_model: ChannelDeliveryOrderingModel::AppendOnly,
             },
         }
+    }
+
+    fn telegram_reaction_capability_entry() -> ChannelCapabilityEntry {
+        let mut entry = capability_entry(CHANNEL_TELEGRAM, TEXT_ONLY_KIND, HTML_ONLY);
+        entry.contract.supports_message_reaction = true;
+        entry
     }
 
     fn outbound_text_msg(content: &str) -> PcMsg {
@@ -772,6 +803,42 @@ mod tests {
             inbound_dedup_key: String::new(),
             is_group: false,
         }
+    }
+
+    #[test]
+    fn telegram_reaction_supplemental_preserves_platform_native_body() {
+        let mut msg = outbound_text_msg("✅");
+        msg.outbound_kind = OutboundKind::Supplemental;
+        msg.platform_message_id = "9".to_string();
+        msg.body = CanonicalMessageBody::PlatformNative(
+            PlatformNativeBody::telegram_message_reaction("✅"),
+        );
+
+        let prepared =
+            prepare_outbound_message_for_channel(&msg, Some(telegram_reaction_capability_entry()));
+
+        assert!(matches!(
+            prepared.msg.body,
+            CanonicalMessageBody::PlatformNative(ref native)
+                if native.is_telegram_message_reaction()
+                    && native.payload_json["emoji"] == "✅"
+        ));
+        assert_eq!(prepared.msg.platform_message_id, "9");
+        assert_eq!(prepared.content, "✅");
+    }
+
+    #[test]
+    fn telegram_reaction_without_anchor_falls_back_to_text() {
+        let mut msg = outbound_text_msg("✅");
+        msg.outbound_kind = OutboundKind::Supplemental;
+        msg.body = CanonicalMessageBody::PlatformNative(
+            PlatformNativeBody::telegram_message_reaction("✅"),
+        );
+
+        let prepared =
+            prepare_outbound_message_for_channel(&msg, Some(telegram_reaction_capability_entry()));
+
+        assert!(matches!(prepared.msg.body, CanonicalMessageBody::Text(_)));
     }
 
     #[test]

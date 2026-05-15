@@ -5509,6 +5509,79 @@ mod tests {
     }
 
     #[test]
+    fn deliver_turn_adds_terminal_success_reaction_after_primary_reply() {
+        let (outbound_tx, outbound_rx, _) = crate::bus::new_inbound_channel(4);
+        let msg = PcMsg::new_inbound("telegram", "chat-1", "继续", false)
+            .expect("message")
+            .with_inbound_provenance(
+                crate::bus::MessageTransport::Poll,
+                "9",
+                "",
+                "telegram_message:9",
+            );
+        let finalized = reply_finalize::FinalizedTurn {
+            delivery: DeliveryReport::default(),
+            reply: crate::agent::final_reply::CanonicalReply::new("构建已通过".to_string()),
+            artifact_bundle: None,
+            is_interrupt: false,
+            reply_already_delivered: false,
+            skip_delivery: false,
+            mark_important: false,
+            streamed: false,
+            msg_start: Instant::now(),
+            turn_observation: None,
+            mental_privacy_review: MentalPrivacyReviewOutcome {
+                reply_content: "构建已通过".to_string(),
+                action: crate::memory::MentalPrivacyShareAction::AllowOriginal,
+                applied: false,
+                touched_targets: Vec::new(),
+            },
+            review_input_before: "构建已通过".to_string(),
+            worker_latency: WorkerLatency::default(),
+            any_tool_used: false,
+            external_content_used: false,
+            pressure: crate::orchestrator::PressureLevel::Normal,
+            reply_surface: ReplySurface::GovernedConversation,
+            prompt_recall_intent: crate::memory::PromptRecallIntent::Mixed,
+            runtime_skill_selected_ids: Vec::new(),
+            task_learning_selected_ids: Vec::new(),
+            programmable_reasoning_intent: None,
+            counterfactual_analysis: None,
+            adversarial_arena_adjudication: None,
+            subject_state: None,
+            soul_feedback_projection: None,
+            mental_privacy_adjudication: None,
+            persona_priority_adjudication: None,
+        };
+
+        let mut config = test_agent_loop_config();
+        let mut app_config = crate::AppConfig::load_from_env();
+        app_config.enabled_channel = crate::CHANNEL_TELEGRAM.to_string();
+        app_config.tg_token = "tg-token".to_string();
+        config.channel_capability_registry =
+            Arc::new(crate::build_channel_capability_registry(&app_config, false));
+        let handoff = delivery_handoff::deliver_turn(&outbound_tx, &msg, &finalized, &config);
+        assert!(handoff.delivered);
+
+        let reply = outbound_rx.try_recv().expect("primary reply");
+        assert_eq!(reply.content, "构建已通过");
+        assert_eq!(reply.outbound_kind, crate::bus::OutboundKind::Primary);
+        let reaction = outbound_rx.try_recv().expect("terminal reaction");
+        assert_eq!(
+            reaction.outbound_kind,
+            crate::bus::OutboundKind::Supplemental
+        );
+        assert_eq!(reaction.platform_message_id, "9");
+        match reaction.body {
+            crate::bus::CanonicalMessageBody::PlatformNative(native) => {
+                assert_eq!(native.platform_type, "telegram_message_reaction");
+                assert_eq!(native.payload_json["emoji"], "✅");
+            }
+            other => panic!("expected reaction body, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn configure_ui_stream_silent_reply_emits_terminal_error() {
         let config = test_agent_loop_config();
         let opened = config.chat_streams.try_open().expect("open stream");
@@ -5666,6 +5739,71 @@ mod tests {
         assert_eq!(turn_ledger.canonical_reply_source, "");
         assert_eq!(turn_ledger.reason, "chat_failure_copy");
         assert!(llm_failure_count.is_empty());
+    }
+
+    #[test]
+    fn handle_worker_path_error_adds_terminal_failure_reaction_after_visible_reply() {
+        let mut config = test_agent_loop_config();
+        let mut app_config = crate::AppConfig::load_from_env();
+        app_config.enabled_channel = crate::CHANNEL_TELEGRAM.to_string();
+        app_config.tg_token = "tg-token".to_string();
+        config.channel_capability_registry =
+            Arc::new(crate::build_channel_capability_registry(&app_config, false));
+
+        let mut msg = PcMsg::new_inbound("telegram", "chat-failure-reaction", "继续", false)
+            .expect("message")
+            .with_inbound_provenance(
+                crate::bus::MessageTransport::Poll,
+                "9",
+                "",
+                "telegram_message:9",
+            );
+        msg.req_id = Some("req-worker-failure".to_string());
+        let (user_inbound_tx, _user_inbound_rx, _) = crate::bus::new_inbound_channel(8);
+        let (system_inbound_tx, _system_inbound_rx, _) = crate::bus::new_inbound_channel(8);
+        let (outbound_tx, outbound_rx, _) = crate::bus::new_inbound_channel(8);
+        let mut llm_failure_count = HashMap::new();
+        let mut turn_ledger = build_turn_ledger_start(&msg, now_unix_ms());
+
+        self::worker_error::handle_worker_path_error(
+            crate::error::Error::config(
+                "artifact_only_reply",
+                "reply_surface=governed_conversation",
+            ),
+            AGENT_LOOP_TAG,
+            &mut msg,
+            UiLocale::Zh,
+            Instant::now(),
+            0,
+            0,
+            0,
+            42,
+            &mut llm_failure_count,
+            &user_inbound_tx,
+            &system_inbound_tx,
+            &outbound_tx,
+            &config,
+            &mut turn_ledger,
+        );
+
+        let reply = outbound_rx.try_recv().expect("visible failure reply");
+        assert_eq!(reply.content, tr(UiMessage::OperationFailed, UiLocale::Zh));
+        assert_eq!(reply.outbound_kind, crate::bus::OutboundKind::Primary);
+
+        let reaction = outbound_rx.try_recv().expect("failure reaction");
+        assert_eq!(
+            reaction.outbound_kind,
+            crate::bus::OutboundKind::Supplemental
+        );
+        assert_eq!(reaction.req_id.as_deref(), Some("req-worker-failure"));
+        assert_eq!(reaction.platform_message_id, "9");
+        match reaction.body {
+            crate::bus::CanonicalMessageBody::PlatformNative(native) => {
+                assert_eq!(native.platform_type, "telegram_message_reaction");
+                assert_eq!(native.payload_json["emoji"], "⚠️");
+            }
+            other => panic!("expected reaction body, got {other:?}"),
+        }
     }
 
     #[test]

@@ -11,7 +11,7 @@ pub(super) fn deliver_turn(
     outbound_tx: &OutboundTx,
     msg: &PcMsg,
     finalized: &super::reply_finalize::FinalizedTurn,
-    _config: &AgentLoopConfig,
+    config: &AgentLoopConfig,
 ) -> DeliveryHandoff {
     if finalized.skip_delivery {
         return DeliveryHandoff::default();
@@ -56,6 +56,16 @@ pub(super) fn deliver_turn(
         true
     };
     let outbound_enqueue_ms = outbound_start.elapsed().as_millis();
+    if delivered {
+        let req_id = msg.req_id.as_deref().unwrap_or("reply");
+        crate::agent::delivery::send_terminal_reaction_if_enabled(
+            msg,
+            req_id,
+            outbound_tx,
+            config.channel_capability_registry.get(msg.channel.as_ref()),
+            true,
+        );
+    }
     let reply_handoff_ms = if delivered {
         finalized.msg_start.elapsed().as_millis()
     } else {

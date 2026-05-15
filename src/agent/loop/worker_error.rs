@@ -115,7 +115,16 @@ pub(super) fn handle_worker_path_error(
                 "error_reply",
             );
             metrics::record_internal_error_copy_suppressed();
-            let _ = try_send_outbound(outbound_tx, reply, "chat-failure");
+            if try_send_outbound(outbound_tx, reply, "chat-failure") {
+                let req_id = msg.req_id.as_deref().unwrap_or("chat-failure");
+                crate::agent::delivery::send_terminal_reaction_if_enabled(
+                    msg,
+                    req_id,
+                    outbound_tx,
+                    config.channel_capability_registry.get(msg.channel.as_ref()),
+                    false,
+                );
+            }
         }
         Err(build_error) => {
             metrics::record_error_by_stage(build_error.metrics_stage());

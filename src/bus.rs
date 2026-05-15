@@ -189,6 +189,26 @@ pub struct PlatformNativeBody {
     pub fallback_text: String,
 }
 
+pub const PLATFORM_NATIVE_TYPE_TELEGRAM_MESSAGE_REACTION: &str = "telegram_message_reaction";
+pub const PLATFORM_NATIVE_TELEGRAM_REACTION_EMOJI_KEY: &str = "emoji";
+
+impl PlatformNativeBody {
+    pub fn telegram_message_reaction(emoji: impl Into<String>) -> Self {
+        let emoji = emoji.into();
+        Self {
+            platform_type: PLATFORM_NATIVE_TYPE_TELEGRAM_MESSAGE_REACTION.to_string(),
+            payload_json: serde_json::json!({
+                PLATFORM_NATIVE_TELEGRAM_REACTION_EMOJI_KEY: emoji,
+            }),
+            fallback_text: emoji,
+        }
+    }
+
+    pub fn is_telegram_message_reaction(&self) -> bool {
+        self.platform_type == PLATFORM_NATIVE_TYPE_TELEGRAM_MESSAGE_REACTION
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum CanonicalMessageBody {
