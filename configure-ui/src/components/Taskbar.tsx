@@ -778,19 +778,7 @@ export function Taskbar({ onOpenSettings }: TaskbarProps) {
         onClose={() => setRestartConfirmOpen(false)}
         title={t("device.restartConfirmTitle")}
         description={t("device.restartConfirmDesc")}
-        icon={
-          <Box
-            sx={{
-              width: 44,
-              height: 44,
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-            }}
-          >
-            <Os3dIcon src={OS_ICON_SHELL.power} />
-          </Box>
-        }
+        dialogIcon="restart"
         confirmLabel={t("device.restart")}
         onConfirm={doRestart}
         confirmDisabled={restarting}

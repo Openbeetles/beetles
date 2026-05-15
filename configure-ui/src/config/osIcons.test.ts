@@ -3,7 +3,11 @@ import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { OS_ICON_DASHBOARD } from "./osIcons.ts";
+import {
+  OS_ICON_DASHBOARD,
+  OS_ICON_DEVICE_CONFIG,
+  OS_ICON_DIALOG,
+} from "./osIcons.ts";
 
 const dashboardCardIconKeys = [
   "healthDetails",
@@ -15,6 +19,17 @@ const dashboardCardIconKeys = [
   "programmableReasoning",
   "storageMedia",
 ] as const;
+
+const dialogIconEntries = {
+  delete: "/icons/dialog_delete_3d.png",
+  error: "/icons/dialog_error_3d.png",
+  restart: "/icons/dialog_restart_3d.png",
+  security: "/icons/dialog_security_3d.png",
+  success: "/icons/dialog_success_3d.png",
+  switch: "/icons/dialog_switch_3d.png",
+  unsavedChanges: "/icons/unsaved_changes_3d.png",
+  warning: "/icons/dialog_warning_3d.png",
+} as const;
 
 const publicRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -47,4 +62,17 @@ test("dashboard detail cards use dedicated semantic 3D icons", () => {
   assert.notEqual(OS_ICON_DASHBOARD.voiceAudio, OS_ICON_DASHBOARD.runtime);
   assert.notEqual(OS_ICON_DASHBOARD.programmableReasoning, OS_ICON_DASHBOARD.workflow);
   assert.notEqual(OS_ICON_DASHBOARD.storageMedia, OS_ICON_DASHBOARD.storage);
+});
+
+test("dialog feedback uses dedicated round semantic 3D icons", () => {
+  for (const [key, src] of Object.entries(dialogIconEntries)) {
+    assert.equal(OS_ICON_DIALOG[key as keyof typeof dialogIconEntries], src);
+    assert.equal(existsSync(publicIconPath(src)), true, `${src} must exist`);
+  }
+});
+
+test("device config display tab uses a dedicated display 3D icon", () => {
+  assert.equal(OS_ICON_DEVICE_CONFIG.display, "/icons/display_3d.png");
+  assert.notEqual(OS_ICON_DEVICE_CONFIG.display, "/icons/camera_3d.png");
+  assert.equal(existsSync(publicIconPath(OS_ICON_DEVICE_CONFIG.display)), true);
 });

@@ -1,5 +1,6 @@
 import Box from '@mui/material/Box'
 import Typography from '@mui/material/Typography'
+import { LAYOUT_TOKENS } from '../config/themeTokens'
 
 interface PageHeaderProps {
   title: string
@@ -14,10 +15,10 @@ export function PageHeader({ title, brandLabel }: PageHeaderProps) {
   return (
     <Box
       sx={{
-        py: 0.125,
+        py: 0.25,
         display: 'flex',
         alignItems: 'center',
-        gap: 0.875,
+        gap: 1,
         minWidth: 0,
       }}
     >
@@ -29,7 +30,7 @@ export function PageHeader({ title, brandLabel }: PageHeaderProps) {
             display: 'inline-flex',
             alignItems: 'center',
             px: 1,
-            py: 0.45,
+            py: 0.5,
             borderRadius: 'calc(var(--radius-chip) - 1px)',
             border:
               '1px solid color-mix(in srgb, var(--primary) 14%, var(--border))',
@@ -44,9 +45,9 @@ export function PageHeader({ title, brandLabel }: PageHeaderProps) {
             component="span"
             sx={{
               fontFamily: 'var(--font-display)',
-              fontSize: '0.625rem',
+              fontSize: `var(--font-size-tiny, ${LAYOUT_TOKENS.fontSizeTiny})`,
               fontWeight: 400,
-              letterSpacing: '0.08em',
+              letterSpacing: 'var(--letter-spacing-small)',
               lineHeight: 1,
               textTransform: 'uppercase',
               color: 'var(--text-secondary)',

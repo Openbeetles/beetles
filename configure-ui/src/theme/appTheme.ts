@@ -69,19 +69,19 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
       h1: {
         fontSize: LAYOUT_TOKENS.fontSizeH1,
         fontWeight: 700,
-        letterSpacing: '-0.04em',
+        letterSpacing: LAYOUT_TOKENS.letterSpacingDisplay,
         lineHeight: LAYOUT_TOKENS.lineHeightTight,
       },
       h2: {
         fontSize: LAYOUT_TOKENS.fontSizeH2,
         fontWeight: 700,
-        letterSpacing: '-0.03em',
+        letterSpacing: LAYOUT_TOKENS.letterSpacingTighter,
         lineHeight: LAYOUT_TOKENS.lineHeightTight,
       },
       h3: {
         fontSize: LAYOUT_TOKENS.fontSizeH3,
         fontWeight: 700,
-        letterSpacing: '-0.025em',
+        letterSpacing: LAYOUT_TOKENS.letterSpacingTight,
         lineHeight: LAYOUT_TOKENS.lineHeightSnug,
       },
       h4: {
@@ -225,8 +225,13 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
             '--dialog-narrow-max-width': `${LAYOUT_TOKENS.dialogNarrowMaxWidthPx}px`,
             '--hover-lift-y': `${LAYOUT_TOKENS.hoverLiftY}px`,
             '--hover-shift-x': `${LAYOUT_TOKENS.hoverShiftX}px`,
+            '--letter-spacing-display': LAYOUT_TOKENS.letterSpacingDisplay,
+            '--letter-spacing-tighter': LAYOUT_TOKENS.letterSpacingTighter,
             '--letter-spacing-tight': LAYOUT_TOKENS.letterSpacingTight,
             '--letter-spacing-label': LAYOUT_TOKENS.letterSpacingLabel,
+            '--letter-spacing-small': LAYOUT_TOKENS.letterSpacingSmall,
+            '--letter-spacing-brand': LAYOUT_TOKENS.letterSpacingBrand,
+            '--font-size-tiny': LAYOUT_TOKENS.fontSizeTiny,
             '--shadow-subtle': tokens.shadowSubtle,
             '--shadow-card': tokens.shadowSubtle,
             '--shadow-card-hover': tokens.shadowCardHover,
@@ -904,12 +909,13 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
         styleOverrides: {
           root: {
             gap: LAYOUT_TOKENS.toggleGroupGap,
-            padding: '5px',
+            minHeight: LAYOUT_TOKENS.formControlHeight,
             borderRadius: 'var(--radius-control)',
             backgroundColor: 'color-mix(in srgb, var(--surface) 62%, var(--card))',
             backgroundImage:
               'linear-gradient(180deg, color-mix(in srgb, #fff 12%, transparent) 0%, color-mix(in srgb, #fff 4%, transparent) 50%, transparent 100%)',
             boxShadow: 'var(--os3d-micro-well-stack)',
+            alignItems: 'stretch',
           },
           grouped: {
             border: '1px solid color-mix(in srgb, var(--border) 9%, transparent)',
@@ -917,8 +923,14 @@ export function createAppTheme(mode: ThemeMode, brand: ThemeBrand) {
             textTransform: 'none',
             fontWeight: 600,
             fontSize: 'var(--font-size-body-sm)',
-            paddingTop: LAYOUT_TOKENS.toggleButtonPaddingY,
-            paddingBottom: LAYOUT_TOKENS.toggleButtonPaddingY,
+            minHeight: LAYOUT_TOKENS.formControlHeight,
+            paddingTop: 0,
+            paddingBottom: 0,
+            paddingLeft: LAYOUT_TOKENS.toggleButtonPaddingX,
+            paddingRight: LAYOUT_TOKENS.toggleButtonPaddingX,
+            alignItems: 'center',
+            justifyContent: 'center',
+            lineHeight: 1,
             transition:
               'background-color var(--transition-duration) ease, color var(--transition-duration) ease, border-color var(--transition-duration) ease, box-shadow var(--transition-duration) ease',
             backgroundColor: 'color-mix(in srgb, var(--card) 64%, transparent)',

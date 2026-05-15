@@ -10,8 +10,6 @@ import InputLabel from '@mui/material/InputLabel'
 import MenuItem from '@mui/material/MenuItem'
 import Select from '@mui/material/Select'
 import Switch from '@mui/material/Switch'
-import Tab from '@mui/material/Tab'
-import Tabs from '@mui/material/Tabs'
 import TextField from '@mui/material/TextField'
 import Typography from '@mui/material/Typography'
 import SaveRounded from '@mui/icons-material/SaveRounded'
@@ -30,6 +28,7 @@ import {
   SaveFeedback,
   splitPageErrorState,
 } from '../components/form'
+import { ConfigPanelTabs } from '../components/ConfigPanelTabs'
 import { Os3dIcon } from '../components/Os3dIcon'
 import { SettingsSection } from '../components/SettingsSection'
 import { OS_ICON_DEVICE_CONFIG } from '../config/osIcons'
@@ -297,9 +296,6 @@ export function AudioConfigPanel() {
   }
 
   const extrasStr = extraSoundEvents(form.ambient_listening.sound_events).join(', ')
-  const speechRoutingDescription = realtimeWakeEnabled
-    ? t('audioConfig.realtimeActiveHelp')
-    : t('audioConfig.speechFallbackHelp')
 
   const setSpeakerSampleRate = (sampleRate: number) => {
     setDraftSafe({
@@ -370,26 +366,17 @@ export function AudioConfigPanel() {
 
           {audioOn ? (
             <>
-              <Tabs
+              <ConfigPanelTabs
                 value={activeAudioTab}
-                onChange={(_, v) => setAudioTab(v)}
-                variant="scrollable"
-                allowScrollButtonsMobile
-                sx={{
-                  borderBottom: 'none',
-                  
-                  minHeight: 44,
-                  '& .MuiTab-root': {
-                    minHeight: 44,
-                    fontSize: 'var(--font-size-body-sm)',
-                  },
-                }}
-              >
-                <Tab label={t('audioConfig.tabDevices')} />
-                <Tab label={t('audioConfig.tabSpeech')} />
-                <Tab label={t('audioConfig.tabMore')} />
-              </Tabs>
-              <Box sx={{ pt: 2.5 }}>
+                ariaLabel={t('audioConfig.tabsAria')}
+                onChange={setAudioTab}
+                items={[
+                  { value: 0, label: t('audioConfig.tabDevices') },
+                  { value: 1, label: t('audioConfig.tabSpeech') },
+                  { value: 2, label: t('audioConfig.tabMore') },
+                ]}
+              />
+              <Box>
                 {activeAudioTab === 0 && (
                   <>
               <FormSectionSub title={t('audioConfig.sectionMicrophone')}>
@@ -850,12 +837,6 @@ export function AudioConfigPanel() {
 
                 {activeAudioTab === 1 && (
                   <>
-                    <FormSectionSub title={t('audioConfig.sectionSpeechRouting')}>
-                      <Typography variant="body2" sx={{ color: "var(--text-tertiary)" }}>
-                        {speechRoutingDescription}
-                      </Typography>
-                    </FormSectionSub>
-
                     {showSpeechInput || showSpeechOutput ? (
                       <FormSectionSubCollapsible title={t('audioConfig.sectionSpeechService')}>
                         <Box sx={{ display: 'flex', flexDirection: 'column', gap: 3 }}>

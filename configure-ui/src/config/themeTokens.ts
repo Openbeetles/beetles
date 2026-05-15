@@ -23,14 +23,22 @@ export const LAYOUT_TOKENS = {
   buttonMinHeight: 44,
   buttonMinHeightLarge: 52,
   buttonMinHeightSmall: 32,
+  /** 标准表单控件高度：TextField / Select / segmented control 对齐 */
+  formControlHeight: 56,
+  /** 配置面板内轻量 Tabs 轨道内距（px） */
+  configPanelTabsInsetPx: 3,
+  /** 配置面板内轻量 Tab 最小高度（px） */
+  configPanelTabHeightPx: 34,
+  /** 配置面板内轻量 Tab 默认最小宽度（px） */
+  configPanelTabMinWidthPx: 96,
   /** 大按钮水平内边距 */
   buttonPaddingXLarge: 28,
   /** CardContent 内边距 */
   cardContentPadding: 24,
   /** ToggleButtonGroup 间距 */
-  toggleGroupGap: 6,
-  /** ToggleButton 上下内边距 */
-  toggleButtonPaddingY: 10,
+  toggleGroupGap: 8,
+  /** ToggleButton 水平内边距 */
+  toggleButtonPaddingX: 18,
   /** Tooltip 内边距 */
   tooltipPadding: '10px 14px',
   /** 焦点环宽度 */
@@ -123,10 +131,18 @@ export const LAYOUT_TOKENS = {
   hoverLiftY: 0,
   /** hover 右移位移（px），用于“更多”链接、箭头等 */
   hoverShiftX: 2,
-  /** 字间距：标题紧 */
+  /** 字间距：极紧（h1 Display 级大标题） */
+  letterSpacingDisplay: '-0.04em',
+  /** 字间距：较紧（h2 区块主标题） */
+  letterSpacingTighter: '-0.03em',
+  /** 字间距：标题紧（h3/h4 卡片标题） */
   letterSpacingTight: '-0.025em',
-  /** 字间距：标签/上标 */
+  /** 字间距：标签/上标（数据标签、次级说明） */
   letterSpacingLabel: '0.04em',
+  /** 字间距：大写标签/overline（uppercase 小标题，如仪表盘分区标题） */
+  letterSpacingSmall: '0.08em',
+  /** 字间距：品牌展示专用（Hero 区品牌文字、DevicePage 型号展示）；勿滥用 */
+  letterSpacingBrand: '0.2em',
 
   // ---------- 字号与行高（单源：偏「桌面 OS」体量，层次拉开、留白充足） ----------
   /** 字号：Display（Hero 主标题） */
@@ -151,6 +167,8 @@ export const LAYOUT_TOKENS = {
   fontSizeOverline: '0.8125rem',
   /** 字号：徽章 / 极小标签 */
   fontSizeLabel: '0.75rem',
+  /** 字号：品牌小标签（PageHeader brandLabel 胶囊、极小 badge）；低于 label 慎用 */
+  fontSizeTiny: '0.625rem',
   /** 等宽字体栈：数值、地址、标识符 */
   fontMono:
     '"JetBrains Mono", "Fira Code", "Cascadia Code", ui-monospace, monospace',

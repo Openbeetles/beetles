@@ -40,7 +40,7 @@ import {
 import { Os3dIcon } from "../components/Os3dIcon";
 import { SkillMonogramBadge } from "../components/SkillMonogramBadge";
 import { SettingsSection } from "../components/SettingsSection";
-import { OS_ICON_DIALOG, OS_ICON_NAV } from "../config/osIcons";
+import { OS_ICON_NAV } from "../config/osIcons";
 import { useDeviceApi, type SkillItem } from "../hooks/useDeviceApi";
 import { useAppPreferences } from "../hooks/useAppPreferences";
 import { useToast } from "../hooks/useToast";
@@ -59,6 +59,7 @@ import {
   parseRootInventory,
 } from "../api/rootInventory";
 import { SETTINGS_LIST_ROW_PLATE_SX } from "../theme/listItemStyles";
+import { createTintedChipSx } from "../theme/chipStyles";
 import { CONTENT_MAX_WIDTH } from "../config/layout";
 import { translateApiError } from "../i18n/apiErrors";
 import { createLatestRequestGuard } from "../util/latestRequest";
@@ -138,9 +139,14 @@ const SKILLS_SUMMARY_CHIP_SX = {
 
 const SKILLS_SUMMARY_ENABLED_CHIP_SX = {
   ...SKILLS_SUMMARY_CHIP_SX,
-  color: "var(--text-secondary)",
-  borderColor: "color-mix(in srgb, var(--primary) 12%, var(--border))",
-  bgcolor: "color-mix(in srgb, var(--primary) 3.5%, transparent)",
+  ...createTintedChipSx("var(--primary)", {
+    height: 22,
+    bgStrength: 4,
+    borderStrength: 16,
+    fontSize: "var(--font-size-caption)",
+    fontWeight: 600,
+  }),
+  boxShadow: "none",
 } as const;
 
 export function SkillsPage() {
@@ -704,7 +710,7 @@ export function SkillsPage() {
             ? t("skills.deleteConfirmDesc", { name: deleteTargetName })
             : ""
         }
-        icon={<DeleteOutlined />}
+        dialogIcon="delete"
         confirmColor="error"
         confirmLabel={t("common.remove")}
         confirmDisabled={deleteSaving}
@@ -715,7 +721,7 @@ export function SkillsPage() {
         onClose={() => setDiscardEditOpen(false)}
         title={t("skills.discardEditTitle")}
         description={t("skills.discardEditDesc")}
-        icon={<Os3dIcon src={OS_ICON_DIALOG.unsavedChanges} />}
+        dialogIcon="unsavedChanges"
         confirmColor="error"
         confirmLabel={t("common.confirm")}
         onConfirm={confirmDiscardEdit}
@@ -725,7 +731,7 @@ export function SkillsPage() {
         onClose={() => setImportDiscardOpen(false)}
         title={t("skills.discardImportTitle")}
         description={t("skills.discardImportDesc")}
-        icon={<Os3dIcon src={OS_ICON_DIALOG.unsavedChanges} />}
+        dialogIcon="unsavedChanges"
         confirmColor="error"
         confirmLabel={t("common.confirm")}
         onConfirm={closeImportDialogFully}

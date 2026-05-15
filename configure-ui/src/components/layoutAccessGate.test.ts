@@ -38,17 +38,15 @@ test("does not replace the shell while restart flow is active", () => {
   );
 });
 
-test("lets protected routes mount once when stored pairing still needs validation", () => {
+test("blocks protected routes while stored pairing still needs validation", () => {
   assert.equal(
     shouldShowProtectedRouteBlocker({
       pathname: "/ai-config",
       appMode: "unlock",
       deviceConnected: true,
       restartPhase: "idle",
-      localPairing: "present",
-      auth: "unknown",
     }),
-    false,
+    true,
   );
 });
 
@@ -59,8 +57,6 @@ test("keeps blocking protected routes after stored pairing is rejected", () => {
       appMode: "unlock",
       deviceConnected: true,
       restartPhase: "idle",
-      localPairing: "present",
-      auth: "invalid",
     }),
     true,
   );

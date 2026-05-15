@@ -13,6 +13,7 @@ import {
   CONFIG_PANEL_SX,
   PANEL_SECTION_PADDING,
 } from "../theme/panelStyles";
+import { createSettingsNavItemButtonSx } from "../theme/listItemStyles";
 
 export type ConfigSubNavItem = {
   segment: string;
@@ -133,39 +134,11 @@ export function ConfigSubNavLayout({ basePath, items }: ConfigSubNavLayoutProps)
                   aria-current={tab === item.segment ? "page" : undefined}
                   onClick={() => goTo(item.segment)}
                   sx={{
+                    ...createSettingsNavItemButtonSx(tab === item.segment),
                     py: { xs: 1, md: 1.125 },
                     px: { xs: 1.5, md: 1.375 },
                     width: { xs: "auto", md: "100%" },
                     whiteSpace: { xs: "nowrap", md: "normal" },
-                    borderRadius: "var(--radius-control)",
-                    border: "1px solid transparent",
-                    backgroundImage:
-                      tab === item.segment
-                        ? "linear-gradient(180deg, color-mix(in srgb, #fff 12%, transparent) 0%, color-mix(in srgb, var(--primary) 7%, transparent) 100%)"
-                        : "linear-gradient(180deg, color-mix(in srgb, #fff 8%, transparent) 0%, transparent 100%)",
-                    transition:
-                      "background-color var(--transition-duration) var(--ease-out-smooth), box-shadow var(--transition-duration) var(--ease-out-smooth), border-color var(--transition-duration) var(--ease-out-smooth)",
-                    "&:hover": {
-                      backgroundColor:
-                        "color-mix(in srgb, var(--foreground) 3.5%, var(--card))",
-                      borderColor:
-                        "color-mix(in srgb, var(--border) 18%, transparent)",
-                      boxShadow: "var(--os3d-control-soft-lift-stack)",
-                    },
-                    "&.Mui-selected": {
-                      borderColor:
-                        "color-mix(in srgb, var(--primary) 22%, var(--border))",
-                      backgroundColor:
-                        "color-mix(in srgb, var(--primary) 11%, var(--card))",
-                      boxShadow: "var(--os3d-selection-pill-stack)",
-                    },
-                    "&.Mui-selected:hover": {
-                      backgroundColor:
-                        "color-mix(in srgb, var(--primary) 13%, var(--card))",
-                    },
-                    "@media (prefers-reduced-motion: reduce)": {
-                      transition: "none",
-                    },
                   }}
                 >
                   {item.iconSrc ? (

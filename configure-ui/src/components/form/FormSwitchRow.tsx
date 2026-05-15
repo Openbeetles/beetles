@@ -5,7 +5,6 @@ import type { ReactElement, ReactNode } from "react";
 import {
   FORM_SWITCH_ROW_SX,
   TEXT_BODY_TERTIARY_SX,
-  TEXT_FIELD_LABEL_SX,
 } from "../../theme/panelStyles";
 
 export interface FormSwitchRowProps {
@@ -15,7 +14,7 @@ export interface FormSwitchRowProps {
   divider?: boolean;
 }
 
-/** Standard binary setting row with label, helper text, and a right-aligned control. */
+/** Standard binary setting row with a compact leading control and adjacent label. */
 export function FormSwitchRow({
   title,
   description,
@@ -24,19 +23,28 @@ export function FormSwitchRow({
 }: FormSwitchRowProps) {
   return (
     <FormControlLabel
-      labelPlacement="start"
       control={control}
       label={
-        <Stack spacing={0.35} sx={{ minWidth: 0 }}>
-          <Typography component="span" sx={TEXT_FIELD_LABEL_SX}>
-            {title}
-          </Typography>
-          {description ? (
+        description ? (
+          <Stack spacing={0.35} sx={{ minWidth: 0 }}>
+            <Typography
+              component="span"
+              sx={{
+                fontSize: "var(--font-size-body)",
+                fontWeight: 400,
+                lineHeight: "var(--line-height-relaxed)",
+                color: "var(--text-primary)",
+              }}
+            >
+              {title}
+            </Typography>
             <Typography component="span" sx={TEXT_BODY_TERTIARY_SX}>
               {description}
             </Typography>
-          ) : null}
-        </Stack>
+          </Stack>
+        ) : (
+          title
+        )
       }
       sx={{
         ...FORM_SWITCH_ROW_SX,

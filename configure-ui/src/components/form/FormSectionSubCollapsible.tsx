@@ -5,7 +5,10 @@ import ExpandMore from "@mui/icons-material/ExpandMore";
 import ExpandLess from "@mui/icons-material/ExpandLess";
 import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import { SectionSubTitleRow } from "./SectionSubTitleRow";
+import {
+  SectionSubTitleRow,
+  type SectionSubTitleAccentTone,
+} from "./SectionSubTitleRow";
 import {
   FORM_SECTION_MODULE_BODY_SX,
   FORM_SECTION_MODULE_HEADER_SX,
@@ -16,6 +19,7 @@ interface FormSectionSubCollapsibleProps {
   title: string;
   children: ReactNode;
   defaultOpen?: boolean;
+  accentTone?: SectionSubTitleAccentTone;
   /** Stable DOM id seed when title is user-editable or can duplicate. */
   idBase?: string;
   /** 标题行右侧操作（如删除），点击不触发展开/收起 */
@@ -33,6 +37,7 @@ export function FormSectionSubCollapsible({
   title,
   children,
   defaultOpen = true,
+  accentTone = "primary",
   idBase,
   action,
 }: FormSectionSubCollapsibleProps) {
@@ -94,7 +99,11 @@ export function FormSectionSubCollapsible({
               : t("form.expandSection", { title })
           }
         >
-          <SectionSubTitleRow title={title} accentStretch />
+          <SectionSubTitleRow
+            title={title}
+            accentTone={accentTone}
+            accentStretch
+          />
           <Box
             component="span"
             sx={{

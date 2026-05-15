@@ -1,4 +1,3 @@
-import type { ReactNode } from "react";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
 import Dialog from "@mui/material/Dialog";
@@ -6,6 +5,8 @@ import DialogActions from "@mui/material/DialogActions";
 import DialogContent from "@mui/material/DialogContent";
 import Typography from "@mui/material/Typography";
 import { useTranslation } from "react-i18next";
+import { OS_ICON_DIALOG, type OsDialogIconKey } from "../config/osIcons";
+import { Os3dIcon } from "./Os3dIcon";
 
 export interface ConfirmDialogProps {
   open: boolean;
@@ -14,8 +15,8 @@ export interface ConfirmDialogProps {
   title: string;
   /** 描述文案 */
   description: string;
-  /** 标题前图标 */
-  icon?: ReactNode;
+  /** 标题前 3D 图标语义 */
+  dialogIcon: OsDialogIconKey;
   /** 确认按钮文案，默认 common 的 confirm 或“确认” */
   confirmLabel?: string;
   /** 取消按钮文案，默认 common.cancel */
@@ -34,27 +35,6 @@ export interface ConfirmDialogProps {
   confirmColor?: "primary" | "error" | "warning";
 }
 
-const ICON_TINT: Record<
-  NonNullable<ConfirmDialogProps["confirmColor"]>,
-  string
-> = {
-  primary:
-    "color-mix(in srgb, var(--primary) 14%, transparent)",
-  error:
-    "color-mix(in srgb, var(--semantic-danger) 16%, transparent)",
-  warning:
-    "color-mix(in srgb, var(--semantic-warning) 16%, transparent)",
-};
-
-const ICON_INK: Record<
-  NonNullable<ConfirmDialogProps["confirmColor"]>,
-  string
-> = {
-  primary: "var(--primary)",
-  error: "var(--semantic-danger)",
-  warning: "var(--semantic-warning)",
-};
-
 const TITLE_ID = "confirm-dialog-title";
 const DESC_ID = "confirm-dialog-description";
 
@@ -66,14 +46,14 @@ const ACTIONS_PAD_Y = 2.5;
 
 /**
  * 通用操作确认弹窗：与壳层卡片一致的描边/轻投影，内容区与操作区分栏。
- * 有 `icon` 时图标置顶水平居中，标题与说明居中；无图标时文案左对齐。
+ * 图标统一使用 OS3D PNG，避免确认面混入字体图标。
  */
 export function ConfirmDialog({
   open,
   onClose,
   title,
   description,
-  icon,
+  dialogIcon,
   confirmLabel,
   cancelLabel,
   onCancel,
@@ -163,44 +143,28 @@ export function ConfirmDialog({
             pb: DIALOG_PAD_BOTTOM,
             display: "flex",
             flexDirection: "column",
-            alignItems: icon ? "center" : "stretch",
-            gap: icon ? 2.5 : 0,
+            alignItems: "center",
+            gap: 2.5,
           }}
         >
-          {icon && (
-            <Box
-              sx={{
-                width: 48,
-                height: 48,
-                borderRadius: "var(--radius-chip)",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                flexShrink: 0,
-                color: ICON_INK[confirmColor],
-                backgroundColor: ICON_TINT[confirmColor],
-                "& > span": {
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  maxWidth: "100%",
-                  maxHeight: "100%",
-                },
-                "& > span > svg": {
-                  fontSize: "var(--icon-size-lg) !important",
-                },
-              }}
-            >
-              <Box component="span" sx={{ lineHeight: 0 }}>
-                {icon}
-              </Box>
-            </Box>
-          )}
+          <Box
+            sx={{
+              width: 56,
+              height: 56,
+              borderRadius: "999px",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              flexShrink: 0,
+            }}
+          >
+            <Os3dIcon src={OS_ICON_DIALOG[dialogIcon]} variant="inline" />
+          </Box>
           <Box
             sx={{
               minWidth: 0,
               width: "100%",
-              textAlign: icon ? "center" : "left",
+              textAlign: "center",
             }}
           >
             <Typography

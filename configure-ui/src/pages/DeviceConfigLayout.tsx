@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import Box from "@mui/material/Box";
-import WarningAmberRounded from "@mui/icons-material/WarningAmberRounded";
 import { ConfigSubNavLayout } from "../components/ConfigSubNavLayout";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { PAGE_COLUMN_FILL_SX } from "../theme/panelStyles";
@@ -70,7 +69,7 @@ export function DeviceConfigLayout() {
         wide
         title={t("deviceConfig.disclaimerTitle")}
         description={t("deviceConfig.disclaimerDesc")}
-        icon={<WarningAmberRounded />}
+        dialogIcon="warning"
         confirmColor="error"
         cancelLabel={t("deviceConfig.disclaimerLeave")}
         confirmLabel={t("deviceConfig.disclaimerContinue")}

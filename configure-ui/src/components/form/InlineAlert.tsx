@@ -2,9 +2,10 @@ import Box from '@mui/material/Box'
 import Button from '@mui/material/Button'
 import Stack from '@mui/material/Stack'
 import Typography from '@mui/material/Typography'
-import ErrorOutline from '@mui/icons-material/ErrorOutline'
 import { useTranslation } from 'react-i18next'
+import { OS_ICON_DIALOG } from '../../config/osIcons'
 import { LAYOUT_TOKENS } from '../../config/themeTokens'
+import { Os3dIcon } from '../Os3dIcon'
 import {
   isDeviceOrPairingErrorKey,
   translateApiError,
@@ -81,14 +82,7 @@ export function InlineAlert({ message, onRetry }: InlineAlertProps) {
               'inset 0 1px 0 color-mix(in srgb, #fff 56%, transparent)',
           }}
         >
-          <ErrorOutline
-            sx={{
-              fontSize: '1.05rem',
-              color:
-                'color-mix(in srgb, var(--semantic-danger) 82%, var(--foreground))',
-            }}
-            aria-hidden
-          />
+          <Os3dIcon src={OS_ICON_DIALOG.error} variant="inline" />
         </Box>
         <Box sx={{ flex: 1, minWidth: 0 }}>
           <Typography

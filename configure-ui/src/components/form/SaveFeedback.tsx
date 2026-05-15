@@ -1,8 +1,8 @@
 import { useEffect } from 'react'
 import Box from '@mui/material/Box'
 import Typography from '@mui/material/Typography'
-import CheckCircleOutlined from '@mui/icons-material/CheckCircleOutlined'
-import ErrorOutline from '@mui/icons-material/ErrorOutline'
+import { OS_ICON_DIALOG } from '../../config/osIcons'
+import { Os3dIcon } from '../Os3dIcon'
 
 type Status = 'ok' | 'fail'
 
@@ -59,11 +59,12 @@ export function SaveFeedback({
         transition: 'opacity var(--transition-duration) ease',
       }}
     >
-      {isOk ? (
-        <CheckCircleOutlined sx={{ fontSize: 'var(--icon-size-md)', color: 'var(--semantic-success)' }} aria-hidden />
-      ) : (
-        <ErrorOutline sx={{ fontSize: 'var(--icon-size-md)', color: 'var(--semantic-danger)' }} aria-hidden />
-      )}
+      <Box sx={{ width: 28, height: 28, flexShrink: 0 }}>
+        <Os3dIcon
+          src={isOk ? OS_ICON_DIALOG.success : OS_ICON_DIALOG.error}
+          variant="inline"
+        />
+      </Box>
       <Typography
         variant="body2"
         sx={{

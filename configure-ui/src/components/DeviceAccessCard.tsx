@@ -652,6 +652,7 @@ export function DeviceAccessCard() {
         onClose={() => setPairingInitConfirmOpen(false)}
         title={t("device.pairingInitConfirmTitle")}
         description={t("device.pairingInitConfirmDesc")}
+        dialogIcon="security"
         confirmLabel={t("device.pairingInitSubmit")}
         onConfirm={() => handleInitializePairing()}
         confirmDisabled={pairingSubmitting === "init_pairing"}

@@ -425,7 +425,7 @@ export function AIConfigPage() {
         onClose={() => setRemoveSourceIndex(null)}
         title={t("config.llmRemoveSourceConfirmTitle")}
         description={t("config.llmRemoveSourceConfirmDesc")}
-        icon={<DeleteOutlined />}
+        dialogIcon="delete"
         confirmColor="error"
         confirmLabel={t("common.remove")}
         onConfirm={confirmRemoveSource}

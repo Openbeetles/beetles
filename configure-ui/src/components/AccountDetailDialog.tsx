@@ -644,6 +644,7 @@ export function AccountDetailDialog({
         onClose={() => setDeleteOpen(false)}
         title={t("accounts.deleteConfirmTitle")}
         description={t("accounts.deleteConfirmDesc")}
+        dialogIcon="delete"
         confirmColor="error"
         confirmLabel={t("accounts.delete")}
         confirmDisabled={deleteBusy}

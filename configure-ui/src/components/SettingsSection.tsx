@@ -14,7 +14,7 @@ import {
 type SettingsSectionSurfaceTone = "default" | "loading";
 
 interface SettingsSectionProps {
-  icon: ReactNode;
+  icon?: ReactNode;
   label: string;
   /** 区块下方、内容区上方的简短说明 */
   description?: string;
@@ -62,29 +62,31 @@ export function SettingsSection({
         gap={1.5}
         sx={{ mb: titleRowMb }}
       >
-        <Stack direction="row" alignItems="center" spacing={1.5}>
-          <Box
-            sx={{
-              width: "var(--icon-size-lg)",
-              height: "var(--icon-size-lg)",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              flexShrink: 0,
-              borderRadius: "var(--radius-chip)",
-              backgroundColor: loadingSurface
-                ? "transparent"
-                : "color-mix(in srgb, var(--primary) 7%, var(--card))",
-              boxShadow: loadingSurface
-                ? "none"
-                : "0 8px 18px -14px color-mix(in srgb, var(--primary) 40%, transparent), inset 0 1px 0 color-mix(in srgb, var(--surface) 58%, transparent)",
-              border: loadingSurface
-                ? "none"
-                : "1px solid color-mix(in srgb, var(--primary) 16%, transparent)",
-            }}
-          >
-            {icon}
-          </Box>
+        <Stack direction="row" alignItems="center" spacing={icon ? 1.5 : 0}>
+          {icon ? (
+            <Box
+              sx={{
+                width: "var(--icon-size-lg)",
+                height: "var(--icon-size-lg)",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                flexShrink: 0,
+                borderRadius: "var(--radius-chip)",
+                backgroundColor: loadingSurface
+                  ? "transparent"
+                  : "color-mix(in srgb, var(--primary) 7%, var(--card))",
+                boxShadow: loadingSurface
+                  ? "none"
+                  : "0 8px 18px -14px color-mix(in srgb, var(--primary) 40%, transparent), inset 0 1px 0 color-mix(in srgb, var(--surface) 58%, transparent)",
+                border: loadingSurface
+                  ? "none"
+                  : "1px solid color-mix(in srgb, var(--primary) 16%, transparent)",
+              }}
+            >
+              {icon}
+            </Box>
+          ) : null}
           <Typography component="span" sx={TEXT_SECTION_TITLE_SX}>
             {label}
           </Typography>
@@ -133,6 +135,7 @@ export function SettingsSection({
             boxSizing: "border-box",
             overflow: "auto",
             WebkitOverflowScrolling: "touch",
+            "& > *": { width: "100%", boxSizing: "border-box" },
           }}
         >
           {children}

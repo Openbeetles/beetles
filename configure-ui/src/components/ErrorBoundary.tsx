@@ -2,8 +2,9 @@ import { Component, type ReactNode } from 'react'
 import Box from '@mui/material/Box'
 import Button from '@mui/material/Button'
 import Typography from '@mui/material/Typography'
-import ErrorOutline from '@mui/icons-material/ErrorOutline'
 import { useTranslation } from 'react-i18next'
+import { OS_ICON_DIALOG } from '../config/osIcons'
+import { Os3dIcon } from './Os3dIcon'
 
 interface ErrorBoundaryProps {
   children: ReactNode
@@ -47,10 +48,9 @@ export class ErrorBoundaryClass extends Component<
             px: 2,
           }}
         >
-          <ErrorOutline
-            sx={{ fontSize: 48, color: 'var(--semantic-danger)' }}
-            aria-hidden
-          />
+          <Box sx={{ width: 72, height: 72 }}>
+            <Os3dIcon src={OS_ICON_DIALOG.error} variant="inline" />
+          </Box>
           <Typography
             variant="h6"
             sx={{

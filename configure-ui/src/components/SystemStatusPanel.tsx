@@ -15,7 +15,7 @@ import { DashboardCard } from "../pages/DevicePage";
 import {
   DASHBOARD_BLOCK_GAP,
   DASHBOARD_INSET_WELL_BG,
-  UI_LABEL_SECONDARY_SX,
+  TEXT_OVERLINE_SX,
 } from "../theme/panelStyles";
 import {
   buildFaultAndRecoveryMetrics,
@@ -150,7 +150,7 @@ function CircularGauge({
           sx={{
             fontWeight: 600,
             color: "var(--foreground-soft)",
-            letterSpacing: "0.04em",
+            letterSpacing: "var(--letter-spacing-label)",
             textTransform: "none",
             fontSize: "0.7rem",
           }}
@@ -214,7 +214,7 @@ function StrategyBehaviorRow({
               color: "var(--text-tertiary)",
               fontWeight: 500,
               fontSize: "var(--font-size-label)",
-              letterSpacing: "0.04em",
+              letterSpacing: "var(--letter-spacing-label)",
               lineHeight: 1.2,
               mb: 0.5,
               overflow: "hidden",
@@ -293,7 +293,7 @@ function StrategyBudgetRow({
                 color: "var(--text-tertiary)",
                 fontWeight: 500,
                 fontSize: "var(--font-size-label)",
-                letterSpacing: "0.04em",
+                letterSpacing: "var(--letter-spacing-label)",
                 lineHeight: 1.2,
                 overflow: "hidden",
                 textOverflow: "ellipsis",
@@ -871,13 +871,7 @@ export function SystemStatusPanel({
           <Typography
             variant="caption"
             component="div"
-            sx={{
-              ...UI_LABEL_SECONDARY_SX,
-              textTransform: "uppercase",
-              letterSpacing: "0.08em",
-              color: "var(--text-tertiary)",
-              mb: 1,
-            }}
+            sx={{ ...TEXT_OVERLINE_SX, mb: 1 }}
           >
             {t("device.systemStatusSubsectionFaults")}
           </Typography>
@@ -889,14 +883,7 @@ export function SystemStatusPanel({
           <Typography
             variant="caption"
             component="div"
-            sx={{
-              ...UI_LABEL_SECONDARY_SX,
-              textTransform: "uppercase",
-              letterSpacing: "0.08em",
-              color: "var(--text-tertiary)",
-              mt: 2,
-              mb: 1,
-            }}
+            sx={{ ...TEXT_OVERLINE_SX, mt: 2, mb: 1 }}
           >
             {t("device.systemStatusSubsectionRecovery")}
           </Typography>
@@ -912,7 +899,7 @@ export function SystemStatusPanel({
           </Box>
           {met?.wifi_last_failure_stage && met.wifi_last_failure_stage !== "none" && (
             <Box sx={buildStatusNoticeSx("var(--semantic-warning)")}>
-              <Typography variant="caption" sx={{ color: "var(--semantic-warning)", fontWeight: 600, letterSpacing: "0.1em", textTransform: "uppercase" }}>
+              <Typography variant="caption" sx={{ ...TEXT_OVERLINE_SX, color: "var(--semantic-warning)", letterSpacing: "var(--letter-spacing-small)" }}>
                 {t("device.systemStatusWifiLastFail")}
               </Typography>
               <Typography variant="body2" sx={{ fontFamily: "var(--font-mono)", color: "var(--foreground)", mt: 1, wordBreak: "break-all" }}>
@@ -924,7 +911,7 @@ export function SystemStatusPanel({
           {/* Last Error Log */}
           {healthData.last_error && healthData.last_error !== "none" && (
             <Box sx={buildStatusNoticeSx("var(--semantic-danger)")}>
-              <Typography variant="caption" sx={{ color: "var(--semantic-danger)", fontWeight: 600, letterSpacing: "0.1em", textTransform: "uppercase" }}>
+              <Typography variant="caption" sx={{ ...TEXT_OVERLINE_SX, color: "var(--semantic-danger)", letterSpacing: "var(--letter-spacing-small)" }}>
                 {t("device.systemStatusLastError")}
               </Typography>
               <Typography variant="body2" sx={{ fontFamily: "var(--font-mono)", color: "var(--foreground)", mt: 1, wordBreak: "break-all" }}>

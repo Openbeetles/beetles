@@ -1,4 +1,4 @@
-import { LAYOUT_TOKENS } from "../config/themeTokens";
+import { LAYOUT_TOKENS } from "../config/themeTokens.ts";
 
 /**
  * 主内容区内层与顶栏/横幅水平 gutter 对齐（MUI spacing：xs=16px, sm=24px）。
@@ -162,7 +162,7 @@ export const FORM_SECTION_MODULE_SX = {
 /** 二级模块头：透明继承玻璃模块底色，仅用极淡分割线分组。 */
 export const FORM_SECTION_MODULE_HEADER_SX = {
   px: 2,
-  py: 1.35,
+  py: 1.25,
   bgcolor: "color-mix(in srgb, #fff 8%, transparent)",
   borderBottom: "1px solid color-mix(in srgb, var(--border) 8%, transparent)",
   boxShadow: "none",
@@ -187,17 +187,18 @@ export const FORM_ACTION_BAR_SX = {
   borderTop: "1px solid color-mix(in srgb, var(--border) 16%, transparent)",
 } as const
 
-/** 二元设置行：标题/说明在左，Switch/Checkbox 在右，避免 FormControlLabel 漂移。 */
+/** 二元设置行：Switch/Checkbox 在前，标题紧随其后，避免设置项被拉成左右分栏。 */
 export const FORM_SWITCH_ROW_SX = {
-  width: "100%",
+  width: "fit-content",
+  maxWidth: "100%",
   m: 0,
   px: 0,
-  py: 1.25,
+  py: 0.25,
   alignItems: "center",
-  justifyContent: "space-between",
-  gap: 1.5,
+  justifyContent: "flex-start",
+  columnGap: 1,
   "& .MuiFormControlLabel-label": {
-    flex: "1 1 auto",
+    flex: "0 1 auto",
     minWidth: 0,
   },
 } as const
@@ -244,9 +245,23 @@ export const DASHBOARD_CARD_HEADER_ROW_SX = {
 export const UI_LABEL_SECONDARY_SX = {
   fontSize: "var(--font-size-label)",
   fontWeight: 500,
-  letterSpacing: "0.02em",
+  letterSpacing: "var(--letter-spacing-label)",
   textTransform: "none" as const,
   color: "var(--text-secondary)",
+} as const
+
+/**
+ * Overline 标签：全大写 + 较宽字距 + caption 字号 + 三级文字色。
+ * 用于仪表盘卡内分区标题（如「故障」「恢复」）、面板段落起始标注等。
+ * 不用于主导航、正文或卡片主标题。
+ */
+export const TEXT_OVERLINE_SX = {
+  fontSize: "var(--font-size-caption)",
+  fontWeight: 600,
+  letterSpacing: "var(--letter-spacing-small)",
+  textTransform: "uppercase" as const,
+  lineHeight: 1.35,
+  color: "var(--text-tertiary)",
 } as const
 
 // ---------- 文字层级预设（配合 `--text-*`，减少页面内硬编码字号/颜色）----------
@@ -268,9 +283,9 @@ export const TEXT_SUBSECTION_TITLE_SX = {
   color: "var(--text-primary)",
 } as const
 
-/** 仪表盘卡片顶栏标题（略小于正文小，偏系统设置列表） */
+/** 仪表盘卡片顶栏标题（caption 字号，保证在玻璃卡面上清晰可读） */
 export const TEXT_DASHBOARD_CARD_TITLE_SX = {
-  fontSize: "var(--font-size-overline)",
+  fontSize: "var(--font-size-caption)",
   fontWeight: 600,
   letterSpacing: "var(--letter-spacing-label)",
   lineHeight: 1.35,

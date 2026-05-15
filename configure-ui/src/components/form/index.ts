@@ -4,6 +4,12 @@ export { FormFieldStack } from './FormFieldStack'
 export { FormGrid } from './FormGrid'
 export { FormActionBar } from './FormActionBar'
 export { FormSwitchRow } from './FormSwitchRow'
+export {
+  FormSegmentedControl,
+  FormSegmentedRow,
+  type FormSegmentedControlProps,
+  type FormSegmentedRowOption,
+} from './FormSegmentedRow'
 export { FormLoadingSkeleton, SectionLoadingSkeleton } from './FormLoadingSkeleton'
 export { FormSectionSub } from './FormSectionSub'
 export { FormSectionSubCollapsible } from './FormSectionSubCollapsible'
@@ -13,7 +19,10 @@ export {
   type FormGridColumns,
   type FormGridGap,
 } from './formLayout'
-export { SectionSubTitleRow } from './SectionSubTitleRow'
+export {
+  SectionSubTitleRow,
+  type SectionSubTitleAccentTone,
+} from './SectionSubTitleRow'
 export { InlineAlert } from './InlineAlert'
 export { PageLoadErrorState } from './PageLoadErrorState'
 export {

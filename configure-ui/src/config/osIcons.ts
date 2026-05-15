@@ -27,7 +27,7 @@ export const OS_ICON_NAV: Record<string, string> = {
  */
 export const OS_ICON_DEVICE_CONFIG = {
   /** 显示 / 画面与屏相关 */
-  display: "/icons/camera_3d.png",
+  display: "/icons/display_3d.png",
   /** 音频 / 扬声器侧（面板内可再区分麦与回放） */
   audio: "/icons/speaker_3d.png",
   /** GPIO / 外设与设备控制 */
@@ -100,12 +100,28 @@ export const OS_ICON_SHELL = {
  * Dedicated 3D glyphs for app-wide `ConfirmDialog` — not shared with nav or dashboard tiles.
  */
 export const OS_ICON_DIALOG = {
+  /** 危险删除 / 移除对象 */
+  delete: "/icons/dialog_delete_3d.png",
+  /** 错误提示 / 失败反馈 */
+  error: "/icons/dialog_error_3d.png",
+  /** 重启设备 */
+  restart: "/icons/dialog_restart_3d.png",
+  /** 配对码 / 安全写入确认 */
+  security: "/icons/dialog_security_3d.png",
+  /** 成功反馈 */
+  success: "/icons/dialog_success_3d.png",
+  /** 切换配置模板 / 结构重建 */
+  switch: "/icons/dialog_switch_3d.png",
   /**
    * 未保存修改 / 放弃编辑：待落盘草稿，非错误叉号、非设备离线。
    * Unsaved changes: pending edits not yet persisted.
    */
   unsavedChanges: "/icons/unsaved_changes_3d.png",
+  /** 通用警告提示 */
+  warning: "/icons/dialog_warning_3d.png",
 } as const;
+
+export type OsDialogIconKey = keyof typeof OS_ICON_DIALOG;
 
 /**
  * 设置抽屉内分区图标（与导航/仪表盘路径解耦，专用隐喻）。
