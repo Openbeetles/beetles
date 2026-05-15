@@ -1622,7 +1622,14 @@ fn handle_llm_gate(
                 msg.enqueue_ts_ms = now_unix_ms();
                 let inbound_tx = choose_inbound_tx(msg.ingress, user_inbound_tx, system_inbound_tx);
                 if let Err(std::sync::mpsc::TrySendError::Full(m)) = inbound_tx.try_send(msg) {
-                    let _ = config.runtime.pending_retry_store.save_pending_retry(&m);
+                    if let Err(error) = config.runtime.pending_retry_store.save_pending_retry(&m) {
+                        metrics::record_error_by_stage(error.metrics_stage());
+                        log::error!(
+                            "[agent] system degrade pending_retry save failed chat_id={}: {}",
+                            m.chat_id,
+                            error
+                        );
+                    }
                 }
             } else {
                 log::info!("[agent] LLM degraded: {}", reason);

@@ -151,7 +151,8 @@ pub use channels::{
 };
 #[cfg(feature = "wecom")]
 pub use channels::{
-    new_wecom_aibot_route_store, run_wecom_aibot_loop, WecomAibotRouteStore, WECOM_AIBOT_WS_URL,
+    new_wecom_aibot_route_store, run_wecom_aibot_loop, WecomAibotLoopConfig, WecomAibotRouteStore,
+    WECOM_AIBOT_WS_URL,
 };
 pub use channels::{
     run_dispatch, ChannelHttpClient, ChannelSinks, LogSink, MessageSink, WssConnectProfile,

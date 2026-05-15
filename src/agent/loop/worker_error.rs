@@ -77,11 +77,22 @@ pub(super) fn handle_worker_path_error(
             match inbound_tx.try_send(msg.clone()) {
                 Ok(()) => {}
                 Err(std::sync::mpsc::TrySendError::Full(m)) => {
-                    let _ = config.runtime.pending_retry_store.save_pending_retry(&m);
-                    log::warn!(
-                        "[agent] llm retry: inbound full, pending_retry saved chat_id={}",
-                        m.chat_id
-                    );
+                    match config.runtime.pending_retry_store.save_pending_retry(&m) {
+                        Ok(()) => {
+                            log::warn!(
+                                "[agent] llm retry: inbound full, pending_retry saved chat_id={}",
+                                m.chat_id
+                            );
+                        }
+                        Err(error) => {
+                            metrics::record_error_by_stage(error.metrics_stage());
+                            log::error!(
+                                "[agent] llm retry: pending_retry save failed chat_id={}: {}",
+                                m.chat_id,
+                                error
+                            );
+                        }
+                    }
                 }
                 Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
                     log::error!("[agent] inbound_tx disconnected during llm retry");

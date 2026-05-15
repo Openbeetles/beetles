@@ -247,6 +247,9 @@ fn chat_stream_admission_error() -> Option<(&'static str, &'static str)> {
         }
     }
     let resource = crate::orchestrator::resource_light_snapshot();
+    if resource.pressure == crate::orchestrator::PressureLevel::Critical {
+        return Some(("chat.stream_pressure", "sessions_post_response_pressure"));
+    }
     if resource.storage_contention_risk != crate::orchestrator::StorageContentionRisk::Healthy {
         return Some(("chat.stream_storage_busy", "sessions_post_storage"));
     }
@@ -275,4 +278,56 @@ fn json_error(
         CORS_HEADERS,
         serde_json::to_vec(&body).unwrap_or_else(|_| br#"{"error_key":"common.error"}"#.to_vec()),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bus::new_inbound_channel;
+    use crate::platform::http_server::handlers::build_default_test_handler_context;
+    use crate::platform::http_server::router::{IncomingRequest, RouterEnv};
+    use std::sync::Mutex;
+
+    static RESOURCE_TEST_MUTEX: Mutex<()> = Mutex::new(());
+
+    fn apply_resource_snapshot(internal: u32, largest: u32) {
+        crate::orchestrator::apply_memory_snapshot(crate::platform::MemorySnapshot {
+            heap_free_internal: internal,
+            heap_min_free_internal: internal,
+            heap_free_spiram: 8 * 1024 * 1024,
+            heap_total_spiram: 8 * 1024 * 1024,
+            heap_min_free_spiram: 8 * 1024 * 1024,
+            heap_largest_block_spiram: 8 * 1024 * 1024,
+            heap_largest_block: largest,
+        });
+    }
+
+    fn stream_post_request() -> IncomingRequest {
+        IncomingRequest {
+            method: "POST".to_string(),
+            uri: "/api/sessions".to_string(),
+            headers: vec![("Accept".to_string(), "text/event-stream".to_string())],
+            body: crate::platform::ByteBuffer::from_vec(
+                br#"{"chat_id":"configure-ui","content":"hello"}"#.to_vec(),
+            ),
+        }
+    }
+
+    #[test]
+    fn post_stream_rejects_pressure_before_enqueueing_turn() {
+        let _guard = RESOURCE_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        apply_resource_snapshot(12_000, 12_000);
+        let ctx = build_default_test_handler_context();
+        let (inbound_tx, inbound_rx, _) = new_inbound_channel(4);
+        let env = RouterEnv::new(inbound_tx);
+
+        let response = post_stream(&ctx, &env, &stream_post_request());
+
+        assert_eq!(response.status, 503);
+        assert!(response.stream.is_none());
+        assert!(inbound_rx.try_recv().is_err());
+        apply_resource_snapshot(128_000, 64_000);
+    }
 }

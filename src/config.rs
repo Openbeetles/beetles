@@ -464,6 +464,11 @@ impl AppConfig {
     pub fn merge_channels_from_json(&mut self, json: &str, errors: &mut Vec<String>) {
         match deserialize_storage_json_loose_tail::<ChannelsSegment>(json) {
             Ok(seg) => {
+                if let Err(e) = validate_channels_segment_storage_merge_fields(&seg) {
+                    log::warn!("[config] merge_channels_from_json validation failed: {}", e);
+                    errors.push("channels_json_invalid".into());
+                    return;
+                }
                 self.tg_group_activation = seg.tg_group_activation;
                 self.tg_token = seg.tg_token;
                 self.tg_allowed_chat_ids = seg.tg_allowed_chat_ids;
@@ -1692,14 +1697,27 @@ fn validate_llm_sources(sources: &[LlmSource]) -> Result<()> {
 
 /// 私有：校验 ChannelsSegment 的 enabled_channel 与各字段长度。供 save_channels_segment 复用。
 fn validate_channels_segment_fields(seg: &ChannelsSegment) -> Result<()> {
-    if !is_valid_enabled_channel(seg.enabled_channel.as_str()) {
+    validate_channels_segment_fields_with_enabled_channel(seg, false)
+}
+
+fn validate_channels_segment_storage_merge_fields(seg: &ChannelsSegment) -> Result<()> {
+    validate_channels_segment_fields_with_enabled_channel(seg, true)
+}
+
+fn validate_channels_segment_fields_with_enabled_channel(
+    seg: &ChannelsSegment,
+    allow_unavailable_enabled_channel: bool,
+) -> Result<()> {
+    if !allow_unavailable_enabled_channel && !is_valid_enabled_channel(seg.enabled_channel.as_str())
+    {
         return Err(Error::config(
             "config",
             enabled_channel_validation_message(),
         ));
     }
     validate_tg_group_activation(&seg.tg_group_activation)?;
-    if seg.tg_token.len() > CONFIG_FIELD_MAX_LEN
+    if seg.enabled_channel.len() > CONFIG_FIELD_MAX_LEN
+        || seg.tg_token.len() > CONFIG_FIELD_MAX_LEN
         || seg.feishu_app_secret.len() > CONFIG_FIELD_MAX_LEN
         || seg.feishu_app_id.len() > CONFIG_FIELD_MAX_LEN
         || seg.dingtalk_client_id.len() > CONFIG_FIELD_MAX_LEN
@@ -3458,14 +3476,39 @@ mod tests {
         let mut config = AppConfig::load_from_env();
         let mut errors = Vec::new();
 
-        config.merge_channels_from_json(r#"{"enabled_channel":"future_channel"}"#, &mut errors);
+        config.merge_channels_from_json(
+            r#"{"enabled_channel":"future_channel","tg_token":"saved-token"}"#,
+            &mut errors,
+        );
 
         assert!(errors.is_empty());
         assert_eq!(config.enabled_channel, "future_channel");
+        assert_eq!(config.tg_token, "saved-token");
         assert_eq!(
             ChannelsSegment::from_app_config(&config).enabled_channel,
             ""
         );
+    }
+
+    #[test]
+    fn merge_channels_from_json_rejects_oversized_field_without_partial_merge() {
+        let mut config = AppConfig::load_from_env();
+        let original_channel = config.enabled_channel.clone();
+        let original_token = config.tg_token.clone();
+        let oversized_token = "x".repeat(CONFIG_FIELD_MAX_LEN + 1);
+        let mut errors = Vec::new();
+
+        config.merge_channels_from_json(
+            &format!(
+                r#"{{"enabled_channel":"future_channel","tg_token":"{}"}}"#,
+                oversized_token
+            ),
+            &mut errors,
+        );
+
+        assert_eq!(errors, ["channels_json_invalid"]);
+        assert_eq!(config.enabled_channel, original_channel);
+        assert_eq!(config.tg_token, original_token);
     }
 
     #[test]

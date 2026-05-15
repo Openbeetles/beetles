@@ -54,8 +54,17 @@ pub(crate) fn bootstrap_pending_retry_into_inbound(
     user_inbound_tx: &beetle::bus::UserInboundTx,
     system_inbound_tx: &beetle::bus::SystemInboundTx,
 ) {
-    let Ok(Some(msg)) = pending_retry.load_pending_retry() else {
-        return;
+    let msg = match pending_retry.load_pending_retry() {
+        Ok(Some(msg)) => msg,
+        Ok(None) => return,
+        Err(error) => {
+            beetle::metrics::record_error_by_stage(error.metrics_stage());
+            log::warn!(
+                "[main] pending_retry load failed during bootstrap: {}",
+                error
+            );
+            return;
+        }
     };
     if should_drop_stale_pending_retry(&msg, current_unix_ms()) {
         beetle::metrics::record_event_ingress_stale_drop();

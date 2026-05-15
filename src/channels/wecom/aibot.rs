@@ -15,6 +15,7 @@ use crate::channels::wss_gateway::{
 use crate::channels::ChannelHttpClient;
 use crate::config::AppConfig;
 use crate::error::{Error, Result};
+use crate::memory::PendingRetryStore;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -48,6 +49,32 @@ pub type WecomAibotRouteStore = Arc<Mutex<HashMap<String, WecomAibotRoute>>>;
 
 pub fn new_wecom_aibot_route_store() -> WecomAibotRouteStore {
     Arc::new(Mutex::new(HashMap::new()))
+}
+
+/// Runtime wiring for the WeCom AI Bot long-connection owner.
+/// 企业微信 AI Bot 长连接 owner 的运行时接线参数，集中传入以保持调用面稳定。
+pub struct WecomAibotLoopConfig {
+    /// Configured AI Bot id.
+    /// 已配置的 AI Bot id。
+    pub bot_id: String,
+    /// Configured AI Bot secret.
+    /// 已配置的 AI Bot secret。
+    pub bot_secret: String,
+    /// Optional WebSocket endpoint override.
+    /// 可选的 WebSocket 端点覆盖。
+    pub websocket_url: String,
+    /// Shared inbound queue for user-visible callbacks.
+    /// 用户可见回调进入的共享入站队列。
+    pub inbound_tx: InboundTx,
+    /// Durable fallback used when the inbound queue is full.
+    /// 入站队列满时使用的持久化降级入口。
+    pub pending_retry: Arc<dyn PendingRetryStore + Send + Sync>,
+    /// Outbound messages routed to the AI Bot owner.
+    /// 路由给 AI Bot owner 的出站消息。
+    pub outbound_rx: std::sync::mpsc::Receiver<QueuedOutboundMessage>,
+    /// Chat route cache used to map Beetle chat ids back to WeCom routes.
+    /// 用于把 Beetle chat id 映射回企业微信路由的缓存。
+    pub route_store: WecomAibotRouteStore,
 }
 
 /// Reports AI Bot long-connection readiness from local credentials.
@@ -299,6 +326,7 @@ fn route_for(route_store: &WecomAibotRouteStore, chat_id: &str) -> Result<Option
 pub fn handle_aibot_frame(
     frame: &str,
     inbound_tx: &InboundTx,
+    pending_retry: &dyn PendingRetryStore,
     route_store: &WecomAibotRouteStore,
 ) -> Result<()> {
     let envelope: WecomEnvelope =
@@ -336,12 +364,33 @@ pub fn handle_aibot_frame(
                 Ok(()) => {
                     inbound_backpressure::record_enqueued(EventIngressSource::WssGateway);
                 }
-                Err(std::sync::mpsc::TrySendError::Full(_)) => {
-                    log::warn!("[{}] inbound queue full, dropping callback", TAG);
-                    inbound_backpressure::record_queue_full_for_source(
-                        EventIngressSource::WssGateway,
-                        InboundBackpressureOutcome::Dropped,
-                    );
+                Err(std::sync::mpsc::TrySendError::Full(m)) => {
+                    match pending_retry.save_pending_retry(&m) {
+                        Ok(()) => {
+                            log::warn!(
+                                "[{}] inbound queue full, saved callback to pending retry chat_id={}",
+                                TAG,
+                                m.chat_id
+                            );
+                            inbound_backpressure::record_queue_full_for_source(
+                                EventIngressSource::WssGateway,
+                                InboundBackpressureOutcome::DeferredToPendingRetry,
+                            );
+                        }
+                        Err(error) => {
+                            crate::metrics::record_error_by_stage(error.metrics_stage());
+                            log::error!(
+                                "[{}] pending_retry save failed chat_id={}: {}",
+                                TAG,
+                                m.chat_id,
+                                error
+                            );
+                            inbound_backpressure::record_queue_full_for_source(
+                                EventIngressSource::WssGateway,
+                                InboundBackpressureOutcome::Dropped,
+                            );
+                        }
+                    }
                 }
                 Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
                     log::warn!("[{}] inbound_tx disconnected, dropping callback", TAG);
@@ -435,18 +484,20 @@ fn mark_wss_lifecycle(state: crate::runtime::PlaneLifecycleState, reason: &'stat
     );
 }
 
-pub fn run_wecom_aibot_loop<C, Connect>(
-    bot_id: String,
-    bot_secret: String,
-    websocket_url: String,
-    inbound_tx: InboundTx,
-    outbound_rx: std::sync::mpsc::Receiver<QueuedOutboundMessage>,
-    route_store: WecomAibotRouteStore,
-    mut connect: Connect,
-) where
+pub fn run_wecom_aibot_loop<C, Connect>(config: WecomAibotLoopConfig, mut connect: Connect)
+where
     C: WssConnection,
     Connect: FnMut(&str) -> Result<C>,
 {
+    let WecomAibotLoopConfig {
+        bot_id,
+        bot_secret,
+        websocket_url,
+        inbound_tx,
+        pending_retry,
+        outbound_rx,
+        route_store,
+    } = config;
     crate::network::set_external_wss_managed_present(true);
     let url = if websocket_url.trim().is_empty() {
         WECOM_AIBOT_WS_URL.to_string()
@@ -530,7 +581,9 @@ pub fn run_wecom_aibot_loop<C, Connect>(
                             continue;
                         }
                     };
-                    if let Err(error) = handle_aibot_frame(frame, &inbound_tx, &route_store) {
+                    if let Err(error) =
+                        handle_aibot_frame(frame, &inbound_tx, pending_retry.as_ref(), &route_store)
+                    {
                         log::warn!("[{}] handle frame failed: {}", TAG, error);
                     }
                 }
@@ -555,8 +608,35 @@ pub fn run_wecom_aibot_loop<C, Connect>(
 
 #[cfg(test)]
 mod tests {
-    use crate::bus::{new_inbound_channel, CanonicalMessageBody, MessageTransport, TextBody};
+    use crate::bus::{
+        new_inbound_channel, CanonicalMessageBody, MessageTransport, PcMsg, TextBody,
+    };
     use crate::channels::send::QueuedOutboundMessage;
+    use crate::memory::PendingRetryStore;
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct RecordingPendingRetryStore {
+        saved: Mutex<Vec<PcMsg>>,
+    }
+
+    impl PendingRetryStore for RecordingPendingRetryStore {
+        fn save_pending_retry(&self, msg: &PcMsg) -> crate::Result<()> {
+            self.saved
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(msg.clone());
+            Ok(())
+        }
+
+        fn load_pending_retry(&self) -> crate::Result<Option<PcMsg>> {
+            Ok(None)
+        }
+
+        fn clear_pending_retry(&self) -> crate::Result<()> {
+            Ok(())
+        }
+    }
 
     #[test]
     fn wecom_aibot_msg_callback_enqueues_text_and_records_route() {
@@ -575,9 +655,11 @@ mod tests {
         })
         .to_string();
         let (inbound_tx, inbound_rx, _) = new_inbound_channel(4);
+        let pending_retry = RecordingPendingRetryStore::default();
         let route_store = super::new_wecom_aibot_route_store();
 
-        super::handle_aibot_frame(&frame, &inbound_tx, &route_store).expect("frame");
+        super::handle_aibot_frame(&frame, &inbound_tx, &pending_retry, &route_store)
+            .expect("frame");
 
         let msg = inbound_rx.try_recv().expect("inbound");
         assert_eq!(msg.channel.as_ref(), "wecom");
@@ -646,5 +728,41 @@ mod tests {
         let guard = route_store.lock().expect("route store");
         assert_eq!(guard.len(), super::ROUTE_STORE_MAX_ENTRIES);
         assert!(guard.contains_key(&format!("chat-{}", super::ROUTE_STORE_MAX_ENTRIES)));
+    }
+
+    #[test]
+    fn wecom_aibot_full_inbound_queue_saves_callback_to_pending_retry() {
+        let frame = serde_json::json!({
+            "cmd": "aibot_msg_callback",
+            "headers": { "req_id": "req-1" },
+            "body": {
+                "msgid": "msg-1",
+                "aibotid": "bot-1",
+                "chatid": "chat-1",
+                "chattype": "single",
+                "from": { "userid": "user-1" },
+                "msgtype": "text",
+                "text": { "content": "hello wecom" }
+            }
+        })
+        .to_string();
+        let (inbound_tx, _inbound_rx, _) = new_inbound_channel(1);
+        inbound_tx
+            .try_send(PcMsg::new("seed", "chat", "queued").expect("seed message"))
+            .expect("fill inbound queue");
+        let pending_retry = RecordingPendingRetryStore::default();
+        let route_store = super::new_wecom_aibot_route_store();
+
+        super::handle_aibot_frame(&frame, &inbound_tx, &pending_retry, &route_store)
+            .expect("frame");
+
+        let saved = pending_retry
+            .saved
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        assert_eq!(saved.len(), 1);
+        assert_eq!(saved[0].channel.as_ref(), "wecom");
+        assert_eq!(saved[0].chat_id.as_ref(), "chat-1");
+        assert_eq!(saved[0].content, "hello wecom");
     }
 }

@@ -1902,11 +1902,19 @@ pub(super) fn handle_admission_defer(
                 "[agent] delayed replay queue full for chat_id={}, saving pending_retry",
                 chat_id
             );
-            let _ = ctx
+            if let Err(error) = ctx
                 .config
                 .runtime
                 .pending_retry_store
-                .save_pending_retry(&msg);
+                .save_pending_retry(&msg)
+            {
+                metrics::record_error_by_stage(error.metrics_stage());
+                log::error!(
+                    "[agent] delayed replay pending_retry save failed chat_id={}: {}",
+                    chat_id,
+                    error
+                );
+            }
         }
         std::thread::sleep(Duration::from_millis(delay_ms));
         crate::platform::task_wdt::feed_current_task();
@@ -1949,15 +1957,27 @@ pub(super) fn handle_admission_defer(
             }
         }
         Err(std::sync::mpsc::TrySendError::Full(m)) => {
-            let _ = ctx
+            match ctx
                 .config
                 .runtime
                 .pending_retry_store
-                .save_pending_retry(&m);
-            log::warn!(
-                "[agent] admission defer, pending_retry saved chat_id={}",
-                m.chat_id
-            );
+                .save_pending_retry(&m)
+            {
+                Ok(()) => {
+                    log::warn!(
+                        "[agent] admission defer, pending_retry saved chat_id={}",
+                        m.chat_id
+                    );
+                }
+                Err(error) => {
+                    metrics::record_error_by_stage(error.metrics_stage());
+                    log::error!(
+                        "[agent] admission defer pending_retry save failed chat_id={}: {}",
+                        m.chat_id,
+                        error
+                    );
+                }
+            }
         }
         Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
             log::error!("[agent] inbound_tx disconnected");

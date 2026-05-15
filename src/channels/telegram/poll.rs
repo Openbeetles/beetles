@@ -545,7 +545,15 @@ pub fn poll_telegram_once<H: ChannelHttpClient>(
                     EventIngressSource::TelegramPoll,
                     InboundBackpressureOutcome::DeferredToPendingRetry,
                 );
-                let _ = pending_retry.save_pending_retry(&pc);
+                if let Err(error) = pending_retry.save_pending_retry(&pc) {
+                    crate::metrics::record_error_by_stage(error.metrics_stage());
+                    log::error!(
+                        "[{}] pending_retry save failed chat_id={}: {}",
+                        TAG_POLL,
+                        chat_id,
+                        error
+                    );
+                }
             }
         }
     }

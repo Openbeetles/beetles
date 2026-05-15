@@ -5,7 +5,7 @@ use crate::office::{
     OfficeCredential, OfficeCredentialStore, OfficeCredentialsSegment, REL_PATH_OFFICE_CREDENTIALS,
 };
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use super::{read_file, state_path_join, write_json_file};
@@ -18,17 +18,27 @@ fn full_path() -> PathBuf {
 
 pub struct StorageOfficeCredentialStore {
     cache: Mutex<Option<BTreeMap<String, OfficeCredential>>>,
+    path: PathBuf,
 }
 
 impl StorageOfficeCredentialStore {
     pub fn new() -> Self {
         Self {
             cache: Mutex::new(None),
+            path: full_path(),
         }
     }
 
-    fn load_from_disk() -> Result<BTreeMap<String, OfficeCredential>> {
-        let bytes = match read_file(full_path()) {
+    #[cfg(test)]
+    fn new_for_test_path(path: PathBuf) -> Self {
+        Self {
+            cache: Mutex::new(None),
+            path,
+        }
+    }
+
+    fn load_from_disk(path: &Path) -> Result<BTreeMap<String, OfficeCredential>> {
+        let bytes = match read_file(path) {
             Ok(bytes) if !bytes.is_empty() => bytes,
             Ok(_) => return Ok(BTreeMap::new()),
             Err(error) if error.stage() == "storage_read" => return Ok(BTreeMap::new()),
@@ -48,7 +58,7 @@ impl StorageOfficeCredentialStore {
             .lock()
             .map_err(|error| Error::config("office_credentials_lock", error.to_string()))?;
         if guard.is_none() {
-            *guard = Some(Self::load_from_disk()?);
+            *guard = Some(Self::load_from_disk(&self.path)?);
         }
         let map = guard
             .as_mut()
@@ -56,13 +66,13 @@ impl StorageOfficeCredentialStore {
         f(map)
     }
 
-    fn persist(map: &BTreeMap<String, OfficeCredential>) -> Result<()> {
+    fn persist(path: &Path, map: &BTreeMap<String, OfficeCredential>) -> Result<()> {
         let segment = OfficeCredentialsSegment {
             items: map.values().cloned().collect(),
         };
         let json = serde_json::to_vec(&segment)
             .map_err(|error| Error::config("office_credentials_persist", error.to_string()))?;
-        write_json_file(full_path(), &json)
+        write_json_file(path, &json)
     }
 }
 
@@ -82,7 +92,18 @@ impl OfficeCredentialStore for StorageOfficeCredentialStore {
     }
 
     fn set(&self, credential: &OfficeCredential) -> Result<()> {
-        self.with_map_mut(|map| {
+        let mut guard = self
+            .cache
+            .lock()
+            .map_err(|error| Error::config("office_credentials_lock", error.to_string()))?;
+        if guard.is_none() {
+            *guard = Some(Self::load_from_disk(&self.path)?);
+        }
+        let current = guard
+            .as_ref()
+            .ok_or_else(|| Error::config("office_credentials_cache", "cache not initialized"))?;
+        let mut next_map = current.clone();
+        {
             let account_key = credential.account_key.trim().to_string();
             if account_key.is_empty() {
                 return Err(Error::config(
@@ -90,7 +111,7 @@ impl OfficeCredentialStore for StorageOfficeCredentialStore {
                     "account_key must not be empty",
                 ));
             }
-            if !map.contains_key(&account_key) && map.len() >= MAX_OFFICE_CREDENTIALS {
+            if !next_map.contains_key(&account_key) && next_map.len() >= MAX_OFFICE_CREDENTIALS {
                 return Err(Error::config(
                     "office_credentials_set",
                     format!(
@@ -101,18 +122,32 @@ impl OfficeCredentialStore for StorageOfficeCredentialStore {
             }
             let mut next = credential.clone();
             next.account_key = account_key.clone();
-            map.insert(account_key, next);
-            Self::persist(map)
-        })
+            next_map.insert(account_key, next);
+        }
+        Self::persist(&self.path, &next_map)?;
+        *guard = Some(next_map);
+        Ok(())
     }
 
     fn clear(&self, account_key: &str) -> Result<()> {
-        self.with_map_mut(|map| {
-            if map.remove(account_key).is_some() {
-                Self::persist(map)?;
-            }
-            Ok(())
-        })
+        let mut guard = self
+            .cache
+            .lock()
+            .map_err(|error| Error::config("office_credentials_lock", error.to_string()))?;
+        if guard.is_none() {
+            *guard = Some(Self::load_from_disk(&self.path)?);
+        }
+        let current = guard
+            .as_ref()
+            .ok_or_else(|| Error::config("office_credentials_cache", "cache not initialized"))?;
+        if !current.contains_key(account_key) {
+            return Ok(());
+        }
+        let mut next_map = current.clone();
+        next_map.remove(account_key);
+        Self::persist(&self.path, &next_map)?;
+        *guard = Some(next_map);
+        Ok(())
     }
 }
 
@@ -142,10 +177,34 @@ fn segment_to_map(
 mod tests {
     use super::*;
     use crate::office::OFFICE_METADATA_CALENDAR_ID;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Mutex;
+
+    static TEST_MUTEX: Mutex<()> = Mutex::new(());
+    static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    fn test_credential_path(name: &str) -> PathBuf {
+        let id = TEST_COUNTER.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!(
+            "beetle-office-credentials-{}-{}-{id}.json",
+            std::process::id(),
+            name
+        ))
+    }
+
+    fn cleanup_path(path: &Path) {
+        if path.is_dir() {
+            std::fs::remove_dir_all(path).expect("remove office credential test dir");
+        } else {
+            let _ = std::fs::remove_file(path);
+        }
+    }
 
     #[test]
     fn set_rejects_empty_account_key() {
-        let store = StorageOfficeCredentialStore::new();
+        let _guard = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let path = test_credential_path("empty-key");
+        let store = StorageOfficeCredentialStore::new_for_test_path(path.clone());
         let error = store
             .set(&OfficeCredential {
                 account_key: String::new(),
@@ -158,12 +217,14 @@ mod tests {
             })
             .expect_err("empty account_key must fail");
         assert!(error.to_string().contains("account_key must not be empty"));
+        cleanup_path(&path);
     }
 
     #[test]
     fn set_roundtrips_metadata() {
-        let store = StorageOfficeCredentialStore::new();
-        store.clear("calendar-work").ok();
+        let _guard = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let path = test_credential_path("roundtrip");
+        let store = StorageOfficeCredentialStore::new_for_test_path(path.clone());
         store
             .set(&OfficeCredential {
                 account_key: "calendar-work".to_string(),
@@ -186,6 +247,31 @@ mod tests {
             saved.metadata_value(OFFICE_METADATA_CALENDAR_ID),
             Some("primary")
         );
-        store.clear("calendar-work").expect("cleanup");
+        cleanup_path(&path);
+    }
+
+    #[test]
+    fn set_persist_failure_does_not_mutate_cached_credentials() {
+        let _guard = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let path = test_credential_path("persist-failure");
+        cleanup_path(&path);
+        std::fs::create_dir_all(&path).expect("create blocking office credential dir");
+        let store = StorageOfficeCredentialStore::new_for_test_path(path.clone());
+
+        let error = store
+            .set(&OfficeCredential {
+                account_key: "calendar-work".to_string(),
+                access_token: "token".to_string(),
+                refresh_token: String::new(),
+                token_endpoint: String::new(),
+                expires_at_unix_secs: 0,
+                updated_at: 1,
+                metadata: BTreeMap::new(),
+            })
+            .expect_err("persist failure should be returned");
+
+        assert_eq!(error.stage(), "atomic_write");
+        assert!(store.get("calendar-work").expect("cache read").is_none());
+        std::fs::remove_dir_all(&path).expect("cleanup blocking office credential dir");
     }
 }

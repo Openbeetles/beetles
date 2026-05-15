@@ -3,6 +3,7 @@
 use crate::bus::{InboundTx, PcMsg};
 use crate::platform::http_server::api_contract;
 use crate::platform::http_server::common::{constant_time_eq, ApiResponse};
+use std::sync::mpsc::TrySendError;
 
 use super::HandlerContext;
 
@@ -32,10 +33,12 @@ pub fn post(
             ));
         }
     };
-    if inbound_tx.send(msg).is_err() {
-        return Ok(ApiResponse::err_503_key(api_contract::COMMON_QUEUE_FULL));
+    match inbound_tx.try_send(msg) {
+        Ok(()) => Ok(ApiResponse::ok_200_json("{\"ok\":true}")),
+        Err(TrySendError::Full(_)) | Err(TrySendError::Disconnected(_)) => {
+            Ok(ApiResponse::err_503_key(api_contract::COMMON_QUEUE_FULL))
+        }
     }
-    Ok(ApiResponse::ok_200_json("{\"ok\":true}"))
 }
 
 #[cfg(test)]
@@ -45,6 +48,7 @@ mod tests {
     use crate::platform::http_server::api_contract;
     use crate::platform::http_server::handlers::build_default_test_handler_context;
     use serde_json::Value;
+    use std::time::Duration;
 
     #[test]
     fn disabled_webhook_uses_error_key_contract() {
@@ -79,5 +83,40 @@ mod tests {
         assert_eq!(parsed["error_key"], api_contract::WEBHOOK_INVALID_TOKEN);
         assert!(parsed.get("error").is_none(), "body={parsed}");
         assert!(parsed.get("upstream_error").is_none(), "body={parsed}");
+    }
+
+    #[test]
+    fn full_inbound_queue_returns_503_without_blocking() {
+        let (inbound_tx, inbound_rx, _depth) = new_inbound_channel(1);
+        inbound_tx
+            .try_send(crate::bus::PcMsg::new("test", "chat", "queued").expect("seed message"))
+            .expect("fill inbound queue");
+
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let thread_tx = inbound_tx.clone();
+        let handle = std::thread::spawn(move || {
+            let ctx = build_default_test_handler_context();
+            ctx.update_cached_config(|config| {
+                config.webhook_enabled = true;
+                config.webhook_token = "secret".to_string();
+            });
+            let status = post(&ctx, &thread_tx, "{}".to_string(), "secret")
+                .expect("webhook response")
+                .status;
+            let _ = done_tx.send(status);
+        });
+
+        match done_rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(status) => assert_eq!(status, 503),
+            Err(error) => {
+                drop(inbound_rx);
+                handle
+                    .join()
+                    .expect("webhook thread exits after receiver drop");
+                panic!("webhook post blocked instead of returning 503: {error}");
+            }
+        }
+        drop(inbound_rx);
+        handle.join().expect("webhook thread exits");
     }
 }

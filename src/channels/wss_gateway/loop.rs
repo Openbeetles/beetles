@@ -619,7 +619,15 @@ pub fn run_wss_gateway_loop<D, H, C, CreateHttp, Conn>(
                                 inbound_backpressure::record_deferred_without_queue_full_for_source(
                                     EventIngressSource::WssGateway,
                                 );
-                                let _ = pending_retry.save_pending_retry(&msg);
+                                if let Err(error) = pending_retry.save_pending_retry(&msg) {
+                                    crate::metrics::record_error_by_stage(error.metrics_stage());
+                                    log::error!(
+                                        "[{}] pressure pending_retry save failed chat_id={}: {}",
+                                        tag,
+                                        chat_id,
+                                        error
+                                    );
+                                }
                             } else {
                                 let mut enqueued = false;
                                 let mut disconnected = false;
@@ -670,7 +678,17 @@ pub fn run_wss_gateway_loop<D, H, C, CreateHttp, Conn>(
                                         InboundBackpressureOutcome::DeferredToPendingRetry,
                                     );
                                     if let Some(m) = pending_msg.as_ref() {
-                                        let _ = pending_retry.save_pending_retry(m);
+                                        if let Err(error) = pending_retry.save_pending_retry(m) {
+                                            crate::metrics::record_error_by_stage(
+                                                error.metrics_stage(),
+                                            );
+                                            log::error!(
+                                                "[{}] queue-full pending_retry save failed chat_id={}: {}",
+                                                tag,
+                                                chat_id,
+                                                error
+                                            );
+                                        }
                                     }
                                 }
                             }

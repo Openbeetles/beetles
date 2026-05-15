@@ -885,10 +885,8 @@ fn route_runtime_admission_response(
 }
 
 fn response_pressure_reject(out: &OutgoingResponse) -> Option<ApiResponse> {
-    if out.stream.is_some() {
-        return None;
-    }
-    if out.status >= 400 || out.body.len() < ESP_LARGE_RESPONSE_GUARD_BYTES {
+    let is_stream = out.stream.is_some();
+    if is_stream || out.status >= 400 || out.body.len() < ESP_LARGE_RESPONSE_GUARD_BYTES {
         return None;
     }
     let resource = crate::orchestrator::resource_light_snapshot();

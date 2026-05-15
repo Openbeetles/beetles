@@ -99,7 +99,8 @@ pub use voice_sink::VoiceSink;
 pub use websocket::{WebSocketSink, MAX_WS_CONNECTIONS, MAX_WS_MESSAGE_LEN};
 #[cfg(feature = "wecom")]
 pub use wecom::{
-    new_wecom_aibot_route_store, run_wecom_aibot_loop, WecomAibotRouteStore, WECOM_AIBOT_WS_URL,
+    new_wecom_aibot_route_store, run_wecom_aibot_loop, WecomAibotLoopConfig, WecomAibotRouteStore,
+    WECOM_AIBOT_WS_URL,
 };
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 pub use wss_gateway::{connect_esp_wss, EspWssConnection};

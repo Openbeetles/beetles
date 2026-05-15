@@ -3706,6 +3706,7 @@ fn start_communication_planes(assembly: &mut PreparedRuntimeAssembly) -> beetle:
             let wc_bot_secret = c.bot_secret;
             let wc_websocket_url = c.websocket_url;
             let wc_inbound_tx = assembly.bus.user_inbound_tx.clone();
+            let wc_pending = Arc::clone(&assembly.runtime.pending_retry_store);
             let wc_route_store = c.route_store;
             let wc_rx = c.rx;
             spawn_required_planned_thread(
@@ -3716,12 +3717,15 @@ fn start_communication_planes(assembly: &mut PreparedRuntimeAssembly) -> beetle:
                 "wecom_aibot_spawn",
                 move || {
                     beetle::run_wecom_aibot_loop(
-                        wc_bot_id,
-                        wc_bot_secret,
-                        wc_websocket_url,
-                        wc_inbound_tx,
-                        wc_rx,
-                        wc_route_store,
+                        beetle::WecomAibotLoopConfig {
+                            bot_id: wc_bot_id,
+                            bot_secret: wc_bot_secret,
+                            websocket_url: wc_websocket_url,
+                            inbound_tx: wc_inbound_tx,
+                            pending_retry: wc_pending,
+                            outbound_rx: wc_rx,
+                            route_store: wc_route_store,
+                        },
                         |url| beetle::network::connect_external_wss(url, "wecom_aibot"),
                     )
                 },

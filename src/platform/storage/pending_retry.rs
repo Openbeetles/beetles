@@ -6,6 +6,7 @@ use crate::constants::PENDING_RETRY_MAX_REPLAY;
 use crate::error::{Error, Result};
 use crate::memory::{PendingRetryStore, REL_PATH_PENDING_RETRY};
 use serde::{Deserialize, Serialize};
+use std::io::ErrorKind;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
@@ -40,18 +41,27 @@ impl StoragePendingRetryStore {
         }
     }
 
-    fn load_cache_locked(cache: &mut PendingRetryCache) {
+    fn load_cache_locked(cache: &mut PendingRetryCache) -> Result<()> {
         if cache.loaded {
-            return;
+            return Ok(());
         }
         cache.loaded = true;
         let path = full_path();
         let buf = match read_file(&path) {
             Ok(buf) => buf,
-            Err(_) => return,
+            Err(Error::Io { source, stage })
+                if stage == "storage_read" && source.kind() == ErrorKind::NotFound =>
+            {
+                return Ok(());
+            }
+            Err(error) => {
+                cache.loaded = false;
+                log::warn!("[storage_pending_retry] load read failed: {}", error);
+                return Err(error);
+            }
         };
         if buf.len() <= 2 {
-            return;
+            return Ok(());
         }
         cache.entry = match serde_json::from_slice::<PendingRetryEntry>(&buf) {
             Ok(entry) => Some(entry),
@@ -66,6 +76,7 @@ impl StoragePendingRetryStore {
                 }
             },
         };
+        Ok(())
     }
 }
 
@@ -88,7 +99,7 @@ impl PendingRetryStore for StoragePendingRetryStore {
             ));
         }
         let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
-        Self::load_cache_locked(&mut cache);
+        Self::load_cache_locked(&mut cache)?;
         let replay_count = cache
             .entry
             .as_ref()
@@ -112,7 +123,7 @@ impl PendingRetryStore for StoragePendingRetryStore {
 
     fn load_pending_retry(&self) -> Result<Option<PcMsg>> {
         let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
-        Self::load_cache_locked(&mut cache);
+        Self::load_cache_locked(&mut cache)?;
         let Some((replay_count, msg)) = cache
             .entry
             .as_ref()
@@ -139,5 +150,38 @@ impl PendingRetryStore for StoragePendingRetryStore {
         cache.loaded = true;
         cache.entry = None;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::memory::PendingRetryStore;
+    use std::sync::Mutex;
+
+    static TEST_MUTEX: Mutex<()> = Mutex::new(());
+
+    fn reset_pending_retry_path() {
+        let path = full_path();
+        if path.is_dir() {
+            std::fs::remove_dir_all(&path).expect("remove pending_retry test dir");
+        } else {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+
+    #[test]
+    fn load_pending_retry_surfaces_storage_read_errors() {
+        let _guard = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        reset_pending_retry_path();
+        std::fs::create_dir_all(full_path()).expect("create blocking pending_retry dir");
+        let store = StoragePendingRetryStore::new();
+
+        let error = store
+            .load_pending_retry()
+            .expect_err("directory read must not be treated as empty pending retry");
+
+        assert_eq!(error.stage(), "storage_read");
+        reset_pending_retry_path();
     }
 }
