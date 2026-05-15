@@ -2,10 +2,13 @@ use super::*;
 use crate::agent::{ActiveWorkRecord, ActiveWorkStore};
 use crate::bus::IngressKind;
 use crate::error::{Error, Result};
+use crate::llm::{
+    LlmClient, LlmHttpClient, LlmResponse, Message, StopReason, ToolChoicePolicy, ToolSpec,
+};
 use crate::orchestrator::PressureLevel;
 use crate::platform::{ResponseBody, SkillStorage};
 use crate::runtime::mode::{snapshot_from_source, RuntimeModeSource};
-use crate::skills::{RuntimeSkillWrite, RuntimeSkillWriteSource};
+use crate::skills::{RuntimeSkillReuseOutcome, RuntimeSkillWrite, RuntimeSkillWriteSource};
 use crate::task::{TaskItem, TaskQuery, TaskStore};
 use crate::task_execution::{
     TaskArtifactRecord, TaskArtifactStore, TaskLearningRecord, TaskLearningStore, TaskRunRecord,
@@ -284,6 +287,27 @@ impl TurnLedgerStore for HarnessTurnLedgerStore {
 }
 
 #[derive(Default)]
+struct HarnessLongTermMemoryExtractionStateStore {
+    state: Mutex<Option<LongTermMemoryExtractionState>>,
+}
+
+impl LongTermMemoryExtractionStateStore for HarnessLongTermMemoryExtractionStateStore {
+    fn get(&self, _chat_id: &str) -> Result<Option<LongTermMemoryExtractionState>> {
+        Ok(self.state.lock().unwrap_or_else(|e| e.into_inner()).clone())
+    }
+
+    fn set(&self, _chat_id: &str, state: &LongTermMemoryExtractionState) -> Result<()> {
+        *self.state.lock().unwrap_or_else(|e| e.into_inner()) = Some(state.clone());
+        Ok(())
+    }
+
+    fn clear(&self, _chat_id: &str) -> Result<()> {
+        *self.state.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        Ok(())
+    }
+}
+
+#[derive(Default)]
 struct HarnessSkillStorage {
     files: Mutex<HashMap<String, Vec<u8>>>,
 }
@@ -339,6 +363,7 @@ struct HarnessStores {
     memory: Arc<HarnessMemoryStore>,
     long_term: Arc<HarnessLongTermMemoryStore>,
     turn_ledger: HarnessTurnLedgerStore,
+    extraction_state: HarnessLongTermMemoryExtractionStateStore,
     skills: Arc<HarnessSkillStorage>,
     summary: EmptySessionSummaryStore,
     execution_state: EmptyExecutionStateStore,
@@ -741,6 +766,288 @@ impl ToolContext for NullToolContext {
 
     fn user_locale(&self) -> crate::i18n::Locale {
         crate::i18n::Locale::Zh
+    }
+}
+
+struct NullLlmHttpClient;
+
+impl LlmHttpClient for NullLlmHttpClient {
+    fn do_post(
+        &mut self,
+        _url: &str,
+        _headers: &[(&str, &str)],
+        _body: &[u8],
+    ) -> Result<(u16, ResponseBody)> {
+        Err(Error::config("memory_harness_http", "network disabled"))
+    }
+}
+
+struct DeterministicReplayLlm;
+
+impl LlmClient for DeterministicReplayLlm {
+    fn chat(
+        &self,
+        _http: &mut dyn LlmHttpClient,
+        system: &str,
+        messages: &[Message],
+        _tools: Option<&[ToolSpec]>,
+        _tool_choice: ToolChoicePolicy,
+    ) -> Result<LlmResponse> {
+        let content = if system == LONG_TERM_MEMORY_EXTRACTION_SYSTEM_PROMPT {
+            let prompt = messages
+                .first()
+                .map(|message| message.content.as_str())
+                .unwrap_or("");
+            if !prompt.contains("When we do engineering review, keep the response in Chinese.")
+                || !prompt.contains("Remember this as the release checklist for later work.")
+            {
+                return Err(Error::config(
+                    "memory_harness_l2_replay",
+                    "extraction prompt missing seeded transcript",
+                ));
+            }
+            json!([
+                {
+                    "plane": "factual",
+                    "op": "upsert",
+                    "kind": "preference",
+                    "topic": "preferred_engineering_language",
+                    "content": "User prefers Chinese for engineering review conversations.",
+                    "keywords": ["Chinese", "engineering", "review"],
+                    "source_type": "conversation",
+                    "source_scope": "user",
+                    "confidence": "high",
+                    "freshness": "stable",
+                    "stale_hint": "none"
+                },
+                {
+                    "plane": "skill",
+                    "topic": "release_checklist",
+                    "content": "- validate the diff\n- run cargo test\n- run the analyzer before claiming release readiness",
+                    "skill_summary": "Run release checks before claiming readiness."
+                }
+            ])
+            .to_string()
+        } else if system.contains("compact live execution state") {
+            "null".to_string()
+        } else if system.contains("conversation summarizer") {
+            "User prefers Chinese for engineering review and expects release readiness to be backed by tests and analyzer evidence.".to_string()
+        } else {
+            "[]".to_string()
+        };
+        Ok(LlmResponse {
+            content,
+            stop_reason: StopReason::EndTurn,
+            tool_calls: None,
+        })
+    }
+}
+
+struct MemoryHarnessL2ReplayResult {
+    extraction_request_outcome: LongTermMemoryRefreshRequestOutcome,
+    refresh_changed_count: usize,
+    extraction_state_processed_clean: bool,
+    prompt_shared_ids_before_refresh: Vec<String>,
+    prompt_shared_ids_after_refresh: Vec<String>,
+    inspection_shared_ids_after_refresh: Vec<String>,
+    prompt_runtime_skill_ids_after_refresh: Vec<String>,
+    inspection_runtime_skill_ids_after_refresh: Vec<String>,
+    stored_factual_content_after_refresh: String,
+    inspection_runtime_skill_text_after_refresh: String,
+}
+
+fn run_memory_harness_l2_production_replay() -> MemoryHarnessL2ReplayResult {
+    let stores = HarnessStores::default();
+    stores.session.seed(
+        CHAT_ID,
+        vec![
+            SessionMessage {
+                role: "user".to_string(),
+                content: "When we do engineering review, keep the response in Chinese.".to_string(),
+            },
+            SessionMessage {
+                role: "assistant".to_string(),
+                content: "I will keep engineering review responses in Chinese and stay evidence-first."
+                    .to_string(),
+            },
+            SessionMessage {
+                role: "user".to_string(),
+                content: "For release readiness, validate the diff and run tests before claiming it."
+                    .to_string(),
+            },
+            SessionMessage {
+                role: "assistant".to_string(),
+                content: "Release readiness should cite test and analyzer evidence before any claim."
+                    .to_string(),
+            },
+            SessionMessage {
+                role: "user".to_string(),
+                content: "Remember this as the release checklist for later work.".to_string(),
+            },
+            SessionMessage {
+                role: "assistant".to_string(),
+                content:
+                    "I will use the release checklist before saying a memory or runtime change is ready."
+                        .to_string(),
+            },
+        ],
+    );
+
+    let query = "preferred engineering language Chinese release checklist";
+    let participation_plan = PromptParticipationPlan {
+        load_l1_constitutional: true,
+        load_l1_session: true,
+        load_l2_governed_recall: true,
+        load_l2_background_governance: false,
+        load_l3_private_depth: false,
+    };
+    let before_prompt = load_prompt_memory_context(stores.prompt_params(
+        query,
+        MemorySystemKind::LinuxFull,
+        participation_plan,
+    ));
+    let prompt_shared_ids_before_refresh = before_prompt
+        .shared_factual_recall_report
+        .selected_ids
+        .clone();
+    let before_carry = before_prompt.into_runtime_carry();
+
+    let mut http = NullLlmHttpClient;
+    let llm = DeterministicReplayLlm;
+    let mut refresh_enqueued = false;
+    let maintenance = run_post_reply_memory_maintenance(
+        &mut http,
+        &llm,
+        PostReplyMemoryMaintenanceContext {
+            session_store: stores.session.as_ref(),
+            memory_store: stores.memory.as_ref(),
+            session_summary_store: &stores.summary,
+            execution_state_store: &stores.execution_state,
+            active_work_store: &stores.active_work,
+            long_term_memory_store: stores.long_term.as_ref(),
+            continuity_capsule_store: &stores.continuity,
+            extraction_state_store: &stores.extraction_state,
+            turn_ledger_store: &stores.turn_ledger,
+            skill_storage: stores.skills.as_ref(),
+            task_run_store: &stores.task_runs,
+            task_artifact_store: &stores.task_artifacts,
+            task_learning_store: &stores.task_learning,
+        },
+        PostReplyMemoryMaintenanceInput {
+            chat_id: CHAT_ID,
+            ingress: IngressKind::User,
+            channel: CHANNEL,
+            user_content: "When we do engineering review, keep the response in Chinese.",
+            reply_content:
+                "I will use Chinese for engineering review and run release checks before readiness claims.",
+            pressure: PressureLevel::Normal,
+            memory_profile: MemoryProfile::Standard,
+            tool_calls: 0,
+            external_content_used: false,
+            prompt_recall_intent: before_carry.prompt_recall_intent,
+            runtime_skill_selected_ids: before_carry.runtime_skill_selected_ids,
+            task_learning_selected_ids: before_carry.task_recall_selected_ids,
+            reuse_outcome: RuntimeSkillReuseOutcome::Neutral,
+            reuse_outcome_note: "",
+            now_secs: NOW_SECS,
+        },
+        || {
+            refresh_enqueued = true;
+            true
+        },
+    );
+    assert!(refresh_enqueued);
+
+    let refresh = run_long_term_memory_refresh(
+        &mut http,
+        &llm,
+        LongTermMemoryRefreshContext {
+            memory_store: stores.memory.as_ref(),
+            session_store: stores.session.as_ref(),
+            session_summary_store: &stores.summary,
+            long_term_memory_store: stores.long_term.as_ref(),
+            extraction_state_store: &stores.extraction_state,
+            turn_ledger_store: &stores.turn_ledger,
+            skill_storage: stores.skills.as_ref(),
+        },
+        CHAT_ID,
+        PressureLevel::Normal,
+        MemoryProfile::Standard,
+    );
+    let refresh_changed_count = match &refresh {
+        LongTermMemoryRefreshOutcome::Processed { changed_count, .. } => *changed_count,
+        LongTermMemoryRefreshOutcome::Deferred { .. } => {
+            panic!("expected production replay refresh to process")
+        }
+        LongTermMemoryRefreshOutcome::Failed { error, .. } => {
+            panic!("expected production replay refresh to process, got {error}")
+        }
+    };
+    refresh.persist(&stores.extraction_state, CHAT_ID);
+
+    let after_prompt = load_prompt_memory_context(stores.prompt_params(
+        query,
+        MemorySystemKind::LinuxFull,
+        participation_plan,
+    ));
+    let inspection = inspect_working_recall(WorkingRecallInspectionInput {
+        chat_id: CHAT_ID,
+        query,
+        summary_text: None,
+        recent: &after_prompt.recent_messages,
+        system_max_len: 1024,
+        profile: MemoryProfile::Standard,
+        current_channel: Some(CHANNEL),
+        session_store: stores.session.as_ref(),
+        memory_store: stores.memory.as_ref(),
+        long_term_memory_store: stores.long_term.as_ref(),
+        active_work_store: Some(&stores.active_work),
+        continuity_capsule_store: &stores.continuity,
+        turn_ledger_store: &stores.turn_ledger,
+        skill_storage: Some(stores.skills.as_ref()),
+        task_run_store: Some(&stores.task_runs),
+        task_learning_store: Some(&stores.task_learning),
+    });
+
+    MemoryHarnessL2ReplayResult {
+        extraction_request_outcome: maintenance.extraction_request_outcome,
+        refresh_changed_count,
+        extraction_state_processed_clean: stores
+            .extraction_state
+            .get(CHAT_ID)
+            .unwrap()
+            .map(|state| {
+                !state.pending
+                    && state.dirty_since_count == 0
+                    && state.dirty_turns == 0
+                    && state.last_processed_at_count >= 6
+            })
+            .unwrap_or(false),
+        prompt_shared_ids_before_refresh,
+        prompt_shared_ids_after_refresh: after_prompt
+            .shared_factual_recall_report
+            .selected_ids
+            .clone(),
+        inspection_shared_ids_after_refresh: inspection.shared_factual_report.selected_ids.clone(),
+        prompt_runtime_skill_ids_after_refresh: after_prompt
+            .runtime_skill_recall_report
+            .selected_ids
+            .clone(),
+        inspection_runtime_skill_ids_after_refresh: inspection
+            .runtime_skill_report
+            .selected_ids
+            .clone(),
+        stored_factual_content_after_refresh: stores
+            .long_term
+            .list(8)
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.topic == "preferred_engineering_language")
+            .map(|entry| entry.content)
+            .unwrap_or_default(),
+        inspection_runtime_skill_text_after_refresh: inspection
+            .runtime_skill_text
+            .unwrap_or_default(),
     }
 }
 
@@ -1288,4 +1595,36 @@ fn memory_harness_forget_scope_contract() {
         .names()
         .iter()
         .any(|name| name == "runtime_skill__release_checklist"));
+}
+
+#[test]
+fn memory_harness_l2_production_replay_closes_refresh_and_recall() {
+    let replay = run_memory_harness_l2_production_replay();
+
+    assert_eq!(
+        replay.extraction_request_outcome,
+        LongTermMemoryRefreshRequestOutcome::Requested
+    );
+    assert!(replay.refresh_changed_count >= 2);
+    assert!(replay.extraction_state_processed_clean);
+    assert!(replay.prompt_shared_ids_before_refresh.is_empty());
+    assert_eq!(
+        replay.prompt_shared_ids_after_refresh,
+        replay.inspection_shared_ids_after_refresh
+    );
+    assert_eq!(
+        replay.prompt_runtime_skill_ids_after_refresh,
+        replay.inspection_runtime_skill_ids_after_refresh
+    );
+    assert_eq!(
+        replay.prompt_runtime_skill_ids_after_refresh,
+        vec!["runtime_skill__release_checklist".to_string()]
+    );
+    assert!(!replay.prompt_shared_ids_after_refresh.is_empty());
+    assert!(replay
+        .stored_factual_content_after_refresh
+        .contains("Chinese"));
+    assert!(replay
+        .inspection_runtime_skill_text_after_refresh
+        .contains("release checklist"));
 }
