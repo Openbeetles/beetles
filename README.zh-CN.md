@@ -3,7 +3,7 @@
     <img src="docs/assets/beetles-os-lockup.png" alt="Beetles OS" width="520" style="max-width: 100%; height: auto;" />
   </a>
 
-  <h3><strong>边缘 Agent OS · 多通道接入 · 工具调用 · 分层记忆 · 硬件控制 · 运维诊断</strong></h3>
+  <h3><strong>智能硬件的设备系统：对话入口、模型接入、工具执行、硬件控制与状态诊断</strong></h3>
 
   <p>
     <a href="https://github.com/Openbeetles/beetles"><img alt="Openbeetles" src="https://img.shields.io/badge/Openbeetles-beetles-00a99d" /></a>
@@ -13,8 +13,8 @@
   <p>
     <a href="https://github.com/Openbeetles/beetles">主页</a> |
     <a href="docs/README.md">文档</a> |
-    <a href="#快速开始">快速开始</a> |
-    <a href="#快速开始">从源码构建</a> |
+    <a href="#quick-start">快速开始</a> |
+    <a href="#build-from-source">从源码构建</a> |
     <a href="README.md">English</a>
   </p>
 </div>
@@ -23,195 +23,142 @@
   <img src="docs/assets/readme-hardware-matrix.svg" alt="Beetles OS hardware matrix" width="1000" style="max-width: 100%; height: auto;" />
 </p>
 
-**Beetles OS** 是面向 ESP32 和 Linux 边缘设备的 Agent Runtime。
+**Beetles OS** 是面向 ESP32 与 Linux 边缘设备的智能设备系统。它把消息入口、模型服务、工具系统、硬件能力、记忆与运维诊断放在同一个设备系统里，使设备能够从自然语言请求进入明确的执行流程，而不是停留在聊天转发。
 
-它把聊天通道、大语言模型接入、工具调用、硬件控制、分层记忆和运维诊断整合到同一运行时。用户提交目标后，Agent 根据上下文选择工具、调用模型、执行硬件或系统动作，并通过通道返回结果。
+对使用者来说，它提供的是一个可配置、可追踪的设备智能层：用户可以通过 Telegram、飞书、钉钉、企业微信或 QQ 频道向设备提出目标；设备结合配置、记忆和现场状态，选择被允许的工具，执行硬件或系统动作，并把结果返回到聊天通道或本地界面。
 
-当前已支持 ESP32-S3、ESP32-P4-NANO 和 Linux；P4-NANO 是双芯片板，WiFi 由板载协处理器提供。STM32、手机和更多边缘终端在规划中。
+当前主线支持 ESP32-S3、ESP32-P4-NANO 和 Linux。
 
-> 代码包名、命令、默认热点和部分路径目前仍沿用 `beetle` / `Beetle`，品牌展示统一使用 **Beetles OS**。
+## 定位
 
-## 核心问题
+大模型让设备交互从固定指令转向目标表达，但真实设备不能把执行权交给模型本身。凭据、文件、引脚、网络连接、系统重启和硬件动作都必须由设备系统统一管理。Beetles OS 解决的是这些能力落到真实设备上以后的基本问题：如何接入、如何授权、如何执行、如何记录，失败时如何恢复。
 
-传统 IoT 多以固定 App、按钮或接口驱动设备。Beetles OS 面向需要自然语言入口、工具调度和运维边界的边缘设备：
+| 目标 | Beetles OS 的处理方式 |
+|------|------------------------|
+| 自然语言进入设备现场 | 支持多种消息入口，把用户目标转入设备侧任务流程 |
+| 模型参与判断但不越界 | 只向模型提供被允许的工具、上下文和约束，执行由 Beetles OS 完成 |
+| 硬件能力可配置 | 将外设注册为受控能力，按配置和平台能力决定是否开放 |
+| 状态和问题看得见 | 展示网络、资源压力、模型调用、工具调用、日志和恢复入口 |
+| 换平台不重做整套系统 | 同一套设备系统覆盖 ESP32 与 Linux，按设备资源选择构建形态 |
 
-- 设备需要基于上下文处理目标，而不只是执行单次指令。
-- 用户需要描述目标，不需要了解按钮、接口或引脚细节。
-- 边缘设备资源有限，需要控制连接、内存、队列和 TLS 开销。
-- 硬件操作需要权限边界，模型不应直接访问引脚、文件或凭据。
-- 商用部署需要配置、诊断、恢复和升级能力。
-- 不同项目会选择不同芯片和终端形态，需要复用同一套运行时。
+Beetles OS 不替代 PLC、工控机或原有业务系统。它更适合部署在现有系统旁边，作为对话入口、工具调度层、设备控制层和运维可见性层。
 
-Beetles OS 在同一 **Runtime** 中提供这些能力：
+## 工作流程
 
-| 能力 | 处理方式 |
-|------|----------|
-| 自然语言入口 | 聊天通道接入后，Agent 汇总上下文、选择工具，并生成回复或动作 |
-| 上下文处理 | 设备结合记忆、配置和现场状态执行任务 |
-| 安全硬件访问 | 模型仅获得受控的设备能力、名称和说明，不直接访问引脚、文件或凭据 |
-| 长期运行 | 入站/出站队列、通道分发、健康检查、诊断工具和恢复路径协同工作 |
-| 资源治理 | ESP 侧跟踪内存、TLS、队列和运行压力，必要时降级或暂停高风险操作 |
-| 配置与运维 | 提供本地配置页、HTTP API、状态检查、网络诊断、日志和 Linux 回滚路径 |
-| 多平台复用 | 当前支持 ESP32-S3、ESP32-P4-NANO 和 Linux；P4-NANO 通过板载 WiFi 协处理器联网 |
+一次请求进入 Beetles OS 后，会经过固定的处理流程：
+
+| 阶段 | 说明 |
+|------|------|
+| 入口识别 | 判断消息来自哪个通道、会话和用户，确定是否允许进入设备流程 |
+| 上下文准备 | 合并当前配置、记忆、设备状态、网络状态和资源压力 |
+| 确定可用能力 | 根据平台、功能开关、硬件配置和安全边界生成当次可用工具 |
+| 模型决策 | 让模型理解目标、组织步骤、选择工具或生成回复 |
+| 执行动作 | 配置保存、硬件控制、状态诊断、消息发送和系统动作由 Beetles OS 执行 |
+| 结果回写 | 将回复、调用结果、失败原因和关键状态返回给通道或本地界面 |
+
+这个分工是 Beetles OS 的核心：模型负责理解目标和组织行动，系统负责边界、执行和恢复。
+
+## 核心能力
+
+| 能力 | 说明 |
+|------|------|
+| 消息入口 | 支持 Telegram、飞书、钉钉、企业微信、QQ 频道等入口；语音和实时网页连接可作为附加交互面 |
+| 模型服务 | 支持 OpenAI、Anthropic、Gemini、GLM、通义千问、DeepSeek、Moonshot、Ollama，以及兼容 OpenAI 接口的模型服务 |
+| 工具系统 | 将提醒、任务、网络查询、状态诊断、硬件控制、办公集成等能力整理为可查看、可追踪的工具 |
+| 记忆与连续性 | 分层保存会话上下文、长期事实、任务进度和证据记录，帮助设备在长任务和重启后恢复上下文 |
+| 硬件控制 | 通过配置将 LED、继电器、蜂鸣器、传感器等外设注册为受控能力 |
+| 本地配置 | 首次启动后通过热点或局域网访问配置页，维护网络、模型、通道、硬件和系统参数 |
+| 运维诊断 | 提供健康状态、网络路径、资源压力、通道连通性、存储状态、日志和恢复入口 |
+| 多平台支持 | ESP32 适合硬件设备与轻量控制，Linux 适合长任务、本地工具、办公集成和服务化部署 |
 
 ## 适用场景
 
 | 场景 | 典型用途 |
-|------|--------------------|
-| 桌面助理 | 聊天、提醒、任务、文档摘要、轻量工作流 |
-| 前台设备 | 访客问答、信息展示、消息转发、值班提醒 |
-| 提醒终端 | 周期提醒、语音播报、日程联动、通知投递 |
-| 监控节点 | 读取传感器、判断阈值、发送告警 |
-| 设备控制器 | GPIO、PWM、I2C、蜂鸣器、继电器等外设控制 |
-| Linux 边缘节点 | 常驻服务、办公集成、长任务、部署回滚和更多本地工具 |
+|------|----------|
+| 前台或值班终端 | 访客问答、消息转发、状态播报、值班提醒 |
+| 设备控制器 | 通过对话触发灯光、电机、蜂鸣器、继电器、传感器等受控动作 |
+| 工业现场辅助 | 告警解释、巡检记录、远程维保、SOP 提醒、环境监测 |
+| Linux 边缘节点 | 常驻服务、办公集成、长任务、部署回滚和本地工具调用 |
+| 自定义智能硬件 | 复用消息入口、模型接入、记忆、工具、配置页和诊断能力 |
 
-## 支持多种通信通道
+## 消息入口
 
 <p align="center">
   <img src="docs/assets/readme-channel-support.svg" alt="Beetles OS communication channel support" width="920" style="max-width: 100%; height: auto;" />
 </p>
 
-飞书、钉钉、企微和 QQ 频道可作为企业入口；Telegram 和 WebSocket 可作为可选能力接入 Bot 或自定义实时前端。更多 IM、Webhook、企业系统和私有通道可继续适配。
+企业内部可以选择飞书、钉钉、企业微信或 QQ 频道；个人和海外场景可以选择 Telegram；语音与实时网页连接适合语音设备或自定义前端。设备最终可选哪些入口，取决于当前固件或 Linux 包实际包含的通道能力。
 
-## 工业场景
+## 记忆与连续性
 
-工业现场需要可靠、安全、可运维的边缘设备。Beetles OS 适合部署在现有控制系统旁，作为边缘 Agent、交互层、诊断层和工具调用层。
+记忆不是聊天记录的堆积，而是设备理解现场、延续任务和解释行为的依据。Beetles OS 将不同性质的信息分层保存，避免临时对话覆盖长期事实，也避免把过期状态当作当前结论。
 
-它不替代 PLC、工控机或原有业务系统，而是为现有系统提供自然语言入口、受控工具调用和运维可见性。
+| 信息类型 | 用途 |
+|----------|------|
+| 会话上下文 | 保留当前对话目标、未完成事项和最近执行结果 |
+| 长期事实 | 保存稳定的设备身份、项目背景、偏好和约束 |
+| 任务进度 | 记录任务执行到哪里、中断原因和下一步入口 |
+| 可复核证据 | 保存来源、时间和观察结果，便于解释与审计 |
+| 诊断记录 | 保留系统异常、调用失败和恢复过程，便于排障 |
 
-| 需求 / 用例 | 支持方式 |
-|-------------|----------|
-| 设备告警 | 读取状态、判断异常、生成告警说明，并推送到飞书、钉钉、企微等通道 |
-| 现场巡检 | 记录设备状态、巡检结果和历史问题，为后续处理保留上下文 |
-| 远程维保 | 运维人员用自然语言查询状态、触发诊断、重启服务或执行安全工具 |
-| 产线辅助 | 将 SOP、任务提醒、异常说明和现场反馈接入同一对话入口 |
-| 环境监测 | 接入传感器，处理温湿度、烟雾、水位、能耗等监控和阈值告警 |
-| 边缘网关 | 在 Linux 或 ESP 设备上连接本地硬件、模型服务、业务 API 和消息通道 |
-| 安全控制 | 仅暴露允许的工具和设备能力，避免模型直接访问引脚、文件和凭据 |
+这样设计的目的不是让设备“更会聊天”，而是让设备在长期使用中知道哪些信息可以使用、哪些信息需要复核、哪些信息只适合作为历史参考。
 
-## 记忆能力
+## 模型服务
 
-Beetles OS 的记忆不只是保存聊天记录。它用于保存设备身份、接入设备、现场事件、任务进度和恢复点。
-
-设备重启、切换通道或更换操作人员后，Agent 可以通过记忆恢复关键上下文。
-
-| 记忆层 | 保存内容 | 用途 |
-|--------|----------|------------|
-| 会话摘要 | 最近对话、用户目标、未完成事项 | 在长对话中保留上下文，减少原文注入 |
-| 长期记忆 | 偏好、画像、项目、任务、约束、事实 | 保存稳定信息，提升现场适配能力 |
-| 事实记忆 | 带来源、置信度和新鲜度的关键事实 | 区分“确定事实”和“可能过期的信息” |
-| 连续性记忆 | 当前进度、中断原因、下一步动作 | 支持任务中断、设备重启和远程接手后的恢复 |
-| 证据归档 | 历史记录、引用、日志和观察结果 | 为解释、审计和排障提供依据 |
-| 记忆诊断 | 稀疏、过期、冲突或待修复的记忆状态 | 让运维人员查看并修复记忆问题 |
-
-记忆会按场景分范围：有些只属于当前会话，有些属于用户，有些是设备或外部世界事实。Beetles OS 还会给记忆标记置信度、新鲜度和复核提示，避免把过期状态当成确定结论。
-
-## 支持大语言模型
-
-Beetles OS 不绑定单一模型厂商。当前可配置 OpenAI、OpenAI-compatible、Anthropic、Gemini、GLM、通义千问、DeepSeek、Moonshot 和 Ollama 等模型服务。
+Beetles OS 不绑定单一模型厂商。你可以在配置页维护多个模型来源，并设置调用顺序；当前一个来源不可用时，系统可以按配置尝试后续来源。
 
 <p align="center">
   <img src="docs/assets/readme-llm-support.svg" alt="Beetles OS large language model support" width="920" style="max-width: 100%; height: auto;" />
 </p>
 
-| 能力 | 说明 |
-|------|------|
-| 多模型服务商 | 支持 OpenAI、OpenAI-compatible、Anthropic、Gemini、GLM、通义千问、DeepSeek、Moonshot、Ollama 等 |
-| 主备模型 | 可配置主模型和备用模型，提升可用性 |
-| 边缘友好 | 模型在云端或本地服务中运行，设备侧负责上下文、工具、安全边界和执行 |
-| 可配置 | API Key、Base URL、模型名、代理和搜索服务都可以在配置页设置 |
-
-模型源不固化在固件中。API Key、模型名、Base URL、主用源和备用源都可以在本地配置页设置。
+当前可配置的模型来源包括 OpenAI、Anthropic、Gemini、GLM、通义千问、DeepSeek、Moonshot、Ollama，以及兼容 OpenAI 接口的模型服务。密钥、服务地址、模型名、自定义请求头和回退顺序都可以在本地配置页维护，不需要把某一家服务写死在固件里。
 
 <p align="center">
   <img src="docs/assets/readme-original-llm-config.png" alt="Beetles OS LLM source configuration" width="1100" style="max-width: 100%; height: auto;" />
 </p>
 
-## 运行时架构
+第一次接入时，建议先用一个模型来源、一组密钥和一个模型名跑通完整链路，再增加其他来源并调整顺序。详细字段见 [模型服务配置](docs/zh-cn/llm-providers.md)。
 
-<p align="center">
-  <img src="docs/assets/readme-runtime-placeholder.svg" alt="Beetles OS runtime placeholder" style="max-width: 100%; height: auto;" />
-</p>
+## 工具与运维
 
-Beetles OS 不会将消息直接转发给大模型。消息进入系统后进入入站队列，再由 Agent 主循环处理：
-
-```text
-聊天通道 / 定时任务 / 语音输入
-        -> 入站队列
-        -> Agent Loop
-        -> 大模型 + 工具 + 记忆
-        -> 出站队列
-        -> 聊天回复 / 硬件动作 / 系统任务
-```
-
-处理过程中，Runtime 会判断以下信息：
-
-- **来源身份**：通道、会话、用户和允许范围。
-- **上下文**：当前配置、会话摘要、稳定事实、历史证据和设备状态。
-- **可用工具**：根据平台、功能开关、硬件配置和运行压力动态生成工具列表。
-- **保护动作**：配置保存、远端发送、重启、恢复、硬件控制等操作需要明确边界。
-- **输出目标**：聊天回复、提醒、任务、硬件动作或系统诊断结果。
-
-因此，Beetles OS 的运行链路包括：**入口、上下文、决策、工具、记忆、执行、反馈、运维**。
-
-## 工具与运维可见性
-
-本地界面展示 Agent 可用工具、系统健康状态、模型调用和工具调用记录。商用部署可以基于这些信息检查状态、解释行为和定位故障。
+工具是模型进入真实设备的执行边界。Beetles OS 向模型暴露的是经过注册的工具说明、参数要求和使用约束；实际的配置保存、硬件控制、状态诊断和消息发送由 Beetles OS 完成。
 
 <p align="center">
   <img src="docs/assets/readme-original-tools-registry.png" alt="Beetles OS registered tools" width="1100" style="max-width: 100%; height: auto;" />
 </p>
 
+商用设备不能只关注一次回复是否成功，还需要在长期使用中定位问题。配置页会展示健康状态、资源压力、模型调用、工具调用和日志；聊天通道也可以触发状态查询，让远程运维人员先获得平台、网络、资源压力和历史负载，再决定下一步动作。
+
 <p align="center">
   <img src="docs/assets/readme-original-health-logs.png" alt="Beetles OS health metrics and logs" width="1100" style="max-width: 100%; height: auto;" />
 </p>
-
-聊天通道也可以触发状态查询。远程运维人员可获取平台、网络、资源压力和历史负载，再决定后续操作。
 
 <p align="center">
   <img src="docs/assets/readme-original-chat-status.png" alt="Beetles OS chat status response" width="900" style="max-width: 100%; height: auto;" />
 </p>
 
-## 主要能力
+## 平台与板型
 
-| 能力 | 说明 |
-|------|------|
-| 聊天入口 | 支持通过飞书、钉钉、企微、QQ 频道等通道与设备交互 |
-| 模型接入 | 支持 OpenAI-compatible 和 Anthropic 接口，可配置主模型和备用模型 |
-| 工具系统 | Agent 可以调用提醒、任务、日历、文件、网络、诊断、硬件等工具 |
-| 分层记忆 | 历史证据、稳定事实和连续性数据分开保存，降低记忆混淆和错误引用 |
-| 办公集成 | 启用对应能力后，可接入邮件、日历、联系人和文档空间 |
-| 网页配置 | 首次启动后通过热点或局域网打开配置页，设置 WiFi、模型、通道和硬件 |
-| 硬件控制 | 通过 `hardware.json` 将 LED、继电器、蜂鸣器、传感器等设备注册为受控能力 |
-| 语音与显示 | 可选语音输入输出、SPI TFT 状态屏和运行时健康展示 |
-| 诊断与运维 | 提供健康检查、网络检查、存储状态、重启、恢复和 Linux 服务回滚入口 |
-| 资源治理 | 在 ESP 侧跟踪堆、TLS、队列和通道压力，控制边缘设备资源占用 |
+Beetles OS 支持在不同硬件形态上部署同一套设备侧系统。
 
-## 硬件矩阵
-
-Beetles OS 支持在不同硬件形态上运行同一套 Agent Runtime。
-
-| 硬件 | 状态 | 能力 |
-|------|------|------|
-| ESP32-S3 | 已支持 | 小型硬件 Agent，支持记忆、对话和外设控制 |
-| ESP32-P4-NANO | 已支持 | P4 运行 Beetles OS 主固件，板载 WiFi 协处理器负责联网 |
-| Linux | 已支持 | 完整 Agent OS、长任务、本地工具和运维能力 |
-| STM32 | 规划中，尚未支持 | 面向工业控制和低功耗设备 |
-| 手机 | 规划中，尚未支持 | 面向移动 Agent 和现场运维 |
-| 更多终端 | 规划中，尚未支持 | 网关、屏幕、边缘盒子等商用设备 |
+| 平台 | 状态 | 适合做什么 |
+|------|------|------------|
+| ESP32-S3 | 已支持 | 小型硬件设备、传感器节点、简单显示和外设控制 |
+| ESP32-P4-NANO | 已支持 | P4 主控固件、更大内存余量的 ESP 设备验证 |
+| Linux | 已支持 | 长任务、本地工具、办公集成、发布包部署和运维回滚 |
 
 当前板型预设：
 
 | BOARD | Flash | PSRAM | 说明 |
 |-------|-------|-------|------|
-| `esp32-s3-8mb` | 8MB | 8MB | N8R8 |
+| `esp32-s3-8mb` | 8MB | 8MB | S3 小容量预设 |
 | `esp32-s3-16mb` | 16MB | 8MB | 常用默认选择 |
-| `esp32-s3-32mb` | 32MB | 16MB | N32R16 |
-| `esp32-p4-nano-16mb` | 16MB | 32MB | Beetles OS 运行在 P4；板载 WiFi 协处理器负责联网 |
+| `esp32-s3-32mb` | 32MB | 16MB | 更大 Flash / PSRAM 余量 |
+| `esp32-p4-nano-16mb` | 16MB | 32MB | P4-NANO 预设 |
 
-硬件控制场景优先选择 ESP32-S3 或 ESP32-P4。
+选择建议：硬件控制、传感器和状态屏优先从 ESP32-S3 或 ESP32-P4-NANO 开始；办公集成、长任务、本地脚本和服务化部署优先选择 Linux。
 
-模型能力、办公集成、长任务和部署便利性优先选择 Linux。
+<a id="quick-start"></a>
 
 ## 快速开始
 
@@ -221,7 +168,11 @@ Beetles OS 支持在不同硬件形态上运行同一套 Agent Runtime。
 - 安装烧录工具：`cargo install espflash`
 - Windows 需要安装 Visual Studio，并勾选 Desktop development for C++
 
-### 2. 编译或烧录
+如果你只想先了解配置和工作方式，可以先读 [ESP32 首次上手](docs/zh-cn/getting-started-esp.md) 或 [Linux 首次上手](docs/zh-cn/getting-started-linux.md)。
+
+<a id="build-from-source"></a>
+
+### 2. 从源码构建和烧录
 
 macOS / Linux：
 
@@ -241,9 +192,9 @@ $env:BOARD="esp32-s3-16mb"; .\build.ps1 --flash
 $env:BOARD="esp32-p4-nano-16mb"; .\build.ps1 --flash
 ```
 
-不设置 `BOARD` 或 `--target` 时，构建脚本会尝试通过 `espflash board-info` 自动识别唯一连接的开发板。识别不到、识别结果不受支持，或同时连接了多个串口时，请手动设置 `BOARD`。
+不设置 `BOARD` 或 `--target` 时，构建脚本会尝试自动识别唯一连接的开发板。识别不到、识别结果不受支持，或同时连接了多个串口时，请手动设置 `BOARD`。
 
-ESP32-P4-NANO 是双芯片板，完整烧录通常需要依次烧录 WiFi 协处理器固件和 P4 主固件：
+P4-NANO 完整烧录通常包含 C6 辅助固件和 P4 主固件两步：
 
 ```bash
 ./build.sh flash-c6
@@ -251,7 +202,17 @@ BOARD=esp32-p4-nano-16mb ./build.sh --flash
 ./build.sh flash-all
 ```
 
-烧录板载 WiFi 协处理器前，先让 P4 进入 bootloader 模式，避免共享板级连线互相干扰。
+烧录 C6 辅助固件前，先让 P4 进入 bootloader 模式，避免共享板级连线互相干扰。
+
+Linux 构建和打包：
+
+```bash
+TARGET=linux ./build.sh
+TARGET=linux ./build.sh --package-linux
+./build.sh --deploy-linux
+```
+
+Linux 版本适合做常驻服务和完整工具环境。发布、重启、停止和回滚见 [Linux 运维](docs/zh-cn/linux-release-rollback.md)。
 
 ### 3. 打开配置页
 
@@ -262,15 +223,15 @@ BOARD=esp32-p4-nano-16mb ./build.sh --flash
 3. 设置配对码。
 4. 配置 WiFi、大模型和要使用的聊天通道。
 
-设备连接路由器后，可通过局域网 IP 打开配置页。Linux 版本如果启动时已有可用网络，会优先继承当前系统网络；此时请访问设备当前 LAN IP。
+设备连接路由器后，可以通过局域网 IP 打开配置页。Linux 版本如果启动时已有可用网络，会优先继承当前系统网络；此时请访问设备当前 LAN IP。
 
-## 配置界面
+## 配置页
 
 <p align="center">
   <img src="docs/assets/readme-original-pairing.png" alt="Beetles OS pairing page" width="900" style="max-width: 100%; height: auto;" />
 </p>
 
-首次连接时，配置页用于完成设备地址和配对码设置。完成后，配置页作为设备本地控制台，可查看连接状态、设备信息和通道连通性，也可配置模型、通道、工具、日志和系统参数。
+首次访问配置页时，需要完成设备地址与配对码设置。之后配置页承担本地控制台职责：查看连接状态、设备信息、通道连通性、可用工具和操作记录；维护模型、通道、硬件与系统参数。
 
 <p align="center">
   <img src="docs/assets/readme-original-dashboard.png" alt="Beetles OS local configuration dashboard" width="1100" style="max-width: 100%; height: auto;" />
@@ -284,13 +245,13 @@ BOARD=esp32-p4-nano-16mb ./build.sh --flash
 
 | 配置区 | 作用 |
 |--------|------|
-| WiFi | 路由器 SSID 和密码 |
-| LLM | 服务商、模型、API Key、API URL、备用模型 |
-| Channels | 飞书、钉钉、企微、QQ 频道等通道凭据 |
-| Proxy / Search | 代理和搜索服务配置 |
-| Hardware | 用 `hardware.json` 定义可被 Agent 控制的外设 |
-| Display | SPI TFT 状态屏 |
-| System | 健康检查、重启、恢复、OTA（启用时） |
+| 网络 | 路由器 WiFi 名称和密码 |
+| 模型 | 模型来源、模型名、密钥、服务地址、回退顺序 |
+| 消息通道 | Telegram、飞书、钉钉、企业微信、QQ 频道等通道凭据 |
+| 代理与搜索 | 网络代理和搜索服务配置 |
+| 硬件 | 注册可被设备智能体控制的外设 |
+| 屏幕 | SPI TFT 状态屏或 Linux 屏幕输出 |
+| 系统 | 健康检查、重启、恢复和系统状态 |
 
 自定义前端、脚本或集成程序可参考 [配置 API](docs/zh-cn/config-api.md)。
 
@@ -298,43 +259,44 @@ BOARD=esp32-p4-nano-16mb ./build.sh --flash
 
 | 路径 | 说明 |
 |------|------|
-| `src/` | Beetles OS 核心运行时、Agent Loop、通道、工具、记忆、平台抽象 |
+| `src/` | 核心系统、智能体主循环、通道、工具、记忆、平台抽象 |
 | `configure-ui/` | Web 配置前端，也可以打包成桌面壳 |
-| `docs/` | 用户文档、集成文档、开发文档 |
+| `docs/` | 公开文档、配置说明、集成说明和运维说明 |
 | `components/` | ESP-IDF 侧组件与底层封装 |
 | `scripts/` | 构建、烧录、检查和辅助脚本 |
 | `storage_data/` | ESP 侧默认存储数据 |
 | `packaging/` | Linux 发布包相关内容 |
-| `tests/` | 运行时、工具、记忆和 Agent 行为测试 |
+| `tests/` | 系统、工具、记忆和智能体行为测试 |
 
 ## 后续阅读
 
 | 你的目标 | 文档 |
 |----------|------|
-| 第一次配置设备 | [配置指南](docs/zh-cn/configuration.md) |
-| 查看 Agent 可用工具 | [工具列表](docs/zh-cn/tools.md) |
-| 配置大模型服务商 | [LLM Providers](docs/zh-cn/llm-providers.md) |
+| 第一次配置 ESP32 设备 | [ESP32 首次上手](docs/zh-cn/getting-started-esp.md) |
+| 第一次部署 Linux 版本 | [Linux 首次上手](docs/zh-cn/getting-started-linux.md) |
+| 查看完整能力范围 | [能力概览](docs/zh-cn/capabilities.md) |
+| 配置大模型服务商 | [模型服务配置](docs/zh-cn/llm-providers.md) |
 | 配置硬件外设 | [硬件设备配置](docs/zh-cn/hardware-device-config.md) |
 | 查看支持板型和硬件问题 | [硬件说明](docs/zh-cn/hardware.md) |
-| 调用 HTTP API | [配置 API](docs/zh-cn/config-api.md) |
-| 部署 Linux 版本 | [Linux 安装、发布与回滚](docs/zh-cn/linux-release-rollback.md) |
-| 了解模块边界 | [架构说明](docs/zh-cn/architecture.md) |
+| 调用开放接口 | [配置 API](docs/zh-cn/config-api.md) |
+| 部署、重启和回滚 Linux 版本 | [Linux 运维](docs/zh-cn/linux-release-rollback.md) |
+| 了解系统结构和扩展点 | [架构说明](docs/zh-cn/architecture.md) |
 | 浏览完整文档地图 | [docs/README.md](docs/README.md) |
-
-## 关于我们
-
-Beetles OS 由 **Openbeetles** 发起。我们希望把大语言模型、边缘硬件和真实世界的设备控制连接起来，让开发者更容易做出可靠、安全、可运维的商用智能硬件。
-
-这个项目仍在快速演进。我们欢迎对边缘 Agent、硬件控制、Linux 部署、模型接入和设备运维感兴趣的开发者一起参与。
 
 ## 常见问题
 
-- 烧录失败：检查 USB 线、串口和 `ESPFLASH_PORT`。
-- `flash-c6` 失败：检查 WiFi 协处理器串口 `ESP_HOSTED_C6_PORT`，并让 P4 进入 bootloader 模式。
+- 烧录失败：先检查 USB 线和串口是否被其他程序占用；需要手动指定串口时设置 `ESPFLASH_PORT`。
+- `flash-c6` 失败：检查 C6 辅助固件烧录串口 `ESP_HOSTED_C6_PORT`，并让 P4 进入 bootloader 模式。
 - 配置页打不开：重新连接热点 **Beetle**，再打开 `http://192.168.4.1`；Linux 版本请确认当前 LAN IP。
-- `storage partition could not be found`：通常由板型预设或分区表不匹配导致。
-- 通道无消息：检查模型配置、通道凭据和 allowed chat ids。
-- 硬件工具没有出现：检查 `hardware.json`，确认对应设备能力已经注册。
+- 启动提示找不到存储分区：通常由板型预设或分区表不匹配导致，错误文本可能包含 `storage partition could not be found`。
+- 通道无消息：检查模型配置、通道凭据、网络连通性和允许访问的会话范围。
+- 硬件工具没有出现：先在配置页确认外设能力已经注册；需要手写配置时再检查 `hardware.json`。
+
+## 关于我们
+
+Beetles OS 由 **Openbeetles** 发起。这个项目关注的是大模型进入真实设备后的工程边界：设备要能接入模型，也要能配置、执行、诊断、恢复和长期维护。
+
+我们欢迎对边缘智能体、硬件控制、Linux 部署、模型接入和设备运维感兴趣的开发者一起参与。
 
 ## 许可
 
