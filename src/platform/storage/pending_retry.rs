@@ -32,22 +32,31 @@ struct PendingRetryCache {
 /// 单槽 pending_retry，带进程内镜像，避免每次 save 先读盘。
 pub struct StoragePendingRetryStore {
     cache: Mutex<PendingRetryCache>,
+    path: PathBuf,
 }
 
 impl StoragePendingRetryStore {
     pub fn new() -> Self {
         Self {
             cache: Mutex::new(PendingRetryCache::default()),
+            path: full_path(),
         }
     }
 
-    fn load_cache_locked(cache: &mut PendingRetryCache) -> Result<()> {
+    #[cfg(test)]
+    fn new_for_test_path(path: PathBuf) -> Self {
+        Self {
+            cache: Mutex::new(PendingRetryCache::default()),
+            path,
+        }
+    }
+
+    fn load_cache_locked(&self, cache: &mut PendingRetryCache) -> Result<()> {
         if cache.loaded {
             return Ok(());
         }
         cache.loaded = true;
-        let path = full_path();
-        let buf = match read_file(&path) {
+        let buf = match read_file(&self.path) {
             Ok(buf) => buf,
             Err(Error::Io { source, stage })
                 if stage == "storage_read" && source.kind() == ErrorKind::NotFound =>
@@ -99,7 +108,7 @@ impl PendingRetryStore for StoragePendingRetryStore {
             ));
         }
         let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
-        Self::load_cache_locked(&mut cache)?;
+        self.load_cache_locked(&mut cache)?;
         let replay_count = cache
             .entry
             .as_ref()
@@ -116,14 +125,14 @@ impl PendingRetryStore for StoragePendingRetryStore {
         };
         let json = serde_json::to_vec(&entry)
             .map_err(|e| Error::config("pending_retry_save", e.to_string()))?;
-        write_json_file(full_path(), &json)?;
+        write_json_file(&self.path, &json)?;
         cache.entry = Some(entry);
         Ok(())
     }
 
     fn load_pending_retry(&self) -> Result<Option<PcMsg>> {
         let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
-        Self::load_cache_locked(&mut cache)?;
+        self.load_cache_locked(&mut cache)?;
         let Some((replay_count, msg)) = cache
             .entry
             .as_ref()
@@ -132,7 +141,7 @@ impl PendingRetryStore for StoragePendingRetryStore {
             return Ok(None);
         };
         if replay_count >= PENDING_RETRY_MAX_REPLAY {
-            let _ = write_json_file(full_path(), b"{}");
+            let _ = write_json_file(&self.path, b"{}");
             cache.entry = None;
             log::info!(
                 "[storage_pending_retry] replay_count {} >= {}, cleared",
@@ -145,7 +154,7 @@ impl PendingRetryStore for StoragePendingRetryStore {
     }
 
     fn clear_pending_retry(&self) -> Result<()> {
-        write_json_file(full_path(), b"{}")?;
+        write_json_file(&self.path, b"{}")?;
         let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
         cache.loaded = true;
         cache.entry = None;
@@ -157,12 +166,23 @@ impl PendingRetryStore for StoragePendingRetryStore {
 mod tests {
     use super::*;
     use crate::memory::PendingRetryStore;
+    use std::path::Path;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Mutex;
 
     static TEST_MUTEX: Mutex<()> = Mutex::new(());
+    static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-    fn reset_pending_retry_path() {
-        let path = full_path();
+    fn test_pending_retry_path(name: &str) -> PathBuf {
+        let id = TEST_COUNTER.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!(
+            "beetle-pending-retry-{}-{}-{id}.json",
+            std::process::id(),
+            name
+        ))
+    }
+
+    fn cleanup_path(path: &Path) {
         if path.is_dir() {
             std::fs::remove_dir_all(&path).expect("remove pending_retry test dir");
         } else {
@@ -173,15 +193,16 @@ mod tests {
     #[test]
     fn load_pending_retry_surfaces_storage_read_errors() {
         let _guard = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-        reset_pending_retry_path();
-        std::fs::create_dir_all(full_path()).expect("create blocking pending_retry dir");
-        let store = StoragePendingRetryStore::new();
+        let path = test_pending_retry_path("read-error");
+        cleanup_path(&path);
+        std::fs::create_dir_all(&path).expect("create blocking pending_retry dir");
+        let store = StoragePendingRetryStore::new_for_test_path(path.clone());
 
         let error = store
             .load_pending_retry()
             .expect_err("directory read must not be treated as empty pending retry");
 
         assert_eq!(error.stage(), "storage_read");
-        reset_pending_retry_path();
+        cleanup_path(&path);
     }
 }

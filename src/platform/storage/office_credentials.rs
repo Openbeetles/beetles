@@ -5,6 +5,7 @@ use crate::office::{
     OfficeCredential, OfficeCredentialStore, OfficeCredentialsSegment, REL_PATH_OFFICE_CREDENTIALS,
 };
 use std::collections::BTreeMap;
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -41,7 +42,11 @@ impl StorageOfficeCredentialStore {
         let bytes = match read_file(path) {
             Ok(bytes) if !bytes.is_empty() => bytes,
             Ok(_) => return Ok(BTreeMap::new()),
-            Err(error) if error.stage() == "storage_read" => return Ok(BTreeMap::new()),
+            Err(Error::Io { source, stage })
+                if stage == "storage_read" && source.kind() == ErrorKind::NotFound =>
+            {
+                return Ok(BTreeMap::new());
+            }
             Err(error) => return Err(error),
         };
         let segment: OfficeCredentialsSegment = serde_json::from_slice(&bytes)
@@ -255,13 +260,25 @@ mod tests {
         let _guard = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let path = test_credential_path("persist-failure");
         cleanup_path(&path);
-        std::fs::create_dir_all(&path).expect("create blocking office credential dir");
         let store = StorageOfficeCredentialStore::new_for_test_path(path.clone());
+        store
+            .set(&OfficeCredential {
+                account_key: "calendar-work".to_string(),
+                access_token: "old-token".to_string(),
+                refresh_token: String::new(),
+                token_endpoint: String::new(),
+                expires_at_unix_secs: 0,
+                updated_at: 1,
+                metadata: BTreeMap::new(),
+            })
+            .expect("seed credential cache");
+        std::fs::remove_file(&path).expect("remove seeded credential file");
+        std::fs::create_dir_all(&path).expect("create blocking office credential dir");
 
         let error = store
             .set(&OfficeCredential {
                 account_key: "calendar-work".to_string(),
-                access_token: "token".to_string(),
+                access_token: "new-token".to_string(),
                 refresh_token: String::new(),
                 token_endpoint: String::new(),
                 expires_at_unix_secs: 0,
@@ -271,7 +288,27 @@ mod tests {
             .expect_err("persist failure should be returned");
 
         assert_eq!(error.stage(), "atomic_write");
-        assert!(store.get("calendar-work").expect("cache read").is_none());
+        let cached = store
+            .get("calendar-work")
+            .expect("cache read")
+            .expect("original credential remains cached");
+        assert_eq!(cached.access_token, "old-token");
+        std::fs::remove_dir_all(&path).expect("cleanup blocking office credential dir");
+    }
+
+    #[test]
+    fn load_from_disk_surfaces_storage_read_errors() {
+        let _guard = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let path = test_credential_path("read-error");
+        cleanup_path(&path);
+        std::fs::create_dir_all(&path).expect("create blocking office credential dir");
+        let store = StorageOfficeCredentialStore::new_for_test_path(path.clone());
+
+        let error = store
+            .list()
+            .expect_err("directory read must not be treated as empty credentials");
+
+        assert_eq!(error.stage(), "storage_read");
         std::fs::remove_dir_all(&path).expect("cleanup blocking office credential dir");
     }
 }

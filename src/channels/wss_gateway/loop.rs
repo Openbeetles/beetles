@@ -616,17 +616,26 @@ pub fn run_wss_gateway_loop<D, H, C, CreateHttp, Conn>(
                                     tag,
                                     chat_id
                                 );
-                                inbound_backpressure::record_deferred_without_queue_full_for_source(
-                                    EventIngressSource::WssGateway,
-                                );
-                                if let Err(error) = pending_retry.save_pending_retry(&msg) {
-                                    crate::metrics::record_error_by_stage(error.metrics_stage());
-                                    log::error!(
-                                        "[{}] pressure pending_retry save failed chat_id={}: {}",
-                                        tag,
-                                        chat_id,
-                                        error
-                                    );
+                                match pending_retry.save_pending_retry(&msg) {
+                                    Ok(()) => {
+                                        inbound_backpressure::record_deferred_without_queue_full_for_source(
+                                            EventIngressSource::WssGateway,
+                                        );
+                                    }
+                                    Err(error) => {
+                                        crate::metrics::record_error_by_stage(
+                                            error.metrics_stage(),
+                                        );
+                                        log::error!(
+                                            "[{}] pressure pending_retry save failed chat_id={}: {}",
+                                            tag,
+                                            chat_id,
+                                            error
+                                        );
+                                        inbound_backpressure::record_drop_without_queue_full_for_source(
+                                            EventIngressSource::WssGateway,
+                                        );
+                                    }
                                 }
                             } else {
                                 let mut enqueued = false;
@@ -667,18 +676,20 @@ pub fn run_wss_gateway_loop<D, H, C, CreateHttp, Conn>(
                                     inbound_backpressure::record_disconnected_drop_for_source(
                                         EventIngressSource::WssGateway,
                                     );
-                                } else {
-                                    log::warn!(
-                                        "[{}] inbound queue full, saved pending retry chat_id={}",
-                                        tag,
-                                        chat_id
-                                    );
-                                    inbound_backpressure::record_queue_full_for_source(
-                                        EventIngressSource::WssGateway,
-                                        InboundBackpressureOutcome::DeferredToPendingRetry,
-                                    );
-                                    if let Some(m) = pending_msg.as_ref() {
-                                        if let Err(error) = pending_retry.save_pending_retry(m) {
+                                } else if let Some(m) = pending_msg.as_ref() {
+                                    match pending_retry.save_pending_retry(m) {
+                                        Ok(()) => {
+                                            log::warn!(
+                                                "[{}] inbound queue full, saved pending retry chat_id={}",
+                                                tag,
+                                                chat_id
+                                            );
+                                            inbound_backpressure::record_queue_full_for_source(
+                                                EventIngressSource::WssGateway,
+                                                InboundBackpressureOutcome::DeferredToPendingRetry,
+                                            );
+                                        }
+                                        Err(error) => {
                                             crate::metrics::record_error_by_stage(
                                                 error.metrics_stage(),
                                             );
@@ -687,6 +698,10 @@ pub fn run_wss_gateway_loop<D, H, C, CreateHttp, Conn>(
                                                 tag,
                                                 chat_id,
                                                 error
+                                            );
+                                            inbound_backpressure::record_queue_full_for_source(
+                                                EventIngressSource::WssGateway,
+                                                InboundBackpressureOutcome::Dropped,
                                             );
                                         }
                                     }

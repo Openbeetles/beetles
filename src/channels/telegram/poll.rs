@@ -536,23 +536,31 @@ pub fn poll_telegram_once<H: ChannelHttpClient>(
                     EventIngressSource::TelegramPoll,
                 );
             } else if !enqueued {
-                log::warn!(
-                    "[{}] inbound queue full, saved telegram msg to pending retry chat_id={}",
-                    TAG_POLL,
-                    chat_id
-                );
-                inbound_backpressure::record_queue_full_for_source(
-                    EventIngressSource::TelegramPoll,
-                    InboundBackpressureOutcome::DeferredToPendingRetry,
-                );
-                if let Err(error) = pending_retry.save_pending_retry(&pc) {
-                    crate::metrics::record_error_by_stage(error.metrics_stage());
-                    log::error!(
-                        "[{}] pending_retry save failed chat_id={}: {}",
-                        TAG_POLL,
-                        chat_id,
-                        error
-                    );
+                match pending_retry.save_pending_retry(&pc) {
+                    Ok(()) => {
+                        log::warn!(
+                            "[{}] inbound queue full, saved telegram msg to pending retry chat_id={}",
+                            TAG_POLL,
+                            chat_id
+                        );
+                        inbound_backpressure::record_queue_full_for_source(
+                            EventIngressSource::TelegramPoll,
+                            InboundBackpressureOutcome::DeferredToPendingRetry,
+                        );
+                    }
+                    Err(error) => {
+                        crate::metrics::record_error_by_stage(error.metrics_stage());
+                        log::error!(
+                            "[{}] pending_retry save failed chat_id={}: {}",
+                            TAG_POLL,
+                            chat_id,
+                            error
+                        );
+                        inbound_backpressure::record_queue_full_for_source(
+                            EventIngressSource::TelegramPoll,
+                            InboundBackpressureOutcome::Dropped,
+                        );
+                    }
                 }
             }
         }

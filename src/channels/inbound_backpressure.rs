@@ -139,6 +139,16 @@ pub(crate) fn record_deferred_without_queue_full_for_source(source: EventIngress
     record_deferred_without_queue_full();
 }
 
+pub(crate) fn record_drop_without_queue_full() {
+    crate::metrics::record_inbound_drop();
+    crate::metrics::record_event_ingress_rejected();
+}
+
+pub(crate) fn record_drop_without_queue_full_for_source(source: EventIngressSource) {
+    let _ = event_ingress_contract(source);
+    record_drop_without_queue_full();
+}
+
 pub(crate) fn record_disconnected_drop() {
     crate::metrics::record_inbound_drop();
     crate::metrics::record_event_ingress_rejected();
@@ -188,12 +198,13 @@ mod tests {
         record_queue_full(InboundBackpressureOutcome::Dropped);
         record_disconnected_drop();
         record_deferred_without_queue_full();
+        record_drop_without_queue_full();
 
         let after = crate::metrics::snapshot();
         assert!(after.inbound_queue_full_total >= before.inbound_queue_full_total + 3);
         assert!(after.inbound_defer_total >= before.inbound_defer_total + 3);
-        assert!(after.inbound_drop_total >= before.inbound_drop_total + 2);
-        assert!(after.event_ingress_rejected_total >= before.event_ingress_rejected_total + 5);
+        assert!(after.inbound_drop_total >= before.inbound_drop_total + 3);
+        assert!(after.event_ingress_rejected_total >= before.event_ingress_rejected_total + 6);
     }
 
     #[test]

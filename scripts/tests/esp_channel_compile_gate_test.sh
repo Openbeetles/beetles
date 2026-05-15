@@ -220,7 +220,7 @@ assert_line_guarded "$CHANNELS_MOD_RS" 'acquire_tenant_token as feishu_acquire_t
   "channels/mod.rs must compile-gate Feishu re-exports"
 assert_line_guarded "$CHANNELS_MOD_RS" 'pub use dingtalk::{flush_dingtalk_sends, run_dingtalk_sender_loop};' 'feature = "dingtalk"' \
   "channels/mod.rs must compile-gate DingTalk re-exports"
-assert_line_guarded "$CHANNELS_MOD_RS" 'new_wecom_aibot_route_store, run_wecom_aibot_loop, WecomAibotRouteStore, WECOM_AIBOT_WS_URL,' 'feature = "wecom"' \
+assert_line_guarded "$CHANNELS_MOD_RS" 'new_wecom_aibot_route_store, run_wecom_aibot_loop, WecomAibotLoopConfig, WecomAibotRouteStore,' 'feature = "wecom"' \
   "channels/mod.rs must compile-gate WeCom AI Bot re-exports"
 assert_line_guarded "$CHANNELS_MOD_RS" 'flush_qq_channel_sends, is_ws_online, new_shared_qq_token_cache, new_shared_qq_ws_status,' 'feature = "qq_channel"' \
   "channels/mod.rs must compile-gate QQ re-exports"
@@ -263,7 +263,7 @@ assert_line_guarded "$LIB_RS" 'flush_telegram_sends, get_bot_username, poll_tele
   "lib.rs must compile-gate Telegram public re-exports"
 assert_line_guarded "$LIB_RS" 'pub use channels::{flush_dingtalk_sends, run_dingtalk_sender_loop};' 'feature = "dingtalk"' \
   "lib.rs must compile-gate DingTalk public re-exports"
-assert_line_guarded "$LIB_RS" 'new_wecom_aibot_route_store, run_wecom_aibot_loop, WecomAibotRouteStore, WECOM_AIBOT_WS_URL,' 'feature = "wecom"' \
+assert_line_guarded "$LIB_RS" 'new_wecom_aibot_route_store, run_wecom_aibot_loop, WecomAibotLoopConfig, WecomAibotRouteStore,' 'feature = "wecom"' \
   "lib.rs must compile-gate WeCom AI Bot public re-exports"
 assert_line_guarded "$LIB_RS" 'pub use channels::{flush_qq_channel_sends, run_qq_sender_loop};' 'feature = "qq_channel"' \
   "lib.rs must compile-gate QQ public re-exports"
