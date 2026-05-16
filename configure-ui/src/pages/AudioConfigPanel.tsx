@@ -42,7 +42,6 @@ import { useDeviceRuntimeKind } from '../store/deviceStatusStore'
 import type { HardwareDiscoveryItem } from '../api/endpoints/hardware'
 import {
   AUDIO_AMBIENT_SOUND_EVENT_PRESETS,
-  AUDIO_BITS_PER_SAMPLE_ALLOWED,
   AUDIO_LED_STATE_PRESETS,
   AUDIO_MIC_DEVICE_TYPES,
   AUDIO_REALTIME_PROVIDERS,
@@ -57,7 +56,6 @@ import {
   ambientCooldownOptions,
   ambientIntervalOptions,
   audioSpeakerPinsOrDefault,
-  bufferSelectOptions,
   DEFAULT_SPEECH_API_URL_BAIDU,
   DEFAULT_SPEECH_API_URL_WHISPER,
   audioRealtimeConfigured,
@@ -448,50 +446,6 @@ export function AudioConfigPanel() {
                     </FormGrid>
                     <FormGrid>
                     <FormControl fullWidth>
-                      <InputLabel id="mic-bits">{t('audioConfig.bitsPerSample')}</InputLabel>
-                      <Select
-                        labelId="mic-bits"
-                        label={t('audioConfig.bitsPerSample')}
-                        value={String(form.microphone.bits_per_sample)}
-                        onChange={(e: SelectChangeEvent) => {
-                          const v = asNumber(e.target.value)
-                          if (v == null) return
-                          setDraftSafe({
-                            ...form,
-                            microphone: { ...form.microphone, bits_per_sample: Math.trunc(v) },
-                          })
-                        }}
-                      >
-                        {AUDIO_BITS_PER_SAMPLE_ALLOWED.map((b) => (
-                          <MenuItem key={b} value={String(b)}>
-                            {b}
-                          </MenuItem>
-                        ))}
-                      </Select>
-                    </FormControl>
-                    <FormControl fullWidth>
-                      <InputLabel id="mic-buf">{t('audioConfig.bufferSize')}</InputLabel>
-                      <Select
-                        labelId="mic-buf"
-                        label={t('audioConfig.bufferSize')}
-                        value={String(form.microphone.buffer_size)}
-                        onChange={(e: SelectChangeEvent) => {
-                          const v = asNumber(e.target.value)
-                          if (v == null) return
-                          setDraftSafe({
-                            ...form,
-                            microphone: { ...form.microphone, buffer_size: Math.trunc(v) },
-                          })
-                        }}
-                      >
-                        {bufferSelectOptions(form.microphone.buffer_size).map((n) => (
-                          <MenuItem key={n} value={String(n)}>
-                            {n} B
-                          </MenuItem>
-                        ))}
-                      </Select>
-                    </FormControl>
-                    <FormControl fullWidth>
                       <InputLabel id="vad-th">{t('audioConfig.vadThreshold')}</InputLabel>
                       <Select
                         labelId="vad-th"
@@ -725,28 +679,6 @@ export function AudioConfigPanel() {
                       ) : null}
                     </FormGrid>
                     <FormGrid>
-                      <FormControl fullWidth>
-                        <InputLabel id="spk-bits">{t('audioConfig.bitsPerSample')}</InputLabel>
-                        <Select
-                          labelId="spk-bits"
-                          label={t('audioConfig.bitsPerSample')}
-                          value={String(form.speaker.bits_per_sample)}
-                          onChange={(e: SelectChangeEvent) => {
-                            const v = asNumber(e.target.value)
-                            if (v == null) return
-                            setDraftSafe({
-                              ...form,
-                              speaker: { ...form.speaker, bits_per_sample: Math.trunc(v) },
-                            })
-                          }}
-                        >
-                          {AUDIO_BITS_PER_SAMPLE_ALLOWED.map((b) => (
-                            <MenuItem key={b} value={String(b)}>
-                              {b}
-                            </MenuItem>
-                          ))}
-                        </Select>
-                      </FormControl>
                       {!speakerUsesUsbDevice ? (
                         <>
                           <TextField

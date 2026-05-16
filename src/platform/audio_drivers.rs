@@ -970,24 +970,6 @@ impl AudioPipelineState {
                 "AudioPipelineState::from_config requires microphone or speaker endpoint",
             ));
         }
-        if seg.microphone.enabled && seg.microphone.bits_per_sample != 16 {
-            return Err(Error::config(
-                "audio_init",
-                format!(
-                    "only 16-bit microphone sampling is supported (got {})",
-                    seg.microphone.bits_per_sample
-                ),
-            ));
-        }
-        if seg.speaker.enabled && seg.speaker.bits_per_sample != 16 {
-            return Err(Error::config(
-                "audio_init",
-                format!(
-                    "only 16-bit speaker output is supported (got {})",
-                    seg.speaker.bits_per_sample
-                ),
-            ));
-        }
         validate_speaker_for_pipeline(seg)?;
 
         const MIC_DEVICE_PDM: &str = "pdm";

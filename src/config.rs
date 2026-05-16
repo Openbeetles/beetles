@@ -1067,9 +1067,6 @@ pub struct OfficeAccountsSegment {
 pub const AUDIO_CONFIG_VERSION: u32 = 1;
 const AUDIO_SAMPLE_RATE_MIN: u32 = 8_000;
 const AUDIO_SAMPLE_RATE_MAX: u32 = 48_000;
-const AUDIO_BUFFER_SIZE_MIN: usize = 256;
-const AUDIO_BUFFER_SIZE_MAX: usize = 16 * 1024;
-const AUDIO_BITS_PER_SAMPLE_ALLOWED: [u16; 3] = [16, 24, 32];
 const AUDIO_DEVICE_TYPE_MAX_LEN: usize = 32;
 const AUDIO_DEVICE_REF_MAX_LEN: usize = 256;
 const AUDIO_KEYWORD_MAX_LEN: usize = 64;
@@ -1113,10 +1110,6 @@ pub struct AudioMicrophoneConfig {
     pub pins: AudioMicPins,
     #[serde(default = "default_audio_sample_rate")]
     pub sample_rate: u32,
-    #[serde(default = "default_audio_bits_per_sample")]
-    pub bits_per_sample: u16,
-    #[serde(default = "default_audio_buffer_size")]
-    pub buffer_size: usize,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1131,8 +1124,6 @@ pub struct AudioSpeakerConfig {
     pub pins: Option<AudioSpeakerPins>,
     #[serde(default = "default_audio_sample_rate")]
     pub sample_rate: u32,
-    #[serde(default = "default_audio_bits_per_sample")]
-    pub bits_per_sample: u16,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1316,14 +1307,6 @@ fn default_audio_sample_rate() -> u32 {
     16_000
 }
 
-fn default_audio_bits_per_sample() -> u16 {
-    16
-}
-
-fn default_audio_buffer_size() -> usize {
-    1024
-}
-
 fn default_audio_vad_threshold() -> f32 {
     0.5
 }
@@ -1427,8 +1410,6 @@ pub fn default_disabled_audio_segment() -> AudioSegment {
                 din: 27,
             },
             sample_rate: default_audio_sample_rate(),
-            bits_per_sample: default_audio_bits_per_sample(),
-            buffer_size: default_audio_buffer_size(),
         },
         speaker: AudioSpeakerConfig {
             enabled: false,
@@ -1441,7 +1422,6 @@ pub fn default_disabled_audio_segment() -> AudioSegment {
                 sd: None,
             }),
             sample_rate: default_audio_sample_rate(),
-            bits_per_sample: default_audio_bits_per_sample(),
         },
         vad: AudioVadConfig {
             threshold: default_audio_vad_threshold(),
@@ -1849,19 +1829,6 @@ fn validate_audio_sample_rate(value: u32, field: &str) -> Result<()> {
     Ok(())
 }
 
-fn validate_audio_bits_per_sample(value: u16, field: &str) -> Result<()> {
-    if !AUDIO_BITS_PER_SAMPLE_ALLOWED.contains(&value) {
-        return Err(Error::config(
-            "audio",
-            format!(
-                "{} must be one of {:?}",
-                field, AUDIO_BITS_PER_SAMPLE_ALLOWED
-            ),
-        ));
-    }
-    Ok(())
-}
-
 fn audio_can_use_baidu_speech_fallback(seg: &AudioSegment) -> bool {
     seg.service_provider == "baidu"
         && !seg.speech.api_key.trim().is_empty()
@@ -2182,19 +2149,6 @@ fn validate_audio_segment(seg: &AudioSegment) -> Result<()> {
         validate_pin_range(seg.microphone.pins.sck, "audio")?;
         validate_pin_range(seg.microphone.pins.din, "audio")?;
         validate_audio_sample_rate(seg.microphone.sample_rate, "microphone.sample_rate")?;
-        validate_audio_bits_per_sample(
-            seg.microphone.bits_per_sample,
-            "microphone.bits_per_sample",
-        )?;
-        if !(AUDIO_BUFFER_SIZE_MIN..=AUDIO_BUFFER_SIZE_MAX).contains(&seg.microphone.buffer_size) {
-            return Err(Error::config(
-                "audio",
-                format!(
-                    "microphone.buffer_size must be {}..={}",
-                    AUDIO_BUFFER_SIZE_MIN, AUDIO_BUFFER_SIZE_MAX
-                ),
-            ));
-        }
     }
     if seg.speaker.enabled {
         match seg.speaker.device_type.as_str() {
@@ -2212,14 +2166,7 @@ fn validate_audio_segment(seg: &AudioSegment) -> Result<()> {
                     validate_pin_range(sd, "audio")?;
                 }
             }
-            AUDIO_SPEAKER_DEVICE_USB => {
-                if seg.speaker.bits_per_sample != 16 {
-                    return Err(Error::config(
-                        "audio",
-                        "speaker.bits_per_sample must be 16 when speaker.device_type == usb",
-                    ));
-                }
-            }
+            AUDIO_SPEAKER_DEVICE_USB => {}
             _ => {
                 return Err(Error::config(
                     "audio",
@@ -2231,7 +2178,6 @@ fn validate_audio_segment(seg: &AudioSegment) -> Result<()> {
             }
         }
         validate_audio_sample_rate(seg.speaker.sample_rate, "speaker.sample_rate")?;
-        validate_audio_bits_per_sample(seg.speaker.bits_per_sample, "speaker.bits_per_sample")?;
     }
     if !(0.0..=1.0).contains(&seg.vad.threshold) {
         return Err(Error::config(
@@ -3637,22 +3583,6 @@ mod tests {
     }
 
     #[test]
-    fn audio_validation_rejects_non_16_bit_usb_speaker() {
-        let mut seg = default_disabled_audio_segment();
-        seg.enabled = true;
-        seg.speaker.enabled = true;
-        seg.speaker.device_type = AUDIO_SPEAKER_DEVICE_USB.to_string();
-        seg.speaker.device_ref = Some("usb:vid=1234:pid=5678:serial=test".to_string());
-        seg.speaker.pins = None;
-        seg.speaker.bits_per_sample = 24;
-
-        let error = validate_audio_segment(&seg).expect_err("usb speaker should require 16-bit");
-        assert!(error
-            .to_string()
-            .contains("speaker.bits_per_sample must be 16"));
-    }
-
-    #[test]
     fn audio_validation_requires_pins_for_i2s_speaker() {
         let mut seg = default_disabled_audio_segment();
         seg.enabled = true;
@@ -3692,16 +3622,13 @@ mod tests {
               "enabled": false,
               "device_type": "i2s_inmp441",
               "pins": { "ws": 25, "sck": 26, "din": 27 },
-              "sample_rate": 16000,
-              "bits_per_sample": 16,
-              "buffer_size": 1024
+              "sample_rate": 16000
             },
             "speaker": {
               "enabled": true,
               "device_type": "usb",
               "device_ref": "   ",
-              "sample_rate": 16000,
-              "bits_per_sample": 16
+              "sample_rate": 16000
             },
             "vad": { "threshold": 0.5, "silence_duration_ms": 1000 },
             "wake_word": { "enabled": false, "keyword": "hiesp", "wake_prompt": "你好，我在听，请说。" },

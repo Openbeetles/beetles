@@ -1,8 +1,5 @@
 import type { AudioConfig } from "../types/audioConfig.ts";
 import {
-  AUDIO_BITS_PER_SAMPLE_ALLOWED,
-  AUDIO_BUFFER_SIZE_MAX,
-  AUDIO_BUFFER_SIZE_MIN,
   AUDIO_CONFIG_VERSION,
   AUDIO_PIN_MAX,
   AUDIO_PIN_MIN,
@@ -32,8 +29,6 @@ export function validateAudioConfig(
   const pinInRange = (pin: number) => pin >= AUDIO_PIN_MIN && pin <= AUDIO_PIN_MAX;
   const sampleRateInRange = (value: number) =>
     value >= AUDIO_SAMPLE_RATE_MIN && value <= AUDIO_SAMPLE_RATE_MAX;
-  const bitsPerSampleValid = (value: number) =>
-    (AUDIO_BITS_PER_SAMPLE_ALLOWED as readonly number[]).includes(value);
 
   if (runtimeKind === "linux" && form.microphone.enabled) {
     return t("audioConfig.validation.linuxMicrophoneUnsupported");
@@ -49,15 +44,6 @@ export function validateAudioConfig(
     }
     if (!sampleRateInRange(form.microphone.sample_rate)) {
       return t("audioConfig.validation.sampleRate");
-    }
-    if (!bitsPerSampleValid(form.microphone.bits_per_sample)) {
-      return t("audioConfig.validation.bitsPerSample");
-    }
-    if (
-      form.microphone.buffer_size < AUDIO_BUFFER_SIZE_MIN ||
-      form.microphone.buffer_size > AUDIO_BUFFER_SIZE_MAX
-    ) {
-      return t("audioConfig.validation.bufferSize");
     }
   }
 
@@ -83,9 +69,6 @@ export function validateAudioConfig(
     }
     if (!sampleRateInRange(form.speaker.sample_rate)) {
       return t("audioConfig.validation.sampleRate");
-    }
-    if (!bitsPerSampleValid(form.speaker.bits_per_sample)) {
-      return t("audioConfig.validation.bitsPerSample");
     }
   }
 

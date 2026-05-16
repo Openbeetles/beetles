@@ -16,8 +16,6 @@ export interface AudioMicrophoneConfig {
   device_type: string
   pins: AudioMicPins
   sample_rate: number
-  bits_per_sample: number
-  buffer_size: number
 }
 
 export interface AudioSpeakerConfig {
@@ -26,7 +24,6 @@ export interface AudioSpeakerConfig {
   device_ref?: string | null
   pins?: AudioSpeakerPins | null
   sample_rate: number
-  bits_per_sample: number
 }
 
 export interface AudioVadConfig {
@@ -120,9 +117,6 @@ export const AUDIO_PIN_MAX = 48
 export const AUDIO_SAMPLE_RATE_MIN = 8_000
 export const AUDIO_SAMPLE_RATE_MAX = 48_000
 export const AUDIO_REALTIME_PCM16_SAMPLE_RATE = 24_000
-export const AUDIO_BUFFER_SIZE_MIN = 256
-export const AUDIO_BUFFER_SIZE_MAX = 16 * 1024
-export const AUDIO_BITS_PER_SAMPLE_ALLOWED = [16, 24, 32] as const
 
 export const AUDIO_MIC_DEVICE_TYPES = ['i2s_inmp441', 'pdm'] as const
 export const AUDIO_SPEAKER_DEVICE_TYPES = ['i2s_max98357a'] as const
@@ -138,7 +132,6 @@ export const AUDIO_SAMPLE_RATE_PRESETS = [
   48_000,
 ] as const
 
-export const AUDIO_BUFFER_PRESETS = [512, 1024, 2048, 4096, 8192] as const
 export const AUDIO_VAD_THRESHOLD_PRESETS = [0.01, 0.02, 0.05, 0.08, 0.1, 0.2, 0.3, 0.5, 0.7] as const
 export const AUDIO_VAD_SILENCE_MS_PRESETS = [500, 750, 1000, 1500, 2000, 3000] as const
 
@@ -289,9 +282,17 @@ export function audioRealtimeConfigured(c: Pick<AudioConfig, 'realtime'> | Audio
 export function normalizeAudioConfigForSave(c: AudioConfig): AudioConfig {
   const speech = { ...c.speech }
   const realtime = { ...c.realtime }
+  const microphone: AudioMicrophoneConfig = {
+    enabled: c.microphone.enabled,
+    device_type: c.microphone.device_type,
+    pins: { ...c.microphone.pins },
+    sample_rate: c.microphone.sample_rate,
+  }
   const realtimeDefaults = realtimeProviderDefaults(realtime.provider)
   const speaker: AudioSpeakerConfig = {
-    ...c.speaker,
+    enabled: c.speaker.enabled,
+    device_type: c.speaker.device_type,
+    sample_rate: c.speaker.sample_rate,
     device_ref: c.speaker.device_ref?.trim() || null,
     pins: audioSpeakerPinsOrDefault(c.speaker.pins),
   }
@@ -329,29 +330,34 @@ export function normalizeAudioConfigForSave(c: AudioConfig): AudioConfig {
     speaker.device_ref = null
   }
 
-  return { ...c, speech, realtime, speaker }
+  return { ...c, speech, realtime, microphone, speaker }
 }
 
 export function normalizeAudioConfigFromDevice(raw: Partial<AudioConfig> | null | undefined): AudioConfig {
   const base = defaultAudioConfig()
   if (!raw) return base
 
+  const rawMicrophone = raw.microphone
+  const rawSpeaker = raw.speaker
+
   return {
     ...base,
     ...raw,
     microphone: {
-      ...base.microphone,
-      ...(raw.microphone ?? {}),
+      enabled: rawMicrophone?.enabled ?? base.microphone.enabled,
+      device_type: rawMicrophone?.device_type ?? base.microphone.device_type,
+      sample_rate: rawMicrophone?.sample_rate ?? base.microphone.sample_rate,
       pins: {
         ...base.microphone.pins,
-        ...(raw.microphone?.pins ?? {}),
+        ...(rawMicrophone?.pins ?? {}),
       },
     },
     speaker: {
-      ...base.speaker,
-      ...(raw.speaker ?? {}),
-      device_ref: raw.speaker?.device_ref?.trim() || null,
-      pins: audioSpeakerPinsOrDefault(raw.speaker?.pins),
+      enabled: rawSpeaker?.enabled ?? base.speaker.enabled,
+      device_type: rawSpeaker?.device_type ?? base.speaker.device_type,
+      sample_rate: rawSpeaker?.sample_rate ?? base.speaker.sample_rate,
+      device_ref: rawSpeaker?.device_ref?.trim() || null,
+      pins: audioSpeakerPinsOrDefault(rawSpeaker?.pins),
     },
     vad: {
       ...base.vad,
@@ -393,11 +399,6 @@ export function normalizeAudioConfigFromDevice(raw: Partial<AudioConfig> | null 
 
 export function sampleRateSelectOptions(current: number): number[] {
   const presets: number[] = [...AUDIO_SAMPLE_RATE_PRESETS]
-  return presets.includes(current) ? presets : [...presets, current].sort((a, b) => a - b)
-}
-
-export function bufferSelectOptions(current: number): number[] {
-  const presets: number[] = [...AUDIO_BUFFER_PRESETS]
   return presets.includes(current) ? presets : [...presets, current].sort((a, b) => a - b)
 }
 
@@ -443,8 +444,6 @@ export function defaultAudioConfig(): AudioConfig {
       device_type: 'i2s_inmp441',
       pins: { ws: 25, sck: 26, din: 27 },
       sample_rate: 16_000,
-      bits_per_sample: 16,
-      buffer_size: 1024,
     },
     speaker: {
       enabled: false,
@@ -452,7 +451,6 @@ export function defaultAudioConfig(): AudioConfig {
       device_ref: null,
       pins: { ...DEFAULT_AUDIO_SPEAKER_PINS },
       sample_rate: 16_000,
-      bits_per_sample: 16,
     },
     vad: {
       threshold: 0.5,

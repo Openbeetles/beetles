@@ -55,16 +55,6 @@ mod imp {
                     ),
                 ));
             }
-            if config.speaker.bits_per_sample != 16 {
-                return Err(Error::config(
-                    STAGE,
-                    format!(
-                        "Linux USB speaker currently requires 16-bit PCM output (got {})",
-                        config.speaker.bits_per_sample
-                    ),
-                ));
-            }
-
             let resolved = resolve_usb_audio_output_device(config.speaker.device_ref.as_deref())?;
             let pcm_name = resolved
                 .playback_pcm

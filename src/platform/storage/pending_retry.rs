@@ -184,9 +184,9 @@ mod tests {
 
     fn cleanup_path(path: &Path) {
         if path.is_dir() {
-            std::fs::remove_dir_all(&path).expect("remove pending_retry test dir");
+            std::fs::remove_dir_all(path).expect("remove pending_retry test dir");
         } else {
-            let _ = std::fs::remove_file(&path);
+            let _ = std::fs::remove_file(path);
         }
     }
 
