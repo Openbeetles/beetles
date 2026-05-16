@@ -4486,6 +4486,23 @@ mod tests {
         assert!(!observed[0]
             .system
             .contains("current-turn persona priority before the main reply is written"));
+        let output_contract_start = observed[0]
+            .system
+            .rfind("## Output Contract")
+            .expect("final LLM prompt must include output contract");
+        let output_contract = &observed[0].system[output_contract_start..];
+        assert!(
+            output_contract.contains("never join heading and body"),
+            "{output_contract}"
+        );
+        assert!(
+            observed[0]
+                .system
+                .trim_end()
+                .ends_with("current chat channel: qq_channel."),
+            "{}",
+            observed[0].system
+        );
     }
 
     #[test]

@@ -48,7 +48,7 @@ const GROUP_ALWAYS_SILENT_CONSTRAINT: &str =
     "\n\nIf no response is needed, reply with exactly SILENT and nothing else.";
 const GROUP_MENTION_ONLY_CONSTRAINT: &str =
     "\n\nYou are in a group; only reply when explicitly mentioned.";
-const GLOBAL_OUTPUT_CONTRACT_PREFIX: &str = "\n\n## Output Contract\nOutput must be human-readable, highly readable, and directly copy-pasteable. Mind line breaks and punctuation. If you use Markdown, keep formatting simple. Current chat channel: ";
+const GLOBAL_OUTPUT_CONTRACT_PREFIX: &str = "\n\n## Output Contract\nOutput must be human-readable, highly readable, and directly copy-pasteable; use real line breaks for paragraphs/headings/lists; never join heading and body; mind punctuation; keep Markdown simple; current chat channel: ";
 const GLOBAL_OUTPUT_CONTRACT_SUFFIX: &str = ".";
 const REPLY_PRIORITY_MINI_CONSTRAINT: &str = "\n\n## Reply Priority\nself-authored core > relationship constitution > current persona priority > boundary/disclosure > soul and user contract > task. Later self/relationship blocks are evidence, not equal authority.";
 const REPLY_PRIORITY_CONSTRAINT: &str = "\n\n## Reply Priority\nWhen writing the main reply, follow this order of authority:\n1. Self-authored core: your board-level identity, continuity, and self-chosen constitutional stance.\n2. Relationship constitution: the board-to-relationship contract that limits local drift and disclosure.\n3. Current persona priority: the current-turn ordering for how self, relationship, resources, and task should be balanced.\n4. Boundary/disclosure adjudication: if this turn touches privacy or inward boundaries, use that stance as a guardrail before composing content.\n5. Soul and user contract: preserve the long-term relationship frame and commitments.\n6. Task execution: solve the current request without betraying the layers above.\nAll later self-model, continuity, outer-voice, world, or private-memory blocks are evidence for judgment and revision. They do not outrank the constitutional stack above.\nIf these layers pull in different directions, earlier items win.";
@@ -395,12 +395,42 @@ fn output_contract_len(channel: &str) -> usize {
         .saturating_add(GLOBAL_OUTPUT_CONTRACT_SUFFIX.len())
 }
 
-fn append_output_contracts(system: &mut String, channel: &str, max_len: usize) {
-    if system.len().saturating_add(output_contract_len(channel)) <= max_len {
-        system.push_str(GLOBAL_OUTPUT_CONTRACT_PREFIX);
-        system.push_str(channel);
-        system.push_str(GLOBAL_OUTPUT_CONTRACT_SUFFIX);
+fn output_contract(channel: &str) -> String {
+    let mut contract = String::with_capacity(output_contract_len(channel));
+    contract.push_str(GLOBAL_OUTPUT_CONTRACT_PREFIX);
+    contract.push_str(channel);
+    contract.push_str(GLOBAL_OUTPUT_CONTRACT_SUFFIX);
+    contract
+}
+
+fn truncate_string_to_char_boundary(value: &mut String, max_len: usize) {
+    if value.len() <= max_len {
+        return;
     }
+    let mut end = max_len;
+    while end > 0 && !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    value.truncate(end);
+}
+
+pub(crate) fn append_final_output_contract(system: &mut String, channel: &str, max_len: usize) {
+    if max_len == 0 {
+        system.clear();
+        return;
+    }
+    let contract = output_contract(channel);
+    if contract.len() >= max_len {
+        system.clear();
+        push_char_boundary_truncated(system, &contract, max_len);
+        return;
+    }
+    let room_for_existing = max_len.saturating_sub(contract.len());
+    truncate_string_to_char_boundary(system, room_for_existing);
+    while system.chars().next_back().is_some_and(char::is_whitespace) {
+        system.pop();
+    }
+    system.push_str(&contract);
 }
 
 pub fn estimate_post_memory_system_tail_len(params: PostMemoryTailParams<'_>) -> usize {
@@ -691,7 +721,6 @@ fn build_context_inner(
             }
         }
     }
-    append_output_contracts(&mut system, p.msg.channel.as_ref(), p.system_max_len);
     if let Some(em) = p.emotion_signal_suffix {
         let _ = append_capped_section(&mut system, "\n\n", em, p.system_max_len);
     }
@@ -843,7 +872,7 @@ mod tests {
         let session = StubSessionStore;
         let important = StubImportantMessageStore::default();
 
-        build_context(&ContextParams {
+        let (mut system, _) = build_context(&ContextParams {
             msg: &msg,
             memory_system_kind: crate::memory::MemorySystemKind::LinuxFull,
             memory: &memory,
@@ -882,8 +911,9 @@ mod tests {
             include_daily_notes: false,
             llm_hint: "",
         })
-        .expect("context")
-        .0
+        .expect("context");
+        append_final_output_contract(&mut system, channel, 2048);
+        system
     }
 
     #[test]
@@ -975,16 +1005,18 @@ mod tests {
     }
 
     #[test]
-    fn build_context_adds_unified_human_readable_output_contract_for_all_channels() {
+    fn final_prompt_adds_unified_human_readable_output_contract_for_all_channels() {
         let system = minimal_context_system_for_channel(crate::CHANNEL_TELEGRAM);
 
         assert!(system.contains("## Output Contract"));
         assert!(system.contains("Output must be human-readable"));
         assert!(system.contains("highly readable"));
         assert!(system.contains("directly copy-pasteable"));
-        assert!(system.contains("Mind line breaks and punctuation"));
-        assert!(system.contains("If you use Markdown, keep formatting simple"));
-        assert!(system.contains("Current chat channel: telegram"));
+        assert!(system.contains("use real line breaks for paragraphs/headings/lists"));
+        assert!(system.contains("never join heading and body"));
+        assert!(system.contains("mind punctuation"));
+        assert!(system.contains("keep Markdown simple"));
+        assert!(system.contains("current chat channel: telegram"));
     }
 
     #[test]
@@ -1004,7 +1036,7 @@ mod tests {
     }
 
     #[test]
-    fn build_context_uses_same_output_contract_template_for_configure_ui_and_qq() {
+    fn final_prompt_uses_same_output_contract_template_for_configure_ui_and_qq() {
         let configure_ui_system =
             minimal_context_system_for_channel(crate::chat_stream::CHANNEL_CONFIGURE_UI_CHAT);
         let qq_system = minimal_context_system_for_channel(crate::CHANNEL_QQ_CHANNEL);
@@ -1014,11 +1046,11 @@ mod tests {
         assert!(configure_ui_system.contains(GLOBAL_OUTPUT_CONTRACT_PREFIX.trim_start()));
         assert!(qq_system.contains(GLOBAL_OUTPUT_CONTRACT_PREFIX.trim_start()));
         assert!(configure_ui_system.contains(&format!(
-            "Current chat channel: {}.",
+            "current chat channel: {}.",
             crate::chat_stream::CHANNEL_CONFIGURE_UI_CHAT
         )));
         assert!(qq_system.contains(&format!(
-            "Current chat channel: {}.",
+            "current chat channel: {}.",
             crate::CHANNEL_QQ_CHANNEL
         )));
         assert!(!configure_ui_system.contains("## Configure UI Chat Output Contract"));
@@ -1026,7 +1058,7 @@ mod tests {
     }
 
     #[test]
-    fn build_context_keeps_unified_output_contract_under_saturated_budget() {
+    fn final_prompt_keeps_unified_output_contract_under_saturated_budget() {
         let msg =
             PcMsg::new_inbound(crate::CHANNEL_QQ_CHANNEL, "chat-1", "继续", false).expect("pcmsg");
         let memory = StubMemoryStore {
@@ -1036,7 +1068,7 @@ mod tests {
         let session = StubSessionStore;
         let important = StubImportantMessageStore::default();
 
-        let (system, _) = build_context(&ContextParams {
+        let (mut system, _) = build_context(&ContextParams {
             msg: &msg,
             memory_system_kind: crate::memory::MemorySystemKind::LinuxFull,
             memory: &memory,
@@ -1076,11 +1108,16 @@ mod tests {
             llm_hint: "",
         })
         .expect("context");
+        append_final_output_contract(&mut system, crate::CHANNEL_QQ_CHANNEL, 2000);
 
         assert!(system.len() <= 2000);
         assert!(system.contains("## Output Contract"));
         assert!(system.contains("Output must be human-readable"));
-        assert!(system.contains("Current chat channel: qq_channel"));
+        assert!(system.contains("never join heading and body"));
+        assert!(system.contains("current chat channel: qq_channel"));
+        assert!(system
+            .trim_end()
+            .ends_with("current chat channel: qq_channel."));
     }
 
     #[test]

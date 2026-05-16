@@ -495,9 +495,12 @@ pub(super) fn execute_turn_boxed(
     .with_programmable_reasoning_intent(programmable_reasoning_intent.as_ref())
     .with_counterfactual_analysis(counterfactual_analysis.as_ref())
     .with_adversarial_arena_adjudication(adversarial_arena_adjudication.as_ref());
-    request_plan.apply_system_prompt(
+    let system_prompt_max = crate::orchestrator::current_budget().system_prompt_max;
+    request_plan.apply_system_prompt(&mut system, system_prompt_max);
+    crate::agent::context::append_final_output_contract(
         &mut system,
-        crate::orchestrator::current_budget().system_prompt_max,
+        msg.channel.as_ref(),
+        system_prompt_max,
     );
     maybe_emit_regular_foreground_action_progress(
         &mut delivery,
