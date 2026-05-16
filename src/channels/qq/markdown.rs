@@ -300,7 +300,7 @@ mod tests {
     }
 
     #[test]
-    fn plain_text_projection_uses_qq_table_projection() {
+    fn explicit_markdown_projection_uses_qq_table_projection() {
         let rendered = render_qq_plain_text(
             "验收测试 D4：提醒已设置 ✅ | 项目 | 值 |---|---| 提醒 ID | rem_1",
         );

@@ -269,7 +269,7 @@ fn reserve_fresh_send_reservation(
 fn qq_payload_chunk_count_for_message(message: &QueuedOutboundMessage) -> usize {
     match &message.body {
         CanonicalMessageBody::Text(body) if body.format == TextFormat::Plain => {
-            qq_plain_text_chunk_count(&render_qq_plain_text(&message.content))
+            qq_plain_text_chunk_count(&body.text)
         }
         CanonicalMessageBody::Text(body) if body.format == TextFormat::Markdown => {
             qq_plain_text_chunk_count(&render_qq_plain_text(&body.text))
@@ -626,12 +626,9 @@ fn render_qq_send_payloads<H: ChannelHttpClient>(
                 msg_seq,
             )
         }
-        CanonicalMessageBody::Text(_) => render_qq_plain_text_payloads(
-            &message.chat_id,
-            &render_qq_plain_text(&message.content),
-            msg_id,
-            msg_seq,
-        ),
+        CanonicalMessageBody::Text(body) => {
+            render_qq_plain_text_payloads(&message.chat_id, &body.text, msg_id, msg_seq)
+        }
         CanonicalMessageBody::Card(body) => match body.format {
             CardFormat::Ark => Ok(vec![ByteBuffer::from_vec(build_qq_card_body(
                 3,
@@ -1662,7 +1659,7 @@ mod tests {
     }
 
     #[test]
-    fn send_one_qq_converts_plain_pipe_table_projection_before_send() {
+    fn send_one_qq_preserves_plain_text_body_before_send() {
         let mut http = StubHttp::default();
         let source = "状态报告 | 项目 | 值 |---|---| CPU | 正常 | 内存 | 256KB";
         let message = queued_message_with_body(
@@ -1697,11 +1694,7 @@ mod tests {
             .get("content")
             .and_then(|content| content.as_str())
             .expect("content");
-        assert!(content.contains("状态报告"));
-        assert!(content.contains("• CPU: 正常"));
-        assert!(content.contains("• 内存: 256KB"));
-        assert!(!content.contains("|---|"));
-        assert!(!content.contains("| 项目 | 值 |"));
+        assert_eq!(content, source);
     }
 
     #[test]
