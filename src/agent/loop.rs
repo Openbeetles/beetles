@@ -4492,7 +4492,7 @@ mod tests {
             .expect("final LLM prompt must include output contract");
         let output_contract = &observed[0].system[output_contract_start..];
         assert!(
-            output_contract.contains("never join heading and body"),
+            output_contract.contains("never join a heading and its body on the same line"),
             "{output_contract}"
         );
         assert!(
