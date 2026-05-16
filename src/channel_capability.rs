@@ -1,32 +1,32 @@
 //! Channel capability contract and runtime snapshot.
 //! 通道能力合同与运行态快照。
 
-use crate::bus::{MessageBodyKind, TextFormat, MAX_CONTENT_LEN};
+use crate::bus::{MessageBodyKind, TextFormat};
 use crate::channel_catalog;
 use crate::config::AppConfig;
 use serde::Serialize;
 use std::collections::HashMap;
 
 #[cfg(feature = "telegram")]
-const TELEGRAM_MAX_TEXT_BYTES: usize = 4096;
+const TELEGRAM_MAX_TEXT_CHARS: Option<usize> = Some(4096);
 #[cfg(feature = "telegram")]
-const TELEGRAM_MAX_CAPTION_BYTES: usize = 1024;
+const TELEGRAM_MAX_CAPTION_CHARS: Option<usize> = Some(1024);
 #[cfg(feature = "feishu")]
-const FEISHU_MAX_TEXT_BYTES: usize = 4096;
+const FEISHU_MAX_TEXT_CHARS: Option<usize> = Some(4096);
 #[cfg(feature = "feishu")]
-const FEISHU_MAX_CAPTION_BYTES: usize = 0;
+const FEISHU_MAX_CAPTION_CHARS: Option<usize> = None;
 #[cfg(feature = "dingtalk")]
-const DINGTALK_MAX_TEXT_BYTES: usize = 4096;
+const DINGTALK_MAX_TEXT_CHARS: Option<usize> = Some(4096);
 #[cfg(feature = "dingtalk")]
-const DINGTALK_MAX_CAPTION_BYTES: usize = 0;
+const DINGTALK_MAX_CAPTION_CHARS: Option<usize> = None;
 #[cfg(feature = "wecom")]
-const WECOM_MAX_TEXT_BYTES: usize = 2048;
+const WECOM_MAX_TEXT_CHARS: Option<usize> = Some(2048);
 #[cfg(feature = "wecom")]
-const WECOM_MAX_CAPTION_BYTES: usize = 0;
+const WECOM_MAX_CAPTION_CHARS: Option<usize> = None;
 #[cfg(feature = "qq_channel")]
-const QQ_CHANNEL_MAX_TEXT_BYTES: usize = 4096;
+const QQ_CHANNEL_MAX_TEXT_CHARS: Option<usize> = Some(4096);
 #[cfg(feature = "qq_channel")]
-const QQ_CHANNEL_MAX_CAPTION_BYTES: usize = 0;
+const QQ_CHANNEL_MAX_CAPTION_CHARS: Option<usize> = None;
 
 const BODY_KINDS_TEXT_ONLY: &[MessageBodyKind] = &[MessageBodyKind::Text];
 #[cfg(feature = "telegram")]
@@ -125,8 +125,8 @@ pub struct ChannelCapabilityContract {
     pub supports_platform_handle_reuse: bool,
     pub supports_http_url_media: bool,
     pub requires_passive_reply_anchor: bool,
-    pub max_text_bytes: usize,
-    pub max_caption_bytes: usize,
+    pub max_text_chars: Option<usize>,
+    pub max_caption_chars: Option<usize>,
     pub delivery_ordering_model: ChannelDeliveryOrderingModel,
 }
 
@@ -180,8 +180,8 @@ pub struct ChannelCapabilitySnapshot {
     pub supports_platform_handle_reuse: bool,
     pub supports_http_url_media: bool,
     pub requires_passive_reply_anchor: bool,
-    pub max_text_bytes: usize,
-    pub max_caption_bytes: usize,
+    pub max_text_chars: Option<usize>,
+    pub max_caption_chars: Option<usize>,
     pub delivery_ordering_model: ChannelDeliveryOrderingModel,
     pub stream_edit_active: bool,
     pub typing_active: bool,
@@ -252,8 +252,8 @@ pub fn build_channel_capability_snapshots_for_registry(
                 supports_platform_handle_reuse: entry.contract.supports_platform_handle_reuse,
                 supports_http_url_media: entry.contract.supports_http_url_media,
                 requires_passive_reply_anchor: entry.contract.requires_passive_reply_anchor,
-                max_text_bytes: entry.contract.max_text_bytes,
-                max_caption_bytes: entry.contract.max_caption_bytes,
+                max_text_chars: entry.contract.max_text_chars,
+                max_caption_chars: entry.contract.max_caption_chars,
                 delivery_ordering_model: entry.contract.delivery_ordering_model,
                 stream_edit_active,
                 typing_active,
@@ -281,8 +281,8 @@ fn static_channel_capability_contract(channel: &str) -> Option<ChannelCapability
             supports_platform_handle_reuse: true,
             supports_http_url_media: true,
             requires_passive_reply_anchor: false,
-            max_text_bytes: TELEGRAM_MAX_TEXT_BYTES,
-            max_caption_bytes: TELEGRAM_MAX_CAPTION_BYTES,
+            max_text_chars: TELEGRAM_MAX_TEXT_CHARS,
+            max_caption_chars: TELEGRAM_MAX_CAPTION_CHARS,
             delivery_ordering_model: ChannelDeliveryOrderingModel::AppendOnly,
         }),
         #[cfg(feature = "feishu")]
@@ -301,8 +301,8 @@ fn static_channel_capability_contract(channel: &str) -> Option<ChannelCapability
             supports_platform_handle_reuse: true,
             supports_http_url_media: false,
             requires_passive_reply_anchor: false,
-            max_text_bytes: FEISHU_MAX_TEXT_BYTES,
-            max_caption_bytes: FEISHU_MAX_CAPTION_BYTES,
+            max_text_chars: FEISHU_MAX_TEXT_CHARS,
+            max_caption_chars: FEISHU_MAX_CAPTION_CHARS,
             delivery_ordering_model: ChannelDeliveryOrderingModel::EditableSingleMessage,
         }),
         #[cfg(feature = "dingtalk")]
@@ -321,8 +321,8 @@ fn static_channel_capability_contract(channel: &str) -> Option<ChannelCapability
             supports_platform_handle_reuse: true,
             supports_http_url_media: false,
             requires_passive_reply_anchor: false,
-            max_text_bytes: DINGTALK_MAX_TEXT_BYTES,
-            max_caption_bytes: DINGTALK_MAX_CAPTION_BYTES,
+            max_text_chars: DINGTALK_MAX_TEXT_CHARS,
+            max_caption_chars: DINGTALK_MAX_CAPTION_CHARS,
             delivery_ordering_model: ChannelDeliveryOrderingModel::StatelessWebhook,
         }),
         #[cfg(feature = "wecom")]
@@ -341,8 +341,8 @@ fn static_channel_capability_contract(channel: &str) -> Option<ChannelCapability
             supports_platform_handle_reuse: true,
             supports_http_url_media: false,
             requires_passive_reply_anchor: false,
-            max_text_bytes: WECOM_MAX_TEXT_BYTES,
-            max_caption_bytes: WECOM_MAX_CAPTION_BYTES,
+            max_text_chars: WECOM_MAX_TEXT_CHARS,
+            max_caption_chars: WECOM_MAX_CAPTION_CHARS,
             delivery_ordering_model: ChannelDeliveryOrderingModel::AppendOnly,
         }),
         #[cfg(feature = "qq_channel")]
@@ -361,8 +361,8 @@ fn static_channel_capability_contract(channel: &str) -> Option<ChannelCapability
             supports_platform_handle_reuse: true,
             supports_http_url_media: false,
             requires_passive_reply_anchor: true,
-            max_text_bytes: QQ_CHANNEL_MAX_TEXT_BYTES,
-            max_caption_bytes: QQ_CHANNEL_MAX_CAPTION_BYTES,
+            max_text_chars: QQ_CHANNEL_MAX_TEXT_CHARS,
+            max_caption_chars: QQ_CHANNEL_MAX_CAPTION_CHARS,
             delivery_ordering_model: ChannelDeliveryOrderingModel::AppendOnly,
         }),
         #[cfg(feature = "websocket")]
@@ -381,8 +381,8 @@ fn static_channel_capability_contract(channel: &str) -> Option<ChannelCapability
             supports_platform_handle_reuse: false,
             supports_http_url_media: false,
             requires_passive_reply_anchor: false,
-            max_text_bytes: MAX_CONTENT_LEN,
-            max_caption_bytes: 0,
+            max_text_chars: None,
+            max_caption_chars: None,
             delivery_ordering_model: ChannelDeliveryOrderingModel::SessionSocket,
         }),
         CHANNEL_VOICE => Some(ChannelCapabilityContract {
@@ -400,8 +400,8 @@ fn static_channel_capability_contract(channel: &str) -> Option<ChannelCapability
             supports_platform_handle_reuse: false,
             supports_http_url_media: false,
             requires_passive_reply_anchor: false,
-            max_text_bytes: MAX_CONTENT_LEN,
-            max_caption_bytes: 0,
+            max_text_chars: None,
+            max_caption_chars: None,
             delivery_ordering_model: ChannelDeliveryOrderingModel::AudioPlayback,
         }),
         _ => None,
@@ -555,6 +555,23 @@ mod tests {
         assert_eq!(feishu.supported_body_kinds, BODY_KINDS_FEISHU);
         assert_eq!(feishu.supported_text_formats, TEXT_FORMATS_FEISHU);
         assert!(feishu.degraded_reasons.is_empty());
+    }
+
+    #[test]
+    fn snapshots_expose_text_limits_as_character_counts_not_bytes() {
+        let snapshots = build_channel_capability_snapshots(&AppConfig::load_from_env(), true);
+        let voice = snapshots
+            .into_iter()
+            .find(|snapshot| snapshot.id == CHANNEL_VOICE)
+            .expect("voice snapshot");
+        let json = serde_json::to_value(&voice).expect("snapshot json");
+
+        assert!(json.get("max_text_chars").is_some(), "{json}");
+        assert!(json.get("max_caption_chars").is_some(), "{json}");
+        assert!(json["max_text_chars"].is_null(), "{json}");
+        assert!(json["max_caption_chars"].is_null(), "{json}");
+        assert!(json.get("max_text_bytes").is_none(), "{json}");
+        assert!(json.get("max_caption_bytes").is_none(), "{json}");
     }
 
     #[cfg(not(feature = "feishu"))]

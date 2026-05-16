@@ -773,8 +773,8 @@ mod tests {
                 supports_platform_handle_reuse: false,
                 supports_http_url_media: false,
                 requires_passive_reply_anchor: false,
-                max_text_bytes: 4096,
-                max_caption_bytes: 0,
+                max_text_chars: Some(4096),
+                max_caption_chars: None,
                 delivery_ordering_model: ChannelDeliveryOrderingModel::AppendOnly,
             },
         }
