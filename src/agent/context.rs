@@ -48,7 +48,7 @@ const GROUP_ALWAYS_SILENT_CONSTRAINT: &str =
     "\n\nIf no response is needed, reply with exactly SILENT and nothing else.";
 const GROUP_MENTION_ONLY_CONSTRAINT: &str =
     "\n\nYou are in a group; only reply when explicitly mentioned.";
-const GLOBAL_OUTPUT_CONTRACT_PREFIX: &str = "\n\n## Output Contract\nOutput must be well-structured, orderly, logically clear, highly readable in the current interaction language, and directly copy-pasteable to any other content platform. Use real line breaks for paragraphs, headings, and lists; never join a heading and its body on the same line; mind punctuation; if you use Markdown, prefer simple Markdown syntax/markers; current chat channel: ";
+const GLOBAL_OUTPUT_CONTRACT_PREFIX: &str = "\n\n## Output Contract\nOutput must be well-structured, organized, logically clear, highly readable in the language of the current interaction, and ready to be copied and pasted to any other content platform. Use real line breaks for paragraphs, headings, and lists; never put a heading and its body on the same line; use proper punctuation; if you use Markdown, prefer simple Markdown syntax; current chat channel: ";
 const GLOBAL_OUTPUT_CONTRACT_SUFFIX: &str = ".";
 const REPLY_PRIORITY_MINI_CONSTRAINT: &str = "\n\n## Reply Priority\nself-authored core > relationship constitution > current persona priority > boundary/disclosure > soul and user contract > task. Later self/relationship blocks are evidence, not equal authority.";
 const REPLY_PRIORITY_CONSTRAINT: &str = "\n\n## Reply Priority\nWhen writing the main reply, follow this order of authority:\n1. Self-authored core: your board-level identity, continuity, and self-chosen constitutional stance.\n2. Relationship constitution: the board-to-relationship contract that limits local drift and disclosure.\n3. Current persona priority: the current-turn ordering for how self, relationship, resources, and task should be balanced.\n4. Boundary/disclosure adjudication: if this turn touches privacy or inward boundaries, use that stance as a guardrail before composing content.\n5. Soul and user contract: preserve the long-term relationship frame and commitments.\n6. Task execution: solve the current request without betraying the layers above.\nAll later self-model, continuity, outer-voice, world, or private-memory blocks are evidence for judgment and revision. They do not outrank the constitutional stack above.\nIf these layers pull in different directions, earlier items win.";
@@ -1005,19 +1005,19 @@ mod tests {
     }
 
     #[test]
-    fn final_prompt_adds_unified_human_readable_output_contract_for_all_channels() {
+    fn final_prompt_adds_unified_readable_output_contract_for_all_channels() {
         let system = minimal_context_system_for_channel(crate::CHANNEL_TELEGRAM);
 
         assert!(system.contains("## Output Contract"));
         assert!(system.contains("Output must be well-structured"));
-        assert!(system.contains("orderly"));
+        assert!(system.contains("organized"));
         assert!(system.contains("logically clear"));
-        assert!(system.contains("highly readable in the current interaction language"));
-        assert!(system.contains("directly copy-pasteable to any other content platform"));
+        assert!(system.contains("highly readable in the language of the current interaction"));
+        assert!(system.contains("ready to be copied and pasted to any other content platform"));
         assert!(system.contains("Use real line breaks for paragraphs, headings, and lists"));
-        assert!(system.contains("never join a heading and its body on the same line"));
-        assert!(system.contains("mind punctuation"));
-        assert!(system.contains("prefer simple Markdown syntax/markers"));
+        assert!(system.contains("never put a heading and its body on the same line"));
+        assert!(system.contains("use proper punctuation"));
+        assert!(system.contains("prefer simple Markdown syntax"));
         assert!(system.contains("current chat channel: telegram"));
     }
 
@@ -1115,7 +1115,7 @@ mod tests {
         assert!(system.len() <= 2000);
         assert!(system.contains("## Output Contract"));
         assert!(system.contains("Output must be well-structured"));
-        assert!(system.contains("never join a heading and its body on the same line"));
+        assert!(system.contains("never put a heading and its body on the same line"));
         assert!(system.contains("current chat channel: qq_channel"));
         assert!(system
             .trim_end()
