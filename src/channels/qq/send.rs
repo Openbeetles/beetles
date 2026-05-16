@@ -1698,6 +1698,45 @@ mod tests {
     }
 
     #[test]
+    fn send_one_qq_preserves_plain_text_line_feeds_before_send() {
+        let mut http = StubHttp::default();
+        let source = "Title\n- Name: value\n- Name: second value";
+        let message = queued_message_with_body(
+            1,
+            "c2c:chat-1",
+            source,
+            crate::bus::CanonicalMessageBody::Text(crate::bus::TextBody {
+                text: source.to_string(),
+                format: crate::bus::TextFormat::Plain,
+            }),
+            Some("req-1"),
+            OutboundKind::Primary,
+        );
+
+        send_one_qq(
+            &mut http,
+            "qq-token",
+            &message,
+            Some("msg-1"),
+            Some(QqMsgSeqReservation {
+                start: 1,
+                chunk_count: 1,
+            }),
+        )
+        .expect("plain send");
+
+        let guard = http.state.lock().unwrap_or_else(|e| e.into_inner());
+        let payload: serde_json::Value =
+            serde_json::from_slice(&guard.sent_bodies[0]).expect("payload json");
+        assert_eq!(payload.get("msg_type"), Some(&serde_json::json!(0)));
+        let content = payload
+            .get("content")
+            .and_then(|content| content.as_str())
+            .expect("content");
+        assert_eq!(content, source);
+    }
+
+    #[test]
     fn send_one_qq_converts_code_fence_before_send() {
         let mut http = StubHttp::default();
         let source = "```rust\nlet x = 1;\n```";

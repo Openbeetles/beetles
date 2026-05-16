@@ -48,9 +48,8 @@ const GROUP_ALWAYS_SILENT_CONSTRAINT: &str =
     "\n\nIf no response is needed, reply with exactly SILENT and nothing else.";
 const GROUP_MENTION_ONLY_CONSTRAINT: &str =
     "\n\nYou are in a group; only reply when explicitly mentioned.";
-const GLOBAL_OUTPUT_CONTRACT: &str = "\n\n## Output Contract\nActive channel docs. Real LF only; never literal `\\n`. Status/diagnostics/key-values: title + one `- name: value` per line. No Markdown tables, pipe rows, inline `|`, HTML, or pseudo-tables.";
-const CONFIGURE_UI_OUTPUT_CONTRACT: &str = "\n\n## Configure UI Chat Output Contract\nConfigure UI renders safe GFM Markdown, but status/key-values still use headings + bullets, not tables. No raw HTML, pipe rows, or one-line list chains.";
-const QQ_OUTPUT_CONTRACT: &str = "\n\n## QQ Output Contract\nQQ is delivered as-is; sender will not repair layout. No Markdown tables, pipe rows, HTML, code fences, literal `\\n`, inline `|`, or label chains. Use title + `- name: value`.";
+const GLOBAL_OUTPUT_CONTRACT_PREFIX: &str = "\n\n## Output Contract\nOutput must be human-readable, highly readable, and directly copy-pasteable. Mind line breaks and punctuation. If you use Markdown, keep formatting simple. Current chat channel: ";
+const GLOBAL_OUTPUT_CONTRACT_SUFFIX: &str = ".";
 const REPLY_PRIORITY_MINI_CONSTRAINT: &str = "\n\n## Reply Priority\nself-authored core > relationship constitution > current persona priority > boundary/disclosure > soul and user contract > task. Later self/relationship blocks are evidence, not equal authority.";
 const REPLY_PRIORITY_CONSTRAINT: &str = "\n\n## Reply Priority\nWhen writing the main reply, follow this order of authority:\n1. Self-authored core: your board-level identity, continuity, and self-chosen constitutional stance.\n2. Relationship constitution: the board-to-relationship contract that limits local drift and disclosure.\n3. Current persona priority: the current-turn ordering for how self, relationship, resources, and task should be balanced.\n4. Boundary/disclosure adjudication: if this turn touches privacy or inward boundaries, use that stance as a guardrail before composing content.\n5. Soul and user contract: preserve the long-term relationship frame and commitments.\n6. Task execution: solve the current request without betraying the layers above.\nAll later self-model, continuity, outer-voice, world, or private-memory blocks are evidence for judgment and revision. They do not outrank the constitutional stack above.\nIf these layers pull in different directions, earlier items win.";
 const REPLY_LAW_MINI_CONSTRAINT: &str = "\n\n## Reply Law\nbounded subject-state or constitutional evidence before mechanism disclaimers; facts direct; private guarded; no hidden system claims.";
@@ -389,22 +388,18 @@ fn estimate_runtime_context_len(runtime: Option<RuntimeContext>) -> usize {
     out.len()
 }
 
+fn output_contract_len(channel: &str) -> usize {
+    GLOBAL_OUTPUT_CONTRACT_PREFIX
+        .len()
+        .saturating_add(channel.len())
+        .saturating_add(GLOBAL_OUTPUT_CONTRACT_SUFFIX.len())
+}
+
 fn append_output_contracts(system: &mut String, channel: &str, max_len: usize) {
-    if system.len().saturating_add(GLOBAL_OUTPUT_CONTRACT.len()) <= max_len {
-        system.push_str(GLOBAL_OUTPUT_CONTRACT);
-    }
-    if channel == crate::chat_stream::CHANNEL_CONFIGURE_UI_CHAT
-        && system
-            .len()
-            .saturating_add(CONFIGURE_UI_OUTPUT_CONTRACT.len())
-            <= max_len
-    {
-        system.push_str(CONFIGURE_UI_OUTPUT_CONTRACT);
-    }
-    if channel == crate::CHANNEL_QQ_CHANNEL
-        && system.len().saturating_add(QQ_OUTPUT_CONTRACT.len()) <= max_len
-    {
-        system.push_str(QQ_OUTPUT_CONTRACT);
+    if system.len().saturating_add(output_contract_len(channel)) <= max_len {
+        system.push_str(GLOBAL_OUTPUT_CONTRACT_PREFIX);
+        system.push_str(channel);
+        system.push_str(GLOBAL_OUTPUT_CONTRACT_SUFFIX);
     }
 }
 
@@ -418,13 +413,7 @@ pub fn estimate_post_memory_system_tail_len(params: PostMemoryTailParams<'_>) ->
     if params.has_tools {
         reserve = reserve.saturating_add(TOOL_BEHAVIOR_CONSTRAINT.len());
     }
-    reserve = reserve.saturating_add(GLOBAL_OUTPUT_CONTRACT.len());
-    if params.channel == crate::chat_stream::CHANNEL_CONFIGURE_UI_CHAT {
-        reserve = reserve.saturating_add(CONFIGURE_UI_OUTPUT_CONTRACT.len());
-    }
-    if params.channel == crate::CHANNEL_QQ_CHANNEL {
-        reserve = reserve.saturating_add(QQ_OUTPUT_CONTRACT.len());
-    }
+    reserve = reserve.saturating_add(output_contract_len(params.channel));
     reserve = reserve.saturating_add(estimate_runtime_context_len(params.runtime));
     if params.is_group {
         reserve = reserve.saturating_add(match params.group_activation {
@@ -926,7 +915,7 @@ mod tests {
     #[test]
     fn post_memory_tail_reserve_covers_dynamic_sections() {
         let reserve = estimate_post_memory_system_tail_len(PostMemoryTailParams {
-            channel: crate::CHANNEL_QQ_CHANNEL,
+            channel: crate::CHANNEL_TELEGRAM,
             has_tools: true,
             skill_descriptions_len: "shell\nweb_search".len(),
             is_group: true,
@@ -937,8 +926,7 @@ mod tests {
         });
         assert!(reserve >= TOOL_BEHAVIOR_CONSTRAINT.len());
         assert!(reserve >= GROUP_MENTION_ONLY_CONSTRAINT.len());
-        assert!(reserve >= GLOBAL_OUTPUT_CONTRACT.len());
-        assert!(reserve >= QQ_OUTPUT_CONTRACT.len());
+        assert!(reserve >= output_contract_len(crate::CHANNEL_TELEGRAM));
     }
 
     #[test]
@@ -954,11 +942,11 @@ mod tests {
             llm_hint: "",
         });
 
-        assert!(reserve >= GLOBAL_OUTPUT_CONTRACT.len());
+        assert!(reserve >= output_contract_len(crate::CHANNEL_TELEGRAM));
     }
 
     #[test]
-    fn post_memory_tail_reserve_charges_qq_output_contract_only_for_qq() {
+    fn post_memory_tail_reserve_uses_the_same_output_contract_for_all_channels() {
         let qq_reserve = estimate_post_memory_system_tail_len(PostMemoryTailParams {
             channel: crate::CHANNEL_QQ_CHANNEL,
             has_tools: false,
@@ -981,57 +969,64 @@ mod tests {
         });
 
         assert_eq!(
-            qq_reserve,
-            telegram_reserve.saturating_add(QQ_OUTPUT_CONTRACT.len())
+            qq_reserve.saturating_sub(crate::CHANNEL_QQ_CHANNEL.len()),
+            telegram_reserve.saturating_sub(crate::CHANNEL_TELEGRAM.len())
         );
     }
 
     #[test]
-    fn build_context_adds_global_output_contract_for_all_channels() {
+    fn build_context_adds_unified_human_readable_output_contract_for_all_channels() {
         let system = minimal_context_system_for_channel(crate::CHANNEL_TELEGRAM);
 
         assert!(system.contains("## Output Contract"));
-        assert!(system.contains("Active channel docs"));
-        assert!(system.contains("Real LF"));
-        assert!(system.contains("literal `\\n`"));
-        assert!(system.contains("one `- name: value` per line"));
-        assert!(system.contains("No Markdown tables"));
-        assert!(system.contains("pipe rows"));
-        assert!(system.contains("pseudo-tables"));
+        assert!(system.contains("Output must be human-readable"));
+        assert!(system.contains("highly readable"));
+        assert!(system.contains("directly copy-pasteable"));
+        assert!(system.contains("Mind line breaks and punctuation"));
+        assert!(system.contains("If you use Markdown, keep formatting simple"));
+        assert!(system.contains("Current chat channel: telegram"));
     }
 
     #[test]
-    fn build_context_adds_configure_ui_markdown_output_contract_for_chat_turns() {
-        let system =
+    fn global_output_contract_stays_english_only() {
+        let contract = format!(
+            "{}{}{}",
+            GLOBAL_OUTPUT_CONTRACT_PREFIX,
+            crate::CHANNEL_TELEGRAM,
+            GLOBAL_OUTPUT_CONTRACT_SUFFIX
+        );
+        assert!(
+            !contract
+                .chars()
+                .any(|ch| matches!(ch, '\u{4e00}'..='\u{9fff}')),
+            "global output contract must not contain Chinese text"
+        );
+    }
+
+    #[test]
+    fn build_context_uses_same_output_contract_template_for_configure_ui_and_qq() {
+        let configure_ui_system =
             minimal_context_system_for_channel(crate::chat_stream::CHANNEL_CONFIGURE_UI_CHAT);
+        let qq_system = minimal_context_system_for_channel(crate::CHANNEL_QQ_CHANNEL);
 
-        assert!(system.contains("## Output Contract"));
-        assert!(system.contains("## Configure UI Chat Output Contract"));
-        assert!(system.contains("safe GFM Markdown"));
-        assert!(system.contains("status/key-values"));
-        assert!(system.contains("headings + bullets, not tables"));
-        assert!(system.contains("pipe rows"));
-        assert!(system.contains("one-line list chains"));
-        assert!(system.contains("No raw HTML"));
+        assert!(configure_ui_system.contains("## Output Contract"));
+        assert!(qq_system.contains("## Output Contract"));
+        assert!(configure_ui_system.contains(GLOBAL_OUTPUT_CONTRACT_PREFIX.trim_start()));
+        assert!(qq_system.contains(GLOBAL_OUTPUT_CONTRACT_PREFIX.trim_start()));
+        assert!(configure_ui_system.contains(&format!(
+            "Current chat channel: {}.",
+            crate::chat_stream::CHANNEL_CONFIGURE_UI_CHAT
+        )));
+        assert!(qq_system.contains(&format!(
+            "Current chat channel: {}.",
+            crate::CHANNEL_QQ_CHANNEL
+        )));
+        assert!(!configure_ui_system.contains("## Configure UI Chat Output Contract"));
+        assert!(!qq_system.contains("## QQ Output Contract"));
     }
 
     #[test]
-    fn build_context_adds_qq_output_contract_for_qq_turns() {
-        let system = minimal_context_system_for_channel(crate::CHANNEL_QQ_CHANNEL);
-        assert!(system.contains("## Output Contract"));
-        assert!(system.contains("## QQ Output Contract"));
-        assert!(system.contains("delivered as-is"));
-        assert!(system.contains("sender will not repair layout"));
-        assert!(system.contains("No Markdown tables"));
-        assert!(system.contains("pipe rows"));
-        assert!(system.contains("code fences"));
-        assert!(system.contains("- name: value"));
-        assert!(system.contains("Use title"));
-        assert!(system.contains("inline `|`"));
-    }
-
-    #[test]
-    fn build_context_keeps_qq_output_contract_under_saturated_budget() {
+    fn build_context_keeps_unified_output_contract_under_saturated_budget() {
         let msg =
             PcMsg::new_inbound(crate::CHANNEL_QQ_CHANNEL, "chat-1", "继续", false).expect("pcmsg");
         let memory = StubMemoryStore {
@@ -1084,16 +1079,22 @@ mod tests {
 
         assert!(system.len() <= 2000);
         assert!(system.contains("## Output Contract"));
-        assert!(system.contains("## QQ Output Contract"));
-        assert!(system.contains("No Markdown tables"));
+        assert!(system.contains("Output must be human-readable"));
+        assert!(system.contains("Current chat channel: qq_channel"));
     }
 
     #[test]
-    fn build_context_does_not_add_qq_output_contract_for_other_channels() {
-        let system = minimal_context_system_for_channel(crate::CHANNEL_TELEGRAM);
-
-        assert!(!system.contains("## QQ Output Contract"));
-        assert!(!system.contains("sender will not repair layout"));
+    fn build_context_does_not_add_channel_specific_output_contracts() {
+        for channel in [
+            crate::CHANNEL_TELEGRAM,
+            crate::CHANNEL_QQ_CHANNEL,
+            crate::chat_stream::CHANNEL_CONFIGURE_UI_CHAT,
+        ] {
+            let system = minimal_context_system_for_channel(channel);
+            assert!(!system.contains("## QQ Output Contract"));
+            assert!(!system.contains("## Configure UI Chat Output Contract"));
+            assert!(!system.contains("sender will not repair layout"));
+        }
     }
 
     #[test]

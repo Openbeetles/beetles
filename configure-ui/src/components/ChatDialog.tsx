@@ -11,6 +11,7 @@ import Typography from "@mui/material/Typography";
 import SendRoundedIcon from "@mui/icons-material/SendRounded";
 import { useTranslation } from "react-i18next";
 import { translateChatApiError } from "./chatErrors";
+import { shouldCloseChatDialog } from "./ChatDialogModel";
 import { ChatMarkdownMessage } from "./ChatMarkdownMessage";
 import {
   appendMarkdownStreamDelta,
@@ -198,6 +199,7 @@ export function ChatDialog({ open, onClose, onMinimize }: ChatDialogProps) {
   const listRequestSeq = useRef(0);
   const detailRequestSeq = useRef(0);
   const streamAbortRef = useRef<AbortController | null>(null);
+  const closeRequestedRef = useRef(false);
   const messagesScrollRef = useRef<HTMLDivElement | null>(null);
   const suppressNextAutoScrollRef = useRef(false);
   const activeConversation = useMemo(
@@ -224,16 +226,32 @@ export function ChatDialog({ open, onClose, onMinimize }: ChatDialogProps) {
     : `${activeChatId ?? ""}:empty`;
 
   const handleClose = () => {
+    if (closeRequestedRef.current) return;
+    closeRequestedRef.current = true;
     streamAbortRef.current?.abort();
     streamAbortRef.current = null;
     setIsStreaming(false);
     onClose();
   };
 
+  const handleDialogClose = (_: object, reason: "backdropClick" | "escapeKeyDown") => {
+    if (!shouldCloseChatDialog(reason)) return;
+    handleClose();
+  };
+
+  const handleBackdropClick = () => {
+    if (!shouldCloseChatDialog("backdropClick")) return;
+    handleClose();
+  };
+
   useEffect(() => {
-    if (open) return;
+    if (open) {
+      closeRequestedRef.current = false;
+      return;
+    }
     streamAbortRef.current?.abort();
     streamAbortRef.current = null;
+    closeRequestedRef.current = false;
   }, [open]);
 
   useEffect(() => {
@@ -545,12 +563,13 @@ export function ChatDialog({ open, onClose, onMinimize }: ChatDialogProps) {
   return (
     <Dialog
       open={open}
-      onClose={handleClose}
+      onClose={handleDialogClose}
       maxWidth={false}
       fullScreen={fullScreen}
       aria-labelledby={CHAT_DIALOG_TITLE_ID}
       slotProps={{
         backdrop: {
+          onClick: handleBackdropClick,
           sx: {
             backgroundColor: "var(--backdrop-overlay)",
             backdropFilter: "blur(var(--glass-blur))",
@@ -607,7 +626,10 @@ export function ChatDialog({ open, onClose, onMinimize }: ChatDialogProps) {
               label={t("chat.close")}
               color="var(--semantic-danger)"
               ink="color-mix(in srgb, var(--semantic-danger) 62%, #491316)"
-              onClick={handleClose}
+              onClick={() => {
+                if (!shouldCloseChatDialog("explicit")) return;
+                handleClose();
+              }}
             >
               <path d="M4 4L10 10" />
               <path d="M10 4L4 10" />

@@ -2,8 +2,9 @@
   max-width: 100%;
   color: inherit;
   font-size: var(--font-size-body-sm);
-  line-height: 1.58;
+  line-height: 1.72;
   overflow-wrap: anywhere;
+  white-space: pre-wrap;
 }
 
 .chat-markdown-message > :first-child {
@@ -15,7 +16,8 @@
 }
 
 .chat-markdown-message p {
-  margin: 0.25rem 0 0.55rem;
+  margin: 0.35rem 0 0.72rem;
+  white-space: pre-wrap;
 }
 
 .chat-markdown-message h1,
@@ -28,7 +30,7 @@
   color: inherit;
   font-size: 1em;
   font-weight: 800;
-  line-height: 1.35;
+  line-height: 1.5;
   letter-spacing: 0;
 }
 
@@ -39,11 +41,11 @@
 }
 
 .chat-markdown-message li {
-  margin: 0.15rem 0;
+  margin: 0.24rem 0;
 }
 
 .chat-markdown-message li > p {
-  margin: 0.1rem 0;
+  margin: 0.16rem 0;
 }
 
 .chat-markdown-message__task-item {
