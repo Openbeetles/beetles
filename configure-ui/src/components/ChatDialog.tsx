@@ -239,11 +239,6 @@ export function ChatDialog({ open, onClose, onMinimize }: ChatDialogProps) {
     handleClose();
   };
 
-  const handleBackdropClick = () => {
-    if (!shouldCloseChatDialog("backdropClick")) return;
-    handleClose();
-  };
-
   useEffect(() => {
     if (open) {
       closeRequestedRef.current = false;
@@ -569,7 +564,6 @@ export function ChatDialog({ open, onClose, onMinimize }: ChatDialogProps) {
       aria-labelledby={CHAT_DIALOG_TITLE_ID}
       slotProps={{
         backdrop: {
-          onClick: handleBackdropClick,
           sx: {
             backgroundColor: "var(--backdrop-overlay)",
             backdropFilter: "blur(var(--glass-blur))",

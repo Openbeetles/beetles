@@ -4,5 +4,5 @@ export type ChatDialogCloseReason =
   | "escapeKeyDown";
 
 export function shouldCloseChatDialog(reason: ChatDialogCloseReason): boolean {
-  return reason === "explicit" || reason === "backdropClick" || reason === "escapeKeyDown";
+  return reason === "explicit";
 }
