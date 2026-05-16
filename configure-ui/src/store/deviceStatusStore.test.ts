@@ -19,6 +19,12 @@ import {
   type LocalPairingState,
   type TransportState,
 } from "./deviceStatusStore.ts";
+import {
+  initialPairingPollMeta,
+  nextPairingPollMetaOnFailure,
+  nextPairingPollMetaOnSuccess,
+  REACHABLE_POLL_FAILURES_BEFORE_UNREACHABLE,
+} from "../contexts/deviceProbePollPolicy.ts";
 
 function resetStoreState() {
   setDeviceSessionState({ hasTarget: false, localPairing: "absent" });
@@ -145,6 +151,44 @@ test("deriveAppMode returns ready only when the device is reachable and protecte
     localPairing: "present",
     auth: "valid",
     expected: "ready",
+  });
+});
+
+test("pairing poll keeps ready transport through transient reachable failures", () => {
+  let meta = initialPairingPollMeta("reachable", true);
+  for (let i = 1; i < REACHABLE_POLL_FAILURES_BEFORE_UNREACHABLE; i += 1) {
+    const decision = nextPairingPollMetaOnFailure(meta);
+    assert.equal(decision.shouldMarkUnreachable, false);
+    assert.equal(decision.meta.prevConnection, "reachable");
+    assert.equal(decision.meta.csrfPrimed, true);
+    meta = decision.meta;
+  }
+
+  const finalFailure = nextPairingPollMetaOnFailure(meta);
+  assert.equal(finalFailure.shouldMarkUnreachable, true);
+  assert.equal(finalFailure.meta.prevConnection, "unreachable");
+  assert.equal(finalFailure.meta.csrfPrimed, false);
+});
+
+test("pairing poll marks first failed startup probe unreachable", () => {
+  const decision = nextPairingPollMetaOnFailure(initialPairingPollMeta("checking"));
+
+  assert.equal(decision.shouldMarkUnreachable, true);
+  assert.equal(decision.meta.prevConnection, "unreachable");
+});
+
+test("pairing poll success clears failures and primes csrf after unreachable", () => {
+  const failed = nextPairingPollMetaOnFailure(
+    initialPairingPollMeta("reachable", true),
+    1,
+  );
+  const recovered = nextPairingPollMetaOnSuccess(failed.meta);
+
+  assert.equal(recovered.shouldPrimeCsrf, true);
+  assert.deepEqual(recovered.meta, {
+    prevConnection: "reachable",
+    csrfPrimed: true,
+    consecutiveFailures: 0,
   });
 });
 

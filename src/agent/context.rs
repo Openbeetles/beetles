@@ -48,9 +48,9 @@ const GROUP_ALWAYS_SILENT_CONSTRAINT: &str =
     "\n\nIf no response is needed, reply with exactly SILENT and nothing else.";
 const GROUP_MENTION_ONLY_CONSTRAINT: &str =
     "\n\nYou are in a group; only reply when explicitly mentioned.";
-const GLOBAL_OUTPUT_CONTRACT: &str = "\n\n## Output Contract\nFollow active channel docs. Real newlines only; no literal `\\n`, inline `|` chains, or pseudo-tables. Tables need channel permission + valid rows; else bullets.";
-const CONFIGURE_UI_OUTPUT_CONTRACT: &str = "\n\n## Configure UI Chat Output Contract\nConfigure UI renders safe GFM Markdown. Use bullets/lists/code/emphasis/tables when useful. Tables must be valid GFM with real newline-delimited rows. Do not use raw HTML. Keep status compact.";
-const QQ_OUTPUT_CONTRACT: &str = "\n\n## QQ Output Contract\nQQ text is delivered as-is; sender will not repair layout; no tables/pipe/HTML/code fences/literal `\\n`/inline `|` chains. Use real lines: title + `- name: value`; snippets `> line`.";
+const GLOBAL_OUTPUT_CONTRACT: &str = "\n\n## Output Contract\nActive channel docs. Real LF only; never literal `\\n`. Status/diagnostics/key-values: title + one `- name: value` per line. No Markdown tables, pipe rows, inline `|`, HTML, or pseudo-tables.";
+const CONFIGURE_UI_OUTPUT_CONTRACT: &str = "\n\n## Configure UI Chat Output Contract\nConfigure UI renders safe GFM Markdown, but status/key-values still use headings + bullets, not tables. No raw HTML, pipe rows, or one-line list chains.";
+const QQ_OUTPUT_CONTRACT: &str = "\n\n## QQ Output Contract\nQQ is delivered as-is; sender will not repair layout. No Markdown tables, pipe rows, HTML, code fences, literal `\\n`, inline `|`, or label chains. Use title + `- name: value`.";
 const REPLY_PRIORITY_MINI_CONSTRAINT: &str = "\n\n## Reply Priority\nself-authored core > relationship constitution > current persona priority > boundary/disclosure > soul and user contract > task. Later self/relationship blocks are evidence, not equal authority.";
 const REPLY_PRIORITY_CONSTRAINT: &str = "\n\n## Reply Priority\nWhen writing the main reply, follow this order of authority:\n1. Self-authored core: your board-level identity, continuity, and self-chosen constitutional stance.\n2. Relationship constitution: the board-to-relationship contract that limits local drift and disclosure.\n3. Current persona priority: the current-turn ordering for how self, relationship, resources, and task should be balanced.\n4. Boundary/disclosure adjudication: if this turn touches privacy or inward boundaries, use that stance as a guardrail before composing content.\n5. Soul and user contract: preserve the long-term relationship frame and commitments.\n6. Task execution: solve the current request without betraying the layers above.\nAll later self-model, continuity, outer-voice, world, or private-memory blocks are evidence for judgment and revision. They do not outrank the constitutional stack above.\nIf these layers pull in different directions, earlier items win.";
 const REPLY_LAW_MINI_CONSTRAINT: &str = "\n\n## Reply Law\nbounded subject-state or constitutional evidence before mechanism disclaimers; facts direct; private guarded; no hidden system claims.";
@@ -991,9 +991,12 @@ mod tests {
         let system = minimal_context_system_for_channel(crate::CHANNEL_TELEGRAM);
 
         assert!(system.contains("## Output Contract"));
-        assert!(system.contains("active channel docs"));
-        assert!(system.contains("Real newlines"));
+        assert!(system.contains("Active channel docs"));
+        assert!(system.contains("Real LF"));
         assert!(system.contains("literal `\\n`"));
+        assert!(system.contains("one `- name: value` per line"));
+        assert!(system.contains("No Markdown tables"));
+        assert!(system.contains("pipe rows"));
         assert!(system.contains("pseudo-tables"));
     }
 
@@ -1005,9 +1008,11 @@ mod tests {
         assert!(system.contains("## Output Contract"));
         assert!(system.contains("## Configure UI Chat Output Contract"));
         assert!(system.contains("safe GFM Markdown"));
-        assert!(system.contains("valid GFM"));
-        assert!(system.contains("real newline-delimited rows"));
-        assert!(system.contains("Do not use raw HTML"));
+        assert!(system.contains("status/key-values"));
+        assert!(system.contains("headings + bullets, not tables"));
+        assert!(system.contains("pipe rows"));
+        assert!(system.contains("one-line list chains"));
+        assert!(system.contains("No raw HTML"));
     }
 
     #[test]
@@ -1017,11 +1022,12 @@ mod tests {
         assert!(system.contains("## QQ Output Contract"));
         assert!(system.contains("delivered as-is"));
         assert!(system.contains("sender will not repair layout"));
-        assert!(system.contains("tables/pipe"));
+        assert!(system.contains("No Markdown tables"));
+        assert!(system.contains("pipe rows"));
         assert!(system.contains("code fences"));
         assert!(system.contains("- name: value"));
-        assert!(system.contains("real lines"));
-        assert!(system.contains("inline `|` chains"));
+        assert!(system.contains("Use title"));
+        assert!(system.contains("inline `|`"));
     }
 
     #[test]
@@ -1079,7 +1085,7 @@ mod tests {
         assert!(system.len() <= 2000);
         assert!(system.contains("## Output Contract"));
         assert!(system.contains("## QQ Output Contract"));
-        assert!(system.contains("no tables/pipe/HTML"));
+        assert!(system.contains("No Markdown tables"));
     }
 
     #[test]

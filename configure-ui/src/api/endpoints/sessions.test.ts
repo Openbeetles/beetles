@@ -147,6 +147,45 @@ test('session stream POST uses event-stream accept, pairing code, csrf, and pars
   }
 })
 
+test('session stream POST reports protected auth valid when SSE is accepted', async () => {
+  clearCsrfToken()
+
+  const originalFetch = globalThis.fetch
+  const observed: string[] = []
+  setProtectedApiAuthObserver((event) => {
+    observed.push(`${event.state}:${event.method}:${event.path}`)
+  })
+  globalThis.fetch = (async (input: string | URL | Request) => {
+    const url = new URL(String(input))
+    if (url.pathname === '/api/csrf_token') {
+      return jsonResponse({ csrf_token: 'csrf-1' })
+    }
+    if (url.pathname === '/api/sessions') {
+      return sseResponse([
+        'event: final\ndata: {"message_id":"a1"}\n\n',
+        'event: done\ndata: {}\n\n',
+      ])
+    }
+    throw new Error(`unexpected fetch ${url.pathname}`)
+  }) as typeof fetch
+
+  try {
+    const result = await streamSessionMessage(
+      'http://device',
+      '123456',
+      { chat_id: 'c1', content: 'hello?' },
+      () => {},
+    )
+
+    assert.equal(result.ok, true)
+    assert.deepEqual(observed, ['valid:POST:/api/sessions'])
+  } finally {
+    globalThis.fetch = originalFetch
+    setProtectedApiAuthObserver(null)
+    clearCsrfToken()
+  }
+})
+
 test('session stream refreshes csrf and retries once on csrf failure', async () => {
   clearCsrfToken()
 

@@ -46,6 +46,15 @@ test("parseChatMarkdown supports assistant status tables and emphasis", () => {
   assert.equal(tree.children[1].children[1]?.children[1]?.children[0]?.type, "strong");
 });
 
+test("parseChatMarkdown does not repair collapsed pipe tables", () => {
+  const tree = parseChatMarkdown(
+    "系统状态总览 | 项目 | 状态 |------|------| 芯片 | ESP32-S3 | WiFi | 已连接",
+  );
+
+  assert.equal(tree.children.length, 1);
+  assert.equal(tree.children[0]?.type, "paragraph");
+});
+
 test("isSafeMarkdownUrl rejects script-like links", () => {
   assert.equal(isSafeMarkdownUrl("https://example.com"), true);
   assert.equal(isSafeMarkdownUrl("/local/path"), true);

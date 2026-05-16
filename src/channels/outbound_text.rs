@@ -925,6 +925,26 @@ mod tests {
     }
 
     #[test]
+    fn primary_collapsed_pipe_table_on_qq_stays_plain_text() {
+        let source = "系统状态总览 | 项目 | 状态 |------|------| 芯片 | ESP32-S3 | WiFi | 已连接";
+        let mut msg = outbound_text_msg(source);
+        msg.channel = Arc::from("qq_channel");
+        let prepared = prepare_outbound_message_for_channel(
+            &msg,
+            Some(capability_entry("qq_channel", TEXT_ONLY_KIND, PLAIN_ONLY)),
+        );
+
+        assert!(matches!(
+            prepared.msg.body,
+            CanonicalMessageBody::Text(TextBody {
+                format: TextFormat::Plain,
+                ref text,
+            }) if text == source
+        ));
+        assert_eq!(prepared.content, source);
+    }
+
+    #[test]
     fn primary_natural_dash_pairs_on_qq_stays_plain_text() {
         let mut msg = outbound_text_msg("我看 A - B: C 只是一个例子，不需要重排。");
         msg.channel = Arc::from("qq_channel");

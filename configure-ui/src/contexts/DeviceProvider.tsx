@@ -25,12 +25,17 @@ import {
   setStoredBaseUrl,
   setStoredPairingCode,
 } from './DeviceContext'
+import {
+  initialPairingPollMeta,
+  nextPairingPollMetaOnFailure,
+  nextPairingPollMetaOnSuccess,
+  type PairingPollMeta,
+} from './deviceProbePollPolicy'
 
 /** 定时检测设备连接间隔（毫秒），用于更快更新重启与连接状态 */
 const CONNECTION_POLL_INTERVAL_MS = 10_000
 const CONNECTION_POLL_TIMEOUT_MS = 5_000
 
-type PollMeta = { prevConnection: 'checking' | 'reachable' | 'unreachable' | 'none'; csrfPrimed: boolean }
 type DeviceSessionMeta = { baseUrl: string; pairingCode: string }
 
 export function DeviceProvider({ children }: { children: React.ReactNode }) {
@@ -43,7 +48,7 @@ export function DeviceProvider({ children }: { children: React.ReactNode }) {
     pairingCode: (getStoredPairingCode() ?? '').trim(),
   })
   /** 配对轮询元数据：避免每次成功都 GET /api/csrf_token；仅在换机后首次成功或 unreachable→reachable 时预热。 */
-  const pollMetaRef = useRef<PollMeta>({ prevConnection: 'none', csrfPrimed: false })
+  const pollMetaRef = useRef<PairingPollMeta>(initialPairingPollMeta('none'))
 
   const setBaseUrl = useCallback((v: string) => {
     setBaseUrlState(v)
@@ -111,19 +116,21 @@ export function DeviceProvider({ children }: { children: React.ReactNode }) {
     if (cancelled || generation !== pollGenerationRef.current) return
     const meta = pollMetaRef.current
     if (res.ok && res.data != null) {
-      const wasUnreachable = meta.prevConnection === 'unreachable'
-      const needCsrf = !meta.csrfPrimed || wasUnreachable
-      if (needCsrf) void fetchCsrfToken(url)
-      pollMetaRef.current = { prevConnection: 'reachable', csrfPrimed: true }
+      const decision = nextPairingPollMetaOnSuccess(meta)
+      if (decision.shouldPrimeCsrf) void fetchCsrfToken(url)
+      pollMetaRef.current = decision.meta
       setDeviceProbeState({
         transport: 'reachable',
         devicePairing: res.data.code_set ? 'initialized' : 'uninitialized',
       })
       updateRestartState('reachable')
     } else {
-      pollMetaRef.current = { ...pollMetaRef.current, prevConnection: 'unreachable' }
-      setDeviceProbeState({ transport: 'unreachable', devicePairing: 'unknown' })
+      const decision = nextPairingPollMetaOnFailure(meta)
+      pollMetaRef.current = decision.meta
       updateRestartState('unreachable')
+      if (decision.shouldMarkUnreachable) {
+        setDeviceProbeState({ transport: 'unreachable', devicePairing: 'unknown' })
+      }
     }
   }, [])
 
@@ -134,10 +141,10 @@ export function DeviceProvider({ children }: { children: React.ReactNode }) {
     pollGenerationRef.current = generation
     const url = baseUrl?.trim()
     if (!url) {
-      pollMetaRef.current = { prevConnection: 'none', csrfPrimed: false }
+      pollMetaRef.current = initialPairingPollMeta('none')
       return
     }
-    pollMetaRef.current = { prevConnection: 'checking', csrfPrimed: false }
+    pollMetaRef.current = initialPairingPollMeta('checking')
     setDeviceProbeState({ transport: 'checking', devicePairing: 'unknown' })
     let cancelled = false
     getPairingCode(url, { timeoutMs: CONNECTION_POLL_TIMEOUT_MS }).then((res) => {

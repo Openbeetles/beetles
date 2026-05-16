@@ -343,6 +343,15 @@ async function streamSessionMessageInternal(
       return result
     }
 
+    if (pairingCode.trim()) {
+      notifyProtectedApiAuthState({
+        state: 'valid',
+        method: 'POST',
+        path: '/api/sessions',
+        sessionKey: buildProtectedApiSessionKey(baseUrl, pairingCode),
+      })
+    }
+
     const streamResult = await parseSseStream(response, onEvent, controller.signal)
     if (streamResult.terminal === 'error') {
       return {
