@@ -446,115 +446,195 @@ export function AudioConfigPanel() {
                       />
                       {micOn ? (
                         <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                          <FormGrid>
-                            {!codecTopology ? (
+                          {codecTopology ? (
+                            <FormGrid>
                               <FormControl fullWidth>
-                                <InputLabel id="mic-device-type">{t('audioConfig.deviceType')}</InputLabel>
+                                <InputLabel id="mic-sr">{t('audioConfig.sampleRate')}</InputLabel>
                                 <Select
-                                  labelId="mic-device-type"
-                                  label={t('audioConfig.deviceType')}
-                                  value={form.microphone.device_type}
-                                  onChange={(e: SelectChangeEvent) =>
+                                  labelId="mic-sr"
+                                  label={t('audioConfig.sampleRate')}
+                                  value={String(form.microphone.sample_rate)}
+                                  onChange={(e: SelectChangeEvent) => {
+                                    const v = asNumber(e.target.value)
+                                    if (v == null) return
                                     setDraftSafe({
                                       ...form,
                                       microphone: {
                                         ...form.microphone,
-                                        device_type: e.target.value,
+                                        sample_rate: Math.trunc(v),
                                       },
                                     })
-                                  }
+                                  }}
                                 >
-                                  {unionStringPreset(
-                                    [...AUDIO_MIC_DEVICE_TYPES],
-                                    form.microphone.device_type,
-                                  ).map((dt) => (
-                                    <MenuItem key={dt} value={dt}>
-                                      {(AUDIO_MIC_DEVICE_TYPES as readonly string[]).includes(dt)
-                                        ? t(`audioConfig.deviceMic.${dt}`)
-                                        : dt}
+                                  {sampleRateSelectOptions(form.microphone.sample_rate).map((sr) => (
+                                    <MenuItem key={sr} value={String(sr)}>
+                                      {sr} Hz
                                     </MenuItem>
                                   ))}
                                 </Select>
                               </FormControl>
-                            ) : null}
-                            <FormControl fullWidth>
-                              <InputLabel id="mic-sr">{t('audioConfig.sampleRate')}</InputLabel>
-                              <Select
-                                labelId="mic-sr"
-                                label={t('audioConfig.sampleRate')}
-                                value={String(form.microphone.sample_rate)}
-                                onChange={(e: SelectChangeEvent) => {
-                                  const v = asNumber(e.target.value)
-                                  if (v == null) return
-                                  setDraftSafe({
-                                    ...form,
-                                    microphone: {
-                                      ...form.microphone,
-                                      sample_rate: Math.trunc(v),
-                                    },
-                                  })
-                                }}
-                              >
-                                {sampleRateSelectOptions(form.microphone.sample_rate).map((sr) => (
-                                  <MenuItem key={sr} value={String(sr)}>
-                                    {sr} Hz
-                                  </MenuItem>
-                                ))}
-                              </Select>
-                            </FormControl>
-                          </FormGrid>
-                          <FormGrid>
-                            <FormControl fullWidth>
-                              <InputLabel id="vad-th">{t('audioConfig.vadThreshold')}</InputLabel>
-                              <Select
-                                labelId="vad-th"
-                                label={t('audioConfig.vadThreshold')}
-                                value={String(form.vad.threshold)}
-                                onChange={(e: SelectChangeEvent) => {
-                                  const v = Number(e.target.value)
-                                  if (!Number.isFinite(v)) return
-                                  setDraftSafe({ ...form, vad: { ...form.vad, threshold: v } })
-                                }}
-                              >
-                                {unionFloatPreset(
-                                  [...AUDIO_VAD_THRESHOLD_PRESETS],
-                                  form.vad.threshold,
-                                ).map((th) => (
-                                  <MenuItem key={th} value={String(th)}>
-                                    {th}
-                                  </MenuItem>
-                                ))}
-                              </Select>
-                            </FormControl>
-                            <FormControl fullWidth>
-                              <InputLabel id="vad-sil">{t('audioConfig.vadSilenceMs')}</InputLabel>
-                              <Select
-                                labelId="vad-sil"
-                                label={t('audioConfig.vadSilenceMs')}
-                                value={String(form.vad.silence_duration_ms)}
-                                onChange={(e: SelectChangeEvent) => {
-                                  const v = asNumber(e.target.value)
-                                  if (v == null) return
-                                  setDraftSafe({
-                                    ...form,
-                                    vad: {
-                                      ...form.vad,
-                                      silence_duration_ms: Math.trunc(v),
-                                    },
-                                  })
-                                }}
-                              >
-                                {unionNumberPreset(
-                                  [...AUDIO_VAD_SILENCE_MS_PRESETS],
-                                  form.vad.silence_duration_ms,
-                                ).map((ms) => (
-                                  <MenuItem key={ms} value={String(ms)}>
-                                    {ms} ms
-                                  </MenuItem>
-                                ))}
-                              </Select>
-                            </FormControl>
-                          </FormGrid>
+                              <FormControl fullWidth>
+                                <InputLabel id="vad-th">{t('audioConfig.vadThreshold')}</InputLabel>
+                                <Select
+                                  labelId="vad-th"
+                                  label={t('audioConfig.vadThreshold')}
+                                  value={String(form.vad.threshold)}
+                                  onChange={(e: SelectChangeEvent) => {
+                                    const v = Number(e.target.value)
+                                    if (!Number.isFinite(v)) return
+                                    setDraftSafe({ ...form, vad: { ...form.vad, threshold: v } })
+                                  }}
+                                >
+                                  {unionFloatPreset(
+                                    [...AUDIO_VAD_THRESHOLD_PRESETS],
+                                    form.vad.threshold,
+                                  ).map((th) => (
+                                    <MenuItem key={th} value={String(th)}>
+                                      {th}
+                                    </MenuItem>
+                                  ))}
+                                </Select>
+                              </FormControl>
+                              <FormControl fullWidth>
+                                <InputLabel id="vad-sil">{t('audioConfig.vadSilenceMs')}</InputLabel>
+                                <Select
+                                  labelId="vad-sil"
+                                  label={t('audioConfig.vadSilenceMs')}
+                                  value={String(form.vad.silence_duration_ms)}
+                                  onChange={(e: SelectChangeEvent) => {
+                                    const v = asNumber(e.target.value)
+                                    if (v == null) return
+                                    setDraftSafe({
+                                      ...form,
+                                      vad: {
+                                        ...form.vad,
+                                        silence_duration_ms: Math.trunc(v),
+                                      },
+                                    })
+                                  }}
+                                >
+                                  {unionNumberPreset(
+                                    [...AUDIO_VAD_SILENCE_MS_PRESETS],
+                                    form.vad.silence_duration_ms,
+                                  ).map((ms) => (
+                                    <MenuItem key={ms} value={String(ms)}>
+                                      {ms} ms
+                                    </MenuItem>
+                                  ))}
+                                </Select>
+                              </FormControl>
+                            </FormGrid>
+                          ) : (
+                            <>
+                              <FormGrid>
+                                <FormControl fullWidth>
+                                  <InputLabel id="mic-device-type">{t('audioConfig.deviceType')}</InputLabel>
+                                  <Select
+                                    labelId="mic-device-type"
+                                    label={t('audioConfig.deviceType')}
+                                    value={form.microphone.device_type}
+                                    onChange={(e: SelectChangeEvent) =>
+                                      setDraftSafe({
+                                        ...form,
+                                        microphone: {
+                                          ...form.microphone,
+                                          device_type: e.target.value,
+                                        },
+                                      })
+                                    }
+                                  >
+                                    {unionStringPreset(
+                                      [...AUDIO_MIC_DEVICE_TYPES],
+                                      form.microphone.device_type,
+                                    ).map((dt) => (
+                                      <MenuItem key={dt} value={dt}>
+                                        {(AUDIO_MIC_DEVICE_TYPES as readonly string[]).includes(dt)
+                                          ? t(`audioConfig.deviceMic.${dt}`)
+                                          : dt}
+                                      </MenuItem>
+                                    ))}
+                                  </Select>
+                                </FormControl>
+                                <FormControl fullWidth>
+                                  <InputLabel id="mic-sr">{t('audioConfig.sampleRate')}</InputLabel>
+                                  <Select
+                                    labelId="mic-sr"
+                                    label={t('audioConfig.sampleRate')}
+                                    value={String(form.microphone.sample_rate)}
+                                    onChange={(e: SelectChangeEvent) => {
+                                      const v = asNumber(e.target.value)
+                                      if (v == null) return
+                                      setDraftSafe({
+                                        ...form,
+                                        microphone: {
+                                          ...form.microphone,
+                                          sample_rate: Math.trunc(v),
+                                        },
+                                      })
+                                    }}
+                                  >
+                                    {sampleRateSelectOptions(form.microphone.sample_rate).map((sr) => (
+                                      <MenuItem key={sr} value={String(sr)}>
+                                        {sr} Hz
+                                      </MenuItem>
+                                    ))}
+                                  </Select>
+                                </FormControl>
+                              </FormGrid>
+                              <FormGrid>
+                                <FormControl fullWidth>
+                                  <InputLabel id="vad-th">{t('audioConfig.vadThreshold')}</InputLabel>
+                                  <Select
+                                    labelId="vad-th"
+                                    label={t('audioConfig.vadThreshold')}
+                                    value={String(form.vad.threshold)}
+                                    onChange={(e: SelectChangeEvent) => {
+                                      const v = Number(e.target.value)
+                                      if (!Number.isFinite(v)) return
+                                      setDraftSafe({ ...form, vad: { ...form.vad, threshold: v } })
+                                    }}
+                                  >
+                                    {unionFloatPreset(
+                                      [...AUDIO_VAD_THRESHOLD_PRESETS],
+                                      form.vad.threshold,
+                                    ).map((th) => (
+                                      <MenuItem key={th} value={String(th)}>
+                                        {th}
+                                      </MenuItem>
+                                    ))}
+                                  </Select>
+                                </FormControl>
+                                <FormControl fullWidth>
+                                  <InputLabel id="vad-sil">{t('audioConfig.vadSilenceMs')}</InputLabel>
+                                  <Select
+                                    labelId="vad-sil"
+                                    label={t('audioConfig.vadSilenceMs')}
+                                    value={String(form.vad.silence_duration_ms)}
+                                    onChange={(e: SelectChangeEvent) => {
+                                      const v = asNumber(e.target.value)
+                                      if (v == null) return
+                                      setDraftSafe({
+                                        ...form,
+                                        vad: {
+                                          ...form.vad,
+                                          silence_duration_ms: Math.trunc(v),
+                                        },
+                                      })
+                                    }}
+                                  >
+                                    {unionNumberPreset(
+                                      [...AUDIO_VAD_SILENCE_MS_PRESETS],
+                                      form.vad.silence_duration_ms,
+                                    ).map((ms) => (
+                                      <MenuItem key={ms} value={String(ms)}>
+                                        {ms} ms
+                                      </MenuItem>
+                                    ))}
+                                  </Select>
+                                </FormControl>
+                              </FormGrid>
+                            </>
+                          )}
                           {!codecTopology ? (
                             <FormGrid>
                               <TextField
@@ -1376,11 +1456,6 @@ export function AudioConfigPanel() {
                     {showRealtime ? (
                       <FormSectionSubCollapsible title={t('audioConfig.sectionRealtime')}>
                         <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                          {realtimeReady ? (
-                            <Typography variant="body2" sx={{ color: "var(--text-tertiary)" }}>
-                              {t('audioConfig.realtimeConfiguredHelp')}
-                            </Typography>
-                          ) : null}
                           <Typography variant="body2" sx={{ color: "var(--text-tertiary)" }}>
                             {`${t('audioConfig.realtimeSampleRateHint')} ${realtimeSampleRate} Hz`}
                           </Typography>

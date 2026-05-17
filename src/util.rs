@@ -1089,11 +1089,11 @@ pub const STACK_HTTP_CHAT_HISTORY_WORKER: usize = 31 * 1024;
 /// ESP HTTP config route worker：承接 NVS/storage/serde 配置写入，避免压在
 /// IDF HTTPD 回调线程上。配置面必须能在 post-startup 约 31-32KB largest block
 /// 下按需启动；不能再沿用一个 48KB 通用 worker 把产品配置入口永久 admission 掉。
-/// S3 实机保存配置已证明 28KB 只能启动 worker，不能覆盖 durable JSON write 的
-/// router/serde/VFS 调用深度；post-QQ 保存窗口又证明 32KB 会被常见 31KB
-/// largest-block floor admission 掉，因此 ESP 预算收在 31KB。
+/// S3 实机保存配置曾证明 28KB 只能启动 worker，不能覆盖 durable JSON write 的
+/// router/serde/VFS 调用深度；2026-05-17 esp-box hardware save 又证明 31KB
+/// 会在 `POST /api/config/hardware` 路径溢出，因此 ESP 预算必须回到 32KB。
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
-pub const STACK_HTTP_CONFIG_WORKER: usize = 31 * 1024;
+pub const STACK_HTTP_CONFIG_WORKER: usize = 32 * 1024;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32", test)))]
 pub const STACK_HTTP_CONFIG_WORKER: usize = 32 * 1024;
 
@@ -1551,19 +1551,19 @@ mod thread_stack_budget_tests {
 
     #[test]
     fn http_config_worker_stack_covers_s3_durable_config_write_depth() {
-        const S3_CONFIG_WRITE_OVERFLOW_STACK_BYTES: usize = 28 * 1024;
-        const MIN_CONFIG_WRITE_HEADROOM_BYTES: usize = 3 * 1024;
-        const S3_CONFIG_SAVE_AVAILABLE_LARGEST_BLOCK_BYTES: usize = 31 * 1024;
+        const S3_CONFIG_WRITE_OVERFLOW_STACK_BYTES: usize = 31 * 1024;
+        const MIN_CONFIG_WRITE_HEADROOM_BYTES: usize = 1 * 1024;
+        const S3_CONFIG_SAVE_NORMAL_LARGEST_BLOCK_BYTES: usize = 32 * 1024;
 
         const {
             assert!(
                 STACK_HTTP_CONFIG_WORKER
                     >= S3_CONFIG_WRITE_OVERFLOW_STACK_BYTES + MIN_CONFIG_WRITE_HEADROOM_BYTES,
-                "http_config_exec overflowed at 28KB on S3 while saving config through durable JSON storage"
+                "http_config_exec overflowed at 31KB on S3 while saving esp-box hardware config"
             );
             assert!(
-                STACK_HTTP_CONFIG_WORKER <= S3_CONFIG_SAVE_AVAILABLE_LARGEST_BLOCK_BYTES,
-                "http_config_exec must fit the observed S3 post-QQ config-save largest-block floor"
+                STACK_HTTP_CONFIG_WORKER <= S3_CONFIG_SAVE_NORMAL_LARGEST_BLOCK_BYTES,
+                "http_config_exec must fit the observed S3 Normal/Healthy config-save largest-block floor"
             );
         }
     }

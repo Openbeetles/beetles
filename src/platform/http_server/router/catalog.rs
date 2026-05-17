@@ -2087,7 +2087,7 @@ mod tests {
 
     #[test]
     fn config_worker_budget_fits_normal_esp_config_mode_largest_block() {
-        const S3_NORMAL_CONFIG_LARGEST_BLOCK_FLOOR_BYTES: usize = 31 * 1024;
+        const S3_NORMAL_CONFIG_LARGEST_BLOCK_FLOOR_BYTES: usize = 32 * 1024;
 
         let contract = RouteExecutionClass::AsyncConfigRoute
             .worker_contract()

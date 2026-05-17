@@ -445,7 +445,6 @@ export const enUS = {
       realtimeVoice: 'Output voice',
       realtimeInstructions: 'Conversation instructions',
       realtimeInstructionsHelp: 'System prompt; keep it short.',
-      realtimeConfiguredHelp: 'Realtime voice is configured.',
       realtimeSampleRateHint: 'Realtime voice currently requires both microphone and speaker sample rates to be',
 
       soundEventsPick: 'Sound events (presets)',
@@ -590,7 +589,6 @@ export const enUS = {
     },
     busConfig: {
       sectionMain: 'Bus config',
-      sectionMainDesc: 'Edit the I2C and I2S bus sources of truth; save still writes hardware.json.',
       sectionI2c: 'I2C bus',
       sectionI2s: 'I2S bus',
       clearBus: 'Clear',
@@ -598,8 +596,6 @@ export const enUS = {
       optionalWhenDiscrete: 'Optional when the current topology is discrete I2S.',
       freqRequiredHelp: 'Recommended to keep the frequency explicit for I2S codec boards.',
       freqOptionalHelp: 'Optional; leave blank to keep the current default frequency.',
-      topologyCodecHint: 'Current audio.topology = i2s_codec, so these bus fields become the hardware source of truth for codec audio.',
-      topologyDiscreteHint: 'Current audio.topology = discrete_i2s, so these bus fields are optional prep and do not replace the legacy pin source of truth.',
       sdaPin: 'SDA pin',
       sclPin: 'SCL pin',
       freqHz: 'Bus frequency (Hz)',
@@ -825,10 +821,10 @@ export const enUS = {
       sectionChannels: 'Channels',
       sectionChannelsDesc: 'Telegram, Feishu, DingTalk, WeCom, QQ.',
       enabledChannel: 'Enabled channel',
-      enabledChannelHelp: 'One channel can be active at a time.',
+      enabledChannelHelp: 'Channels can be disabled; only one channel can be active when enabled.',
       unavailableEnabledChannel:
         'The saved channel {{channel}} is not available on this device and is currently treated as disabled.',
-      enabledChannel_none: 'None',
+      enabledChannel_none: 'No channel enabled',
       enabledChannel_telegram: 'Telegram',
       enabledChannel_feishu: 'Feishu',
       enabledChannel_dingtalk: 'DingTalk',

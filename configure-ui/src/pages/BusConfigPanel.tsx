@@ -3,7 +3,6 @@ import { useTranslation } from "react-i18next";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
 import TextField from "@mui/material/TextField";
-import Typography from "@mui/material/Typography";
 import SaveRounded from "@mui/icons-material/SaveRounded";
 import {
   FormFieldStack,
@@ -195,7 +194,6 @@ export function BusConfigPanel() {
           sx={{ flex: 1, minHeight: 0 }}
           icon={<Os3dIcon src={OS_ICON_DEVICE_CONFIG.buses} />}
           label={t("busConfig.sectionMain")}
-          description={t("busConfig.sectionMainDesc")}
         >
           {loadErrorState.blockingError ? (
             <PageLoadErrorState
@@ -226,7 +224,6 @@ export function BusConfigPanel() {
         sx={{ flex: 1, minHeight: 0 }}
         icon={<Os3dIcon src={OS_ICON_DEVICE_CONFIG.buses} />}
         label={t("busConfig.sectionMain")}
-        description={t("busConfig.sectionMainDesc")}
         accessory={
           <Button
             size="small"
@@ -259,12 +256,6 @@ export function BusConfigPanel() {
         }
       >
         <FormFieldStack>
-          <Typography variant="body2" sx={{ color: "var(--text-tertiary)" }}>
-            {codecTopology
-              ? t("busConfig.topologyCodecHint")
-              : t("busConfig.topologyDiscreteHint")}
-          </Typography>
-
           <FormSectionSubCollapsible
             title={t("busConfig.sectionI2c")}
             defaultOpen

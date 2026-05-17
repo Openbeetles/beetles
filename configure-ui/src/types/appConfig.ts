@@ -127,6 +127,8 @@ function normalizeAvailableChannels(value: unknown): string[] {
 
   const seen = new Set<string>()
   const channels: string[] = []
+  seen.add('')
+  channels.push('')
   for (const item of value) {
     if (typeof item !== 'string') continue
     const channel = item.trim()

@@ -18,7 +18,7 @@ test("normalizeChannelsConfigFromDevice fills missing channel string fields", ()
   assert.equal(config.wecom_ws_url, "");
   assert.equal(config.wecom_bot_secret, "");
   assert.equal(config.webhook_enabled, false);
-  assert.deepEqual(config.available_channels, ["wecom"]);
+  assert.deepEqual(config.available_channels, ["", "wecom"]);
 });
 
 test("normalizeChannelsConfigFromDevice keeps legacy responses usable without catalog", () => {

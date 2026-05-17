@@ -42,6 +42,17 @@ const MAX_LEN = 64;
 const MAX_URL = 512;
 const CHANNELS_CONFIG_DIRTY_OWNER = "channels-config";
 const TG_ACTIVATION_OPTIONS = ["mention", "always"] as const;
+const DISABLED_CHANNEL_SELECT_VALUE = "__beetle_disabled_channel__";
+
+function channelConfigValueToSelectValue(channelId: string): string {
+  return channelId.trim().length === 0
+    ? DISABLED_CHANNEL_SELECT_VALUE
+    : channelId;
+}
+
+function channelSelectValueToConfigValue(value: string): string {
+  return value === DISABLED_CHANNEL_SELECT_VALUE ? "" : value;
+}
 
 function validateChannels(
   config: ChannelsConfigView,
@@ -147,6 +158,9 @@ export function ChannelsConfigPage() {
   const availableChannels = form
     ? new Set(form.available_channels.filter((value) => value.trim().length > 0))
     : new Set<string>();
+  const selectedChannelValue = form
+    ? channelConfigValueToSelectValue(form.enabled_channel)
+    : DISABLED_CHANNEL_SELECT_VALUE;
   const showConnectionLoading =
     !form && !channelsLoading && ready && connectionChecking && !deviceConnected;
   const showConnectState =
@@ -241,15 +255,20 @@ export function ChannelsConfigPage() {
             select
             hiddenLabel
             fullWidth
-            value={form.enabled_channel ?? ""}
-            onChange={(e) => update("enabled_channel", e.target.value)}
+            value={selectedChannelValue}
+            onChange={(e) =>
+              update("enabled_channel", channelSelectValueToConfigValue(e.target.value))
+            }
             aria-label={t("config.enabledChannel")}
             slotProps={{
               inputLabel: { shrink: true },
             }}
           >
             {form.available_channels.map((channelId) => (
-              <MenuItem key={channelId || "none"} value={channelId}>
+              <MenuItem
+                key={channelId || "disabled"}
+                value={channelConfigValueToSelectValue(channelId)}
+              >
                 {t(enabledChannelLabelKey(channelId))}
               </MenuItem>
             ))}
