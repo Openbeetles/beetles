@@ -641,7 +641,9 @@ mod tests {
     use crate::config::{self, ConfigFileStore};
     use crate::error::Result;
     use serde_json::Value;
+    use std::collections::HashMap;
     use std::sync::Arc;
+    use std::sync::Mutex;
 
     struct PanicConfigFileStore;
 
@@ -659,18 +661,44 @@ mod tests {
         }
     }
 
-    struct WriteOnlyConfigFileStore;
+    #[derive(Default)]
+    struct MemoryConfigFileStore {
+        files: Mutex<HashMap<String, Vec<u8>>>,
+    }
 
-    impl ConfigFileStore for WriteOnlyConfigFileStore {
+    impl MemoryConfigFileStore {
+        fn with_file(path: &str, data: impl Into<Vec<u8>>) -> Self {
+            let mut files = HashMap::new();
+            files.insert(path.to_string(), data.into());
+            Self {
+                files: Mutex::new(files),
+            }
+        }
+    }
+
+    impl ConfigFileStore for MemoryConfigFileStore {
         fn read_config_file(&self, rel_path: &str) -> Result<Option<Vec<u8>>> {
-            panic!("config POST should not reload config file {rel_path}");
+            Ok(self
+                .files
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(rel_path)
+                .cloned())
         }
 
-        fn write_config_file(&self, _rel_path: &str, _data: &[u8]) -> Result<()> {
+        fn write_config_file(&self, rel_path: &str, data: &[u8]) -> Result<()> {
+            self.files
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(rel_path.to_string(), data.to_vec());
             Ok(())
         }
 
-        fn remove_config_file(&self, _rel_path: &str) -> Result<()> {
+        fn remove_config_file(&self, rel_path: &str) -> Result<()> {
+            self.files
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(rel_path);
             Ok(())
         }
     }
@@ -786,7 +814,7 @@ mod tests {
     #[test]
     fn post_llm_updates_cached_config_without_reloading_config_files() {
         let mut ctx = build_test_context();
-        ctx.config_file_store = Arc::new(WriteOnlyConfigFileStore);
+        ctx.config_file_store = Arc::new(MemoryConfigFileStore::default());
 
         let response = post_llm(
             &ctx,
@@ -819,7 +847,7 @@ mod tests {
     #[test]
     fn post_channels_updates_cached_config_without_reloading_config_files() {
         let mut ctx = build_test_context();
-        ctx.config_file_store = Arc::new(WriteOnlyConfigFileStore);
+        ctx.config_file_store = Arc::new(MemoryConfigFileStore::default());
 
         let response = post_channels(
             &ctx,
@@ -847,7 +875,7 @@ mod tests {
     #[test]
     fn post_channels_rejects_invalid_activation_policy() {
         let mut ctx = build_test_context();
-        ctx.config_file_store = Arc::new(WriteOnlyConfigFileStore);
+        ctx.config_file_store = Arc::new(MemoryConfigFileStore::default());
 
         let response = post_channels(
             &ctx,
@@ -869,13 +897,14 @@ mod tests {
     #[test]
     fn post_hardware_updates_cached_config_without_reloading_config_files() {
         let mut ctx = build_test_context();
-        ctx.config_file_store = Arc::new(WriteOnlyConfigFileStore);
+        ctx.config_file_store = Arc::new(MemoryConfigFileStore::default());
 
         let response = post_hardware(
             &ctx,
             r#"{
                 "hardware_devices":[],
                 "i2c_bus":null,
+                "i2s_bus":null,
                 "i2c_devices":[],
                 "i2c_sensors":[]
             }"#,
@@ -886,6 +915,7 @@ mod tests {
         let config = ctx.config();
         assert_eq!(config.hardware_devices.len(), 0);
         assert!(config.i2c_bus.is_none());
+        assert!(config.i2s_bus.is_none());
         assert_eq!(config.i2c_devices.len(), 0);
         assert_eq!(config.i2c_sensors.len(), 0);
     }
@@ -893,7 +923,7 @@ mod tests {
     #[test]
     fn post_hardware_drops_cached_display_when_new_hardware_conflicts() {
         let mut ctx = build_test_context();
-        ctx.config_file_store = Arc::new(WriteOnlyConfigFileStore);
+        ctx.config_file_store = Arc::new(MemoryConfigFileStore::default());
         ctx.update_cached_config(|config| {
             let mut display = crate::display::default_disabled_display_config();
             display.enabled = true;
@@ -912,6 +942,7 @@ mod tests {
                     "how":"test"
                 }],
                 "i2c_bus":null,
+                "i2s_bus":null,
                 "i2c_devices":[],
                 "i2c_sensors":[]
             }"#,
@@ -925,7 +956,7 @@ mod tests {
     #[test]
     fn post_audio_updates_cached_config_without_reloading_config_files() {
         let mut ctx = build_test_context();
-        ctx.config_file_store = Arc::new(WriteOnlyConfigFileStore);
+        ctx.config_file_store = Arc::new(MemoryConfigFileStore::default());
         let body = serde_json::to_string(&config::default_disabled_audio_segment())
             .expect("serialize audio");
 
@@ -939,7 +970,7 @@ mod tests {
     #[test]
     fn post_display_updates_cached_config_without_reloading_config_files() {
         let mut ctx = build_test_context();
-        ctx.config_file_store = Arc::new(WriteOnlyConfigFileStore);
+        ctx.config_file_store = Arc::new(MemoryConfigFileStore::default());
         let body = serde_json::to_string(&crate::display::default_disabled_display_config())
             .expect("serialize display");
 
@@ -951,6 +982,110 @@ mod tests {
             .display
             .as_ref()
             .is_some_and(|display| !display.enabled));
+    }
+
+    #[test]
+    fn post_hardware_rejects_when_persisted_audio_requires_i2s_codec_buses() {
+        let mut ctx = build_test_context();
+        let mut audio = config::default_disabled_audio_segment();
+        audio.enabled = true;
+        audio.topology = "i2s_codec".to_string();
+        audio.microphone.enabled = true;
+        audio.speaker.enabled = true;
+        audio.microphone.sample_rate = 24_000;
+        audio.speaker.sample_rate = 24_000;
+        audio.codec.input_codec = Some("es7210".to_string());
+        audio.codec.output_codec = Some("es8311".to_string());
+        audio.codec.pa_pin = Some(46);
+        ctx.config_file_store = Arc::new(MemoryConfigFileStore::with_file(
+            "config/audio.json",
+            serde_json::to_vec(&audio).expect("serialize audio"),
+        ));
+
+        let response = post_hardware(
+            &ctx,
+            r#"{
+                "hardware_devices":[],
+                "i2c_bus":null,
+                "i2s_bus":null,
+                "i2c_devices":[],
+                "i2c_sensors":[]
+            }"#,
+        )
+        .expect("post_hardware response");
+
+        assert_eq!(response.status, 400);
+    }
+
+    #[test]
+    fn post_audio_rejects_when_persisted_hardware_cannot_support_i2s_codec() {
+        let mut ctx = build_test_context();
+        ctx.config_file_store = Arc::new(MemoryConfigFileStore::with_file(
+            "config/hardware.json",
+            br#"{
+                "hardware_devices":[],
+                "i2c_bus":null,
+                "i2s_bus":null,
+                "i2c_devices":[],
+                "i2c_sensors":[]
+            }"#
+            .to_vec(),
+        ));
+        let body = serde_json::json!({
+            "version": 1,
+            "enabled": true,
+            "service_provider": "baidu",
+            "topology": "i2s_codec",
+            "microphone": {
+                "enabled": true,
+                "device_type": "i2s_inmp441",
+                "pins": { "ws": 25, "sck": 26, "din": 27 },
+                "sample_rate": 24000
+            },
+            "speaker": {
+                "enabled": true,
+                "device_type": "i2s_max98357a",
+                "pins": { "ws": 32, "sck": 33, "dout": 22, "sd": null },
+                "sample_rate": 24000
+            },
+            "codec": {
+                "input_codec": "es7210",
+                "output_codec": "es8311",
+                "input_addr": null,
+                "output_addr": null,
+                "pa_pin": 46,
+                "input_reference": true
+            },
+            "vad": { "threshold": 0.5, "silence_duration_ms": 1000 },
+            "wake_word": { "enabled": false, "keyword": "hiesp", "wake_prompt": "你好，我在听，请说。" },
+            "speech": { "api_url": "https://vop.baidu.com/server_api", "api_key": "", "api_secret": "", "model": "1537", "language": "zh" },
+            "tts": { "voice": "0", "rate": "+0%", "pitch": "+0Hz" },
+            "realtime": {
+                "provider": "openai_compatible",
+                "ws_url": "wss://api.openai.com/v1/realtime",
+                "api_key": "",
+                "model": "gpt-realtime",
+                "voice": "alloy",
+                "instructions": ""
+            },
+            "ambient_listening": {
+                "enabled": false,
+                "detect_emotions": true,
+                "sound_events": ["sigh"],
+                "cooldown_minutes": 10,
+                "check_interval_seconds": 300
+            },
+            "led_indicator": {
+                "enabled": false,
+                "pin": 2,
+                "states": { "listening": "breathing", "processing": "fast_blink", "speaking": "solid" }
+            }
+        })
+        .to_string();
+
+        let response = post_audio(&ctx, &body).expect("post_audio response");
+
+        assert_eq!(response.status, 400);
     }
 
     fn build_test_context() -> crate::platform::http_server::handlers::HandlerContext {

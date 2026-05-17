@@ -11,6 +11,7 @@ use crate::llm::types::{AnthropicResponse, StopReason, ToolCall};
 use crate::llm::{LlmClient, LlmHttpClient, LlmResponse, Message, ToolChoicePolicy, ToolSpec};
 use serde::Deserialize;
 use serde_json;
+use std::borrow::Cow;
 
 const TAG: &str = "llm::anthropic";
 const API_BASE: &str = "https://api.anthropic.com/v1/messages";
@@ -294,8 +295,10 @@ struct AnthropicContentBlockStart<'a> {
 struct AnthropicContentBlock<'a> {
     #[serde(rename = "type")]
     block_type: &'a str,
-    id: Option<&'a str>,
-    name: Option<&'a str>,
+    #[serde(borrow)]
+    id: Option<Cow<'a, str>>,
+    #[serde(borrow)]
+    name: Option<Cow<'a, str>>,
 }
 
 #[derive(Deserialize)]
@@ -308,8 +311,10 @@ struct AnthropicContentBlockDeltaEvent<'a> {
 struct AnthropicDeltaInner<'a> {
     #[serde(rename = "type")]
     delta_type: &'a str,
-    text: Option<&'a str>,
-    partial_json: Option<&'a str>,
+    #[serde(borrow)]
+    text: Option<Cow<'a, str>>,
+    #[serde(borrow)]
+    partial_json: Option<Cow<'a, str>>,
 }
 
 #[derive(Deserialize)]
@@ -320,7 +325,8 @@ struct AnthropicMessageDeltaEvent<'a> {
 
 #[derive(Deserialize)]
 struct AnthropicMessageDelta<'a> {
-    stop_reason: Option<&'a str>,
+    #[serde(borrow)]
+    stop_reason: Option<Cow<'a, str>>,
 }
 
 /// Anthropic SSE 流式累加器：逐事件拼接 content / tool_calls，最终产出 LlmResponse。
@@ -347,15 +353,15 @@ impl AnthropicStreamAccumulator {
     }
 
     /// 处理单条 SSE 事件（event type + JSON data），返回 text_delta 借用供进度回调（零分配）。
-    fn handle_event_value<'a>(&mut self, event_type: &str, data: &'a str) -> Option<&'a str> {
+    fn handle_event_value<'a>(&mut self, event_type: &str, data: &'a str) -> Option<Cow<'a, str>> {
         match event_type {
             "content_block_start" => {
                 if let Ok(v) = serde_json::from_str::<AnthropicContentBlockStart>(data) {
                     if let Some(cb) = v.content_block {
                         if cb.block_type == "tool_use" {
                             self.tool_calls.push(ToolCallBuilder {
-                                id: cb.id.unwrap_or("").to_string(),
-                                name: cb.name.unwrap_or("").to_string(),
+                                id: cb.id.as_deref().unwrap_or("").to_string(),
+                                name: cb.name.as_deref().unwrap_or("").to_string(),
                                 input_json: String::new(),
                             });
                         }
@@ -368,13 +374,13 @@ impl AnthropicStreamAccumulator {
                     if let Some(delta) = v.delta {
                         match delta.delta_type {
                             "text_delta" => {
-                                if let Some(text) = delta.text {
+                                if let Some(text) = delta.text.as_ref() {
                                     self.content.push_str(text);
-                                    return Some(text);
+                                    return Some(text.clone());
                                 }
                             }
                             "input_json_delta" => {
-                                if let Some(partial) = delta.partial_json {
+                                if let Some(partial) = delta.partial_json.as_deref() {
                                     if let Some(tc) = self.tool_calls.last_mut() {
                                         tc.input_json.push_str(partial);
                                     }
@@ -389,7 +395,7 @@ impl AnthropicStreamAccumulator {
             "message_delta" => {
                 if let Ok(v) = serde_json::from_str::<AnthropicMessageDeltaEvent>(data) {
                     if let Some(d) = v.delta {
-                        if let Some(sr) = d.stop_reason {
+                        if let Some(sr) = d.stop_reason.as_deref() {
                             self.stop_reason = match sr {
                                 "end_turn" => StopReason::EndTurn,
                                 "tool_use" => StopReason::ToolUse,
@@ -472,8 +478,9 @@ fn do_request_streaming(
                 while let Some(event) = sse_reader.next_event() {
                     let delta_text = accumulator.handle_event_value(&event.event, &event.data);
 
-                    if let (Some(delta), Some(ref mut cb)) = (delta_text, &mut progress_cb) {
-                        cb(delta, &accumulator.content);
+                    if let (Some(delta), Some(ref mut cb)) = (delta_text.as_ref(), &mut progress_cb)
+                    {
+                        cb(delta.as_ref(), &accumulator.content);
                     }
                 }
                 Ok(())
@@ -607,6 +614,99 @@ mod tests {
 
         assert_eq!(err.stage(), "llm_response_truncated");
         assert_ne!(err.stage(), "producer_empty");
+    }
+
+    struct ScriptedStreamingHttp {
+        chunks: Vec<&'static [u8]>,
+        status: u16,
+    }
+
+    impl LlmHttpClient for ScriptedStreamingHttp {
+        fn do_post(
+            &mut self,
+            _url: &str,
+            _headers: &[(&str, &str)],
+            _body: &[u8],
+        ) -> crate::Result<(u16, crate::platform::ResponseBody)> {
+            unreachable!("scripted streaming test should not call non-streaming POST")
+        }
+
+        fn do_post_streaming(
+            &mut self,
+            _url: &str,
+            _headers: &[(&str, &str)],
+            _body: &[u8],
+            max_response_bytes: Option<usize>,
+            on_chunk: &mut dyn FnMut(&[u8]) -> crate::Result<()>,
+        ) -> crate::Result<u16> {
+            assert!(max_response_bytes.is_some());
+            for chunk in &self.chunks {
+                on_chunk(chunk)?;
+            }
+            Ok(self.status)
+        }
+    }
+
+    #[test]
+    fn streaming_chat_preserves_escaped_newlines_in_text_deltas() {
+        let client = AnthropicClient::from_source(
+            &LlmSource {
+                id: "anthropic-stream-newlines".to_string(),
+                provider: "anthropic".to_string(),
+                api_key: "k".to_string(),
+                model: "claude".to_string(),
+                api_url: "https://example.test/v1/messages".to_string(),
+                max_tokens: Some(128),
+                model_kind: LlmModelKind::Text,
+                custom_headers: Vec::<LlmHeaderEntry>::new(),
+            },
+            true,
+        );
+        let mut http = ScriptedStreamingHttp {
+            chunks: vec![
+                br#"event: content_block_delta
+data: {"delta":{"type":"text_delta","text":"**Status"}}
+
+"#,
+                br#"event: content_block_delta
+data: {"delta":{"type":"text_delta","text":"\n"}}
+
+"#,
+                br#"event: content_block_delta
+data: {"delta":{"type":"text_delta","text":"- WiFi: connected"}}
+
+"#,
+                br#"event: content_block_delta
+data: {"delta":{"type":"text_delta","text":"\n\n"}}
+
+"#,
+                br#"event: content_block_delta
+data: {"delta":{"type":"text_delta","text":"All good."}}
+
+"#,
+                br#"event: message_delta
+data: {"delta":{"stop_reason":"end_turn"}}
+
+"#,
+            ],
+            status: 200,
+        };
+
+        let response = LlmClient::chat(
+            &client,
+            &mut http,
+            "",
+            &[Message {
+                role: std::borrow::Cow::Borrowed("user"),
+                content: "hi".to_string(),
+            }],
+            None,
+            ToolChoicePolicy::Auto,
+        )
+        .expect("streaming response");
+
+        assert_eq!(response.stop_reason, crate::llm::types::StopReason::EndTurn);
+        assert_eq!(response.content, "**Status\n- WiFi: connected\n\nAll good.");
     }
 
     #[test]

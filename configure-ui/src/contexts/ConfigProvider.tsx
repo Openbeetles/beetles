@@ -372,6 +372,7 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
         setHardwareSegment({
           hardware_devices: ensureHardwareDeviceIds(list),
           i2c_bus: d.i2c_bus ?? undefined,
+          i2s_bus: d.i2s_bus ?? null,
           i2c_devices: Array.isArray(d.i2c_devices) ? d.i2c_devices : undefined,
           i2c_sensors: Array.isArray(d.i2c_sensors) ? d.i2c_sensors : [],
         });

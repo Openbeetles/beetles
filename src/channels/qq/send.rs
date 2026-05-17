@@ -272,7 +272,11 @@ fn qq_payload_chunk_count_for_message(message: &QueuedOutboundMessage) -> usize 
             qq_plain_text_chunk_count(&body.text)
         }
         CanonicalMessageBody::Text(body) if body.format == TextFormat::Markdown => {
-            qq_plain_text_chunk_count(&render_qq_plain_text(&body.text))
+            if qq_markdown_requires_plain_chunk_fallback(&body.text) {
+                qq_plain_text_chunk_count(&qq_markdown_fallback_content(&body.text))
+            } else {
+                1
+            }
         }
         _ => 1,
     }
@@ -282,6 +286,19 @@ fn qq_plain_text_chunk_count(content: &str) -> usize {
     crate::channels::chunk::chunk_text_by_char_count(content, QQ_MAX_MESSAGE_LEN)
         .len()
         .max(1)
+}
+
+fn qq_markdown_requires_plain_chunk_fallback(markdown: &str) -> bool {
+    crate::channels::chunk::chunk_text_by_char_count(markdown, QQ_MAX_MESSAGE_LEN).len() > 1
+}
+
+fn qq_markdown_fallback_content(markdown: &str) -> String {
+    let projected = render_qq_plain_text(markdown);
+    if projected.trim().is_empty() {
+        markdown.trim().to_string()
+    } else {
+        projected
+    }
 }
 
 fn resolve_retryable_send_reservation(
@@ -458,6 +475,34 @@ fn build_qq_card_body(
         .map_err(|e| crate::error::Error::config("qq_send", e.to_string()))
 }
 
+fn build_qq_markdown_body(
+    chat_id: &str,
+    markdown_content: &str,
+    fallback_content: &str,
+    msg_id: Option<&str>,
+    msg_seq: Option<u64>,
+) -> crate::error::Result<Vec<u8>> {
+    let mut map = serde_json::Map::new();
+    if is_v2_chat(chat_id) {
+        map.insert("msg_type".to_string(), serde_json::json!(2));
+    }
+    if !fallback_content.trim().is_empty() {
+        map.insert(
+            "content".to_string(),
+            serde_json::json!(fallback_content.trim()),
+        );
+    }
+    map.insert(
+        "markdown".to_string(),
+        serde_json::json!({
+            "content": markdown_content,
+        }),
+    );
+    push_reply_metadata(&mut map, msg_id, msg_seq);
+    serde_json::to_vec(&serde_json::Value::Object(map))
+        .map_err(|e| crate::error::Error::config("qq_send", e.to_string()))
+}
+
 fn build_qq_media_body(
     file_info: &str,
     msg_id: Option<&str>,
@@ -619,12 +664,22 @@ fn render_qq_send_payloads<H: ChannelHttpClient>(
 ) -> crate::error::Result<Vec<ByteBuffer>> {
     match &message.body {
         CanonicalMessageBody::Text(body) if body.format == TextFormat::Markdown => {
-            render_qq_plain_text_payloads(
-                &message.chat_id,
-                &render_qq_plain_text(&body.text),
-                msg_id,
-                msg_seq,
-            )
+            if qq_markdown_requires_plain_chunk_fallback(&body.text) {
+                render_qq_plain_text_payloads(
+                    &message.chat_id,
+                    &qq_markdown_fallback_content(&body.text),
+                    msg_id,
+                    msg_seq,
+                )
+            } else {
+                Ok(vec![ByteBuffer::from_vec(build_qq_markdown_body(
+                    &message.chat_id,
+                    &body.text,
+                    &qq_markdown_fallback_content(&body.text),
+                    msg_id,
+                    msg_seq.and_then(|reservation| reservation.seq_for_chunk(0)),
+                )?)])
+            }
         }
         CanonicalMessageBody::Text(body) => {
             render_qq_plain_text_payloads(&message.chat_id, &body.text, msg_id, msg_seq)
@@ -1541,7 +1596,7 @@ mod tests {
     }
 
     #[test]
-    fn send_one_qq_downgrades_markdown_body_to_plain_text_payload() {
+    fn send_one_qq_preserves_markdown_body_as_markdown_payload() {
         let mut http = StubHttp::default();
         let message = queued_message_with_body(
             1,
@@ -1571,8 +1626,8 @@ mod tests {
         assert_eq!(guard.sent_bodies.len(), 1);
         let payload: serde_json::Value =
             serde_json::from_slice(&guard.sent_bodies[0]).expect("payload json");
-        assert_eq!(payload.get("msg_type"), Some(&serde_json::json!(0)));
-        assert!(payload.get("markdown").is_none());
+        assert_eq!(payload.get("msg_type"), Some(&serde_json::json!(2)));
+        assert_eq!(payload["markdown"]["content"].as_str(), Some("## Hello"));
         assert_eq!(
             payload.get("content").and_then(|content| content.as_str()),
             Some("Hello")
@@ -1580,7 +1635,37 @@ mod tests {
     }
 
     #[test]
-    fn send_one_qq_converts_markdown_table_before_send() {
+    fn send_one_qq_channel_markdown_payload_omits_v2_msg_type() {
+        let mut http = StubHttp::default();
+        let source = "## Hello";
+        let message = queued_message_with_body(
+            1,
+            "channel-1",
+            source,
+            crate::bus::CanonicalMessageBody::Text(crate::bus::TextBody {
+                text: source.to_string(),
+                format: crate::bus::TextFormat::Markdown,
+            }),
+            Some("req-1"),
+            OutboundKind::Primary,
+        );
+
+        send_one_qq(&mut http, "qq-token", &message, None, None).expect("markdown send");
+
+        let guard = http.state.lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(guard.sent_bodies.len(), 1);
+        let payload: serde_json::Value =
+            serde_json::from_slice(&guard.sent_bodies[0]).expect("payload json");
+        assert!(payload.get("msg_type").is_none());
+        assert_eq!(payload["markdown"]["content"].as_str(), Some(source));
+        assert_eq!(
+            payload.get("content").and_then(|content| content.as_str()),
+            Some("Hello")
+        );
+    }
+
+    #[test]
+    fn send_one_qq_preserves_markdown_table_in_markdown_payload() {
         let mut http = StubHttp::default();
         let source = "# 状态\n\n| 项目 | 值 |\n| --- | --- |\n| CPU | 正常 |\n| 内存 | 256KB |";
         let message = queued_message_with_body(
@@ -1611,8 +1696,8 @@ mod tests {
         assert_eq!(guard.sent_bodies.len(), 1);
         let payload: serde_json::Value =
             serde_json::from_slice(&guard.sent_bodies[0]).expect("payload json");
-        assert_eq!(payload.get("msg_type"), Some(&serde_json::json!(0)));
-        assert!(payload.get("markdown").is_none());
+        assert_eq!(payload.get("msg_type"), Some(&serde_json::json!(2)));
+        assert_eq!(payload["markdown"]["content"].as_str(), Some(source));
         assert_eq!(
             payload.get("content").and_then(|content| content.as_str()),
             Some("状态\n\n• CPU: 正常\n• 内存: 256KB")
@@ -1620,7 +1705,7 @@ mod tests {
     }
 
     #[test]
-    fn send_one_qq_converts_collapsed_markdown_table_before_send() {
+    fn send_one_qq_preserves_collapsed_markdown_table_in_markdown_payload() {
         let mut http = StubHttp::default();
         let source = "状态报告 | 项目 | 值 |---|---| CPU | 正常 | 内存 | 256KB";
         let message = queued_message_with_body(
@@ -1650,8 +1735,8 @@ mod tests {
         let guard = http.state.lock().unwrap_or_else(|e| e.into_inner());
         let payload: serde_json::Value =
             serde_json::from_slice(&guard.sent_bodies[0]).expect("payload json");
-        assert_eq!(payload.get("msg_type"), Some(&serde_json::json!(0)));
-        assert!(payload.get("markdown").is_none());
+        assert_eq!(payload.get("msg_type"), Some(&serde_json::json!(2)));
+        assert_eq!(payload["markdown"]["content"].as_str(), Some(source));
         assert_eq!(
             payload.get("content").and_then(|content| content.as_str()),
             Some("状态报告\n• CPU: 正常\n• 内存: 256KB")
@@ -1737,7 +1822,7 @@ mod tests {
     }
 
     #[test]
-    fn send_one_qq_converts_code_fence_before_send() {
+    fn send_one_qq_preserves_code_fence_in_markdown_payload() {
         let mut http = StubHttp::default();
         let source = "```rust\nlet x = 1;\n```";
         let message = queued_message_with_body(
@@ -1767,15 +1852,14 @@ mod tests {
         let guard = http.state.lock().unwrap_or_else(|e| e.into_inner());
         let payload: serde_json::Value =
             serde_json::from_slice(&guard.sent_bodies[0]).expect("payload json");
-        assert_eq!(payload.get("msg_type"), Some(&serde_json::json!(0)));
-        assert!(payload.get("markdown").is_none());
+        assert_eq!(payload.get("msg_type"), Some(&serde_json::json!(2)));
+        assert_eq!(payload["markdown"]["content"].as_str(), Some(source));
         let content = payload
             .get("content")
             .and_then(|content| content.as_str())
             .expect("content");
         assert!(content.contains("Code: rust"));
         assert!(content.contains("let x = 1;"));
-        assert!(!content.contains("```"));
     }
 
     #[test]

@@ -1,13 +1,19 @@
 import type { AudioConfig } from "../types/audioConfig.ts";
+import type { HardwareSegment } from "../types/hardwareConfig.ts";
 import {
   AUDIO_CONFIG_VERSION,
+  AUDIO_I2C_ADDR_MAX,
+  AUDIO_I2C_ADDR_MIN,
   AUDIO_PIN_MAX,
   AUDIO_PIN_MIN,
   AUDIO_SAMPLE_RATE_MAX,
   AUDIO_SAMPLE_RATE_MIN,
+  audioInputCodecSupported,
+  audioOutputCodecSupported,
   audioRealtimeConfigured,
   audioRealtimeProviderSupported,
   audioSpeakerPinsOrDefault,
+  audioTopologySupported,
   realtimeRequiredSampleRate,
 } from "../types/audioConfig.ts";
 import type { DeviceRuntimeKind } from "../store/deviceStatusStore.ts";
@@ -16,29 +22,42 @@ export function validateAudioConfig(
   form: AudioConfig,
   runtimeKind: DeviceRuntimeKind,
   t: (key: string) => string,
+  hardwareSegment?: HardwareSegment | null,
 ): string | null {
   const realtimeReady = audioRealtimeConfigured(form);
   const wakeVoicePipelineEnabled = form.enabled && form.wake_word.enabled;
   const speakerPins = audioSpeakerPinsOrDefault(form.speaker.pins);
   const wake = form.wake_word;
+  const codecTopology = form.topology === "i2s_codec";
 
   if (form.version !== AUDIO_CONFIG_VERSION) {
     return t("audioConfig.validation.version");
+  }
+  if (!audioTopologySupported(form.topology)) {
+    return t("audioConfig.validation.topology");
   }
 
   const pinInRange = (pin: number) => pin >= AUDIO_PIN_MIN && pin <= AUDIO_PIN_MAX;
   const sampleRateInRange = (value: number) =>
     value >= AUDIO_SAMPLE_RATE_MIN && value <= AUDIO_SAMPLE_RATE_MAX;
+  const addrInRange = (value: number) =>
+    value >= AUDIO_I2C_ADDR_MIN && value <= AUDIO_I2C_ADDR_MAX;
 
   if (runtimeKind === "linux" && form.microphone.enabled) {
     return t("audioConfig.validation.linuxMicrophoneUnsupported");
   }
+  if (runtimeKind === "linux" && codecTopology) {
+    return t("audioConfig.validation.linuxCodecTopologyUnsupported");
+  }
 
   if (form.microphone.enabled) {
     if (
-      !pinInRange(form.microphone.pins.ws) ||
-      !pinInRange(form.microphone.pins.sck) ||
-      !pinInRange(form.microphone.pins.din)
+      !codecTopology &&
+      (
+        !pinInRange(form.microphone.pins.ws) ||
+        !pinInRange(form.microphone.pins.sck) ||
+        !pinInRange(form.microphone.pins.din)
+      )
     ) {
       return t("audioConfig.validation.pin");
     }
@@ -49,26 +68,70 @@ export function validateAudioConfig(
 
   if (form.speaker.enabled) {
     if (runtimeKind === "linux") {
-      if (form.speaker.device_type !== "usb") {
+      if (!codecTopology && form.speaker.device_type !== "usb") {
         return t("audioConfig.validation.linuxSpeakerDeviceType");
       }
-      if (!form.speaker.device_ref?.trim()) {
+      if (!codecTopology && !form.speaker.device_ref?.trim()) {
         return t("audioConfig.validation.speakerUsbRequired");
       }
-    } else {
-      if (
+    } else if (
+      !codecTopology &&
+      (
         !pinInRange(speakerPins.ws) ||
         !pinInRange(speakerPins.sck) ||
         !pinInRange(speakerPins.dout)
-      ) {
-        return t("audioConfig.validation.pin");
-      }
-      if (speakerPins.sd != null && !pinInRange(speakerPins.sd)) {
-        return t("audioConfig.validation.pin");
-      }
+      )
+    ) {
+      return t("audioConfig.validation.pin");
+    } else if (
+      !codecTopology &&
+      speakerPins.sd != null &&
+      !pinInRange(speakerPins.sd)
+    ) {
+      return t("audioConfig.validation.pin");
     }
     if (!sampleRateInRange(form.speaker.sample_rate)) {
       return t("audioConfig.validation.sampleRate");
+    }
+  }
+
+  if (codecTopology) {
+    if (hardwareSegment?.i2c_bus == null) {
+      return t("audioConfig.validation.codecI2cBusRequired");
+    }
+    if (hardwareSegment.i2s_bus == null) {
+      return t("audioConfig.validation.codecI2sBusRequired");
+    }
+    if (!form.codec.input_codec?.trim()) {
+      return t("audioConfig.validation.codecInputCodecRequired");
+    }
+    if (!audioInputCodecSupported(form.codec.input_codec.trim())) {
+      return t("audioConfig.validation.codecInputCodec");
+    }
+    if (!form.codec.output_codec?.trim()) {
+      return t("audioConfig.validation.codecOutputCodecRequired");
+    }
+    if (!audioOutputCodecSupported(form.codec.output_codec.trim())) {
+      return t("audioConfig.validation.codecOutputCodec");
+    }
+    if (form.codec.input_addr != null && !addrInRange(form.codec.input_addr)) {
+      return t("audioConfig.validation.codecInputAddr");
+    }
+    if (form.codec.output_addr != null && !addrInRange(form.codec.output_addr)) {
+      return t("audioConfig.validation.codecOutputAddr");
+    }
+    if (form.codec.pa_pin == null || !pinInRange(form.codec.pa_pin)) {
+      return t("audioConfig.validation.codecPaPin");
+    }
+    if (typeof form.codec.input_reference !== "boolean") {
+      return t("audioConfig.validation.codecInputReference");
+    }
+    if (
+      form.microphone.enabled &&
+      form.speaker.enabled &&
+      form.microphone.sample_rate !== form.speaker.sample_rate
+    ) {
+      return t("audioConfig.validation.codecSampleRateMatch");
     }
   }
 

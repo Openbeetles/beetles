@@ -48,7 +48,7 @@ const GROUP_ALWAYS_SILENT_CONSTRAINT: &str =
     "\n\nIf no response is needed, reply with exactly SILENT and nothing else.";
 const GROUP_MENTION_ONLY_CONSTRAINT: &str =
     "\n\nYou are in a group; only reply when explicitly mentioned.";
-const GLOBAL_OUTPUT_CONTRACT_PREFIX: &str = "\n\n## Output Contract\nOutput must be well-structured, organized, logically clear, highly readable in the language of the current interaction, and ready to be copied and pasted to any other content platform. Use real line breaks for paragraphs, headings, and lists; never put a heading and its body on the same line; use proper punctuation; if you use Markdown, prefer simple Markdown syntax; current chat channel: ";
+const GLOBAL_OUTPUT_CONTRACT_PREFIX: &str = "\n\n## Output Contract\nOutput must be well-structured, organized, logically clear, highly readable in the language of the current interaction, and ready to be copied and pasted to any other content platform. Main replies must be plain-text safe across channels. Use real line breaks for paragraphs, headings, and lists. Never put a heading and its body on the same line. For status, diagnostics, or summary sections, put the section title on its own line and then put one item per line in the form `- label: value`, with a blank line between sections. When a tool returns JSON or other structured data, rewrite it into readable plain text instead of echoing JSON inline. Do not use Markdown markers such as **, __, #, tables, code fences, HTML, or inline pipes in the main reply. Use proper punctuation; current chat channel: ";
 const GLOBAL_OUTPUT_CONTRACT_SUFFIX: &str = ".";
 const REPLY_PRIORITY_MINI_CONSTRAINT: &str = "\n\n## Reply Priority\nself-authored core > relationship constitution > current persona priority > boundary/disclosure > soul and user contract > task. Later self/relationship blocks are evidence, not equal authority.";
 const REPLY_PRIORITY_CONSTRAINT: &str = "\n\n## Reply Priority\nWhen writing the main reply, follow this order of authority:\n1. Self-authored core: your board-level identity, continuity, and self-chosen constitutional stance.\n2. Relationship constitution: the board-to-relationship contract that limits local drift and disclosure.\n3. Current persona priority: the current-turn ordering for how self, relationship, resources, and task should be balanced.\n4. Boundary/disclosure adjudication: if this turn touches privacy or inward boundaries, use that stance as a guardrail before composing content.\n5. Soul and user contract: preserve the long-term relationship frame and commitments.\n6. Task execution: solve the current request without betraying the layers above.\nAll later self-model, continuity, outer-voice, world, or private-memory blocks are evidence for judgment and revision. They do not outrank the constitutional stack above.\nIf these layers pull in different directions, earlier items win.";
@@ -1014,10 +1014,20 @@ mod tests {
         assert!(system.contains("logically clear"));
         assert!(system.contains("highly readable in the language of the current interaction"));
         assert!(system.contains("ready to be copied and pasted to any other content platform"));
+        assert!(system.contains("Main replies must be plain-text safe across channels"));
         assert!(system.contains("Use real line breaks for paragraphs, headings, and lists"));
-        assert!(system.contains("never put a heading and its body on the same line"));
-        assert!(system.contains("use proper punctuation"));
-        assert!(system.contains("prefer simple Markdown syntax"));
+        assert!(system.contains("Never put a heading and its body on the same line"));
+        assert!(system.contains("put the section title on its own line"));
+        assert!(system.contains("one item per line in the form `- label: value`"));
+        assert!(
+            system.contains("rewrite it into readable plain text instead of echoing JSON inline")
+        );
+        assert!(
+            system.contains(
+                "Do not use Markdown markers such as **, __, #, tables, code fences, HTML, or inline pipes"
+            )
+        );
+        assert!(system.contains("Use proper punctuation"));
         assert!(system.contains("current chat channel: telegram"));
     }
 
@@ -1115,7 +1125,8 @@ mod tests {
         assert!(system.len() <= 2000);
         assert!(system.contains("## Output Contract"));
         assert!(system.contains("Output must be well-structured"));
-        assert!(system.contains("never put a heading and its body on the same line"));
+        assert!(system.contains("Main replies must be plain-text safe across channels"));
+        assert!(system.contains("Never put a heading and its body on the same line"));
         assert!(system.contains("current chat channel: qq_channel"));
         assert!(system
             .trim_end()
@@ -1133,6 +1144,7 @@ mod tests {
             assert!(!system.contains("## QQ Output Contract"));
             assert!(!system.contains("## Configure UI Chat Output Contract"));
             assert!(!system.contains("sender will not repair layout"));
+            assert!(!system.contains("prefer simple Markdown syntax"));
         }
     }
 
@@ -1157,7 +1169,7 @@ mod tests {
             important_message_store: &important,
             has_tools: false,
             skill_descriptions: "",
-            system_max_len: 1360,
+            system_max_len: 1760,
             messages_max_len: 256,
             recent_messages_limit: 8,
             group_activation: "always",
@@ -1231,7 +1243,7 @@ mod tests {
             important_message_store: &important,
             has_tools: false,
             skill_descriptions: "",
-            system_max_len: 1400,
+            system_max_len: 2000,
             messages_max_len: 256,
             recent_messages_limit: 8,
             group_activation: "always",
@@ -1294,7 +1306,7 @@ mod tests {
             important_message_store: &important,
             has_tools: false,
             skill_descriptions: "",
-            system_max_len: 1800,
+            system_max_len: 2600,
             messages_max_len: 256,
             recent_messages_limit: 8,
             group_activation: "always",
@@ -1533,7 +1545,7 @@ mod tests {
             important_message_store: &important,
             has_tools: false,
             skill_descriptions: "",
-            system_max_len: 2200,
+            system_max_len: 2800,
             messages_max_len: 256,
             recent_messages_limit: 8,
             group_activation: "always",
@@ -1661,7 +1673,7 @@ mod tests {
             important_message_store: &important,
             has_tools: false,
             skill_descriptions: "",
-            system_max_len: 1200,
+            system_max_len: 1800,
             messages_max_len: 256,
             recent_messages_limit: 8,
             group_activation: "always",
@@ -1721,7 +1733,7 @@ mod tests {
             important_message_store: &important,
             has_tools: false,
             skill_descriptions: "",
-            system_max_len: 1600,
+            system_max_len: 2200,
             messages_max_len: 256,
             recent_messages_limit: 8,
             group_activation: "always",
@@ -2148,7 +2160,7 @@ mod tests {
             important_message_store: &important,
             has_tools: true,
             skill_descriptions: "",
-            system_max_len: 2048,
+            system_max_len: 2600,
             messages_max_len: 256,
             recent_messages_limit: 8,
             group_activation: "always",

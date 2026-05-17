@@ -5,6 +5,7 @@ import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
 import IconButton from "@mui/material/IconButton";
 import TextField from "@mui/material/TextField";
+import Typography from "@mui/material/Typography";
 import AddRounded from "@mui/icons-material/AddRounded";
 import DeleteOutlineRounded from "@mui/icons-material/DeleteOutlineRounded";
 import SaveRounded from "@mui/icons-material/SaveRounded";
@@ -26,15 +27,8 @@ import { OS_ICON_DEVICE_CONFIG } from "../config/osIcons";
 import { PAGE_COLUMN_FILL_SX, PAGE_STACK_OUTER_SX } from "../theme/panelStyles";
 import { useConfig } from "../hooks/useConfig";
 import { useConfigEditorController } from "../hooks/useConfigEditorController";
-import type { I2cBusConfig, I2cSensorEntry } from "../types/hardwareConfig";
+import type { I2cSensorEntry } from "../types/hardwareConfig";
 import {
-  HARDWARE_PIN_MAX,
-  HARDWARE_PIN_MIN,
-  I2C_BUS_DEFAULT_FREQ_HZ,
-  I2C_BUS_DEFAULT_SCL_PIN,
-  I2C_BUS_DEFAULT_SDA_PIN,
-  I2C_BUS_FREQ_MAX,
-  I2C_BUS_FREQ_MIN,
   I2C_MAX_READ_LEN_UI,
   I2C_SENSOR_ADDR_MAX,
   I2C_SENSOR_ADDR_MIN,
@@ -49,14 +43,6 @@ import { validateHardwareSegment } from "./hardwareConfigValidation";
 function asNumber(v: string): number | null {
   const n = Number(v);
   return Number.isFinite(n) ? n : null;
-}
-
-function defaultI2cBus(): I2cBusConfig {
-  return {
-    sda_pin: I2C_BUS_DEFAULT_SDA_PIN,
-    scl_pin: I2C_BUS_DEFAULT_SCL_PIN,
-    freq_hz: I2C_BUS_DEFAULT_FREQ_HZ,
-  };
 }
 
 function createNewI2cSensor(taken: Set<string>): I2cSensorEntry {
@@ -88,28 +74,20 @@ export function I2cSensorsPanel() {
     load: loadHardwareConfig,
   });
   const [saveRestartRequired, setSaveRestartRequired] = useState(false);
-  const [draftI2cBus, setDraftI2cBus] = useState<I2cBusConfig | null>();
   const [draftI2cSensors, setDraftI2cSensors] = useState<
     I2cSensorEntry[] | null
   >(null);
   const [i2cRawInitDraft, setI2cRawInitDraft] = useState<Record<number, string>>(
     {},
   );
-  const hasSegmentSource =
-    hardwareSegment !== null ||
-    draftI2cBus !== undefined ||
-    draftI2cSensors !== null;
+  const hasSegmentSource = hardwareSegment !== null || draftI2cSensors !== null;
   const loadErrorState = splitPageErrorState({
     hasData: hasSegmentSource,
     loading: hardwareLoading,
     error: hardwareError,
   });
 
-  const i2cBus = useMemo(
-    () =>
-      draftI2cBus !== undefined ? draftI2cBus : hardwareSegment?.i2c_bus ?? null,
-    [draftI2cBus, hardwareSegment],
-  );
+  const i2cBus = hardwareSegment?.i2c_bus ?? null;
   const i2cSensors = useMemo(
     () => draftI2cSensors ?? hardwareSegment?.i2c_sensors ?? [],
     [draftI2cSensors, hardwareSegment],
@@ -119,19 +97,6 @@ export function I2cSensorsPanel() {
     [hardwareSegment, i2cBus, i2cSensors],
   );
   const saveDisabled = editor.saveDisabled;
-
-  const updateBus = (patch: Partial<I2cBusConfig>) => {
-    editor.markDirty();
-    setDraftI2cBus((prev) => ({
-      ...(prev ?? hardwareSegment?.i2c_bus ?? defaultI2cBus()),
-      ...patch,
-    }));
-  };
-
-  const clearBus = () => {
-    editor.markDirty();
-    setDraftI2cBus(null);
-  };
 
   const updateI2cSensor = (index: number, next: I2cSensorEntry) => {
     editor.markDirty();
@@ -154,9 +119,6 @@ export function I2cSensorsPanel() {
   const addI2cSensor = () => {
     if (i2cSensors.length >= MAX_I2C_SENSORS) return;
     editor.markDirty();
-    if (i2cBus == null) {
-      setDraftI2cBus(defaultI2cBus());
-    }
     setDraftI2cSensors((prev) => {
       const base = prev ?? hardwareSegment?.i2c_sensors ?? [];
       const taken = new Set<string>();
@@ -177,7 +139,6 @@ export function I2cSensorsPanel() {
       performSave: () => saveHardwareConfig(segmentToSave),
       onSuccess: (result) => {
         setSaveRestartRequired(Boolean(result.restartRequired));
-        setDraftI2cBus(undefined);
         setDraftI2cSensors(null);
       },
     });
@@ -278,68 +239,6 @@ export function I2cSensorsPanel() {
         }
       >
         <FormFieldStack>
-          <FormSectionSubCollapsible
-            title={t("i2cSensorsConfig.busTitle")}
-            defaultOpen
-            action={
-              <Button
-                size="small"
-                variant="text"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  clearBus();
-                }}
-              >
-                {t("i2cSensorsConfig.clearBus")}
-              </Button>
-            }
-          >
-            <FormGrid>
-              <TextField
-                type="number"
-                label={t("i2cSensorsConfig.sdaPin")}
-                helperText={t("i2cSensorsConfig.busPinHelp")}
-                value={i2cBus?.sda_pin ?? ""}
-                onChange={(e) => {
-                  const n = asNumber(e.target.value);
-                  updateBus({ sda_pin: n ?? I2C_BUS_DEFAULT_SDA_PIN });
-                }}
-                slotProps={{
-                  htmlInput: { min: HARDWARE_PIN_MIN, max: HARDWARE_PIN_MAX },
-                }}
-              />
-              <TextField
-                type="number"
-                label={t("i2cSensorsConfig.sclPin")}
-                helperText={t("i2cSensorsConfig.busPinHelp")}
-                value={i2cBus?.scl_pin ?? ""}
-                onChange={(e) => {
-                  const n = asNumber(e.target.value);
-                  updateBus({ scl_pin: n ?? I2C_BUS_DEFAULT_SCL_PIN });
-                }}
-                slotProps={{
-                  htmlInput: { min: HARDWARE_PIN_MIN, max: HARDWARE_PIN_MAX },
-                }}
-              />
-              <TextField
-                type="number"
-                label={t("i2cSensorsConfig.freqHz")}
-                helperText={t("i2cSensorsConfig.freqHelp")}
-                value={i2cBus?.freq_hz ?? ""}
-                onChange={(e) => {
-                  const raw = e.target.value.trim();
-                  const n = raw === "" ? undefined : asNumber(raw);
-                  updateBus({
-                    freq_hz: n == null ? undefined : Math.round(n),
-                  });
-                }}
-                slotProps={{
-                  htmlInput: { min: I2C_BUS_FREQ_MIN, max: I2C_BUS_FREQ_MAX },
-                }}
-              />
-            </FormGrid>
-          </FormSectionSubCollapsible>
-
           {i2cSensors.map((sens, i) => (
             <FormSectionSubCollapsible
               key={`${sens.id}-${i}`}
@@ -569,10 +468,23 @@ export function I2cSensorsPanel() {
               variant="outlined"
               startIcon={<AddRounded />}
               onClick={addI2cSensor}
-              disabled={i2cSensors.length >= MAX_I2C_SENSORS}
+              disabled={i2cBus == null || i2cSensors.length >= MAX_I2C_SENSORS}
             >
               {t("hardwareConfig.addI2cSensor")}
             </Button>
+            {i2cBus == null ? (
+              <Typography
+                variant="caption"
+                sx={{
+                  mt: 0.75,
+                  display: "block",
+                  color: "var(--semantic-danger)",
+                  fontSize: "var(--font-size-caption)",
+                }}
+              >
+                {t("i2cSensorsConfig.busRequiredDesc")}
+              </Typography>
+            ) : null}
           </Box>
         </FormFieldStack>
       </SettingsSection>

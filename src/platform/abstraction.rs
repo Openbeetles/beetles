@@ -2,7 +2,7 @@
 //! 核心域与 main 仅依赖这些 trait，便于后续支持多种硬件。
 
 use crate::calendar::CalendarStore;
-use crate::config::{AppConfig, AudioSegment, PinConfig};
+use crate::config::{AppConfig, AudioSegment, I2cBusConfig, I2sBusConfig, PinConfig};
 use crate::display::{DisplayCommand, DisplayConfig};
 use crate::error::{Error, Result};
 use crate::memory::{
@@ -777,7 +777,12 @@ pub trait Platform: Send + Sync + PlatformCamera {
     }
 
     /// 初始化音频硬件（麦克风/喇叭）。默认 no-op（非音频平台）。
-    fn init_audio(&self, _config: &AudioSegment) -> Result<()> {
+    fn init_audio(
+        &self,
+        _config: &AudioSegment,
+        _i2c_bus: Option<&I2cBusConfig>,
+        _i2s_bus: Option<&I2sBusConfig>,
+    ) -> Result<()> {
         Ok(())
     }
 

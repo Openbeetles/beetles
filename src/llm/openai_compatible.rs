@@ -9,6 +9,7 @@ use crate::llm::request_body::LlmRequestBody;
 use crate::llm::types::{LlmResponse, StopReason, ToolCall, MAX_REQUEST_BODY_LEN};
 use crate::llm::{LlmClient, LlmHttpClient, LlmModelCompat, Message, ToolChoicePolicy, ToolSpec};
 use serde::Deserialize;
+use std::borrow::Cow;
 
 const TAG: &str = "llm::openai_compat";
 const DEFAULT_API_BASE: &str = "https://api.openai.com/v1";
@@ -423,7 +424,8 @@ struct OpenAiStreamChoice<'a> {
 
 #[derive(Debug, Deserialize)]
 struct OpenAiStreamDelta<'a> {
-    content: Option<&'a str>,
+    #[serde(borrow)]
+    content: Option<Cow<'a, str>>,
     #[serde(borrow, default)]
     tool_calls: Option<Vec<OpenAiStreamToolCallDelta<'a>>>,
 }
@@ -431,14 +433,17 @@ struct OpenAiStreamDelta<'a> {
 #[derive(Debug, Deserialize)]
 struct OpenAiStreamToolCallDelta<'a> {
     index: Option<u64>,
-    id: Option<&'a str>,
+    #[serde(borrow)]
+    id: Option<Cow<'a, str>>,
     function: Option<OpenAiStreamFunctionDelta<'a>>,
 }
 
 #[derive(Debug, Deserialize)]
 struct OpenAiStreamFunctionDelta<'a> {
-    name: Option<&'a str>,
-    arguments: Option<&'a str>,
+    #[serde(borrow)]
+    name: Option<Cow<'a, str>>,
+    #[serde(borrow)]
+    arguments: Option<Cow<'a, str>>,
 }
 
 /// OpenAI SSE 流式累加器：逐事件拼接 content / tool_calls。
@@ -465,8 +470,8 @@ impl OpenAiStreamAccumulator {
     }
 
     /// 处理单条 SSE data 的已解析 JSON chunk；返回 content_delta 借用供进度回调（零分配）。
-    fn handle_chunk<'a>(&mut self, chunk: &OpenAiStreamChunk<'a>) -> Option<&'a str> {
-        let mut delta_text: Option<&'a str> = None;
+    fn handle_chunk<'a>(&mut self, chunk: &'a OpenAiStreamChunk<'a>) -> Option<Cow<'a, str>> {
+        let mut delta_text: Option<Cow<'a, str>> = None;
 
         for choice in &chunk.choices {
             if let Some(fr) = choice.finish_reason {
@@ -478,9 +483,9 @@ impl OpenAiStreamAccumulator {
                 None => continue,
             };
 
-            if let Some(text) = delta.content {
+            if let Some(text) = delta.content.as_ref() {
                 self.content.push_str(text);
-                delta_text = Some(text);
+                delta_text = Some(text.clone());
             }
 
             if let Some(ref tc_arr) = delta.tool_calls {
@@ -503,14 +508,14 @@ impl OpenAiStreamAccumulator {
                         });
                     }
                     let builder = &mut self.tool_calls[index];
-                    if let Some(id) = tc.id {
+                    if let Some(id) = tc.id.as_deref() {
                         builder.id = id.to_string();
                     }
                     if let Some(ref func) = tc.function {
-                        if let Some(name) = func.name {
+                        if let Some(name) = func.name.as_deref() {
                             builder.name.push_str(name);
                         }
-                        if let Some(args) = func.arguments {
+                        if let Some(args) = func.arguments.as_deref() {
                             builder.arguments.push_str(args);
                         }
                     }
@@ -594,8 +599,9 @@ fn do_request_streaming(
                     };
                     let delta_text = accumulator.handle_chunk(&parsed);
 
-                    if let (Some(delta), Some(ref mut cb)) = (delta_text, &mut progress_cb) {
-                        cb(delta, &accumulator.content);
+                    if let (Some(delta), Some(ref mut cb)) = (delta_text.as_ref(), &mut progress_cb)
+                    {
+                        cb(delta.as_ref(), &accumulator.content);
                     }
                 }
                 Ok(())
@@ -732,6 +738,96 @@ mod tests {
         .expect_err("stream truncation must be a first-class LLM error");
 
         assert_eq!(err.stage(), "llm_response_truncated");
+    }
+
+    struct ScriptedStreamingHttp {
+        chunks: Vec<&'static [u8]>,
+        status: u16,
+    }
+
+    impl LlmHttpClient for ScriptedStreamingHttp {
+        fn do_post(
+            &mut self,
+            _url: &str,
+            _headers: &[(&str, &str)],
+            _body: &[u8],
+        ) -> crate::Result<(u16, crate::platform::ResponseBody)> {
+            unreachable!("scripted streaming test should not call non-streaming POST")
+        }
+
+        fn do_post_streaming(
+            &mut self,
+            _url: &str,
+            _headers: &[(&str, &str)],
+            _body: &[u8],
+            max_response_bytes: Option<usize>,
+            on_chunk: &mut dyn FnMut(&[u8]) -> crate::Result<()>,
+        ) -> crate::Result<u16> {
+            assert!(max_response_bytes.is_some());
+            for chunk in &self.chunks {
+                on_chunk(chunk)?;
+            }
+            Ok(self.status)
+        }
+    }
+
+    #[test]
+    fn streaming_chat_preserves_escaped_newlines_in_content_chunks() {
+        let client = OpenAiCompatibleClient::from_source(
+            &LlmSource {
+                id: "openai-stream-newlines".to_string(),
+                provider: "openai".to_string(),
+                api_key: "k".to_string(),
+                model: "m".to_string(),
+                api_url: "https://example.test/v1".to_string(),
+                max_tokens: Some(128),
+                model_kind: LlmModelKind::Text,
+                custom_headers: Vec::<LlmHeaderEntry>::new(),
+            },
+            true,
+        );
+        let mut http = ScriptedStreamingHttp {
+            chunks: vec![
+                br#"data: {"choices":[{"delta":{"content":"**Status"}}]}
+
+"#,
+                br#"data: {"choices":[{"delta":{"content":"\n"}}]}
+
+"#,
+                br#"data: {"choices":[{"delta":{"content":"- WiFi: connected"}}]}
+
+"#,
+                br#"data: {"choices":[{"delta":{"content":"\n\n"}}]}
+
+"#,
+                br#"data: {"choices":[{"delta":{"content":"All good."}}]}
+
+"#,
+                br#"data: {"choices":[{"delta":{},"finish_reason":"stop"}]}
+
+"#,
+                br#"data: [DONE]
+
+"#,
+            ],
+            status: 200,
+        };
+
+        let response = LlmClient::chat(
+            &client,
+            &mut http,
+            "",
+            &[Message {
+                role: std::borrow::Cow::Borrowed("user"),
+                content: "hi".to_string(),
+            }],
+            None,
+            ToolChoicePolicy::Auto,
+        )
+        .expect("streaming response");
+
+        assert_eq!(response.stop_reason, crate::llm::types::StopReason::EndTurn);
+        assert_eq!(response.content, "**Status\n- WiFi: connected\n\nAll good.");
     }
 
     #[test]

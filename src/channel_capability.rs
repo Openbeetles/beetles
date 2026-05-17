@@ -89,7 +89,7 @@ const TEXT_FORMATS_DINGTALK: &[TextFormat] = &[
 #[cfg(feature = "wecom")]
 const TEXT_FORMATS_WECOM: &[TextFormat] = &[TextFormat::Plain, TextFormat::Markdown];
 #[cfg(feature = "qq_channel")]
-const TEXT_FORMATS_QQ: &[TextFormat] = &[TextFormat::Plain];
+const TEXT_FORMATS_QQ: &[TextFormat] = &[TextFormat::Plain, TextFormat::Markdown];
 
 pub const CHANNEL_TELEGRAM: &str = "telegram";
 pub const CHANNEL_FEISHU: &str = "feishu";

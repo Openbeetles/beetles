@@ -42,13 +42,16 @@ import { useDeviceRuntimeKind } from '../store/deviceStatusStore'
 import type { HardwareDiscoveryItem } from '../api/endpoints/hardware'
 import {
   AUDIO_AMBIENT_SOUND_EVENT_PRESETS,
+  AUDIO_INPUT_CODEC_TYPES,
   AUDIO_LED_STATE_PRESETS,
   AUDIO_MIC_DEVICE_TYPES,
+  AUDIO_OUTPUT_CODEC_TYPES,
   AUDIO_REALTIME_PROVIDERS,
   AUDIO_SPEECH_LANGUAGES,
   AUDIO_SPEECH_PROVIDERS,
   AUDIO_SPEAKER_DEVICE_TYPES,
   AUDIO_SPEAKER_DEVICE_TYPES_LINUX,
+  AUDIO_TOPOLOGIES,
   AUDIO_TTS_PITCH_PRESETS,
   AUDIO_TTS_RATE_PRESETS,
   AUDIO_VAD_SILENCE_MS_PRESETS,
@@ -70,6 +73,7 @@ import {
   unionFloatPreset,
   unionNumberPreset,
   unionStringPreset,
+  type AudioTopology,
   type AudioConfig,
 } from '../types/audioConfig'
 import { validateAudioConfig } from './audioConfigValidation'
@@ -111,6 +115,9 @@ export function AudioConfigPanel() {
     audioError,
     loadAudioConfig,
     saveAudioConfig,
+    hardwareSegment,
+    hardwareLoading,
+    loadHardwareConfig,
   } = useConfig()
   const editor = useConfigEditorController({
     t,
@@ -131,6 +138,7 @@ export function AudioConfigPanel() {
   const form: AudioConfig = linuxRuntime
     ? {
         ...rawForm,
+        topology: 'discrete_i2s',
         microphone: {
           ...rawForm.microphone,
           enabled: false,
@@ -148,9 +156,9 @@ export function AudioConfigPanel() {
     error: audioError,
   })
   const speakerPins = audioSpeakerPinsOrDefault(form.speaker.pins)
-
-  const saveDisabled = editor.saveDisabled
   const activeAudioTab = form.enabled ? audioTab : 0
+  const codecTopology = form.topology === 'i2s_codec'
+  const saveDisabled = editor.saveDisabled || (codecTopology && hardwareLoading && hardwareSegment == null)
   const setDraftSafe = (next: AudioConfig) => {
     editor.markDirty()
     setDraft(next)
@@ -158,7 +166,7 @@ export function AudioConfigPanel() {
 
   const save = async () => {
     await editor.runSave({
-      validate: () => validateAudioConfig(form, runtimeKind, t),
+      validate: () => validateAudioConfig(form, runtimeKind, t, hardwareSegment),
       onBeforeSave: () => setSaveRestartRequired(false),
       performSave: () => saveAudioConfig(normalizeAudioConfigForSave(form)),
       onSuccess: (result) => {
@@ -184,11 +192,22 @@ export function AudioConfigPanel() {
   const speakerDeviceTypes = linuxRuntime
     ? [...AUDIO_SPEAKER_DEVICE_TYPES_LINUX]
     : [...AUDIO_SPEAKER_DEVICE_TYPES]
-  const speakerUsesUsbDevice = linuxRuntime && form.speaker.device_type === 'usb'
+  const speakerUsesUsbDevice =
+    !codecTopology && linuxRuntime && form.speaker.device_type === 'usb'
   const selectedUsbAudioDevice =
     usbAudioDevices.find((item) => item.device_ref === (form.speaker.device_ref ?? '')) ?? null
   const usbAudioEmpty = !usbAudioLoading && usbAudioDevices.length === 0
   const usbAudioFieldError = usbAudioError ?? (usbAudioEmpty ? t('audioConfig.speakerUsbScanEmpty') : null)
+
+  useEffect(() => {
+    if (!linuxRuntime && !hardwareLoading && hardwareSegment == null) {
+      void loadHardwareConfig()
+    }
+  }, [hardwareLoading, hardwareSegment, linuxRuntime, loadHardwareConfig])
+
+  const topologyChoices = linuxRuntime
+    ? ['discrete_i2s']
+    : unionStringPreset([...AUDIO_TOPOLOGIES], form.topology)
 
   const refreshUsbAudioDevices = async () => {
     if (!linuxRuntime || !audioOn || !spkOn || form.speaker.device_type !== 'usb') {
@@ -359,7 +378,39 @@ export function AudioConfigPanel() {
               <Typography variant="body2" sx={{ mt: 1, color: "var(--text-tertiary)" }}>
                 {t('audioConfig.hintEnableAudioFirst')}
               </Typography>
-            ) : null}
+            ) : (
+              <>
+                <FormGrid sx={{ mt: 1 }}>
+                  <FormControl fullWidth>
+                    <InputLabel id="audio-topology">{t('audioConfig.topology')}</InputLabel>
+                    <Select
+                      labelId="audio-topology"
+                      label={t('audioConfig.topology')}
+                      value={form.topology}
+                      onChange={(e: SelectChangeEvent) =>
+                        setDraftSafe({
+                          ...form,
+                          topology: e.target.value as AudioTopology,
+                        })
+                      }
+                    >
+                      {topologyChoices.map((topology) => (
+                        <MenuItem key={topology} value={topology}>
+                          {(AUDIO_TOPOLOGIES as readonly string[]).includes(topology)
+                            ? t(`audioConfig.topologyLabels.${topology}`)
+                            : topology}
+                        </MenuItem>
+                      ))}
+                    </Select>
+                  </FormControl>
+                </FormGrid>
+                <Typography variant="body2" sx={{ mt: 1, color: 'var(--text-tertiary)' }}>
+                  {codecTopology
+                    ? t('audioConfig.topologyCodecHelp')
+                    : t('audioConfig.topologyDiscreteHelp')}
+                </Typography>
+              </>
+            )}
           </FormSectionSub>
 
           {audioOn ? (
@@ -377,393 +428,540 @@ export function AudioConfigPanel() {
               <Box>
                 {activeAudioTab === 0 && (
                   <>
-              <FormSectionSub title={t('audioConfig.sectionMicrophone')}>
-                <FormSwitchRow
-                  title={t('audioConfig.microphoneEnabled')}
-                  divider={false}
-                  control={
-                    <Switch
-                      checked={form.microphone.enabled}
-                      onChange={(_, checked) =>
-                        setDraftSafe({
-                          ...form,
-                          microphone: { ...form.microphone, enabled: checked },
-                        })
-                      }
-                    />
-                  }
-                />
-                {micOn ? (
-                  <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                    <FormGrid>
-                    <FormControl fullWidth>
-                      <InputLabel id="mic-device-type">{t('audioConfig.deviceType')}</InputLabel>
-                      <Select
-                        labelId="mic-device-type"
-                        label={t('audioConfig.deviceType')}
-                        value={form.microphone.device_type}
-                        onChange={(e: SelectChangeEvent) =>
-                          setDraftSafe({
-                            ...form,
-                            microphone: { ...form.microphone, device_type: e.target.value },
-                          })
+                    <FormSectionSub title={t('audioConfig.sectionMicrophone')}>
+                      <FormSwitchRow
+                        title={t('audioConfig.microphoneEnabled')}
+                        divider={false}
+                        control={
+                          <Switch
+                            checked={form.microphone.enabled}
+                            onChange={(_, checked) =>
+                              setDraftSafe({
+                                ...form,
+                                microphone: { ...form.microphone, enabled: checked },
+                              })
+                            }
+                          />
                         }
-                      >
-                        {unionStringPreset(
-                          [...AUDIO_MIC_DEVICE_TYPES],
-                          form.microphone.device_type,
-                        ).map((dt) => (
-                          <MenuItem key={dt} value={dt}>
-                            {(AUDIO_MIC_DEVICE_TYPES as readonly string[]).includes(dt)
-                              ? t(`audioConfig.deviceMic.${dt}`)
-                              : dt}
-                          </MenuItem>
-                        ))}
-                      </Select>
-                    </FormControl>
-                    <FormControl fullWidth>
-                      <InputLabel id="mic-sr">{t('audioConfig.sampleRate')}</InputLabel>
-                      <Select
-                        labelId="mic-sr"
-                        label={t('audioConfig.sampleRate')}
-                        value={String(form.microphone.sample_rate)}
-                        onChange={(e: SelectChangeEvent) => {
-                          const v = asNumber(e.target.value)
-                          if (v == null) return
-                          setDraftSafe({
-                            ...form,
-                            microphone: { ...form.microphone, sample_rate: Math.trunc(v) },
-                          })
-                        }}
-                      >
-                        {sampleRateSelectOptions(form.microphone.sample_rate).map((sr) => (
-                          <MenuItem key={sr} value={String(sr)}>
-                            {sr} Hz
-                          </MenuItem>
-                        ))}
-                      </Select>
-                    </FormControl>
-                    </FormGrid>
-                    <FormGrid>
-                    <FormControl fullWidth>
-                      <InputLabel id="vad-th">{t('audioConfig.vadThreshold')}</InputLabel>
-                      <Select
-                        labelId="vad-th"
-                        label={t('audioConfig.vadThreshold')}
-                        value={String(form.vad.threshold)}
-                        onChange={(e: SelectChangeEvent) => {
-                          const v = Number(e.target.value)
-                          if (!Number.isFinite(v)) return
-                          setDraftSafe({ ...form, vad: { ...form.vad, threshold: v } })
-                        }}
-                      >
-                        {unionFloatPreset(
-                          [...AUDIO_VAD_THRESHOLD_PRESETS],
-                          form.vad.threshold,
-                        ).map((th) => (
-                          <MenuItem key={th} value={String(th)}>
-                            {th}
-                          </MenuItem>
-                        ))}
-                      </Select>
-                    </FormControl>
-                    <FormControl fullWidth>
-                      <InputLabel id="vad-sil">{t('audioConfig.vadSilenceMs')}</InputLabel>
-                      <Select
-                        labelId="vad-sil"
-                        label={t('audioConfig.vadSilenceMs')}
-                        value={String(form.vad.silence_duration_ms)}
-                        onChange={(e: SelectChangeEvent) => {
-                          const v = asNumber(e.target.value)
-                          if (v == null) return
-                          setDraftSafe({
-                            ...form,
-                            vad: {
-                              ...form.vad,
-                              silence_duration_ms: Math.trunc(v),
-                            },
-                          })
-                        }}
-                      >
-                        {unionNumberPreset(
-                          [...AUDIO_VAD_SILENCE_MS_PRESETS],
-                          form.vad.silence_duration_ms,
-                        ).map((ms) => (
-                          <MenuItem key={ms} value={String(ms)}>
-                            {ms} ms
-                          </MenuItem>
-                        ))}
-                      </Select>
-                    </FormControl>
-                    <TextField
-                      label={t('audioConfig.pinWs')}
-                      value={String(form.microphone.pins.ws)}
-                      onChange={(e) => {
-                        const v = asNumber(e.target.value)
-                        if (v == null) return
-                        setDraftSafe({
-                          ...form,
-                          microphone: {
-                            ...form.microphone,
-                            pins: { ...form.microphone.pins, ws: Math.trunc(v) },
-                          },
-                        })
-                      }}
-                    />
-                    <TextField
-                      label={t('audioConfig.pinSck')}
-                      value={String(form.microphone.pins.sck)}
-                      onChange={(e) => {
-                        const v = asNumber(e.target.value)
-                        if (v == null) return
-                        setDraftSafe({
-                          ...form,
-                          microphone: {
-                            ...form.microphone,
-                            pins: { ...form.microphone.pins, sck: Math.trunc(v) },
-                          },
-                        })
-                      }}
-                    />
-                    <TextField
-                      label={t('audioConfig.pinDin')}
-                      value={String(form.microphone.pins.din)}
-                      onChange={(e) => {
-                        const v = asNumber(e.target.value)
-                        if (v == null) return
-                        setDraftSafe({
-                          ...form,
-                          microphone: {
-                            ...form.microphone,
-                            pins: { ...form.microphone.pins, din: Math.trunc(v) },
-                          },
-                        })
-                      }}
-                    />
-                    </FormGrid>
-                  </Box>
-                ) : null}
-              </FormSectionSub>
-              <FormSectionSub title={t('audioConfig.sectionSpeaker')}>
-                <FormSwitchRow
-                  title={t('audioConfig.speakerEnabled')}
-                  divider={false}
-                  control={
-                    <Switch
-                      checked={form.speaker.enabled}
-                      onChange={(_, checked) =>
-                        setDraftSafe({
-                          ...form,
-                          speaker: { ...form.speaker, enabled: checked },
-                        })
-                      }
-                    />
-                  }
-                />
-                {spkOn ? (
-                  <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                    <FormGrid>
-                      <FormControl fullWidth>
-                        <InputLabel id="spk-device-type">{t('audioConfig.deviceType')}</InputLabel>
-                        <Select
-                          labelId="spk-device-type"
-                          label={t('audioConfig.deviceType')}
-                          value={form.speaker.device_type}
-                          onChange={(e: SelectChangeEvent) =>
-                            setDraftSafe({
-                              ...form,
-                              speaker: { ...form.speaker, device_type: e.target.value },
-                            })
-                          }
-                        >
-                          {unionStringPreset(
-                            speakerDeviceTypes,
-                            form.speaker.device_type,
-                          ).map((dt) => (
-                            <MenuItem key={dt} value={dt}>
-                              {([...AUDIO_SPEAKER_DEVICE_TYPES, ...AUDIO_SPEAKER_DEVICE_TYPES_LINUX] as readonly string[]).includes(dt)
-                                ? t(`audioConfig.deviceSpeaker.${dt}`)
-                                : dt}
-                            </MenuItem>
-                          ))}
-                        </Select>
-                      </FormControl>
-                      <FormControl fullWidth>
-                        <InputLabel id="spk-sr">{t('audioConfig.sampleRate')}</InputLabel>
-                        <Select
-                          labelId="spk-sr"
-                          label={t('audioConfig.sampleRate')}
-                          value={String(form.speaker.sample_rate)}
-                          onChange={(e: SelectChangeEvent) => {
-                            const v = asNumber(e.target.value)
-                            if (v == null) return
-                            setSpeakerSampleRate(Math.trunc(v))
-                          }}
-                        >
-                          {sampleRateSelectOptions(form.speaker.sample_rate).map((sr) => (
-                            <MenuItem key={sr} value={String(sr)}>
-                              {sr} Hz
-                            </MenuItem>
-                          ))}
-                        </Select>
-                      </FormControl>
-                      {speakerUsesUsbDevice ? (
-                        <Box
-                          sx={{
-                            display: 'flex',
-                            gap: 1.5,
-                            alignItems: 'stretch',
-                            flexWrap: {
-                              xs: 'wrap',
-                              md: 'nowrap',
-                            },
-                            gridColumn: {
-                              xs: 'span 1',
-                              md: 'span 1',
-                            },
-                          }}
-                        >
-                          <FormControl
-                            fullWidth
-                            sx={{
-                              flex: '1 1 auto',
-                            }}
-                          >
-                            <InputLabel id="spk-device-ref">{t('audioConfig.speakerUsbDevice')}</InputLabel>
-                            <Select
-                              labelId="spk-device-ref"
-                              label={t('audioConfig.speakerUsbDevice')}
-                              value={form.speaker.device_ref ?? ''}
-                              error={Boolean(usbAudioFieldError)}
-                              onChange={(e: SelectChangeEvent) =>
-                                setDraftSafe({
-                                  ...form,
-                                  speaker: { ...form.speaker, device_ref: e.target.value || null },
-                                })
-                              }
-                            >
-                              {usbAudioDevices.map((item) => (
-                                <MenuItem key={item.device_ref} value={item.device_ref}>
-                                  {usbSpeakerSupportsInput(item)
-                                    ? `${item.label} · ${t('audioConfig.speakerUsbComboSuffix')}`
-                                    : item.label}
-                                </MenuItem>
-                              ))}
-                            </Select>
-                            {usbAudioFieldError ? (
-                              <Typography variant="body2" color="error.main" sx={{ mt: 0.75 }}>
-                                {usbAudioFieldError}
-                              </Typography>
+                      />
+                      {micOn ? (
+                        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                          <FormGrid>
+                            {!codecTopology ? (
+                              <FormControl fullWidth>
+                                <InputLabel id="mic-device-type">{t('audioConfig.deviceType')}</InputLabel>
+                                <Select
+                                  labelId="mic-device-type"
+                                  label={t('audioConfig.deviceType')}
+                                  value={form.microphone.device_type}
+                                  onChange={(e: SelectChangeEvent) =>
+                                    setDraftSafe({
+                                      ...form,
+                                      microphone: {
+                                        ...form.microphone,
+                                        device_type: e.target.value,
+                                      },
+                                    })
+                                  }
+                                >
+                                  {unionStringPreset(
+                                    [...AUDIO_MIC_DEVICE_TYPES],
+                                    form.microphone.device_type,
+                                  ).map((dt) => (
+                                    <MenuItem key={dt} value={dt}>
+                                      {(AUDIO_MIC_DEVICE_TYPES as readonly string[]).includes(dt)
+                                        ? t(`audioConfig.deviceMic.${dt}`)
+                                        : dt}
+                                    </MenuItem>
+                                  ))}
+                                </Select>
+                              </FormControl>
                             ) : null}
-                          </FormControl>
-                          <Button
-                            size="small"
-                            variant="outlined"
-                            onClick={() => {
-                              void refreshUsbAudioDevices()
-                            }}
-                            disabled={usbAudioLoading}
-                            sx={{
-                              flexShrink: 0,
-                              minWidth: 96,
-                              height: 40,
-                              alignSelf: {
-                                xs: 'stretch',
-                                md: 'flex-start',
-                              },
-                            }}
-                          >
-                            {t('audioConfig.speakerUsbScanAction')}
-                          </Button>
+                            <FormControl fullWidth>
+                              <InputLabel id="mic-sr">{t('audioConfig.sampleRate')}</InputLabel>
+                              <Select
+                                labelId="mic-sr"
+                                label={t('audioConfig.sampleRate')}
+                                value={String(form.microphone.sample_rate)}
+                                onChange={(e: SelectChangeEvent) => {
+                                  const v = asNumber(e.target.value)
+                                  if (v == null) return
+                                  setDraftSafe({
+                                    ...form,
+                                    microphone: {
+                                      ...form.microphone,
+                                      sample_rate: Math.trunc(v),
+                                    },
+                                  })
+                                }}
+                              >
+                                {sampleRateSelectOptions(form.microphone.sample_rate).map((sr) => (
+                                  <MenuItem key={sr} value={String(sr)}>
+                                    {sr} Hz
+                                  </MenuItem>
+                                ))}
+                              </Select>
+                            </FormControl>
+                          </FormGrid>
+                          <FormGrid>
+                            <FormControl fullWidth>
+                              <InputLabel id="vad-th">{t('audioConfig.vadThreshold')}</InputLabel>
+                              <Select
+                                labelId="vad-th"
+                                label={t('audioConfig.vadThreshold')}
+                                value={String(form.vad.threshold)}
+                                onChange={(e: SelectChangeEvent) => {
+                                  const v = Number(e.target.value)
+                                  if (!Number.isFinite(v)) return
+                                  setDraftSafe({ ...form, vad: { ...form.vad, threshold: v } })
+                                }}
+                              >
+                                {unionFloatPreset(
+                                  [...AUDIO_VAD_THRESHOLD_PRESETS],
+                                  form.vad.threshold,
+                                ).map((th) => (
+                                  <MenuItem key={th} value={String(th)}>
+                                    {th}
+                                  </MenuItem>
+                                ))}
+                              </Select>
+                            </FormControl>
+                            <FormControl fullWidth>
+                              <InputLabel id="vad-sil">{t('audioConfig.vadSilenceMs')}</InputLabel>
+                              <Select
+                                labelId="vad-sil"
+                                label={t('audioConfig.vadSilenceMs')}
+                                value={String(form.vad.silence_duration_ms)}
+                                onChange={(e: SelectChangeEvent) => {
+                                  const v = asNumber(e.target.value)
+                                  if (v == null) return
+                                  setDraftSafe({
+                                    ...form,
+                                    vad: {
+                                      ...form.vad,
+                                      silence_duration_ms: Math.trunc(v),
+                                    },
+                                  })
+                                }}
+                              >
+                                {unionNumberPreset(
+                                  [...AUDIO_VAD_SILENCE_MS_PRESETS],
+                                  form.vad.silence_duration_ms,
+                                ).map((ms) => (
+                                  <MenuItem key={ms} value={String(ms)}>
+                                    {ms} ms
+                                  </MenuItem>
+                                ))}
+                              </Select>
+                            </FormControl>
+                          </FormGrid>
+                          {!codecTopology ? (
+                            <FormGrid>
+                              <TextField
+                                label={t('audioConfig.pinWs')}
+                                value={String(form.microphone.pins.ws)}
+                                onChange={(e) => {
+                                  const v = asNumber(e.target.value)
+                                  if (v == null) return
+                                  setDraftSafe({
+                                    ...form,
+                                    microphone: {
+                                      ...form.microphone,
+                                      pins: { ...form.microphone.pins, ws: Math.trunc(v) },
+                                    },
+                                  })
+                                }}
+                              />
+                              <TextField
+                                label={t('audioConfig.pinSck')}
+                                value={String(form.microphone.pins.sck)}
+                                onChange={(e) => {
+                                  const v = asNumber(e.target.value)
+                                  if (v == null) return
+                                  setDraftSafe({
+                                    ...form,
+                                    microphone: {
+                                      ...form.microphone,
+                                      pins: { ...form.microphone.pins, sck: Math.trunc(v) },
+                                    },
+                                  })
+                                }}
+                              />
+                              <TextField
+                                label={t('audioConfig.pinDin')}
+                                value={String(form.microphone.pins.din)}
+                                onChange={(e) => {
+                                  const v = asNumber(e.target.value)
+                                  if (v == null) return
+                                  setDraftSafe({
+                                    ...form,
+                                    microphone: {
+                                      ...form.microphone,
+                                      pins: { ...form.microphone.pins, din: Math.trunc(v) },
+                                    },
+                                  })
+                                }}
+                              />
+                            </FormGrid>
+                          ) : null}
                         </Box>
                       ) : null}
-                    </FormGrid>
-                    <FormGrid>
-                      {!speakerUsesUsbDevice ? (
-                        <>
-                          <TextField
-                            label={t('audioConfig.pinWs')}
-                            value={String(speakerPins.ws)}
-                            onChange={(e) => {
-                              const v = asNumber(e.target.value)
-                              if (v == null) return
+                    </FormSectionSub>
+
+                    <FormSectionSub title={t('audioConfig.sectionSpeaker')}>
+                      <FormSwitchRow
+                        title={t('audioConfig.speakerEnabled')}
+                        divider={false}
+                        control={
+                          <Switch
+                            checked={form.speaker.enabled}
+                            onChange={(_, checked) =>
                               setDraftSafe({
                                 ...form,
-                                speaker: {
-                                  ...form.speaker,
-                                  pins: { ...speakerPins, ws: Math.trunc(v) },
-                                },
+                                speaker: { ...form.speaker, enabled: checked },
                               })
-                            }}
+                            }
                           />
-                          <TextField
-                            label={t('audioConfig.pinSck')}
-                            value={String(speakerPins.sck)}
-                            onChange={(e) => {
-                              const v = asNumber(e.target.value)
-                              if (v == null) return
-                              setDraftSafe({
-                                ...form,
-                                speaker: {
-                                  ...form.speaker,
-                                  pins: { ...speakerPins, sck: Math.trunc(v) },
-                                },
-                              })
-                            }}
-                          />
-                          <TextField
-                            label={t('audioConfig.pinDout')}
-                            value={String(speakerPins.dout)}
-                            onChange={(e) => {
-                              const v = asNumber(e.target.value)
-                              if (v == null) return
-                              setDraftSafe({
-                                ...form,
-                                speaker: {
-                                  ...form.speaker,
-                                  pins: { ...speakerPins, dout: Math.trunc(v) },
-                                },
-                              })
-                            }}
-                          />
-                          <TextField
-                            label={t('audioConfig.pinSdOptional')}
-                            placeholder={t('audioConfig.pinOptionalPlaceholder')}
-                            value={speakerPins.sd != null ? String(speakerPins.sd) : ''}
-                            onChange={(e) => {
-                              const raw = e.target.value.trim()
-                              if (raw === '') {
+                        }
+                      />
+                      {spkOn ? (
+                        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                          <FormGrid>
+                            {!codecTopology ? (
+                              <FormControl fullWidth>
+                                <InputLabel id="spk-device-type">{t('audioConfig.deviceType')}</InputLabel>
+                                <Select
+                                  labelId="spk-device-type"
+                                  label={t('audioConfig.deviceType')}
+                                  value={form.speaker.device_type}
+                                  onChange={(e: SelectChangeEvent) =>
+                                    setDraftSafe({
+                                      ...form,
+                                      speaker: { ...form.speaker, device_type: e.target.value },
+                                    })
+                                  }
+                                >
+                                  {unionStringPreset(
+                                    speakerDeviceTypes,
+                                    form.speaker.device_type,
+                                  ).map((dt) => (
+                                    <MenuItem key={dt} value={dt}>
+                                      {([...AUDIO_SPEAKER_DEVICE_TYPES, ...AUDIO_SPEAKER_DEVICE_TYPES_LINUX] as readonly string[]).includes(dt)
+                                        ? t(`audioConfig.deviceSpeaker.${dt}`)
+                                        : dt}
+                                    </MenuItem>
+                                  ))}
+                                </Select>
+                              </FormControl>
+                            ) : null}
+                            <FormControl fullWidth>
+                              <InputLabel id="spk-sr">{t('audioConfig.sampleRate')}</InputLabel>
+                              <Select
+                                labelId="spk-sr"
+                                label={t('audioConfig.sampleRate')}
+                                value={String(form.speaker.sample_rate)}
+                                onChange={(e: SelectChangeEvent) => {
+                                  const v = asNumber(e.target.value)
+                                  if (v == null) return
+                                  setSpeakerSampleRate(Math.trunc(v))
+                                }}
+                              >
+                                {sampleRateSelectOptions(form.speaker.sample_rate).map((sr) => (
+                                  <MenuItem key={sr} value={String(sr)}>
+                                    {sr} Hz
+                                  </MenuItem>
+                                ))}
+                              </Select>
+                            </FormControl>
+                            {speakerUsesUsbDevice ? (
+                              <Box
+                                sx={{
+                                  display: 'flex',
+                                  gap: 1.5,
+                                  alignItems: 'stretch',
+                                  flexWrap: {
+                                    xs: 'wrap',
+                                    md: 'nowrap',
+                                  },
+                                  gridColumn: {
+                                    xs: 'span 1',
+                                    md: 'span 1',
+                                  },
+                                }}
+                              >
+                                <FormControl
+                                  fullWidth
+                                  sx={{
+                                    flex: '1 1 auto',
+                                  }}
+                                >
+                                  <InputLabel id="spk-device-ref">{t('audioConfig.speakerUsbDevice')}</InputLabel>
+                                  <Select
+                                    labelId="spk-device-ref"
+                                    label={t('audioConfig.speakerUsbDevice')}
+                                    value={form.speaker.device_ref ?? ''}
+                                    error={Boolean(usbAudioFieldError)}
+                                    onChange={(e: SelectChangeEvent) =>
+                                      setDraftSafe({
+                                        ...form,
+                                        speaker: {
+                                          ...form.speaker,
+                                          device_ref: e.target.value || null,
+                                        },
+                                      })
+                                    }
+                                  >
+                                    {usbAudioDevices.map((item) => (
+                                      <MenuItem key={item.device_ref} value={item.device_ref}>
+                                        {usbSpeakerSupportsInput(item)
+                                          ? `${item.label} · ${t('audioConfig.speakerUsbComboSuffix')}`
+                                          : item.label}
+                                      </MenuItem>
+                                    ))}
+                                  </Select>
+                                  {usbAudioFieldError ? (
+                                    <Typography variant="body2" color="error.main" sx={{ mt: 0.75 }}>
+                                      {usbAudioFieldError}
+                                    </Typography>
+                                  ) : null}
+                                </FormControl>
+                                <Button
+                                  size="small"
+                                  variant="outlined"
+                                  onClick={() => {
+                                    void refreshUsbAudioDevices()
+                                  }}
+                                  disabled={usbAudioLoading}
+                                  sx={{
+                                    flexShrink: 0,
+                                    minWidth: 96,
+                                    height: 40,
+                                    alignSelf: {
+                                      xs: 'stretch',
+                                      md: 'flex-start',
+                                    },
+                                  }}
+                                >
+                                  {t('audioConfig.speakerUsbScanAction')}
+                                </Button>
+                              </Box>
+                            ) : null}
+                          </FormGrid>
+                          {!codecTopology ? (
+                            <FormGrid>
+                              {!speakerUsesUsbDevice ? (
+                                <>
+                                  <TextField
+                                    label={t('audioConfig.pinWs')}
+                                    value={String(speakerPins.ws)}
+                                    onChange={(e) => {
+                                      const v = asNumber(e.target.value)
+                                      if (v == null) return
+                                      setDraftSafe({
+                                        ...form,
+                                        speaker: {
+                                          ...form.speaker,
+                                          pins: { ...speakerPins, ws: Math.trunc(v) },
+                                        },
+                                      })
+                                    }}
+                                  />
+                                  <TextField
+                                    label={t('audioConfig.pinSck')}
+                                    value={String(speakerPins.sck)}
+                                    onChange={(e) => {
+                                      const v = asNumber(e.target.value)
+                                      if (v == null) return
+                                      setDraftSafe({
+                                        ...form,
+                                        speaker: {
+                                          ...form.speaker,
+                                          pins: { ...speakerPins, sck: Math.trunc(v) },
+                                        },
+                                      })
+                                    }}
+                                  />
+                                  <TextField
+                                    label={t('audioConfig.pinDout')}
+                                    value={String(speakerPins.dout)}
+                                    onChange={(e) => {
+                                      const v = asNumber(e.target.value)
+                                      if (v == null) return
+                                      setDraftSafe({
+                                        ...form,
+                                        speaker: {
+                                          ...form.speaker,
+                                          pins: { ...speakerPins, dout: Math.trunc(v) },
+                                        },
+                                      })
+                                    }}
+                                  />
+                                  <TextField
+                                    label={t('audioConfig.pinSdOptional')}
+                                    placeholder={t('audioConfig.pinOptionalPlaceholder')}
+                                    value={speakerPins.sd != null ? String(speakerPins.sd) : ''}
+                                    onChange={(e) => {
+                                      const raw = e.target.value.trim()
+                                      if (raw === '') {
+                                        setDraftSafe({
+                                          ...form,
+                                          speaker: {
+                                            ...form.speaker,
+                                            pins: { ...speakerPins, sd: null },
+                                          },
+                                        })
+                                        return
+                                      }
+                                      const v = asNumber(raw)
+                                      if (v == null) return
+                                      setDraftSafe({
+                                        ...form,
+                                        speaker: {
+                                          ...form.speaker,
+                                          pins: { ...speakerPins, sd: Math.trunc(v) },
+                                        },
+                                      })
+                                    }}
+                                  />
+                                </>
+                              ) : null}
+                            </FormGrid>
+                          ) : null}
+                          {speakerUsesUsbDevice &&
+                          selectedUsbAudioDevice &&
+                          usbSpeakerSupportsInput(selectedUsbAudioDevice) ? (
+                            <Typography variant="body2" sx={{ color: "var(--text-tertiary)" }}>
+                              {t('audioConfig.speakerUsbComboHint')}
+                            </Typography>
+                          ) : null}
+                        </Box>
+                      ) : null}
+                    </FormSectionSub>
+
+                    {codecTopology ? (
+                      <FormSectionSub title={t('audioConfig.sectionCodec')}>
+                        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                          <FormGrid>
+                            <FormControl fullWidth>
+                              <InputLabel id="codec-input">{t('audioConfig.codecInputCodec')}</InputLabel>
+                              <Select
+                                labelId="codec-input"
+                                label={t('audioConfig.codecInputCodec')}
+                                value={form.codec.input_codec ?? ''}
+                                onChange={(e: SelectChangeEvent) =>
+                                  setDraftSafe({
+                                    ...form,
+                                    codec: {
+                                      ...form.codec,
+                                      input_codec: e.target.value || null,
+                                    },
+                                  })
+                                }
+                              >
+                                {unionStringPreset(
+                                  [...AUDIO_INPUT_CODEC_TYPES],
+                                  form.codec.input_codec ?? '',
+                                ).map((codec) => (
+                                  <MenuItem key={codec || 'empty'} value={codec}>
+                                    {codec || ' '}
+                                  </MenuItem>
+                                ))}
+                              </Select>
+                            </FormControl>
+                            <FormControl fullWidth>
+                              <InputLabel id="codec-output">{t('audioConfig.codecOutputCodec')}</InputLabel>
+                              <Select
+                                labelId="codec-output"
+                                label={t('audioConfig.codecOutputCodec')}
+                                value={form.codec.output_codec ?? ''}
+                                onChange={(e: SelectChangeEvent) =>
+                                  setDraftSafe({
+                                    ...form,
+                                    codec: {
+                                      ...form.codec,
+                                      output_codec: e.target.value || null,
+                                    },
+                                  })
+                                }
+                              >
+                                {unionStringPreset(
+                                  [...AUDIO_OUTPUT_CODEC_TYPES],
+                                  form.codec.output_codec ?? '',
+                                ).map((codec) => (
+                                  <MenuItem key={codec || 'empty'} value={codec}>
+                                    {codec || ' '}
+                                  </MenuItem>
+                                ))}
+                              </Select>
+                            </FormControl>
+                            <TextField
+                              type="number"
+                              label={t('audioConfig.codecInputAddr')}
+                              helperText={t('audioConfig.codecAddrHelp')}
+                              value={form.codec.input_addr ?? ''}
+                              onChange={(e) => {
+                                const raw = e.target.value.trim()
                                 setDraftSafe({
                                   ...form,
-                                  speaker: {
-                                    ...form.speaker,
-                                    pins: { ...speakerPins, sd: null },
+                                  codec: {
+                                    ...form.codec,
+                                    input_addr: raw === '' ? null : asNumber(raw),
                                   },
                                 })
-                                return
+                              }}
+                            />
+                            <TextField
+                              type="number"
+                              label={t('audioConfig.codecOutputAddr')}
+                              helperText={t('audioConfig.codecAddrHelp')}
+                              value={form.codec.output_addr ?? ''}
+                              onChange={(e) => {
+                                const raw = e.target.value.trim()
+                                setDraftSafe({
+                                  ...form,
+                                  codec: {
+                                    ...form.codec,
+                                    output_addr: raw === '' ? null : asNumber(raw),
+                                  },
+                                })
+                              }}
+                            />
+                            <TextField
+                              type="number"
+                              label={t('audioConfig.codecPaPin')}
+                              value={form.codec.pa_pin ?? ''}
+                              onChange={(e) => {
+                                const raw = e.target.value.trim()
+                                setDraftSafe({
+                                  ...form,
+                                  codec: {
+                                    ...form.codec,
+                                    pa_pin: raw === '' ? null : asNumber(raw),
+                                  },
+                                })
+                              }}
+                            />
+                            <FormControlLabel
+                              control={
+                                <Switch
+                                  checked={form.codec.input_reference}
+                                  onChange={(_, checked) =>
+                                    setDraftSafe({
+                                      ...form,
+                                      codec: {
+                                        ...form.codec,
+                                        input_reference: checked,
+                                      },
+                                    })
+                                  }
+                                />
                               }
-                              const v = asNumber(raw)
-                              if (v == null) return
-                              setDraftSafe({
-                                ...form,
-                                speaker: {
-                                  ...form.speaker,
-                                  pins: { ...speakerPins, sd: Math.trunc(v) },
-                                },
-                              })
-                            }}
-                          />
-                        </>
-                      ) : null}
-                    </FormGrid>
-                    {speakerUsesUsbDevice && selectedUsbAudioDevice && usbSpeakerSupportsInput(selectedUsbAudioDevice) ? (
-                      <Typography variant="body2" sx={{ color: "var(--text-tertiary)" }}>
-                        {t('audioConfig.speakerUsbComboHint')}
-                      </Typography>
+                              label={t('audioConfig.codecInputReference')}
+                            />
+                          </FormGrid>
+                        </Box>
+                      </FormSectionSub>
                     ) : null}
-                  </Box>
-                ) : null}
-              </FormSectionSub>
                   </>
                 )}
 

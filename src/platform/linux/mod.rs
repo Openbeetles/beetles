@@ -66,6 +66,16 @@ use crate::{
 };
 use std::sync::{Arc, Mutex};
 
+fn validate_linux_audio_config(config: &AudioSegment) -> crate::error::Result<()> {
+    if config.enabled && crate::config::audio_topology_is_codec(config) {
+        return Err(crate::error::Error::config(
+            "audio_init",
+            "Linux platform does not support audio.topology == i2s_codec",
+        ));
+    }
+    Ok(())
+}
+
 /// Linux / host 平台实现（musl 等 CI 与本地 `cargo build`）。
 pub struct LinuxPlatform {
     state_fs: Arc<dyn StateFs + Send + Sync>,
@@ -561,7 +571,13 @@ impl Platform for LinuxPlatform {
         install_display_state(&mut guard, config)
     }
 
-    fn init_audio(&self, config: &AudioSegment) -> crate::error::Result<()> {
+    fn init_audio(
+        &self,
+        config: &AudioSegment,
+        _i2c_bus: Option<&crate::config::I2cBusConfig>,
+        _i2s_bus: Option<&crate::config::I2sBusConfig>,
+    ) -> crate::error::Result<()> {
+        validate_linux_audio_config(config)?;
         let mut guard = self.audio_state.lock().unwrap_or_else(|e| e.into_inner());
         *guard = None;
         *self
@@ -774,5 +790,23 @@ impl Platform for LinuxPlatform {
 
     fn i2c_write(&self, addr: u8, register: u8, data: &[u8]) -> crate::error::Result<()> {
         crate::platform::hardware_drivers::drive_i2c_write(addr, register, data)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_linux_audio_config;
+    use crate::config::default_disabled_audio_segment;
+
+    #[test]
+    fn linux_audio_rejects_i2s_codec_topology_when_audio_enabled() {
+        let mut audio = default_disabled_audio_segment();
+        audio.enabled = true;
+        audio.topology = "i2s_codec".to_string();
+
+        let error = validate_linux_audio_config(&audio).expect_err("linux must reject i2s codec");
+        assert!(error
+            .to_string()
+            .contains("does not support audio.topology == i2s_codec"));
     }
 }

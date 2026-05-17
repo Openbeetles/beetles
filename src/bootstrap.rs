@@ -238,7 +238,8 @@ pub fn init_audio_if_enabled(platform: &Arc<dyn Platform>, config: &Arc<AppConfi
         );
         return;
     }
-    if let Err(e) = platform.init_audio(audio_cfg) {
+    if let Err(e) = platform.init_audio(audio_cfg, config.i2c_bus.as_ref(), config.i2s_bus.as_ref())
+    {
         log::warn!("[{}] audio init failed (degraded): {}", TAG, e);
     } else {
         let caps = platform.audio_duplex_capabilities();

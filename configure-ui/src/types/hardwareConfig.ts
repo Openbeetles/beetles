@@ -20,6 +20,14 @@ export interface I2cBusConfig {
   freq_hz?: number
 }
 
+export interface I2sBusConfig {
+  mclk_pin: number
+  ws_pin: number
+  bclk_pin: number
+  din_pin: number
+  dout_pin: number
+}
+
 export interface I2cDeviceEntry {
   id: string
   addr: number
@@ -41,6 +49,7 @@ export interface I2cSensorEntry {
 export interface HardwareSegment {
   hardware_devices: DeviceEntry[]
   i2c_bus?: I2cBusConfig | null
+  i2s_bus?: I2sBusConfig | null
   i2c_devices?: I2cDeviceEntry[]
   i2c_sensors?: I2cSensorEntry[]
 }
@@ -76,6 +85,11 @@ export const I2C_BUS_FREQ_MAX = 1_000_000
 export const I2C_BUS_DEFAULT_FREQ_HZ = 100_000
 export const I2C_BUS_DEFAULT_SDA_PIN = 21
 export const I2C_BUS_DEFAULT_SCL_PIN = 22
+export const I2S_BUS_DEFAULT_MCLK_PIN = 2
+export const I2S_BUS_DEFAULT_WS_PIN = 47
+export const I2S_BUS_DEFAULT_BCLK_PIN = 17
+export const I2S_BUS_DEFAULT_DIN_PIN = 16
+export const I2S_BUS_DEFAULT_DOUT_PIN = 15
 
 export const I2C_SENSOR_MODELS = ['sht3x', 'aht20', 'raw'] as const
 export type I2cSensorModel = (typeof I2C_SENSOR_MODELS)[number]
@@ -83,6 +97,7 @@ export type I2cSensorModel = (typeof I2C_SENSOR_MODELS)[number]
 export function defaultHardwareSegment(): HardwareSegment {
   return {
     hardware_devices: [],
+    i2s_bus: null,
     i2c_sensors: [],
   }
 }

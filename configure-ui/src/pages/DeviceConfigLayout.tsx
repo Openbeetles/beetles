@@ -9,7 +9,7 @@ import { OS_ICON_DEVICE_CONFIG } from "../config/osIcons";
 
 /**
  * 设备配置壳层：左侧分区导航 + 右侧子路由（`/device-config/:tab`）。
- * /device-config/display — 显示；/device-config/audio — 音频；
+ * /device-config/display — 显示；/device-config/buses — 总线配置；/device-config/audio — 音频；
  * /device-config/hardware — GPIO 等硬件设备；/device-config/i2c-sensors — I2C 传感器
  */
 export function DeviceConfigLayout() {
@@ -38,6 +38,11 @@ export function DeviceConfigLayout() {
       segment: "display",
       label: t("deviceConfig.tabDisplay"),
       iconSrc: OS_ICON_DEVICE_CONFIG.display,
+    },
+    {
+      segment: "buses",
+      label: t("deviceConfig.tabBuses"),
+      iconSrc: OS_ICON_DEVICE_CONFIG.buses,
     },
     {
       segment: "audio",

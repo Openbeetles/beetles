@@ -568,7 +568,12 @@ impl Platform for Esp32Platform {
         install_display_state(&mut guard, config)
     }
 
-    fn init_audio(&self, config: &AudioSegment) -> crate::error::Result<()> {
+    fn init_audio(
+        &self,
+        config: &AudioSegment,
+        i2c_bus: Option<&crate::config::I2cBusConfig>,
+        i2s_bus: Option<&crate::config::I2sBusConfig>,
+    ) -> crate::error::Result<()> {
         if !config.enabled {
             *self.audio_state.write().unwrap_or_else(|e| e.into_inner()) = None;
             *self
@@ -587,7 +592,9 @@ impl Platform for Esp32Platform {
                 crate::platform::AudioDuplexCapabilities::unavailable();
             return Ok(());
         }
-        match crate::platform::audio_drivers::AudioPipelineState::from_config(config) {
+        match crate::platform::audio_drivers::AudioPipelineState::from_config(
+            config, i2c_bus, i2s_bus,
+        ) {
             Ok(state) => {
                 let capabilities = state.duplex_capabilities().normalized();
                 *self.audio_state.write().unwrap_or_else(|e| e.into_inner()) =

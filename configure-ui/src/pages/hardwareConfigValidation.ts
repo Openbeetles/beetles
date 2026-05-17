@@ -1,3 +1,4 @@
+import type { AudioConfig } from "../types/audioConfig.ts";
 import type { HardwareSegment } from "../types/hardwareConfig.ts";
 import {
   HARDWARE_ADC1_MAX_PIN,
@@ -21,9 +22,111 @@ import {
   type I2cSensorModel,
 } from "../types/hardwareConfig.ts";
 
+export function validateI2cBusConfig(
+  i2cBus: HardwareSegment["i2c_bus"] | null | undefined,
+  t: (key: string) => string,
+): string | null {
+  if (i2cBus == null) {
+    return null;
+  }
+  if (
+    !Number.isFinite(i2cBus.sda_pin) ||
+    i2cBus.sda_pin < HARDWARE_PIN_MIN ||
+    i2cBus.sda_pin > HARDWARE_PIN_MAX
+  ) {
+    return t("hardwareConfig.validation.i2cBusSdaPin");
+  }
+  if (
+    !Number.isFinite(i2cBus.scl_pin) ||
+    i2cBus.scl_pin < HARDWARE_PIN_MIN ||
+    i2cBus.scl_pin > HARDWARE_PIN_MAX
+  ) {
+    return t("hardwareConfig.validation.i2cBusSclPin");
+  }
+  if (i2cBus.sda_pin === i2cBus.scl_pin) {
+    return t("hardwareConfig.validation.i2cBusPinsDistinct");
+  }
+  if ((HARDWARE_FORBIDDEN_PINS as readonly number[]).includes(i2cBus.sda_pin)) {
+    return t("hardwareConfig.validation.i2cBusSdaPin");
+  }
+  if ((HARDWARE_FORBIDDEN_PINS as readonly number[]).includes(i2cBus.scl_pin)) {
+    return t("hardwareConfig.validation.i2cBusSclPin");
+  }
+  if (i2cBus.freq_hz != null) {
+    const freq =
+      typeof i2cBus.freq_hz === "number"
+        ? i2cBus.freq_hz
+        : Number(i2cBus.freq_hz);
+    if (
+      !Number.isFinite(freq) ||
+      freq < I2C_BUS_FREQ_MIN ||
+      freq > I2C_BUS_FREQ_MAX
+    ) {
+      return t("hardwareConfig.validation.i2cBusFreq");
+    }
+  }
+  return null;
+}
+
+export function validateI2sBusConfig(
+  i2sBus: HardwareSegment["i2s_bus"] | null | undefined,
+  t: (key: string) => string,
+): string | null {
+  if (i2sBus == null) {
+    return null;
+  }
+  const i2sPins = [
+    [i2sBus.mclk_pin, "hardwareConfig.validation.i2sBusMclkPin"],
+    [i2sBus.ws_pin, "hardwareConfig.validation.i2sBusWsPin"],
+    [i2sBus.bclk_pin, "hardwareConfig.validation.i2sBusBclkPin"],
+    [i2sBus.din_pin, "hardwareConfig.validation.i2sBusDinPin"],
+    [i2sBus.dout_pin, "hardwareConfig.validation.i2sBusDoutPin"],
+  ] as const;
+  const seenI2sPins = new Set<number>();
+  for (const [pin, errorKey] of i2sPins) {
+    if (!Number.isFinite(pin) || pin < HARDWARE_PIN_MIN || pin > HARDWARE_PIN_MAX) {
+      return t(errorKey);
+    }
+    if ((HARDWARE_FORBIDDEN_PINS as readonly number[]).includes(pin)) {
+      return t(errorKey);
+    }
+    if (seenI2sPins.has(pin)) {
+      return t("hardwareConfig.validation.i2sBusPinsDistinct");
+    }
+    seenI2sPins.add(pin);
+  }
+  return null;
+}
+
+export function validateHardwareSegmentForAudioTopology(
+  segment: HardwareSegment | null | undefined,
+  audioConfig: Pick<AudioConfig, "topology"> | null | undefined,
+  t: (key: string) => string,
+): string | null {
+  if (audioConfig?.topology !== "i2s_codec") {
+    return null;
+  }
+
+  const i2cBus = segment?.i2c_bus ?? null;
+  if (i2cBus == null) {
+    return t("hardwareConfig.validation.codecI2cBusRequired");
+  }
+  const i2cBusError = validateI2cBusConfig(i2cBus, t);
+  if (i2cBusError) {
+    return i2cBusError;
+  }
+
+  const i2sBus = segment?.i2s_bus ?? null;
+  if (i2sBus == null) {
+    return t("hardwareConfig.validation.codecI2sBusRequired");
+  }
+  return validateI2sBusConfig(i2sBus, t);
+}
+
 export function validateHardwareSegment(
   segment: HardwareSegment,
   t: (key: string) => string,
+  audioConfig?: Pick<AudioConfig, "topology"> | null,
 ): string | null {
   const devices = segment.hardware_devices;
   if (devices.length > MAX_HARDWARE_DEVICES) {
@@ -102,43 +205,15 @@ export function validateHardwareSegment(
   }
 
   const i2cBus = segment.i2c_bus ?? null;
-  if (i2cBus != null) {
-    if (
-      !Number.isFinite(i2cBus.sda_pin) ||
-      i2cBus.sda_pin < HARDWARE_PIN_MIN ||
-      i2cBus.sda_pin > HARDWARE_PIN_MAX
-    ) {
-      return t("hardwareConfig.validation.i2cBusSdaPin");
-    }
-    if (
-      !Number.isFinite(i2cBus.scl_pin) ||
-      i2cBus.scl_pin < HARDWARE_PIN_MIN ||
-      i2cBus.scl_pin > HARDWARE_PIN_MAX
-    ) {
-      return t("hardwareConfig.validation.i2cBusSclPin");
-    }
-    if (i2cBus.sda_pin === i2cBus.scl_pin) {
-      return t("hardwareConfig.validation.i2cBusPinsDistinct");
-    }
-    if ((HARDWARE_FORBIDDEN_PINS as readonly number[]).includes(i2cBus.sda_pin)) {
-      return t("hardwareConfig.validation.i2cBusSdaPin");
-    }
-    if ((HARDWARE_FORBIDDEN_PINS as readonly number[]).includes(i2cBus.scl_pin)) {
-      return t("hardwareConfig.validation.i2cBusSclPin");
-    }
-    if (i2cBus.freq_hz != null) {
-      const freq =
-        typeof i2cBus.freq_hz === "number"
-          ? i2cBus.freq_hz
-          : Number(i2cBus.freq_hz);
-      if (
-        !Number.isFinite(freq) ||
-        freq < I2C_BUS_FREQ_MIN ||
-        freq > I2C_BUS_FREQ_MAX
-      ) {
-        return t("hardwareConfig.validation.i2cBusFreq");
-      }
-    }
+  const i2cBusError = validateI2cBusConfig(i2cBus, t);
+  if (i2cBusError) {
+    return i2cBusError;
+  }
+
+  const i2sBus = segment.i2s_bus ?? null;
+  const i2sBusError = validateI2sBusConfig(i2sBus, t);
+  if (i2sBusError) {
+    return i2sBusError;
   }
 
   const i2cSensors = segment.i2c_sensors ?? [];
@@ -212,6 +287,15 @@ export function validateHardwareSegment(
         }
       }
     }
+  }
+
+  const codecTopologyHardwareError = validateHardwareSegmentForAudioTopology(
+    segment,
+    audioConfig,
+    t,
+  );
+  if (codecTopologyHardwareError) {
+    return codecTopologyHardwareError;
   }
 
   return null;

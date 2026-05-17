@@ -3,6 +3,8 @@
 
 pub mod abstraction;
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+pub(crate) mod audio_codec_backend;
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 pub(crate) mod audio_drivers;
 pub mod board_info;
 pub mod byte_buffer;

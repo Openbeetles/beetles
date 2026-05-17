@@ -1,8 +1,8 @@
 /**
- * 拟物 3D 图标路径单源（`/public/icons/*.png`）。
+ * 拟物 3D 图标资源路径单源（`/public/icons/*`）。
  * 导航与仪表盘卡片共用同一套视觉；来源与版权见 `public/icons/README.md`。
  *
- * Single source for glossy 3D PNG paths; see `public/icons/README.md` for attribution.
+ * Single source for glossy 3D icon asset paths; see `public/icons/README.md` for attribution.
  */
 
 /** 主导航路径 → 图标（任务栏 / 开始菜单） */
@@ -28,6 +28,8 @@ export const OS_ICON_NAV: Record<string, string> = {
 export const OS_ICON_DEVICE_CONFIG = {
   /** 显示 / 画面与屏相关 */
   display: "/icons/display_3d.png",
+  /** 总线 / I2C + I2S 配置 */
+  buses: "/icons/bus_config_3d.svg",
   /** 音频 / 扬声器侧（面板内可再区分麦与回放） */
   audio: "/icons/speaker_3d.png",
   /** GPIO / 外设与设备控制 */

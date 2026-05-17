@@ -26,6 +26,15 @@ export interface AudioSpeakerConfig {
   sample_rate: number
 }
 
+export interface AudioCodecConfig {
+  input_codec: string | null
+  output_codec: string | null
+  input_addr: number | null
+  output_addr: number | null
+  pa_pin: number | null
+  input_reference: boolean
+}
+
 export interface AudioVadConfig {
   threshold: number
   silence_duration_ms: number
@@ -92,9 +101,11 @@ export interface AudioLedIndicatorConfig {
 export interface AudioConfig {
   version: number
   enabled: boolean
+  topology: AudioTopology
   service_provider: string
   microphone: AudioMicrophoneConfig
   speaker: AudioSpeakerConfig
+  codec: AudioCodecConfig
   vad: AudioVadConfig
   wake_word: AudioWakeWordConfig
   speech: AudioSpeechConfig
@@ -117,10 +128,17 @@ export const AUDIO_PIN_MAX = 48
 export const AUDIO_SAMPLE_RATE_MIN = 8_000
 export const AUDIO_SAMPLE_RATE_MAX = 48_000
 export const AUDIO_REALTIME_PCM16_SAMPLE_RATE = 24_000
+export const AUDIO_I2C_ADDR_MIN = 0x08
+export const AUDIO_I2C_ADDR_MAX = 0x77
+
+export const AUDIO_TOPOLOGIES = ['discrete_i2s', 'i2s_codec'] as const
+export type AudioTopology = (typeof AUDIO_TOPOLOGIES)[number]
 
 export const AUDIO_MIC_DEVICE_TYPES = ['i2s_inmp441', 'pdm'] as const
 export const AUDIO_SPEAKER_DEVICE_TYPES = ['i2s_max98357a'] as const
 export const AUDIO_SPEAKER_DEVICE_TYPES_LINUX = ['usb'] as const
+export const AUDIO_INPUT_CODEC_TYPES = ['es7210'] as const
+export const AUDIO_OUTPUT_CODEC_TYPES = ['es8311'] as const
 
 export const AUDIO_SAMPLE_RATE_PRESETS = [
   8_000,
@@ -150,6 +168,8 @@ export const AUDIO_SPEECH_LANGUAGES = ['zh', 'en', 'ja', 'ko'] as const
 export const AUDIO_REALTIME_PROVIDERS = ['openai_compatible', 'qwen', 'doubao'] as const
 
 export type AudioRealtimeProvider = (typeof AUDIO_REALTIME_PROVIDERS)[number]
+export type AudioInputCodecType = (typeof AUDIO_INPUT_CODEC_TYPES)[number]
+export type AudioOutputCodecType = (typeof AUDIO_OUTPUT_CODEC_TYPES)[number]
 
 export const AUDIO_TTS_RATE_PRESETS = ['-20%', '-10%', '+0%', '+10%', '+20%'] as const
 export const AUDIO_TTS_PITCH_PRESETS = ['-10Hz', '-5Hz', '+0Hz', '+5Hz', '+10Hz'] as const
@@ -279,9 +299,22 @@ export function audioRealtimeConfigured(c: Pick<AudioConfig, 'realtime'> | Audio
   )
 }
 
+export function audioTopologySupported(topology: string): topology is AudioTopology {
+  return (AUDIO_TOPOLOGIES as readonly string[]).includes(topology)
+}
+
+export function audioInputCodecSupported(codec: string): codec is AudioInputCodecType {
+  return (AUDIO_INPUT_CODEC_TYPES as readonly string[]).includes(codec)
+}
+
+export function audioOutputCodecSupported(codec: string): codec is AudioOutputCodecType {
+  return (AUDIO_OUTPUT_CODEC_TYPES as readonly string[]).includes(codec)
+}
+
 export function normalizeAudioConfigForSave(c: AudioConfig): AudioConfig {
   const speech = { ...c.speech }
   const realtime = { ...c.realtime }
+  const topology = audioTopologySupported(c.topology) ? c.topology : 'discrete_i2s'
   const microphone: AudioMicrophoneConfig = {
     enabled: c.microphone.enabled,
     device_type: c.microphone.device_type,
@@ -295,6 +328,14 @@ export function normalizeAudioConfigForSave(c: AudioConfig): AudioConfig {
     sample_rate: c.speaker.sample_rate,
     device_ref: c.speaker.device_ref?.trim() || null,
     pins: audioSpeakerPinsOrDefault(c.speaker.pins),
+  }
+  const codec: AudioCodecConfig = {
+    input_codec: c.codec.input_codec?.trim() || null,
+    output_codec: c.codec.output_codec?.trim() || null,
+    input_addr: c.codec.input_addr ?? null,
+    output_addr: c.codec.output_addr ?? null,
+    pa_pin: c.codec.pa_pin ?? null,
+    input_reference: Boolean(c.codec.input_reference),
   }
 
   if (c.service_provider === 'baidu' && !speech.api_url.trim()) {
@@ -330,7 +371,7 @@ export function normalizeAudioConfigForSave(c: AudioConfig): AudioConfig {
     speaker.device_ref = null
   }
 
-  return { ...c, speech, realtime, microphone, speaker }
+  return { ...c, topology, speech, realtime, microphone, speaker, codec }
 }
 
 export function normalizeAudioConfigFromDevice(raw: Partial<AudioConfig> | null | undefined): AudioConfig {
@@ -339,10 +380,14 @@ export function normalizeAudioConfigFromDevice(raw: Partial<AudioConfig> | null 
 
   const rawMicrophone = raw.microphone
   const rawSpeaker = raw.speaker
+  const rawCodec = raw.codec
+  const rawTopology = typeof raw.topology === 'string' ? raw.topology : ''
+  const topology = audioTopologySupported(rawTopology) ? rawTopology : base.topology
 
   return {
     ...base,
     ...raw,
+    topology,
     microphone: {
       enabled: rawMicrophone?.enabled ?? base.microphone.enabled,
       device_type: rawMicrophone?.device_type ?? base.microphone.device_type,
@@ -358,6 +403,14 @@ export function normalizeAudioConfigFromDevice(raw: Partial<AudioConfig> | null 
       sample_rate: rawSpeaker?.sample_rate ?? base.speaker.sample_rate,
       device_ref: rawSpeaker?.device_ref?.trim() || null,
       pins: audioSpeakerPinsOrDefault(rawSpeaker?.pins),
+    },
+    codec: {
+      input_codec: rawCodec?.input_codec?.trim() || null,
+      output_codec: rawCodec?.output_codec?.trim() || null,
+      input_addr: rawCodec?.input_addr ?? base.codec.input_addr,
+      output_addr: rawCodec?.output_addr ?? base.codec.output_addr,
+      pa_pin: rawCodec?.pa_pin ?? base.codec.pa_pin,
+      input_reference: rawCodec?.input_reference ?? base.codec.input_reference,
     },
     vad: {
       ...base.vad,
@@ -438,6 +491,7 @@ export function defaultAudioConfig(): AudioConfig {
   return {
     version: AUDIO_CONFIG_VERSION,
     enabled: false,
+    topology: 'discrete_i2s',
     service_provider: 'baidu',
     microphone: {
       enabled: false,
@@ -451,6 +505,14 @@ export function defaultAudioConfig(): AudioConfig {
       device_ref: null,
       pins: { ...DEFAULT_AUDIO_SPEAKER_PINS },
       sample_rate: 16_000,
+    },
+    codec: {
+      input_codec: null,
+      output_codec: null,
+      input_addr: null,
+      output_addr: null,
+      pa_pin: null,
+      input_reference: false,
     },
     vad: {
       threshold: 0.5,

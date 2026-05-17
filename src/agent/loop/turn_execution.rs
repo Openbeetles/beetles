@@ -594,13 +594,14 @@ pub(super) fn execute_turn_boxed(
                 first_token_marked = true;
             }
         };
+        let tool_choice = request_plan.tool_choice(round, any_tool_used);
         super::log_user_turn_memory_checkpoint("agent_llm_before_request", msg);
         let response = worker_llm.chat_with_progress(
             &mut tool_ctx,
             &system,
             &messages,
             round_tools,
-            request_plan.tool_choice(round, any_tool_used),
+            tool_choice,
             &mut progress_cb,
         );
         super::log_user_turn_memory_checkpoint("agent_llm_after_response", msg);

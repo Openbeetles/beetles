@@ -1,0 +1,67 @@
+<svg width="128" height="128" viewBox="0 0 128 128" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="28" y1="18" x2="96" y2="110" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#EEF7FF"/>
+      <stop offset="1" stop-color="#C9E6FF"/>
+    </linearGradient>
+    <linearGradient id="hub" x1="40" y1="36" x2="88" y2="92" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#6FD1FF"/>
+      <stop offset="0.55" stop-color="#3E92FF"/>
+      <stop offset="1" stop-color="#2057C7"/>
+    </linearGradient>
+    <linearGradient id="hubGloss" x1="44" y1="36" x2="76" y2="68" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF" stop-opacity="0.92"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="trace" x1="24" y1="64" x2="104" y2="64" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FDBA48"/>
+      <stop offset="0.5" stop-color="#FFE082"/>
+      <stop offset="1" stop-color="#F59E0B"/>
+    </linearGradient>
+    <radialGradient id="nodeBlue" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(23 63) rotate(47.5) scale(16.5895)">
+      <stop stop-color="#F7FDFF"/>
+      <stop offset="0.35" stop-color="#9CE0FF"/>
+      <stop offset="1" stop-color="#2D7CF8"/>
+    </radialGradient>
+    <radialGradient id="nodeGreen" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(105 63) rotate(132.5) scale(16.5895)">
+      <stop stop-color="#FCFFF6"/>
+      <stop offset="0.35" stop-color="#B9F18D"/>
+      <stop offset="1" stop-color="#3D9A3B"/>
+    </radialGradient>
+    <radialGradient id="nodeRose" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(64 22) rotate(90) scale(16.5)">
+      <stop stop-color="#FFF8FB"/>
+      <stop offset="0.35" stop-color="#FFC0D4"/>
+      <stop offset="1" stop-color="#D14C87"/>
+    </radialGradient>
+    <radialGradient id="nodePurple" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(64 106) rotate(90) scale(16.5)">
+      <stop stop-color="#FBF9FF"/>
+      <stop offset="0.35" stop-color="#D4C4FF"/>
+      <stop offset="1" stop-color="#6C55E8"/>
+    </radialGradient>
+    <filter id="shadow" x="8" y="6" width="112" height="116" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="10" stdDeviation="8" flood-color="#1B4D8F" flood-opacity="0.22"/>
+    </filter>
+  </defs>
+
+  <g filter="url(#shadow)">
+    <circle cx="64" cy="64" r="48" fill="url(#bg)"/>
+    <path d="M35 64H49" stroke="url(#trace)" stroke-width="8" stroke-linecap="round"/>
+    <path d="M79 64H93" stroke="url(#trace)" stroke-width="8" stroke-linecap="round"/>
+    <path d="M64 35V49" stroke="url(#trace)" stroke-width="8" stroke-linecap="round"/>
+    <path d="M64 79V93" stroke="url(#trace)" stroke-width="8" stroke-linecap="round"/>
+
+    <rect x="42" y="42" width="44" height="44" rx="15" fill="url(#hub)"/>
+    <rect x="45" y="45" width="38" height="20" rx="10" fill="url(#hubGloss)"/>
+    <rect x="49" y="52" width="30" height="24" rx="8" fill="#F7FBFF" fill-opacity="0.18" stroke="#D9EEFF" stroke-opacity="0.45"/>
+
+    <circle cx="23" cy="64" r="11" fill="url(#nodeBlue)"/>
+    <circle cx="105" cy="64" r="11" fill="url(#nodeGreen)"/>
+    <circle cx="64" cy="23" r="11" fill="url(#nodeRose)"/>
+    <circle cx="64" cy="105" r="11" fill="url(#nodePurple)"/>
+
+    <circle cx="23" cy="60" r="4" fill="#FFFFFF" fill-opacity="0.72"/>
+    <circle cx="105" cy="60" r="4" fill="#FFFFFF" fill-opacity="0.68"/>
+    <circle cx="64" cy="19" r="4" fill="#FFFFFF" fill-opacity="0.72"/>
+    <circle cx="64" cy="101" r="4" fill="#FFFFFF" fill-opacity="0.68"/>
+  </g>
+</svg>

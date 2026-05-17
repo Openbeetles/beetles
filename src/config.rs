@@ -249,6 +249,9 @@ pub struct AppConfig {
     /// I2C 总线配置（从 storage config/hardware.json 加载），不序列化到 NVS。
     #[serde(skip, default)]
     pub i2c_bus: Option<I2cBusConfig>,
+    /// I2S 总线配置（从 storage config/hardware.json 加载），不序列化到 NVS。
+    #[serde(skip, default)]
+    pub i2s_bus: Option<I2sBusConfig>,
     /// I2C 设备列表（从 storage config/hardware.json 加载），不序列化到 NVS。
     #[serde(skip, default)]
     pub i2c_devices: Vec<I2cDeviceEntry>,
@@ -329,6 +332,7 @@ impl AppConfig {
                 .map(String::from),
             hardware_devices: vec![],
             i2c_bus: None,
+            i2s_bus: None,
             i2c_devices: vec![],
             i2c_sensors: vec![],
             display: None,
@@ -505,6 +509,7 @@ impl AppConfig {
                 }
                 self.hardware_devices = seg.hardware_devices;
                 self.i2c_bus = seg.i2c_bus;
+                self.i2s_bus = seg.i2s_bus;
                 self.i2c_devices = seg.i2c_devices;
                 self.i2c_sensors = seg.i2c_sensors;
             }
@@ -546,6 +551,15 @@ impl AppConfig {
                 normalize_audio_segment(&mut seg);
                 if let Err(e) = validate_audio_segment(&seg) {
                     log::warn!("[config] merge_audio_from_json validation failed: {}", e);
+                    errors.push("audio_validation_failed".into());
+                    return;
+                }
+                let hardware = HardwareSegment::from_app_config(self);
+                if let Err(e) = validate_audio_hardware_pair("audio", &seg, &hardware) {
+                    log::warn!(
+                        "[config] merge_audio_from_json pair validation failed: {}",
+                        e
+                    );
                     errors.push("audio_validation_failed".into());
                     return;
                 }
@@ -1078,12 +1092,17 @@ const AUDIO_SPEECH_API_SECRET_MAX_LEN: usize = 256;
 const AUDIO_SOUND_EVENTS_MAX: usize = 16;
 const AUDIO_SOUND_EVENT_MAX_LEN: usize = 32;
 const AUDIO_REALTIME_INSTRUCTIONS_MAX_LEN: usize = 1024;
+const AUDIO_TOPOLOGY_MAX_LEN: usize = 32;
 const AUDIO_MIC_DEVICE_I2S_INMP441: &str = "i2s_inmp441";
 /// Maximum length for `wake_word.wake_prompt`.
 const AUDIO_WAKE_PROMPT_MAX_LEN: usize = 256;
 const AUDIO_MIC_DEVICE_PDM: &str = "pdm";
 const AUDIO_SPEAKER_DEVICE_I2S_MAX98357A: &str = "i2s_max98357a";
 const AUDIO_SPEAKER_DEVICE_USB: &str = "usb";
+pub const AUDIO_TOPOLOGY_DISCRETE_I2S: &str = "discrete_i2s";
+pub const AUDIO_TOPOLOGY_I2S_CODEC: &str = "i2s_codec";
+pub const AUDIO_CODEC_INPUT_ES7210: &str = "es7210";
+pub const AUDIO_CODEC_OUTPUT_ES8311: &str = "es8311";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AudioMicPins {
@@ -1124,6 +1143,22 @@ pub struct AudioSpeakerConfig {
     pub pins: Option<AudioSpeakerPins>,
     #[serde(default = "default_audio_sample_rate")]
     pub sample_rate: u32,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AudioCodecConfig {
+    #[serde(default)]
+    pub input_codec: Option<String>,
+    #[serde(default)]
+    pub output_codec: Option<String>,
+    #[serde(default)]
+    pub input_addr: Option<u8>,
+    #[serde(default)]
+    pub output_addr: Option<u8>,
+    #[serde(default)]
+    pub pa_pin: Option<i32>,
+    #[serde(default)]
+    pub input_reference: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1287,8 +1322,12 @@ pub struct AudioSegment {
     pub enabled: bool,
     #[serde(default = "default_audio_service_provider")]
     pub service_provider: String,
+    #[serde(default = "default_audio_topology")]
+    pub topology: String,
     pub microphone: AudioMicrophoneConfig,
     pub speaker: AudioSpeakerConfig,
+    #[serde(default = "default_audio_codec_config")]
+    pub codec: AudioCodecConfig,
     pub vad: AudioVadConfig,
     pub wake_word: AudioWakeWordConfig,
     pub speech: AudioSpeechConfig,
@@ -1305,6 +1344,21 @@ fn default_audio_config_version() -> u32 {
 
 fn default_audio_sample_rate() -> u32 {
     16_000
+}
+
+fn default_audio_topology() -> String {
+    AUDIO_TOPOLOGY_DISCRETE_I2S.to_string()
+}
+
+fn default_audio_codec_config() -> AudioCodecConfig {
+    AudioCodecConfig {
+        input_codec: None,
+        output_codec: None,
+        input_addr: None,
+        output_addr: None,
+        pa_pin: None,
+        input_reference: false,
+    }
 }
 
 fn default_audio_vad_threshold() -> f32 {
@@ -1401,6 +1455,7 @@ pub fn default_disabled_audio_segment() -> AudioSegment {
         version: AUDIO_CONFIG_VERSION,
         enabled: false,
         service_provider: default_audio_service_provider(),
+        topology: default_audio_topology(),
         microphone: AudioMicrophoneConfig {
             enabled: false,
             device_type: "i2s_inmp441".to_string(),
@@ -1423,6 +1478,7 @@ pub fn default_disabled_audio_segment() -> AudioSegment {
             }),
             sample_rate: default_audio_sample_rate(),
         },
+        codec: default_audio_codec_config(),
         vad: AudioVadConfig {
             threshold: default_audio_vad_threshold(),
             silence_duration_ms: default_audio_vad_silence_ms(),
@@ -1549,6 +1605,16 @@ fn default_i2c_freq() -> u32 {
     crate::constants::I2C_DEFAULT_FREQ_HZ
 }
 
+/// I2S 总线配置。
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct I2sBusConfig {
+    pub mclk_pin: i32,
+    pub ws_pin: i32,
+    pub bclk_pin: i32,
+    pub din_pin: i32,
+    pub dout_pin: i32,
+}
+
 /// 单个 I2C 设备条目。
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct I2cDeviceEntry {
@@ -1582,6 +1648,8 @@ pub struct HardwareSegment {
     #[serde(default)]
     pub i2c_bus: Option<I2cBusConfig>,
     #[serde(default)]
+    pub i2s_bus: Option<I2sBusConfig>,
+    #[serde(default)]
     pub i2c_devices: Vec<I2cDeviceEntry>,
     #[serde(default)]
     pub i2c_sensors: Vec<I2cSensorEntry>,
@@ -1592,6 +1660,7 @@ impl HardwareSegment {
         Self {
             hardware_devices: config.hardware_devices.clone(),
             i2c_bus: config.i2c_bus.clone(),
+            i2s_bus: config.i2s_bus.clone(),
             i2c_devices: config.i2c_devices.clone(),
             i2c_sensors: config.i2c_sensors.clone(),
         }
@@ -1847,6 +1916,100 @@ fn normalize_audio_segment(seg: &mut AudioSegment) {
     if seg.speaker.device_type != AUDIO_SPEAKER_DEVICE_USB {
         seg.speaker.device_ref = None;
     }
+    seg.topology = seg.topology.trim().to_ascii_lowercase();
+    trim_optional_nonempty(&mut seg.codec.input_codec);
+    trim_optional_nonempty(&mut seg.codec.output_codec);
+}
+
+fn trim_optional_nonempty(field: &mut Option<String>) {
+    if let Some(value) = field {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            *field = None;
+        } else if trimmed.len() != value.len() {
+            *value = trimmed.to_string();
+        }
+    }
+}
+
+pub(crate) fn audio_topology_is_codec(seg: &AudioSegment) -> bool {
+    seg.topology == AUDIO_TOPOLOGY_I2S_CODEC
+}
+
+fn validate_audio_codec_pa_pin(field: &'static str, pin: i32) -> Result<()> {
+    if !(HARDWARE_PIN_MIN..=HARDWARE_PIN_MAX).contains(&pin) {
+        return Err(Error::config(
+            "audio",
+            format!(
+                "{} = {} out of range {}..={}",
+                field, pin, HARDWARE_PIN_MIN, HARDWARE_PIN_MAX
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_audio_codec_config(seg: &AudioSegment) -> Result<()> {
+    let input_codec = seg.codec.input_codec.as_deref().ok_or_else(|| {
+        Error::config(
+            "audio",
+            "audio.codec.input_codec is required when audio.topology == i2s_codec",
+        )
+    })?;
+    if input_codec != AUDIO_CODEC_INPUT_ES7210 {
+        return Err(Error::config(
+            "audio",
+            format!(
+                "audio.codec.input_codec must be one of: {}",
+                AUDIO_CODEC_INPUT_ES7210
+            ),
+        ));
+    }
+    let output_codec = seg.codec.output_codec.as_deref().ok_or_else(|| {
+        Error::config(
+            "audio",
+            "audio.codec.output_codec is required when audio.topology == i2s_codec",
+        )
+    })?;
+    if output_codec != AUDIO_CODEC_OUTPUT_ES8311 {
+        return Err(Error::config(
+            "audio",
+            format!(
+                "audio.codec.output_codec must be one of: {}",
+                AUDIO_CODEC_OUTPUT_ES8311
+            ),
+        ));
+    }
+    let pa_pin = seg.codec.pa_pin.ok_or_else(|| {
+        Error::config(
+            "audio",
+            "audio.codec.pa_pin is required when audio.topology == i2s_codec",
+        )
+    })?;
+    validate_audio_codec_pa_pin("audio.codec.pa_pin", pa_pin)?;
+    if let Some(addr) = seg.codec.input_addr {
+        if !(0x08..=0x77).contains(&addr) {
+            return Err(Error::config(
+                "audio",
+                format!(
+                    "audio.codec.input_addr 0x{:02X} must be in 0x08..=0x77",
+                    addr
+                ),
+            ));
+        }
+    }
+    if let Some(addr) = seg.codec.output_addr {
+        if !(0x08..=0x77).contains(&addr) {
+            return Err(Error::config(
+                "audio",
+                format!(
+                    "audio.codec.output_addr 0x{:02X} must be in 0x08..=0x77",
+                    addr
+                ),
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// 私有：校验 AudioSegment 字段（引脚、采样率、阈值、字符串长度等）。
@@ -1861,6 +2024,21 @@ fn validate_audio_segment(seg: &AudioSegment) -> Result<()> {
                 "audio version must be {} (got {})",
                 AUDIO_CONFIG_VERSION, seg.version
             ),
+        ));
+    }
+    if seg.topology.is_empty() || seg.topology.len() > AUDIO_TOPOLOGY_MAX_LEN {
+        return Err(Error::config(
+            "audio",
+            format!(
+                "audio.topology length must be 1..={}",
+                AUDIO_TOPOLOGY_MAX_LEN
+            ),
+        ));
+    }
+    if seg.topology != AUDIO_TOPOLOGY_DISCRETE_I2S && seg.topology != AUDIO_TOPOLOGY_I2S_CODEC {
+        return Err(Error::config(
+            "audio",
+            "audio.topology must be one of: discrete_i2s, i2s_codec",
         ));
     }
     if seg.microphone.device_type.len() > AUDIO_DEVICE_TYPE_MAX_LEN
@@ -2133,51 +2311,74 @@ fn validate_audio_segment(seg: &AudioSegment) -> Result<()> {
         }
     }
 
-    if seg.microphone.enabled {
-        if seg.microphone.device_type != AUDIO_MIC_DEVICE_I2S_INMP441
-            && seg.microphone.device_type != AUDIO_MIC_DEVICE_PDM
-        {
-            return Err(Error::config(
-                "audio",
-                format!(
-                    "microphone.device_type must be one of: {}, {}",
-                    AUDIO_MIC_DEVICE_I2S_INMP441, AUDIO_MIC_DEVICE_PDM
-                ),
-            ));
-        }
-        validate_pin_range(seg.microphone.pins.ws, "audio")?;
-        validate_pin_range(seg.microphone.pins.sck, "audio")?;
-        validate_pin_range(seg.microphone.pins.din, "audio")?;
-        validate_audio_sample_rate(seg.microphone.sample_rate, "microphone.sample_rate")?;
-    }
-    if seg.speaker.enabled {
-        match seg.speaker.device_type.as_str() {
-            AUDIO_SPEAKER_DEVICE_I2S_MAX98357A => {
-                let pins = seg.speaker.pins.as_ref().ok_or_else(|| {
-                    Error::config(
+    match seg.topology.as_str() {
+        AUDIO_TOPOLOGY_DISCRETE_I2S => {
+            if seg.microphone.enabled {
+                if seg.microphone.device_type != AUDIO_MIC_DEVICE_I2S_INMP441
+                    && seg.microphone.device_type != AUDIO_MIC_DEVICE_PDM
+                {
+                    return Err(Error::config(
                         "audio",
-                        "speaker.pins are required when speaker.device_type == i2s_max98357a",
-                    )
-                })?;
-                validate_pin_range(pins.ws, "audio")?;
-                validate_pin_range(pins.sck, "audio")?;
-                validate_pin_range(pins.dout, "audio")?;
-                if let Some(sd) = pins.sd {
-                    validate_pin_range(sd, "audio")?;
+                        format!(
+                            "microphone.device_type must be one of: {}, {}",
+                            AUDIO_MIC_DEVICE_I2S_INMP441, AUDIO_MIC_DEVICE_PDM
+                        ),
+                    ));
                 }
+                validate_pin_range(seg.microphone.pins.ws, "audio")?;
+                validate_pin_range(seg.microphone.pins.sck, "audio")?;
+                validate_pin_range(seg.microphone.pins.din, "audio")?;
+                validate_audio_sample_rate(seg.microphone.sample_rate, "microphone.sample_rate")?;
             }
-            AUDIO_SPEAKER_DEVICE_USB => {}
-            _ => {
+            if seg.speaker.enabled {
+                match seg.speaker.device_type.as_str() {
+                    AUDIO_SPEAKER_DEVICE_I2S_MAX98357A => {
+                        let pins = seg.speaker.pins.as_ref().ok_or_else(|| {
+                            Error::config(
+                                "audio",
+                                "speaker.pins are required when speaker.device_type == i2s_max98357a",
+                            )
+                        })?;
+                        validate_pin_range(pins.ws, "audio")?;
+                        validate_pin_range(pins.sck, "audio")?;
+                        validate_pin_range(pins.dout, "audio")?;
+                        if let Some(sd) = pins.sd {
+                            validate_pin_range(sd, "audio")?;
+                        }
+                    }
+                    AUDIO_SPEAKER_DEVICE_USB => {}
+                    _ => {
+                        return Err(Error::config(
+                            "audio",
+                            format!(
+                                "speaker.device_type must be one of: {}, {}",
+                                AUDIO_SPEAKER_DEVICE_I2S_MAX98357A, AUDIO_SPEAKER_DEVICE_USB
+                            ),
+                        ));
+                    }
+                }
+                validate_audio_sample_rate(seg.speaker.sample_rate, "speaker.sample_rate")?;
+            }
+        }
+        AUDIO_TOPOLOGY_I2S_CODEC => {
+            if seg.microphone.enabled {
+                validate_audio_sample_rate(seg.microphone.sample_rate, "microphone.sample_rate")?;
+            }
+            if seg.speaker.enabled {
+                validate_audio_sample_rate(seg.speaker.sample_rate, "speaker.sample_rate")?;
+            }
+            if seg.microphone.enabled
+                && seg.speaker.enabled
+                && seg.microphone.sample_rate != seg.speaker.sample_rate
+            {
                 return Err(Error::config(
                     "audio",
-                    format!(
-                        "speaker.device_type must be one of: {}, {}",
-                        AUDIO_SPEAKER_DEVICE_I2S_MAX98357A, AUDIO_SPEAKER_DEVICE_USB
-                    ),
+                    "speaker.sample_rate must equal microphone.sample_rate when audio.topology == i2s_codec",
                 ));
             }
+            validate_audio_codec_config(seg)?;
         }
-        validate_audio_sample_rate(seg.speaker.sample_rate, "speaker.sample_rate")?;
+        _ => {}
     }
     if !(0.0..=1.0).contains(&seg.vad.threshold) {
         return Err(Error::config(
@@ -2410,6 +2611,9 @@ fn validate_hardware_segment(seg: &HardwareSegment) -> Result<()> {
             ));
         }
     }
+    if let Some(bus) = &seg.i2s_bus {
+        validate_i2s_bus_config(bus)?;
+    }
 
     // i2c_sensors
     use crate::constants::{
@@ -2576,6 +2780,122 @@ fn validate_i2c_bus_pin(field: &'static str, pin: i32) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+fn validate_i2s_bus_pin(field: &'static str, pin: i32) -> Result<()> {
+    if !(HARDWARE_PIN_MIN..=HARDWARE_PIN_MAX).contains(&pin) {
+        return Err(Error::config(
+            "hardware",
+            format!(
+                "{} = {} out of range {}..={}",
+                field, pin, HARDWARE_PIN_MIN, HARDWARE_PIN_MAX
+            ),
+        ));
+    }
+    if HARDWARE_FORBIDDEN_PINS.contains(&pin) {
+        return Err(Error::config(
+            "hardware",
+            format!("{} = {} is a forbidden strapping pin", field, pin),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_i2s_bus_config(bus: &I2sBusConfig) -> Result<()> {
+    validate_i2s_bus_pin("i2s_bus.mclk_pin", bus.mclk_pin)?;
+    validate_i2s_bus_pin("i2s_bus.ws_pin", bus.ws_pin)?;
+    validate_i2s_bus_pin("i2s_bus.bclk_pin", bus.bclk_pin)?;
+    validate_i2s_bus_pin("i2s_bus.din_pin", bus.din_pin)?;
+    validate_i2s_bus_pin("i2s_bus.dout_pin", bus.dout_pin)?;
+
+    let pins = [
+        ("i2s_bus.mclk_pin", bus.mclk_pin),
+        ("i2s_bus.ws_pin", bus.ws_pin),
+        ("i2s_bus.bclk_pin", bus.bclk_pin),
+        ("i2s_bus.din_pin", bus.din_pin),
+        ("i2s_bus.dout_pin", bus.dout_pin),
+    ];
+    let mut seen = std::collections::HashSet::new();
+    for (field, pin) in pins {
+        if !seen.insert(pin) {
+            return Err(Error::config(
+                "hardware",
+                format!("{} duplicates another i2s_bus pin ({})", field, pin),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_audio_hardware_pair(
+    stage: &'static str,
+    audio: &AudioSegment,
+    hardware: &HardwareSegment,
+) -> Result<()> {
+    if !audio_topology_is_codec(audio) {
+        return Ok(());
+    }
+    if hardware.i2c_bus.is_none() {
+        return Err(Error::config(
+            stage,
+            "hardware.i2c_bus is required when audio.topology == i2s_codec",
+        ));
+    }
+    if hardware.i2s_bus.is_none() {
+        return Err(Error::config(
+            stage,
+            "hardware.i2s_bus is required when audio.topology == i2s_codec",
+        ));
+    }
+    Ok(())
+}
+
+fn default_hardware_segment() -> HardwareSegment {
+    HardwareSegment {
+        hardware_devices: vec![],
+        i2c_bus: None,
+        i2s_bus: None,
+        i2c_devices: vec![],
+        i2c_sensors: vec![],
+    }
+}
+
+fn load_hardware_segment_value(reader: &dyn ConfigFileStore) -> Result<HardwareSegment> {
+    match reader.read_config_file("config/hardware.json")? {
+        Some(bytes) if bytes.iter().all(|b| b.is_ascii_whitespace()) => {
+            Ok(default_hardware_segment())
+        }
+        Some(bytes) => {
+            let json = std::str::from_utf8(&bytes)
+                .map_err(|e| Error::config("hardware", e.to_string()))?;
+            let seg = deserialize_storage_json_loose_tail::<HardwareSegment>(json)
+                .map_err(|e| Error::config("hardware", e.to_string()))?;
+            validate_hardware_segment(&seg)?;
+            Ok(seg)
+        }
+        None => Ok(default_hardware_segment()),
+    }
+}
+
+fn load_audio_segment_value(reader: &dyn ConfigFileStore) -> Result<AudioSegment> {
+    match reader.read_config_file("config/audio.json")? {
+        Some(bytes) if bytes.iter().all(|b| b.is_ascii_whitespace()) => {
+            Ok(default_disabled_audio_segment())
+        }
+        Some(bytes) => {
+            let json =
+                std::str::from_utf8(&bytes).map_err(|e| Error::config("audio", e.to_string()))?;
+            let mut seg = deserialize_storage_json_loose_tail::<AudioSegment>(json)
+                .map_err(|e| Error::config("audio", e.to_string()))?;
+            if seg.version == 0 {
+                seg.version = AUDIO_CONFIG_VERSION;
+            }
+            normalize_audio_segment(&mut seg);
+            validate_audio_segment(&seg)?;
+            Ok(seg)
+        }
+        None => Ok(default_disabled_audio_segment()),
+    }
 }
 
 fn validate_pin_range(pin: i32, stage: &'static str) -> Result<()> {
@@ -2838,6 +3158,8 @@ pub fn save_hardware_segment_value(
     seg: &HardwareSegment,
 ) -> Result<()> {
     validate_hardware_segment(seg)?;
+    let audio = load_audio_segment_value(writer)?;
+    validate_audio_hardware_pair("hardware", &audio, seg)?;
     let json =
         serde_json::to_string(&seg).map_err(|e| Error::config("serialize", e.to_string()))?;
     writer.write_config_file("config/hardware.json", json.as_bytes())?;
@@ -2870,6 +3192,8 @@ pub fn save_audio_segment_value(
     }
     normalize_audio_segment(&mut seg);
     validate_audio_segment(&seg)?;
+    let hardware = load_hardware_segment_value(writer)?;
+    validate_audio_hardware_pair("audio", &seg, &hardware)?;
     let json =
         serde_json::to_string(&seg).map_err(|e| Error::config("serialize", e.to_string()))?;
     writer.write_config_file("config/audio.json", json.as_bytes())?;
@@ -2916,6 +3240,7 @@ pub fn save_display_segment_value(
 pub(crate) fn apply_hardware_segment_to_config(config: &mut AppConfig, seg: &HardwareSegment) {
     config.hardware_devices = seg.hardware_devices.clone();
     config.i2c_bus = seg.i2c_bus.clone();
+    config.i2s_bus = seg.i2s_bus.clone();
     config.i2c_devices = seg.i2c_devices.clone();
     config.i2c_sensors = seg.i2c_sensors.clone();
     drop_invalid_display_after_hardware_update(config);
@@ -3042,6 +3367,50 @@ pub fn parse_allowed_chat_ids(s: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct MultiFileStore {
+        files: Mutex<HashMap<String, Vec<u8>>>,
+    }
+
+    impl MultiFileStore {
+        fn with_file(path: &str, data: impl Into<Vec<u8>>) -> Self {
+            let mut files = HashMap::new();
+            files.insert(path.to_string(), data.into());
+            Self {
+                files: Mutex::new(files),
+            }
+        }
+    }
+
+    impl ConfigFileStore for MultiFileStore {
+        fn read_config_file(&self, rel_path: &str) -> Result<Option<Vec<u8>>> {
+            Ok(self
+                .files
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(rel_path)
+                .cloned())
+        }
+
+        fn write_config_file(&self, rel_path: &str, data: &[u8]) -> Result<()> {
+            self.files
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(rel_path.to_string(), data.to_vec());
+            Ok(())
+        }
+
+        fn remove_config_file(&self, rel_path: &str) -> Result<()> {
+            self.files
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(rel_path);
+            Ok(())
+        }
+    }
 
     fn aht20_sensor_for_tests() -> I2cSensorEntry {
         I2cSensorEntry {
@@ -3059,6 +3428,7 @@ mod tests {
         let segment = HardwareSegment {
             hardware_devices: vec![],
             i2c_bus: None,
+            i2s_bus: None,
             i2c_devices: vec![],
             i2c_sensors: vec![aht20_sensor_for_tests()],
         };
@@ -3078,6 +3448,7 @@ mod tests {
                 scl_pin: 40,
                 freq_hz: crate::constants::I2C_DEFAULT_FREQ_HZ,
             }),
+            i2s_bus: None,
             i2c_devices: vec![],
             i2c_sensors: vec![],
         };
@@ -3097,6 +3468,7 @@ mod tests {
                 scl_pin: 41,
                 freq_hz: crate::constants::I2C_DEFAULT_FREQ_HZ,
             }),
+            i2s_bus: None,
             i2c_devices: vec![],
             i2c_sensors: vec![],
         };
@@ -3116,11 +3488,70 @@ mod tests {
                 scl_pin: 22,
                 freq_hz: crate::constants::I2C_DEFAULT_FREQ_HZ,
             }),
+            i2s_bus: None,
             i2c_devices: vec![],
             i2c_sensors: vec![aht20_sensor_for_tests()],
         };
 
         validate_hardware_segment(&segment).unwrap();
+    }
+
+    #[test]
+    fn hardware_validation_rejects_duplicate_i2s_bus_pins() {
+        let segment = HardwareSegment {
+            hardware_devices: vec![],
+            i2c_bus: None,
+            i2s_bus: Some(I2sBusConfig {
+                mclk_pin: 2,
+                ws_pin: 47,
+                bclk_pin: 17,
+                din_pin: 16,
+                dout_pin: 16,
+            }),
+            i2c_devices: vec![],
+            i2c_sensors: vec![],
+        };
+
+        assert!(validate_hardware_segment(&segment)
+            .unwrap_err()
+            .to_string()
+            .contains("i2s_bus.dout_pin duplicates"));
+    }
+
+    #[test]
+    fn hardware_segment_round_trips_i2s_bus() {
+        let store = MultiFileStore::default();
+        let segment = HardwareSegment {
+            hardware_devices: vec![],
+            i2c_bus: Some(I2cBusConfig {
+                sda_pin: 8,
+                scl_pin: 18,
+                freq_hz: crate::constants::I2C_DEFAULT_FREQ_HZ,
+            }),
+            i2s_bus: Some(I2sBusConfig {
+                mclk_pin: 2,
+                ws_pin: 47,
+                bclk_pin: 17,
+                din_pin: 16,
+                dout_pin: 15,
+            }),
+            i2c_devices: vec![],
+            i2c_sensors: vec![],
+        };
+
+        save_hardware_segment_value(&store, &segment).expect("save hardware");
+        let written = store
+            .read_config_file("config/hardware.json")
+            .expect("read")
+            .expect("written");
+        let saved: HardwareSegment =
+            serde_json::from_slice(&written).expect("parse saved hardware");
+        let bus = saved.i2s_bus.expect("saved i2s bus");
+        assert_eq!(bus.mclk_pin, 2);
+        assert_eq!(bus.ws_pin, 47);
+        assert_eq!(bus.bclk_pin, 17);
+        assert_eq!(bus.din_pin, 16);
+        assert_eq!(bus.dout_pin, 15);
     }
 
     #[test]
@@ -3472,6 +3903,47 @@ mod tests {
     }
 
     #[test]
+    fn audio_validation_i2s_codec_accepts_pa_pin_46_and_ignores_legacy_pins() {
+        let mut seg = default_disabled_audio_segment();
+        seg.enabled = true;
+        seg.topology = AUDIO_TOPOLOGY_I2S_CODEC.to_string();
+        seg.microphone.enabled = true;
+        seg.speaker.enabled = true;
+        seg.microphone.sample_rate = 24_000;
+        seg.speaker.sample_rate = 24_000;
+        seg.codec.input_codec = Some(AUDIO_CODEC_INPUT_ES7210.to_string());
+        seg.codec.output_codec = Some(AUDIO_CODEC_OUTPUT_ES8311.to_string());
+        seg.codec.pa_pin = Some(46);
+        seg.codec.input_reference = true;
+        seg.microphone.pins.ws = 0;
+        seg.microphone.pins.sck = 0;
+        seg.microphone.pins.din = 0;
+        seg.speaker.pins = None;
+
+        assert!(validate_audio_segment(&seg).is_ok());
+    }
+
+    #[test]
+    fn audio_validation_i2s_codec_requires_matching_sample_rates() {
+        let mut seg = default_disabled_audio_segment();
+        seg.enabled = true;
+        seg.topology = AUDIO_TOPOLOGY_I2S_CODEC.to_string();
+        seg.microphone.enabled = true;
+        seg.speaker.enabled = true;
+        seg.microphone.sample_rate = 16_000;
+        seg.speaker.sample_rate = 24_000;
+        seg.codec.input_codec = Some(AUDIO_CODEC_INPUT_ES7210.to_string());
+        seg.codec.output_codec = Some(AUDIO_CODEC_OUTPUT_ES8311.to_string());
+        seg.codec.pa_pin = Some(46);
+
+        let error = validate_audio_segment(&seg)
+            .expect_err("codec topology should enforce equal sample rates");
+        assert!(error
+            .to_string()
+            .contains("speaker.sample_rate must equal microphone.sample_rate"));
+    }
+
+    #[test]
     fn audio_validation_requires_realtime_sample_rate_when_wake_word_enabled() {
         let mut seg = default_disabled_audio_segment();
         seg.enabled = true;
@@ -3591,6 +4063,289 @@ mod tests {
 
         let error = validate_audio_segment(&seg).expect_err("i2s speaker should require pins");
         assert!(error.to_string().contains("speaker.pins are required"));
+    }
+
+    #[test]
+    fn audio_segment_round_trips_topology_and_codec() {
+        let store = MultiFileStore::with_file(
+            "config/hardware.json",
+            serde_json::to_vec(&HardwareSegment {
+                hardware_devices: vec![],
+                i2c_bus: Some(I2cBusConfig {
+                    sda_pin: 8,
+                    scl_pin: 18,
+                    freq_hz: crate::constants::I2C_DEFAULT_FREQ_HZ,
+                }),
+                i2s_bus: Some(I2sBusConfig {
+                    mclk_pin: 2,
+                    ws_pin: 47,
+                    bclk_pin: 17,
+                    din_pin: 16,
+                    dout_pin: 15,
+                }),
+                i2c_devices: vec![],
+                i2c_sensors: vec![],
+            })
+            .expect("serialize hardware"),
+        );
+        let mut seg = default_disabled_audio_segment();
+        seg.enabled = true;
+        seg.topology = AUDIO_TOPOLOGY_I2S_CODEC.to_string();
+        seg.microphone.enabled = true;
+        seg.speaker.enabled = true;
+        seg.microphone.sample_rate = 24_000;
+        seg.speaker.sample_rate = 24_000;
+        seg.codec.input_codec = Some(AUDIO_CODEC_INPUT_ES7210.to_string());
+        seg.codec.output_codec = Some(AUDIO_CODEC_OUTPUT_ES8311.to_string());
+        seg.codec.input_addr = Some(0x40);
+        seg.codec.output_addr = Some(0x18);
+        seg.codec.pa_pin = Some(46);
+        seg.codec.input_reference = true;
+
+        save_audio_segment_value(&store, seg).expect("save audio");
+        let written = store
+            .read_config_file("config/audio.json")
+            .expect("read")
+            .expect("written");
+        let saved: AudioSegment = serde_json::from_slice(&written).expect("parse saved audio");
+        assert_eq!(saved.topology, AUDIO_TOPOLOGY_I2S_CODEC);
+        assert_eq!(
+            saved.codec.input_codec.as_deref(),
+            Some(AUDIO_CODEC_INPUT_ES7210)
+        );
+        assert_eq!(
+            saved.codec.output_codec.as_deref(),
+            Some(AUDIO_CODEC_OUTPUT_ES8311)
+        );
+        assert_eq!(saved.codec.input_addr, Some(0x40));
+        assert_eq!(saved.codec.output_addr, Some(0x18));
+        assert_eq!(saved.codec.pa_pin, Some(46));
+        assert!(saved.codec.input_reference);
+    }
+
+    #[test]
+    fn merge_audio_from_json_defaults_missing_topology_to_discrete_i2s() {
+        let mut config = AppConfig::load_from_env();
+        let mut errors = Vec::new();
+        config.merge_audio_from_json(
+            r#"{
+                "version": 1,
+                "enabled": false,
+                "service_provider": "baidu",
+                "microphone": {
+                  "enabled": false,
+                  "device_type": "i2s_inmp441",
+                  "pins": { "ws": 25, "sck": 26, "din": 27 },
+                  "sample_rate": 16000
+                },
+                "speaker": {
+                  "enabled": false,
+                  "device_type": "i2s_max98357a",
+                  "pins": { "ws": 32, "sck": 33, "dout": 22, "sd": null },
+                  "sample_rate": 16000
+                },
+                "vad": { "threshold": 0.5, "silence_duration_ms": 1000 },
+                "wake_word": { "enabled": false, "keyword": "hiesp", "wake_prompt": "你好，我在听，请说。" },
+                "speech": { "api_url": "https://vop.baidu.com/server_api", "api_key": "", "api_secret": "", "model": "1537", "language": "zh" },
+                "tts": { "voice": "0", "rate": "+0%", "pitch": "+0Hz" },
+                "realtime": {
+                  "provider": "openai_compatible",
+                  "ws_url": "wss://api.openai.com/v1/realtime",
+                  "api_key": "",
+                  "model": "gpt-realtime",
+                  "voice": "alloy",
+                  "instructions": ""
+                },
+                "ambient_listening": {
+                  "enabled": false,
+                  "detect_emotions": true,
+                  "sound_events": ["sigh"],
+                  "cooldown_minutes": 10,
+                  "check_interval_seconds": 300
+                },
+                "led_indicator": {
+                  "enabled": false,
+                  "pin": 2,
+                  "states": { "listening": "breathing", "processing": "fast_blink", "speaking": "solid" }
+                }
+            }"#,
+            &mut errors,
+        );
+
+        assert!(errors.is_empty());
+        assert_eq!(
+            config.audio.as_ref().expect("merged audio").topology,
+            AUDIO_TOPOLOGY_DISCRETE_I2S
+        );
+    }
+
+    #[test]
+    fn save_audio_segment_rejects_i2s_codec_without_codec_fields() {
+        let store = MultiFileStore::with_file(
+            "config/hardware.json",
+            serde_json::to_vec(&HardwareSegment {
+                hardware_devices: vec![],
+                i2c_bus: Some(I2cBusConfig {
+                    sda_pin: 8,
+                    scl_pin: 18,
+                    freq_hz: crate::constants::I2C_DEFAULT_FREQ_HZ,
+                }),
+                i2s_bus: Some(I2sBusConfig {
+                    mclk_pin: 2,
+                    ws_pin: 47,
+                    bclk_pin: 17,
+                    din_pin: 16,
+                    dout_pin: 15,
+                }),
+                i2c_devices: vec![],
+                i2c_sensors: vec![],
+            })
+            .expect("serialize hardware"),
+        );
+        let mut seg = default_disabled_audio_segment();
+        seg.topology = AUDIO_TOPOLOGY_I2S_CODEC.to_string();
+        seg.enabled = true;
+        seg.microphone.enabled = true;
+        seg.speaker.enabled = true;
+        seg.microphone.sample_rate = 24_000;
+        seg.speaker.sample_rate = 24_000;
+
+        let error = save_audio_segment_value(&store, seg).expect_err("codec fields are required");
+        assert!(error
+            .to_string()
+            .contains("audio.codec.input_codec is required"));
+    }
+
+    #[test]
+    fn save_audio_segment_rejects_codec_addr_out_of_range() {
+        let store = MultiFileStore::with_file(
+            "config/hardware.json",
+            serde_json::to_vec(&HardwareSegment {
+                hardware_devices: vec![],
+                i2c_bus: Some(I2cBusConfig {
+                    sda_pin: 8,
+                    scl_pin: 18,
+                    freq_hz: crate::constants::I2C_DEFAULT_FREQ_HZ,
+                }),
+                i2s_bus: Some(I2sBusConfig {
+                    mclk_pin: 2,
+                    ws_pin: 47,
+                    bclk_pin: 17,
+                    din_pin: 16,
+                    dout_pin: 15,
+                }),
+                i2c_devices: vec![],
+                i2c_sensors: vec![],
+            })
+            .expect("serialize hardware"),
+        );
+        let mut seg = default_disabled_audio_segment();
+        seg.topology = AUDIO_TOPOLOGY_I2S_CODEC.to_string();
+        seg.enabled = true;
+        seg.microphone.enabled = true;
+        seg.speaker.enabled = true;
+        seg.microphone.sample_rate = 24_000;
+        seg.speaker.sample_rate = 24_000;
+        seg.codec.input_codec = Some(AUDIO_CODEC_INPUT_ES7210.to_string());
+        seg.codec.output_codec = Some(AUDIO_CODEC_OUTPUT_ES8311.to_string());
+        seg.codec.input_addr = Some(0x01);
+        seg.codec.pa_pin = Some(46);
+
+        let error = save_audio_segment_value(&store, seg).expect_err("codec addr range");
+        assert!(error.to_string().contains("audio.codec.input_addr"));
+    }
+
+    #[test]
+    fn save_hardware_segment_rejects_i2s_codec_audio_without_required_buses() {
+        let mut audio = default_disabled_audio_segment();
+        audio.topology = AUDIO_TOPOLOGY_I2S_CODEC.to_string();
+        audio.enabled = true;
+        audio.microphone.enabled = true;
+        audio.speaker.enabled = true;
+        audio.microphone.sample_rate = 24_000;
+        audio.speaker.sample_rate = 24_000;
+        audio.codec.input_codec = Some(AUDIO_CODEC_INPUT_ES7210.to_string());
+        audio.codec.output_codec = Some(AUDIO_CODEC_OUTPUT_ES8311.to_string());
+        audio.codec.pa_pin = Some(46);
+        let store = MultiFileStore::with_file(
+            "config/audio.json",
+            serde_json::to_vec(&audio).expect("serialize audio"),
+        );
+        let hardware = HardwareSegment {
+            hardware_devices: vec![],
+            i2c_bus: None,
+            i2s_bus: None,
+            i2c_devices: vec![],
+            i2c_sensors: vec![],
+        };
+
+        let error = save_hardware_segment_value(&store, &hardware)
+            .expect_err("codec topology requires buses");
+        assert!(error
+            .to_string()
+            .contains("hardware.i2c_bus is required when audio.topology == i2s_codec"));
+    }
+
+    #[test]
+    fn merge_audio_from_json_rejects_pair_invalid_loaded_hardware() {
+        let mut config = AppConfig::load_from_env();
+        let mut errors = Vec::new();
+        config.merge_audio_from_json(
+            r#"{
+                "version": 1,
+                "enabled": true,
+                "service_provider": "baidu",
+                "topology": "i2s_codec",
+                "microphone": {
+                  "enabled": true,
+                  "device_type": "i2s_inmp441",
+                  "pins": { "ws": 25, "sck": 26, "din": 27 },
+                  "sample_rate": 24000
+                },
+                "speaker": {
+                  "enabled": true,
+                  "device_type": "i2s_max98357a",
+                  "pins": { "ws": 32, "sck": 33, "dout": 22, "sd": null },
+                  "sample_rate": 24000
+                },
+                "codec": {
+                  "input_codec": "es7210",
+                  "output_codec": "es8311",
+                  "input_addr": null,
+                  "output_addr": null,
+                  "pa_pin": 46,
+                  "input_reference": true
+                },
+                "vad": { "threshold": 0.5, "silence_duration_ms": 1000 },
+                "wake_word": { "enabled": false, "keyword": "hiesp", "wake_prompt": "你好，我在听，请说。" },
+                "speech": { "api_url": "https://vop.baidu.com/server_api", "api_key": "", "api_secret": "", "model": "1537", "language": "zh" },
+                "tts": { "voice": "0", "rate": "+0%", "pitch": "+0Hz" },
+                "realtime": {
+                  "provider": "openai_compatible",
+                  "ws_url": "wss://api.openai.com/v1/realtime",
+                  "api_key": "",
+                  "model": "gpt-realtime",
+                  "voice": "alloy",
+                  "instructions": ""
+                },
+                "ambient_listening": {
+                  "enabled": false,
+                  "detect_emotions": true,
+                  "sound_events": ["sigh"],
+                  "cooldown_minutes": 10,
+                  "check_interval_seconds": 300
+                },
+                "led_indicator": {
+                  "enabled": false,
+                  "pin": 2,
+                  "states": { "listening": "breathing", "processing": "fast_blink", "speaking": "solid" }
+                }
+            }"#,
+            &mut errors,
+        );
+
+        assert_eq!(errors, vec!["audio_validation_failed"]);
+        assert!(config.audio.is_none());
     }
 
     #[test]

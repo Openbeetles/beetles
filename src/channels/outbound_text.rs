@@ -869,7 +869,11 @@ mod tests {
         msg.channel = Arc::from("qq_channel");
         let prepared = prepare_outbound_message_for_channel(
             &msg,
-            Some(capability_entry("qq_channel", TEXT_ONLY_KIND, PLAIN_ONLY)),
+            Some(capability_entry(
+                "qq_channel",
+                TEXT_ONLY_KIND,
+                MARKDOWN_ONLY,
+            )),
         );
 
         assert!(matches!(
@@ -888,7 +892,11 @@ mod tests {
         msg.channel = Arc::from("qq_channel");
         let prepared = prepare_outbound_message_for_channel(
             &msg,
-            Some(capability_entry("qq_channel", TEXT_ONLY_KIND, PLAIN_ONLY)),
+            Some(capability_entry(
+                "qq_channel",
+                TEXT_ONLY_KIND,
+                MARKDOWN_ONLY,
+            )),
         );
 
         assert!(matches!(
@@ -908,7 +916,11 @@ mod tests {
         msg.channel = Arc::from("qq_channel");
         let prepared = prepare_outbound_message_for_channel(
             &msg,
-            Some(capability_entry("qq_channel", TEXT_ONLY_KIND, PLAIN_ONLY)),
+            Some(capability_entry(
+                "qq_channel",
+                TEXT_ONLY_KIND,
+                MARKDOWN_ONLY,
+            )),
         );
 
         assert!(matches!(
@@ -1023,7 +1035,7 @@ mod tests {
     }
 
     #[test]
-    fn explicit_qq_markdown_body_downgrades_to_plain_text() {
+    fn explicit_qq_markdown_body_stays_markdown_for_markdown_capable_channel() {
         let mut msg = outbound_text_msg("# Title\n- item");
         msg.channel = Arc::from("qq_channel");
         msg.body = CanonicalMessageBody::Text(TextBody {
@@ -1032,17 +1044,21 @@ mod tests {
         });
         let prepared = prepare_outbound_message_for_channel(
             &msg,
-            Some(capability_entry("qq_channel", TEXT_ONLY_KIND, PLAIN_ONLY)),
+            Some(capability_entry(
+                "qq_channel",
+                TEXT_ONLY_KIND,
+                MARKDOWN_ONLY,
+            )),
         );
 
         assert!(matches!(
             prepared.msg.body,
             CanonicalMessageBody::Text(TextBody {
-                format: TextFormat::Plain,
+                format: TextFormat::Markdown,
                 ref text,
-            }) if text == "Title\n• item"
+            }) if text == "# Title\n- item"
         ));
-        assert_eq!(prepared.content, "Title\n• item");
+        assert_eq!(prepared.content, "# Title\n- item");
     }
 
     #[test]

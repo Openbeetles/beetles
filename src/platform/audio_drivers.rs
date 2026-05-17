@@ -2,7 +2,7 @@
 //! Audio driver for ESP32 using I2S DMA via esp-idf-sys new channel API.
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-use crate::config::AudioSegment;
+use crate::config::{AudioSegment, I2cBusConfig, I2sBusConfig};
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 use crate::error::{Error, Result};
 #[cfg(target_arch = "xtensa")]
@@ -427,7 +427,7 @@ fn init_speaker_channel(seg: &AudioSegment) -> Result<SpeakerState> {
 }
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-trait AudioBackend: Send {
+pub(crate) trait AudioBackend: Send {
     fn mic_ready(&self) -> bool;
     fn speaker_ready(&self) -> bool;
     fn read_mic_frame_pcm16(&mut self, out: &mut [i16]) -> Result<usize>;
@@ -935,8 +935,29 @@ fn should_feed_wake_backend(
 pub(crate) struct AudioPipelineState {
     mic_enabled: bool,
     speaker_enabled: bool,
+    duplex_capabilities: crate::platform::AudioDuplexCapabilities,
     shared: Arc<SharedAudioBuffers>,
     worker: Option<crate::util::TaskHandle>,
+}
+
+fn duplex_capabilities_for_runtime(
+    mic_enabled: bool,
+    speaker_enabled: bool,
+    input_reference: bool,
+) -> crate::platform::AudioDuplexCapabilities {
+    match (mic_enabled, speaker_enabled) {
+        (true, true) => {
+            if input_reference {
+                crate::platform::AudioDuplexCapabilities::duplex_with_input_reference()
+            } else {
+                crate::platform::AudioDuplexCapabilities::duplex_with_playback_reference()
+            }
+        }
+        (true, false) => crate::platform::AudioDuplexCapabilities::microphone_only(),
+        (false, true) => crate::platform::AudioDuplexCapabilities::speaker_only(),
+        (false, false) => crate::platform::AudioDuplexCapabilities::unavailable(),
+    }
+    .normalized()
 }
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
@@ -957,7 +978,11 @@ fn validate_speaker_for_pipeline(seg: &AudioSegment) -> Result<()> {
 impl AudioPipelineState {
     /// 仅应在存在真实 microphone/speaker 端点时由 `Esp32Platform::init_audio` 调用。
     /// Call only when a real microphone/speaker endpoint exists.
-    pub fn from_config(seg: &AudioSegment) -> Result<Self> {
+    pub fn from_config(
+        seg: &AudioSegment,
+        i2c_bus: Option<&I2cBusConfig>,
+        i2s_bus: Option<&I2sBusConfig>,
+    ) -> Result<Self> {
         if !seg.enabled {
             return Err(Error::config(
                 "audio_init",
@@ -970,26 +995,29 @@ impl AudioPipelineState {
                 "AudioPipelineState::from_config requires microphone or speaker endpoint",
             ));
         }
-        validate_speaker_for_pipeline(seg)?;
+        let codec_topology = crate::config::audio_topology_is_codec(seg);
+        if !codec_topology {
+            validate_speaker_for_pipeline(seg)?;
 
-        const MIC_DEVICE_PDM: &str = "pdm";
-        if seg.microphone.enabled && seg.microphone.device_type == MIC_DEVICE_PDM {
-            return Err(Error::config(
-                "audio_init",
-                format!(
-                    "microphone device_type '{}' is not supported (PDM not implemented); use {}",
-                    MIC_DEVICE_PDM, MIC_DEVICE_I2S_INMP441
-                ),
-            ));
-        }
-        if seg.microphone.enabled && seg.microphone.device_type != MIC_DEVICE_I2S_INMP441 {
-            return Err(Error::config(
-                "audio_init",
-                format!(
-                    "unsupported microphone device_type '{}', only {} is supported",
-                    seg.microphone.device_type, MIC_DEVICE_I2S_INMP441
-                ),
-            ));
+            const MIC_DEVICE_PDM: &str = "pdm";
+            if seg.microphone.enabled && seg.microphone.device_type == MIC_DEVICE_PDM {
+                return Err(Error::config(
+                    "audio_init",
+                    format!(
+                        "microphone device_type '{}' is not supported (PDM not implemented); use {}",
+                        MIC_DEVICE_PDM, MIC_DEVICE_I2S_INMP441
+                    ),
+                ));
+            }
+            if seg.microphone.enabled && seg.microphone.device_type != MIC_DEVICE_I2S_INMP441 {
+                return Err(Error::config(
+                    "audio_init",
+                    format!(
+                        "unsupported microphone device_type '{}', only {} is supported",
+                        seg.microphone.device_type, MIC_DEVICE_I2S_INMP441
+                    ),
+                ));
+            }
         }
 
         let mic_cap = if seg.microphone.enabled {
@@ -1026,26 +1054,39 @@ impl AudioPipelineState {
             stop: AtomicBool::new(false),
         });
 
-        let mic = if seg.microphone.enabled {
-            Some(init_mic_channel(seg)?)
+        let mut backend: Box<dyn AudioBackend> = if codec_topology {
+            Box::new(
+                crate::platform::audio_codec_backend::CodecAudioBackend::new(
+                    seg, i2c_bus, i2s_bus,
+                )?,
+            )
         } else {
-            None
-        };
-        let speaker = if seg.speaker.enabled {
-            match init_speaker_channel(seg) {
-                Ok(s) => Some(s),
-                Err(e) => {
-                    drop(mic);
-                    return Err(e);
+            let mic = if seg.microphone.enabled {
+                Some(init_mic_channel(seg)?)
+            } else {
+                None
+            };
+            let speaker = if seg.speaker.enabled {
+                match init_speaker_channel(seg) {
+                    Ok(s) => Some(s),
+                    Err(e) => {
+                        drop(mic);
+                        return Err(e);
+                    }
                 }
-            }
-        } else {
-            None
+            } else {
+                None
+            };
+            Box::new(I2sStdBackend { mic, speaker })
         };
-        let mut backend: Box<dyn AudioBackend> = Box::new(I2sStdBackend { mic, speaker });
 
         let mic_enabled = backend.mic_ready();
         let speaker_enabled = backend.speaker_ready();
+        let duplex_capabilities = duplex_capabilities_for_runtime(
+            mic_enabled,
+            speaker_enabled,
+            codec_topology && seg.codec.input_reference,
+        );
         let worker_shared = Arc::clone(&shared);
         let worker_plan = thread_plan("audio_io_worker");
         let worker_surface =
@@ -1262,6 +1303,7 @@ impl AudioPipelineState {
         Ok(Self {
             mic_enabled,
             speaker_enabled,
+            duplex_capabilities,
             shared,
             worker: Some(worker),
         })
@@ -1274,14 +1316,7 @@ impl AudioPipelineState {
 
     #[inline]
     pub fn duplex_capabilities(&self) -> crate::platform::AudioDuplexCapabilities {
-        match (self.mic_enabled, self.speaker_enabled) {
-            (true, true) => {
-                crate::platform::AudioDuplexCapabilities::duplex_with_playback_reference()
-            }
-            (true, false) => crate::platform::AudioDuplexCapabilities::microphone_only(),
-            (false, true) => crate::platform::AudioDuplexCapabilities::speaker_only(),
-            (false, false) => crate::platform::AudioDuplexCapabilities::unavailable(),
-        }
+        self.duplex_capabilities
     }
 
     pub fn speaker_buffered_samples(&self) -> usize {
@@ -1482,9 +1517,9 @@ impl Drop for AudioPipelineState {
 #[cfg(test)]
 mod tests {
     use super::{
-        mic_i2s_sample_to_pcm16, should_feed_wake_backend, should_read_mic_frame,
-        AUDIO_MIC_FRAME_SAMPLES, AUDIO_MIC_I2S_STAGING_SAMPLES, AUDIO_SPEAKER_FRAME_SAMPLES,
-        AUDIO_SPEAKER_I2S_STAGING_SAMPLES,
+        duplex_capabilities_for_runtime, mic_i2s_sample_to_pcm16, should_feed_wake_backend,
+        should_read_mic_frame, AUDIO_MIC_FRAME_SAMPLES, AUDIO_MIC_I2S_STAGING_SAMPLES,
+        AUDIO_SPEAKER_FRAME_SAMPLES, AUDIO_SPEAKER_I2S_STAGING_SAMPLES,
     };
 
     #[test]
@@ -1528,5 +1563,17 @@ mod tests {
     #[test]
     fn mic_i2s_conversion_saturates_negative_peak_like_reference() {
         assert_eq!(mic_i2s_sample_to_pcm16((-50_000i32) << 12), -i16::MAX);
+    }
+
+    #[test]
+    fn codec_duplex_with_input_reference_reports_input_reference_capability() {
+        let caps = duplex_capabilities_for_runtime(true, true, true);
+        assert_eq!(caps.profile().as_str(), "duplex_input_reference");
+    }
+
+    #[test]
+    fn duplex_without_input_reference_reports_playback_monitor_capability() {
+        let caps = duplex_capabilities_for_runtime(true, true, false);
+        assert_eq!(caps.profile().as_str(), "duplex_playback_reference");
     }
 }
