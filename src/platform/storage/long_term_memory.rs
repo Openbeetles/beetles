@@ -13,7 +13,7 @@ use crate::memory::{
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-use super::{read_file, state_path_join, write_json_file};
+use super::{read_file, state_path_join, write_json_value};
 
 fn full_path() -> PathBuf {
     state_path_join(REL_PATH_LONG_TERM_MEMORIES)
@@ -98,9 +98,7 @@ impl StorageLongTermMemoryStore {
     }
 
     fn persist(&self, entries: &[LongTermMemoryEntry]) -> Result<()> {
-        let json = serde_json::to_vec(entries)
-            .map_err(|e| Error::config("long_term_memory_persist", e.to_string()))?;
-        write_json_file((self.path_fn)(), &json)
+        write_json_value((self.path_fn)(), entries, "long_term_memory_persist")
     }
 }
 

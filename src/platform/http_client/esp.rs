@@ -7,7 +7,7 @@ use crate::orchestrator::Priority;
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 use crate::platform::heap::alloc_spiram_buffer;
 use crate::platform::http_client::response_buffer::{
-    choose_response_body_read_plan, ResponseBodyReadPlan,
+    choose_response_body_read_plan, release_heap_staging_buffer, ResponseBodyReadPlan,
 };
 use crate::platform::ResponseBody;
 use embedded_svc::http::client::Client as HttpClient;
@@ -549,7 +549,7 @@ where
                     }
                     len += to_copy;
                 }
-                heap.clear();
+                release_heap_staging_buffer(&mut heap);
                 psram = Some((ptr, len, cap));
                 if to_copy < take {
                     log::warn!("[{}] response body truncated at {} bytes", TAG, cap);

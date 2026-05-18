@@ -5,8 +5,10 @@
 use crate::error::{Error, Result};
 use crate::platform::psram_vec::PsramVec;
 use crate::platform::state_root::state_mount_path;
+use crate::platform::ByteBuffer;
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 use core::ffi::c_void;
+use serde::Serialize;
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 use std::ffi::CString;
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -643,6 +645,27 @@ pub fn write_json_file(path: impl AsRef<Path>, data: &[u8]) -> Result<()> {
     })
 }
 
+pub(crate) fn serialize_json_to_buffer<T>(value: &T, stage: &'static str) -> Result<ByteBuffer>
+where
+    T: Serialize + ?Sized,
+{
+    let mut data = ByteBuffer::with_capacity(1024);
+    serde_json::to_writer(&mut data, value).map_err(|e| Error::config(stage, e.to_string()))?;
+    Ok(data)
+}
+
+pub(crate) fn write_json_value<T>(
+    path: impl AsRef<Path>,
+    value: &T,
+    stage: &'static str,
+) -> Result<()>
+where
+    T: Serialize + ?Sized,
+{
+    let data = serialize_json_to_buffer(value, stage)?;
+    write_json_file(path, data.as_ref())
+}
+
 /// 写换行分隔文本状态。保留独立入口，便于调用方表达 JSONL/文本状态语义与日志 stage。
 /// Write newline-delimited state through the common storage overwrite primitive.
 pub fn write_line_file(path: impl AsRef<Path>, data: &[u8]) -> Result<()> {
@@ -845,8 +868,8 @@ pub use world_sense::StorageWorldSenseStore;
 #[cfg(test)]
 mod tests {
     use super::{
-        append_line_file, esp_storage_rel_path, state_write_kind, write_json_file, StateWriteKind,
-        ESP_STORAGE_ROOT_DIRS,
+        append_line_file, esp_storage_rel_path, serialize_json_to_buffer, state_write_kind,
+        write_json_file, write_json_value, StateWriteKind, ESP_STORAGE_ROOT_DIRS,
     };
     use crate::agent::REL_PATH_ACTIVE_WORKS;
     use crate::memory::{
@@ -861,6 +884,45 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     const MAX_SAFE_ESP_REL_PATH_LEN: usize = 31;
+
+    #[test]
+    fn serialize_json_to_buffer_promotes_large_json_to_external_preferred() {
+        let value = vec!["x".repeat(crate::platform::ByteBuffer::EXTERNAL_PREFERRED_THRESHOLD)];
+
+        let buffer = serialize_json_to_buffer(&value, "storage_json_test").unwrap();
+
+        assert!(buffer.is_external_preferred());
+        let decoded: Vec<String> = serde_json::from_slice(buffer.as_ref()).unwrap();
+        assert_eq!(decoded, value);
+    }
+
+    #[test]
+    fn write_json_value_keeps_shorter_rewrite_parseable() {
+        let path = std::env::temp_dir().join(format!(
+            "beetle-storage-json-value-{}-{}.json",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        write_json_value(
+            &path,
+            &serde_json::json!({"long":"value","items":[1,2,3]}),
+            "storage_json_test",
+        )
+        .unwrap();
+        write_json_value(
+            &path,
+            &serde_json::json!({"short":true}),
+            "storage_json_test",
+        )
+        .unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        let parsed: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(parsed["short"], true);
+        let _ = std::fs::remove_file(path);
+    }
 
     #[test]
     fn write_json_file_keeps_shorter_rewrite_parseable() {

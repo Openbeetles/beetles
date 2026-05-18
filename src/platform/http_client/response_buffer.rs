@@ -55,9 +55,15 @@ pub(crate) fn choose_response_body_read_plan(
     ResponseBodyReadPlan::Heap { initial_cap }
 }
 
+pub(crate) fn release_heap_staging_buffer(heap: &mut Vec<u8>) {
+    drop(std::mem::take(heap));
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{choose_response_body_read_plan, ResponseBodyReadPlan};
+    use super::{
+        choose_response_body_read_plan, release_heap_staging_buffer, ResponseBodyReadPlan,
+    };
 
     #[test]
     fn unknown_length_starts_small_then_moves_to_psram_on_esp() {
@@ -95,5 +101,16 @@ mod tests {
                 initial_cap: 8 * 1024
             }
         );
+    }
+
+    #[test]
+    fn release_heap_staging_buffer_drops_capacity_after_psram_migration() {
+        let mut heap = Vec::with_capacity(8 * 1024);
+        heap.extend_from_slice(b"staged response bytes");
+
+        release_heap_staging_buffer(&mut heap);
+
+        assert!(heap.is_empty());
+        assert_eq!(heap.capacity(), 0);
     }
 }
