@@ -379,6 +379,11 @@ pub(crate) fn sync_active_work_after_turn(
     store: &dyn ActiveWorkStore,
     input: ActiveWorkSyncInput<'_>,
 ) -> Result<()> {
+    enum ExistingActiveWork {
+        Known(Option<ActiveWorkRecord>),
+        Unknown,
+    }
+
     let next = input
         .active_task_run
         .and_then(ActiveWorkRecord::from_task_run)
@@ -394,10 +399,28 @@ pub(crate) fn sync_active_work_after_turn(
                     .flatten()
             })
         });
-    if let Some(record) = next {
-        store.set(input.chat_id, &record)
-    } else {
-        store.clear(input.chat_id)
+
+    let existing = match store.get(input.chat_id) {
+        Ok(value) => ExistingActiveWork::Known(value),
+        Err(error) => {
+            log::warn!(
+                "[agent_active_work] read-before-sync failed chat_id={}: {}",
+                input.chat_id,
+                error
+            );
+            ExistingActiveWork::Unknown
+        }
+    };
+
+    match next {
+        Some(record) => match existing {
+            ExistingActiveWork::Known(Some(existing)) if existing == record => Ok(()),
+            _ => store.set(input.chat_id, &record),
+        },
+        None => match existing {
+            ExistingActiveWork::Known(None) => Ok(()),
+            _ => store.clear(input.chat_id),
+        },
     }
 }
 
@@ -594,6 +617,25 @@ mod tests {
     #[derive(Default)]
     struct MemoryActiveWorkStore {
         inner: Mutex<HashMap<String, ActiveWorkRecord>>,
+        set_calls: Mutex<usize>,
+        clear_calls: Mutex<usize>,
+    }
+
+    impl MemoryActiveWorkStore {
+        fn seed(&self, chat_id: &str, record: ActiveWorkRecord) {
+            self.inner
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(chat_id.to_string(), record);
+        }
+
+        fn set_calls(&self) -> usize {
+            *self.set_calls.lock().unwrap_or_else(|e| e.into_inner())
+        }
+
+        fn clear_calls(&self) -> usize {
+            *self.clear_calls.lock().unwrap_or_else(|e| e.into_inner())
+        }
     }
 
     impl ActiveWorkStore for MemoryActiveWorkStore {
@@ -607,6 +649,7 @@ mod tests {
         }
 
         fn set(&self, chat_id: &str, record: &ActiveWorkRecord) -> Result<()> {
+            *self.set_calls.lock().unwrap_or_else(|e| e.into_inner()) += 1;
             self.inner
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
@@ -615,6 +658,7 @@ mod tests {
         }
 
         fn clear(&self, chat_id: &str) -> Result<()> {
+            *self.clear_calls.lock().unwrap_or_else(|e| e.into_inner()) += 1;
             self.inner
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
@@ -866,7 +910,7 @@ mod tests {
             active_artifact_refs: Vec::new(),
             updated_at: 1,
         };
-        store.set("chat-1", &record).expect("store");
+        store.seed("chat-1", record);
 
         sync_active_work_after_turn(
             &store,
@@ -881,6 +925,63 @@ mod tests {
         .expect("sync");
 
         assert!(store.get("chat-1").expect("get").is_none());
+        assert_eq!(store.clear_calls(), 1);
+    }
+
+    #[test]
+    fn sync_skips_clear_when_no_existing_or_next_active_work() {
+        let store = MemoryActiveWorkStore::default();
+
+        sync_active_work_after_turn(
+            &store,
+            ActiveWorkSyncInput {
+                chat_id: "chat-1",
+                active_task_run: None,
+                execution_state: None,
+                user_request: "普通聊天",
+                now_secs: 8,
+            },
+        )
+        .expect("sync");
+
+        assert!(store.get("chat-1").expect("get").is_none());
+        assert_eq!(store.clear_calls(), 0);
+        assert_eq!(store.set_calls(), 0);
+    }
+
+    #[test]
+    fn sync_skips_set_when_existing_active_work_is_unchanged() {
+        let store = MemoryActiveWorkStore::default();
+        let execution_state = ExecutionState {
+            status: ExecutionStatus::Blocked,
+            goal: "配置 QQ 邮箱账户".to_string(),
+            progress: "账户草案已创建".to_string(),
+            blocker: "缺少 provider_kind".to_string(),
+            next_action: "补认证信息".to_string(),
+            updated_at: 7,
+            ..ExecutionState::default()
+        };
+        let existing = ActiveWorkRecord::from_interactive_execution_state(
+            &execution_state,
+            "帮我配置 QQ 邮箱账户",
+        )
+        .expect("active work");
+        store.seed("chat-1", existing);
+
+        sync_active_work_after_turn(
+            &store,
+            ActiveWorkSyncInput {
+                chat_id: "chat-1",
+                active_task_run: None,
+                execution_state: Some(&execution_state),
+                user_request: "帮我配置 QQ 邮箱账户",
+                now_secs: 7,
+            },
+        )
+        .expect("sync");
+
+        assert_eq!(store.set_calls(), 0);
+        assert_eq!(store.clear_calls(), 0);
     }
 
     #[test]
