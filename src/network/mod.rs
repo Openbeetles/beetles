@@ -80,6 +80,35 @@ pub enum HttpClientClass {
     Interactive,
 }
 
+/// Runtime-owned transport admission class.
+/// 运行态负责判定语义，network 层负责把判定统一给 HTTP/WSS 执行点消费。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TransportAdmissionKind {
+    NonVoiceHttp,
+    ExternalWssConnect,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TransportAdmissionRejection {
+    pub stage: &'static str,
+    pub reason: &'static str,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TransportAdmission {
+    Allowed,
+    Rejected(TransportAdmissionRejection),
+}
+
+impl TransportAdmission {
+    pub fn rejection(self) -> Option<TransportAdmissionRejection> {
+        match self {
+            Self::Allowed => None,
+            Self::Rejected(rejection) => Some(rejection),
+        }
+    }
+}
+
 /// Shared network governor used by startup assembly and runtime planes.
 #[derive(Clone)]
 pub struct NetworkGovernor {
@@ -221,6 +250,42 @@ impl From<WssConnectProfile> for TransportWssProfile {
             WssConnectProfile::Realtime => Self::RealtimeVoice,
         }
     }
+}
+
+fn runtime_transport_reject_reason(mode: crate::runtime::RuntimeModeSnapshot) -> &'static str {
+    if mode.current_mode == crate::runtime::RuntimeMode::VoiceExclusive {
+        "voice_exclusive_suspend"
+    } else if mode.current_mode == crate::runtime::RuntimeMode::ConfigActive
+        && mode.action_budget.require_external_wss_suspended
+    {
+        "config_persisting_suspend"
+    } else {
+        "runtime_mode_transport_suspend"
+    }
+}
+
+pub fn runtime_transport_admission(
+    kind: TransportAdmissionKind,
+    mode: crate::runtime::RuntimeModeSnapshot,
+) -> TransportAdmission {
+    let allowed = match kind {
+        TransportAdmissionKind::NonVoiceHttp => mode.action_budget.allow_non_voice_outbound,
+        TransportAdmissionKind::ExternalWssConnect => mode.action_budget.allow_external_wss_connect,
+    };
+    if allowed {
+        return TransportAdmission::Allowed;
+    }
+    TransportAdmission::Rejected(TransportAdmissionRejection {
+        stage: "transport_runtime_admission",
+        reason: runtime_transport_reject_reason(mode),
+    })
+}
+
+pub fn current_runtime_transport_admission(kind: TransportAdmissionKind) -> TransportAdmission {
+    runtime_transport_admission(
+        kind,
+        crate::runtime::thread_registry::runtime_mode_snapshot(),
+    )
 }
 
 /// Low-level transport WSS session guard.
@@ -654,6 +719,13 @@ pub fn create_http_client_with_config(
     config: &AppConfig,
     class: HttpClientClass,
 ) -> Result<Box<dyn PlatformHttpClient>> {
+    if class == HttpClientClass::Background {
+        if let Some(rejection) =
+            current_runtime_transport_admission(TransportAdmissionKind::NonVoiceHttp).rejection()
+        {
+            return Err(Error::config(rejection.stage, rejection.reason));
+        }
+    }
     // On ESP, outbound callers own the STA settle wait. Keep it on the
     // governed HTTP entrypoint instead of blocking the entire startup path.
     if !crate::platform::wait_for_network_ready() {
@@ -1526,6 +1598,57 @@ mod tests {
         drop(config);
         assert!(!external_wss_suspend_requested());
         assert_eq!(external_wss_suspend_reason(), None);
+    }
+
+    #[test]
+    fn runtime_transport_admission_blocks_non_voice_http_during_voice_exclusive() {
+        let mode =
+            crate::runtime::mode::snapshot_from_source(crate::runtime::mode::RuntimeModeSource {
+                voice_exclusive_active: true,
+                ..crate::runtime::mode::RuntimeModeSource::default()
+            });
+
+        let admission = runtime_transport_admission(TransportAdmissionKind::NonVoiceHttp, mode);
+
+        assert_eq!(
+            admission,
+            TransportAdmission::Rejected(TransportAdmissionRejection {
+                stage: "transport_runtime_admission",
+                reason: "voice_exclusive_suspend",
+            })
+        );
+    }
+
+    #[test]
+    fn runtime_transport_admission_blocks_non_voice_http_during_config_persisting() {
+        let mode =
+            crate::runtime::mode::snapshot_from_source(crate::runtime::mode::RuntimeModeSource {
+                config_active: true,
+                config_activity_phase: crate::runtime::ConfigActivityPhase::Persisting,
+                ..crate::runtime::mode::RuntimeModeSource::default()
+            });
+
+        let admission = runtime_transport_admission(TransportAdmissionKind::NonVoiceHttp, mode);
+
+        assert_eq!(
+            admission,
+            TransportAdmission::Rejected(TransportAdmissionRejection {
+                stage: "transport_runtime_admission",
+                reason: "config_persisting_suspend",
+            })
+        );
+    }
+
+    #[test]
+    fn runtime_transport_admission_allows_non_voice_http_in_normal_mode() {
+        let mode = crate::runtime::mode::snapshot_from_source(
+            crate::runtime::mode::RuntimeModeSource::default(),
+        );
+
+        assert_eq!(
+            runtime_transport_admission(TransportAdmissionKind::NonVoiceHttp, mode),
+            TransportAdmission::Allowed
+        );
     }
 
     #[test]

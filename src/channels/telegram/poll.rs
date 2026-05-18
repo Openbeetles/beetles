@@ -568,6 +568,16 @@ pub fn poll_telegram_once<H: ChannelHttpClient>(
     Ok(next_offset)
 }
 
+fn telegram_poll_transport_admission(
+    mode: crate::runtime::RuntimeModeSnapshot,
+) -> Option<crate::network::TransportAdmissionRejection> {
+    crate::network::runtime_transport_admission(
+        crate::network::TransportAdmissionKind::NonVoiceHttp,
+        mode,
+    )
+    .rejection()
+}
+
 #[cfg(test)]
 #[allow(clippy::items_after_test_module)]
 mod tests {
@@ -634,6 +644,21 @@ mod tests {
             http.get_urls,
             ["https://api.telegram.org/bottoken/deleteWebhook?drop_pending_updates=false"]
         );
+    }
+
+    #[test]
+    fn telegram_poll_transport_admission_uses_non_voice_http_budget() {
+        let mode =
+            crate::runtime::mode::snapshot_from_source(crate::runtime::mode::RuntimeModeSource {
+                voice_exclusive_active: true,
+                ..crate::runtime::mode::RuntimeModeSource::default()
+            });
+
+        let rejection =
+            telegram_poll_transport_admission(mode).expect("voice exclusive should block poll");
+
+        assert_eq!(rejection.stage, "transport_runtime_admission");
+        assert_eq!(rejection.reason, "voice_exclusive_suspend");
     }
 
     #[derive(Default)]
@@ -951,14 +976,7 @@ pub fn run_telegram_poll_loop<H, F>(
         set_group_activation,
     };
 
-    let mut http = match create_http() {
-        Ok(h) => h,
-        Err(e) => {
-            log::warn!("[{}] create_http failed: {}", TAG_TG, e);
-            return;
-        }
-    };
-
+    let mut http: Option<H> = None;
     let mut webhook_cleared = false;
     let mut bot_username: Option<String> = None;
     let mut offset: Option<i64> = None;
@@ -966,11 +984,43 @@ pub fn run_telegram_poll_loop<H, F>(
     const BACKOFF_SECS: u64 = 30;
 
     loop {
+        if let Some(rejection) = telegram_poll_transport_admission(
+            crate::runtime::thread_registry::runtime_mode_snapshot(),
+        ) {
+            if http.take().is_some() {
+                log::info!(
+                    "[{}] release HTTP client while transport is suspended reason={}",
+                    TAG_TG,
+                    rejection.reason
+                );
+            }
+            log::info!(
+                "[{}] transport admission deferred stage={} reason={}",
+                TAG_TG,
+                rejection.stage,
+                rejection.reason
+            );
+            std::thread::sleep(std::time::Duration::from_secs(POLL_INTERVAL_SECS));
+            continue;
+        }
+        if http.is_none() {
+            match create_http() {
+                Ok(h) => http = Some(h),
+                Err(e) => {
+                    log::warn!("[{}] create_http failed: {}", TAG_TG, e);
+                    std::thread::sleep(std::time::Duration::from_secs(BACKOFF_SECS));
+                    continue;
+                }
+            }
+        }
+        let Some(http_client) = http.as_mut() else {
+            continue;
+        };
         if !webhook_cleared {
-            match clear_telegram_webhook(&mut http, &token) {
+            match clear_telegram_webhook(http_client, &token) {
                 Ok(()) => {
                     webhook_cleared = true;
-                    bot_username = match super::send::get_bot_username(&mut http, &token) {
+                    bot_username = match super::send::get_bot_username(http_client, &token) {
                         Ok(Some(u)) => Some(u),
                         _ => None,
                     };
@@ -982,7 +1032,7 @@ pub fn run_telegram_poll_loop<H, F>(
                         BACKOFF_SECS,
                         e
                     );
-                    ChannelHttpClient::reset_connection_for_retry(&mut http);
+                    ChannelHttpClient::reset_connection_for_retry(http_client);
                     std::thread::sleep(std::time::Duration::from_secs(BACKOFF_SECS));
                     continue;
                 }
@@ -993,7 +1043,7 @@ pub fn run_telegram_poll_loop<H, F>(
             .unwrap_or_else(|error| error.into_inner())
             .clone();
         match poll_telegram_once(
-            &mut http,
+            http_client,
             &token,
             offset,
             &inbound_tx,
@@ -1007,7 +1057,7 @@ pub fn run_telegram_poll_loop<H, F>(
             Ok(next) => offset = next,
             Err(e) => {
                 log::warn!("[{}] poll failed: {}, backoff {}s", TAG_TG, e, BACKOFF_SECS);
-                ChannelHttpClient::reset_connection_for_retry(&mut http);
+                ChannelHttpClient::reset_connection_for_retry(http_client);
                 webhook_cleared = false;
                 std::thread::sleep(std::time::Duration::from_secs(BACKOFF_SECS));
             }

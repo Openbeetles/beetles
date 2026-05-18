@@ -181,16 +181,15 @@ fn external_wss_worker_evict_lifecycle_reason() -> Option<&'static str> {
         })
 }
 
+#[cfg(test)]
 fn wss_runtime_gate_suspend_reason(mode: crate::runtime::RuntimeModeSnapshot) -> &'static str {
-    if mode.current_mode == crate::runtime::RuntimeMode::VoiceExclusive {
-        "voice_exclusive_suspend"
-    } else if mode.current_mode == crate::runtime::RuntimeMode::ConfigActive
-        && mode.action_budget.require_external_wss_suspended
-    {
-        "config_persisting_suspend"
-    } else {
-        "runtime_mode_gate"
-    }
+    crate::network::runtime_transport_admission(
+        crate::network::TransportAdmissionKind::ExternalWssConnect,
+        mode,
+    )
+    .rejection()
+    .map(|rejection| rejection.reason)
+    .unwrap_or("runtime_mode_transport_suspend")
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -205,11 +204,16 @@ pub(crate) fn external_wss_connect_gate(
     waiting_for_wall_clock: &mut bool,
 ) -> bool {
     let runtime_mode = crate::runtime::thread_registry::runtime_mode_snapshot();
-    if !runtime_mode.action_budget.allow_external_wss_connect {
+    if let Some(rejection) = crate::network::runtime_transport_admission(
+        crate::network::TransportAdmissionKind::ExternalWssConnect,
+        runtime_mode,
+    )
+    .rejection()
+    {
         mark_wss_lifecycle(
             lifecycle_owner,
             crate::runtime::PlaneLifecycleState::Suspended,
-            wss_runtime_gate_suspend_reason(runtime_mode),
+            rejection.reason,
         );
         if runtime_mode.action_budget.require_external_wss_suspended {
             crate::network::wait_for_external_wss_resume(tag);
@@ -329,11 +333,16 @@ pub(crate) fn external_wss_connect_gate(
     }
 
     let runtime_mode = crate::runtime::thread_registry::runtime_mode_snapshot();
-    if !runtime_mode.action_budget.allow_external_wss_connect {
+    if let Some(rejection) = crate::network::runtime_transport_admission(
+        crate::network::TransportAdmissionKind::ExternalWssConnect,
+        runtime_mode,
+    )
+    .rejection()
+    {
         mark_wss_lifecycle(
             lifecycle_owner,
             crate::runtime::PlaneLifecycleState::Suspended,
-            wss_runtime_gate_suspend_reason(runtime_mode),
+            rejection.reason,
         );
         if runtime_mode.action_budget.require_external_wss_suspended {
             crate::network::wait_for_external_wss_resume(tag);
@@ -354,13 +363,20 @@ pub(crate) fn external_wss_session_stop_reason(
     let keep_existing_for_config_write = runtime_mode.current_mode
         == crate::runtime::RuntimeMode::ConfigActive
         && !runtime_mode.action_budget.require_external_wss_suspended;
-    if !runtime_mode.action_budget.allow_external_wss_connect && !keep_existing_for_config_write {
+    let transport_rejection = crate::network::runtime_transport_admission(
+        crate::network::TransportAdmissionKind::ExternalWssConnect,
+        runtime_mode,
+    )
+    .rejection();
+    if transport_rejection.is_some() && !keep_existing_for_config_write {
         let reason = if crate::network::external_wss_suspend_requested() {
             crate::network::external_wss_suspend_reason()
                 .map(crate::network::ExternalWssSuspendReason::as_str)
                 .unwrap_or("external_wss_suspend")
         } else {
-            "runtime_mode_gate"
+            transport_rejection
+                .map(|rejection| rejection.reason)
+                .unwrap_or("runtime_mode_transport_suspend")
         };
         log::info!(
             "[{}] disconnecting external WSS under runtime mode gate current_mode={} reason={}",
@@ -470,11 +486,16 @@ pub fn run_wss_gateway_loop<D, H, C, CreateHttp, Conn>(
             }
         };
         let runtime_mode = crate::runtime::thread_registry::runtime_mode_snapshot();
-        if !runtime_mode.action_budget.allow_external_wss_connect {
+        if let Some(rejection) = crate::network::runtime_transport_admission(
+            crate::network::TransportAdmissionKind::ExternalWssConnect,
+            runtime_mode,
+        )
+        .rejection()
+        {
             mark_wss_lifecycle(
                 lifecycle_owner,
                 crate::runtime::PlaneLifecycleState::Suspended,
-                wss_runtime_gate_suspend_reason(runtime_mode),
+                rejection.reason,
             );
             if runtime_mode.action_budget.require_external_wss_suspended {
                 crate::network::wait_for_external_wss_resume(tag);
@@ -1029,7 +1050,7 @@ mod tests {
                 recovery_safe_mode_active: true,
                 ..RuntimeModeSource::default()
             })),
-            "runtime_mode_gate"
+            "runtime_mode_transport_suspend"
         );
         assert_eq!(
             wss_runtime_gate_suspend_reason(snapshot_from_source(RuntimeModeSource {

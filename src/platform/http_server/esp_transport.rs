@@ -370,6 +370,19 @@ struct RouteWorkerAdmissionReject {
 fn route_worker_admission_reject(
     contract: RouteWorkerContract,
 ) -> Option<RouteWorkerAdmissionReject> {
+    if let Some(rejection) = crate::network::current_runtime_transport_admission(
+        crate::network::TransportAdmissionKind::NonVoiceHttp,
+    )
+    .rejection()
+    {
+        return Some(RouteWorkerAdmissionReject {
+            stage: rejection.stage,
+            detail: format!(
+                "route worker start deferred for {:?}: transport_reason={}",
+                contract.lane, rejection.reason
+            ),
+        });
+    }
     let resource = crate::orchestrator::resource_light_snapshot();
     let snap = crate::orchestrator::cached_memory_snapshot();
     if let Some(detail) = catalog::route_worker_runtime_busy_detail(contract, (&resource).into()) {
@@ -556,6 +569,7 @@ fn status_text(status: u16) -> &'static str {
 fn route_worker_reject_error_key(stage: &'static str) -> &'static str {
     match stage {
         "http_route_worker_admission" => "http.route_worker_memory_low",
+        "transport_runtime_admission" => "runtime.transport_blocked",
         _ => "http.route_worker_busy",
     }
 }
@@ -1279,6 +1293,10 @@ mod tests {
         assert_eq!(
             super::route_worker_reject_error_key("http_route_worker_runtime_busy"),
             "http.route_worker_busy"
+        );
+        assert_eq!(
+            super::route_worker_reject_error_key("transport_runtime_admission"),
+            "runtime.transport_blocked"
         );
         assert_eq!(
             super::route_worker_reject_error_key("http_route_worker_submit"),

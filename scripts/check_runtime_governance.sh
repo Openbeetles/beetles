@@ -671,6 +671,35 @@ if ! rg -n 'OutboundHttpRecovery' src/network/mod.rs >/dev/null ||
   exit 1
 fi
 
+if ! rg -n 'enum TransportAdmissionKind' src/network/mod.rs >/dev/null ||
+   ! rg -n 'pub fn runtime_transport_admission' src/network/mod.rs >/dev/null ||
+   ! rg -n 'TransportAdmissionKind::NonVoiceHttp' src/network/mod.rs >/dev/null ||
+   ! rg -n 'TransportAdmissionKind::ExternalWssConnect' src/network/mod.rs >/dev/null; then
+  echo "FAIL: transport admission kind/source no longer lives in the network transport governance boundary" >&2
+  exit 1
+fi
+
+if ! rg -n 'telegram_poll_transport_admission' src/channels/telegram/poll.rs >/dev/null ||
+   ! rg -n 'TransportAdmissionKind::NonVoiceHttp' src/channels/telegram/poll.rs >/dev/null ||
+   ! rg -n 'runtime_transport_admission_blocks_non_voice_http_during_voice_exclusive' src/network/mod.rs >/dev/null ||
+   ! rg -n 'telegram_poll_transport_admission_uses_non_voice_http_budget' src/channels/telegram/poll.rs >/dev/null; then
+  echo "FAIL: Telegram poll must consume the shared non-voice HTTP transport admission contract" >&2
+  exit 1
+fi
+
+if ! rg -n 'TransportAdmissionKind::ExternalWssConnect' src/channels/wss_gateway/loop.rs >/dev/null ||
+   ! rg -n 'runtime_mode_transport_suspend' src/channels/wss_gateway/loop.rs >/dev/null; then
+  echo "FAIL: external WSS connect/session gates must consume the shared transport admission contract" >&2
+  exit 1
+fi
+
+if ! rg -n 'TransportAdmissionKind::NonVoiceHttp' src/platform/http_server/esp_transport.rs >/dev/null ||
+   ! rg -n 'transport_runtime_admission' src/platform/http_server/esp_transport.rs >/dev/null ||
+   ! rg -n 'runtime.transport_blocked' src/platform/http_server/esp_transport.rs >/dev/null; then
+  echo "FAIL: ESP route workers must reject before spawning when non-voice transport admission is suspended" >&2
+  exit 1
+fi
+
 if ! rg -n 'PrepareRealtimeTransportThenSpawnConnect' src/audio/voice_session.rs >/dev/null ||
    ! rg -n 'spawn_prepared_realtime_session_worker' src/audio/voice_session.rs >/dev/null; then
   echo "FAIL: realtime voice startup must keep connect and session workers split" >&2
