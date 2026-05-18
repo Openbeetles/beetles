@@ -1177,8 +1177,8 @@ mod tests {
             Ok(items.remove(id).is_some())
         }
 
-        fn claim_due(&self, now_unix_secs: u64, limit: usize) -> Result<Vec<TaskItem>> {
-            let mut items = self.items.lock().unwrap_or_else(|e| e.into_inner());
+        fn list_due_unnotified(&self, now_unix_secs: u64, limit: usize) -> Result<Vec<TaskItem>> {
+            let items = self.items.lock().unwrap_or_else(|e| e.into_inner());
             let mut due = items
                 .values()
                 .filter(|item| {
@@ -1193,12 +1193,19 @@ mod tests {
             if due.len() > limit {
                 due.truncate(limit);
             }
-            for task in &due {
-                if let Some(item) = items.get_mut(&task.id) {
-                    item.due_notified_at_unix_secs = now_unix_secs;
-                }
-            }
             Ok(due)
+        }
+
+        fn mark_due_notified(&self, task: &TaskItem, notified_at_unix_secs: u64) -> Result<bool> {
+            let mut items = self.items.lock().unwrap_or_else(|e| e.into_inner());
+            let Some(item) = items.get_mut(&task.id) else {
+                return Ok(false);
+            };
+            if item != task {
+                return Ok(false);
+            }
+            item.due_notified_at_unix_secs = notified_at_unix_secs;
+            Ok(true)
         }
     }
 

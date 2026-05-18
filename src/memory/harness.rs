@@ -724,8 +724,15 @@ impl RemindAtStore for EmptyRemindAtStore {
     fn delete(&self, _channel: &str, _chat_id: &str, _id: &str) -> Result<bool> {
         Ok(false)
     }
-    fn pop_due(&self, _now_unix_secs: u64) -> Result<Option<crate::reminder::ReminderItem>> {
-        Ok(None)
+    fn list_due(
+        &self,
+        _now_unix_secs: u64,
+        _limit: usize,
+    ) -> Result<Vec<crate::reminder::ReminderItem>> {
+        Ok(Vec::new())
+    }
+    fn delete_due(&self, _reminder: &crate::reminder::ReminderItem) -> Result<bool> {
+        Ok(false)
     }
     fn list_upcoming(
         &self,
@@ -753,8 +760,11 @@ impl TaskStore for EmptyTaskStore {
     fn delete(&self, _channel: &str, _chat_id: &str, _id: &str) -> Result<bool> {
         Ok(false)
     }
-    fn claim_due(&self, _now_unix_secs: u64, _limit: usize) -> Result<Vec<TaskItem>> {
+    fn list_due_unnotified(&self, _now_unix_secs: u64, _limit: usize) -> Result<Vec<TaskItem>> {
         Ok(Vec::new())
+    }
+    fn mark_due_notified(&self, _task: &TaskItem, _notified_at_unix_secs: u64) -> Result<bool> {
+        Ok(false)
     }
 }
 

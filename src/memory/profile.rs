@@ -395,9 +395,9 @@ const STANDARD_PROMPT_PARTICIPATION_POLICY: PromptParticipationPolicy = PromptPa
 
 const EMBEDDED_MEMORY_POLICY: MemoryPolicy = MemoryPolicy {
     session_summary: SessionSummaryPolicy {
-        refresh_min_messages: 20,
-        refresh_delta_messages: 10,
-        recent_message_count: 16,
+        refresh_min_messages: 40,
+        refresh_delta_messages: 20,
+        recent_message_count: 12,
         fallback_recent_message_count: 4,
         transcript_preview_chars: 160,
         fallback_preview_chars: 80,

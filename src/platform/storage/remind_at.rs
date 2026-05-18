@@ -166,17 +166,33 @@ impl RemindAtStore for StorageRemindAtStore {
         Ok(deleted)
     }
 
-    fn pop_due(&self, now_unix_secs: u64) -> Result<Option<ReminderItem>> {
+    fn list_due(&self, now_unix_secs: u64, limit: usize) -> Result<Vec<ReminderItem>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
         self.store.with_cached_mut(|list| {
-            let pos = list
-                .iter()
-                .position(|entry| entry.at_unix_secs <= now_unix_secs);
-            let Some(idx) = pos else {
-                return Ok(StoreOp::clean(None));
-            };
-            let removed = list.remove(idx);
-            Ok(StoreOp::dirty(Some(removed)))
+            Ok(StoreOp::clean(
+                list.iter()
+                    .filter(|entry| entry.at_unix_secs <= now_unix_secs)
+                    .take(limit)
+                    .cloned()
+                    .collect(),
+            ))
         })
+    }
+
+    fn delete_due(&self, reminder: &ReminderItem) -> Result<bool> {
+        let deleted = self.store.with_cached_mut(|list| {
+            let Some(idx) = list.iter().position(|entry| entry == reminder) else {
+                return Ok(StoreOp::clean(false));
+            };
+            list.remove(idx);
+            Ok(StoreOp::dirty(true))
+        })?;
+        if deleted {
+            crate::bg_timer::notify_deadline_changed();
+        }
+        Ok(deleted)
     }
 
     fn next_due_at(&self) -> Result<Option<u64>> {
@@ -297,5 +313,24 @@ mod tests {
             .unwrap()
             .expect("updated reminder");
         assert_eq!(updated.at_unix_secs, 9_999);
+    }
+
+    #[test]
+    fn delete_due_does_not_remove_updated_same_id_reminder() {
+        reset_test_store();
+        let store = StorageRemindAtStore::new_with_path(test_store_path);
+        store.upsert(&reminder("rem-1", 1)).unwrap();
+        let due = store.list_due(1, 1).unwrap().pop().expect("due reminder");
+
+        let mut updated = reminder("rem-1", 9_999);
+        updated.context = "updated".to_string();
+        store.upsert(&updated).unwrap();
+
+        assert!(!store.delete_due(&due).unwrap());
+        let loaded = store
+            .get("qq_channel", "chat-1", "rem-1")
+            .unwrap()
+            .expect("updated reminder retained");
+        assert_eq!(loaded, updated);
     }
 }

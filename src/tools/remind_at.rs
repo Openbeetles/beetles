@@ -1191,8 +1191,24 @@ mod tests {
             Ok(self.items.lock().expect("items lock").remove(id).is_some())
         }
 
-        fn pop_due(&self, _now_unix_secs: u64) -> Result<Option<ReminderItem>> {
-            Ok(None)
+        fn list_due(&self, now_unix_secs: u64, limit: usize) -> Result<Vec<ReminderItem>> {
+            Ok(self
+                .items
+                .lock()
+                .expect("items lock")
+                .values()
+                .filter(|item| item.at_unix_secs <= now_unix_secs)
+                .take(limit)
+                .cloned()
+                .collect())
+        }
+
+        fn delete_due(&self, reminder: &ReminderItem) -> Result<bool> {
+            let mut items = self.items.lock().expect("items lock");
+            if items.get(&reminder.id) != Some(reminder) {
+                return Ok(false);
+            }
+            Ok(items.remove(&reminder.id).is_some())
         }
 
         fn list_upcoming(

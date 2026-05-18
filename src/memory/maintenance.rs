@@ -1320,6 +1320,84 @@ mod tests {
     }
 
     #[test]
+    fn embedded_maintenance_uses_model_summary_when_summary_is_only_due() {
+        let session_store = StubSessionStore {
+            recent: vec![
+                SessionMessage {
+                    role: "user".to_string(),
+                    content: "继续".to_string(),
+                },
+                SessionMessage {
+                    role: "assistant".to_string(),
+                    content: "好".to_string(),
+                },
+            ],
+            count: 40,
+            ..Default::default()
+        };
+        let summary_store = StubSessionSummaryStore::default();
+        let extraction_state_store = StubExtractionStateStore::default();
+        let execution_state_store = StubExecutionStateStore::default();
+        let memory_store = StubMemoryStore;
+        let long_term_memory_store = StubLongTermMemoryStore;
+        let continuity_capsule_store = StubContinuityCapsuleStore::default();
+        let turn_ledger_store = StubTurnLedgerStore;
+        let skill_storage = StubSkillStorage::default();
+        let mut http = DummyHttpClient;
+
+        let outcome = run_post_reply_memory_maintenance(
+            &mut http,
+            &FixedLlmClient,
+            PostReplyMemoryMaintenanceContext {
+                session_store: &session_store,
+                memory_store: &memory_store,
+                session_summary_store: &summary_store,
+                execution_state_store: &execution_state_store,
+                active_work_store: &StubActiveWorkStore::default(),
+                long_term_memory_store: &long_term_memory_store,
+                continuity_capsule_store: &continuity_capsule_store,
+                extraction_state_store: &extraction_state_store,
+                turn_ledger_store: &turn_ledger_store,
+                skill_storage: &skill_storage,
+                task_run_store: &StubTaskRunStore::default(),
+                task_artifact_store: &StubTaskArtifactStore::default(),
+                task_learning_store: &StubTaskLearningStore::default(),
+            },
+            PostReplyMemoryMaintenanceInput {
+                chat_id: "chat-1",
+                ingress: IngressKind::User,
+                channel: "qq_channel",
+                user_content: "继续",
+                reply_content: "好",
+                pressure: PressureLevel::Normal,
+                memory_profile: MemoryProfile::Embedded,
+                tool_calls: 0,
+                external_content_used: false,
+                prompt_recall_intent: PromptRecallIntent::Mixed,
+                runtime_skill_selected_ids: Vec::new(),
+                task_learning_selected_ids: Vec::new(),
+                reuse_outcome: RuntimeSkillReuseOutcome::Neutral,
+                reuse_outcome_note: "",
+                now_secs: 42,
+            },
+            || false,
+        );
+
+        assert!(matches!(
+            outcome.summary_result,
+            Ok(SessionSummaryRefreshOutcome::Updated {
+                used_fallback: false
+            })
+        ));
+        assert!(matches!(
+            outcome.execution_state_result,
+            Ok(ExecutionStateRefreshOutcome::Skipped)
+        ));
+        let stored = summary_store.get("chat-1").unwrap().unwrap();
+        assert_eq!(stored, "summary");
+    }
+
+    #[test]
     fn maintenance_reuses_recent_window_when_summary_and_execution_both_refresh() {
         let session_store = StubSessionStore {
             recent: vec![
@@ -1340,7 +1418,7 @@ mod tests {
                     content: "这轮会合并 session summary 和 execution state 的重复读取".to_string(),
                 },
             ],
-            count: 24,
+            count: 40,
             ..Default::default()
         };
         let summary_store = StubSessionSummaryStore::default();

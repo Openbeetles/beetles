@@ -110,7 +110,8 @@ pub trait TaskStore: Send + Sync {
     fn get(&self, channel: &str, chat_id: &str, id: &str) -> Result<Option<TaskItem>>;
     fn upsert(&self, task: &TaskItem) -> Result<()>;
     fn delete(&self, channel: &str, chat_id: &str, id: &str) -> Result<bool>;
-    fn claim_due(&self, now_unix_secs: u64, limit: usize) -> Result<Vec<TaskItem>>;
+    fn list_due_unnotified(&self, now_unix_secs: u64, limit: usize) -> Result<Vec<TaskItem>>;
+    fn mark_due_notified(&self, task: &TaskItem, notified_at_unix_secs: u64) -> Result<bool>;
     /// 返回最早待提醒任务的 due_at；无待提醒任务则返回 Ok(None)。
     fn next_due_at(&self) -> Result<Option<u64>> {
         Ok(None)
@@ -245,8 +246,16 @@ pub(crate) fn task_due_tick(
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let Ok(tasks) = task_store.claim_due(now, 8) else {
+    let limit = crate::constants::DUE_TASK_SWEEP_BATCH_MAX.min(inbound_tx.remaining_capacity());
+    if limit == 0 {
         return;
+    }
+    let tasks = match task_store.list_due_unnotified(now, limit) {
+        Ok(tasks) => tasks,
+        Err(error) => {
+            log::warn!("[task::task_due_tick] failed to list due tasks: {error}");
+            return;
+        }
     };
     for task in tasks {
         let loc = resolve_locale();
@@ -262,14 +271,33 @@ pub(crate) fn task_due_tick(
         if !task.detail.is_empty() {
             content.push_str(&format!("\n{}", task.detail));
         }
-        if let Ok(msg) = crate::bus::PcMsg::new_inbound_with_ingress(
+        let Ok(msg) = crate::bus::PcMsg::new_inbound_with_ingress(
             &task.channel,
             &task.chat_id,
             content,
             false,
             crate::bus::IngressKind::System,
-        ) {
-            let _ = inbound_tx.send(msg);
+        ) else {
+            log::warn!(
+                "[task::task_due_tick] failed to build system inbound for task {}",
+                task.id
+            );
+            continue;
+        };
+        match inbound_tx.try_send(msg) {
+            Ok(()) => {
+                if let Err(error) = task_store.mark_due_notified(&task, now) {
+                    log::warn!(
+                        "[task::task_due_tick] failed to mark due task {} notified: {}",
+                        task.id,
+                        error
+                    );
+                }
+            }
+            Err(std::sync::mpsc::TrySendError::Full(_))
+            | Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+                break;
+            }
         }
     }
 }
@@ -277,6 +305,8 @@ pub(crate) fn task_due_tick(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bus::new_inbound_channel;
+    use std::sync::Mutex;
 
     #[test]
     fn normalize_task_item_rejects_half_calendar_range() {
@@ -352,5 +382,138 @@ mod tests {
             },
         );
         assert_eq!(filtered.len(), 50);
+    }
+
+    #[derive(Default)]
+    struct StubDueTaskStore {
+        items: Mutex<Vec<TaskItem>>,
+    }
+
+    impl StubDueTaskStore {
+        fn new(items: Vec<TaskItem>) -> Self {
+            Self {
+                items: Mutex::new(items),
+            }
+        }
+
+        fn notified_ids(&self) -> Vec<String> {
+            self.items
+                .lock()
+                .expect("items lock")
+                .iter()
+                .filter(|item| item.due_notified_at_unix_secs != 0)
+                .map(|item| item.id.clone())
+                .collect()
+        }
+
+        fn unnotified_ids(&self) -> Vec<String> {
+            self.items
+                .lock()
+                .expect("items lock")
+                .iter()
+                .filter(|item| item.due_notified_at_unix_secs == 0)
+                .map(|item| item.id.clone())
+                .collect()
+        }
+    }
+
+    impl TaskStore for StubDueTaskStore {
+        fn list(&self, _channel: &str, _chat_id: &str, _query: TaskQuery) -> Result<Vec<TaskItem>> {
+            Ok(Vec::new())
+        }
+
+        fn get(&self, _channel: &str, _chat_id: &str, _id: &str) -> Result<Option<TaskItem>> {
+            Ok(None)
+        }
+
+        fn upsert(&self, _task: &TaskItem) -> Result<()> {
+            Ok(())
+        }
+
+        fn delete(&self, _channel: &str, _chat_id: &str, _id: &str) -> Result<bool> {
+            Ok(false)
+        }
+
+        fn list_due_unnotified(&self, now_unix_secs: u64, limit: usize) -> Result<Vec<TaskItem>> {
+            let items = self.items.lock().expect("items lock");
+            let mut due = items
+                .iter()
+                .filter(|item| {
+                    item.due_at_unix_secs != 0
+                        && item.due_at_unix_secs <= now_unix_secs
+                        && item.due_notified_at_unix_secs == 0
+                        && !item.status.is_terminal()
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            due.sort_by(|left, right| left.id.cmp(&right.id));
+            if due.len() > limit {
+                due.truncate(limit);
+            }
+            Ok(due)
+        }
+
+        fn mark_due_notified(&self, task: &TaskItem, notified_at_unix_secs: u64) -> Result<bool> {
+            let mut items = self.items.lock().expect("items lock");
+            let Some(item) = items.iter_mut().find(|item| {
+                item.channel == task.channel && item.chat_id == task.chat_id && item.id == task.id
+            }) else {
+                return Ok(false);
+            };
+            if item != task {
+                return Ok(false);
+            }
+            item.due_notified_at_unix_secs = notified_at_unix_secs;
+            Ok(true)
+        }
+    }
+
+    fn due_task(id: &str) -> TaskItem {
+        TaskItem {
+            id: id.to_string(),
+            channel: "qq_channel".to_string(),
+            chat_id: "chat-1".to_string(),
+            title: format!("task-{id}"),
+            due_at_unix_secs: 1,
+            ..TaskItem::default()
+        }
+    }
+
+    #[test]
+    fn task_due_tick_processes_at_most_four_due_items_per_tick() {
+        let store =
+            StubDueTaskStore::new((0..5).map(|idx| due_task(&format!("task-{idx}"))).collect());
+        let (tx, rx, _) = new_inbound_channel(16);
+        let resolve_locale: std::sync::Arc<dyn Fn() -> crate::i18n::Locale + Send + Sync> =
+            std::sync::Arc::new(|| crate::i18n::Locale::Zh);
+
+        task_due_tick(&store, &tx, &resolve_locale);
+
+        let delivered = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+        assert_eq!(delivered.len(), 4);
+        assert_eq!(
+            store.notified_ids(),
+            vec![
+                "task-0".to_string(),
+                "task-1".to_string(),
+                "task-2".to_string(),
+                "task-3".to_string()
+            ]
+        );
+        assert_eq!(store.unnotified_ids(), vec!["task-4".to_string()]);
+    }
+
+    #[test]
+    fn task_due_tick_does_not_mark_notified_when_system_inbound_is_disconnected() {
+        let store = StubDueTaskStore::new(vec![due_task("task-1")]);
+        let (tx, rx, _) = new_inbound_channel(1);
+        drop(rx);
+        let resolve_locale: std::sync::Arc<dyn Fn() -> crate::i18n::Locale + Send + Sync> =
+            std::sync::Arc::new(|| crate::i18n::Locale::Zh);
+
+        task_due_tick(&store, &tx, &resolve_locale);
+
+        assert!(store.notified_ids().is_empty());
+        assert_eq!(store.unnotified_ids(), vec!["task-1".to_string()]);
     }
 }

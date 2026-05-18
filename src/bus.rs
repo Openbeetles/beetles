@@ -777,6 +777,7 @@ impl PcMsg {
 pub struct TrackedSender<T> {
     inner: SyncSender<T>,
     depth: Arc<AtomicUsize>,
+    capacity: usize,
 }
 
 impl<T> TrackedSender<T> {
@@ -797,6 +798,18 @@ impl<T> TrackedSender<T> {
         }
         result
     }
+
+    pub fn queued_len(&self) -> usize {
+        self.depth.load(Ordering::Relaxed)
+    }
+
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
+
+    pub fn remaining_capacity(&self) -> usize {
+        self.capacity.saturating_sub(self.queued_len())
+    }
 }
 
 impl<T> Clone for TrackedSender<T> {
@@ -804,6 +817,7 @@ impl<T> Clone for TrackedSender<T> {
         Self {
             inner: self.inner.clone(),
             depth: Arc::clone(&self.depth),
+            capacity: self.capacity,
         }
     }
 }
@@ -863,6 +877,7 @@ pub fn new_inbound_channel(capacity: usize) -> (InboundTx, InboundRx, Arc<Atomic
         TrackedSender {
             inner: tx,
             depth: Arc::clone(&depth),
+            capacity,
         },
         TrackedReceiver {
             inner: rx,
@@ -895,10 +910,12 @@ impl MessageBus {
                 inbound_tx: TrackedSender {
                     inner: inbound_tx,
                     depth: Arc::clone(&inbound_depth),
+                    capacity,
                 },
                 outbound_tx: TrackedSender {
                     inner: outbound_tx,
                     depth: Arc::clone(&outbound_depth),
+                    capacity,
                 },
                 inbound_depth,
                 outbound_depth,

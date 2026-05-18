@@ -633,7 +633,7 @@ pub trait ImportantMessageStore: Send + Sync {
     fn clear_important(&self, chat_id: &str) -> Result<()>;
 }
 
-/// 到点提醒存储。持久条目带稳定 id 与可选 calendar link；pop_due(now) 移除并返回一条 at<=now 的提醒。
+/// 到点提醒存储。持久条目带稳定 id 与可选 calendar link；到期投递必须先非破坏性 list，成功入队后再按快照 delete。
 /// 条目数/context 长度上界见 constants::REMIND_AT_*，字段规范见 `crate::reminder::ReminderItem`。
 pub trait RemindAtStore: Send + Sync {
     fn get(
@@ -644,8 +644,14 @@ pub trait RemindAtStore: Send + Sync {
     ) -> Result<Option<crate::reminder::ReminderItem>>;
     fn upsert(&self, reminder: &crate::reminder::ReminderItem) -> Result<()>;
     fn delete(&self, channel: &str, chat_id: &str, id: &str) -> Result<bool>;
-    /// 移除并返回一条 at <= now 的条目（任选其一）；无到点项返回 Ok(None)。
-    fn pop_due(&self, now_unix_secs: u64) -> Result<Option<crate::reminder::ReminderItem>>;
+    /// 非破坏性列出最早到期提醒；用于成功投递 system inbound 后再显式删除。
+    fn list_due(
+        &self,
+        now_unix_secs: u64,
+        limit: usize,
+    ) -> Result<Vec<crate::reminder::ReminderItem>>;
+    /// 删除仍与投递快照一致的 due reminder；若用户已更新同 id 条目则不得删除。
+    fn delete_due(&self, reminder: &crate::reminder::ReminderItem) -> Result<bool>;
     /// 返回下一条提醒的最早触发时间；无待触发项则返回 Ok(None)。
     fn next_due_at(&self) -> Result<Option<u64>> {
         Ok(None)
@@ -909,25 +915,58 @@ pub(crate) fn remind_tick(
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    while let Ok(Some(reminder)) = remind_store.pop_due(now) {
-        if let Err(error) = cleanup(&reminder) {
-            log::warn!(
-                "[memory::remind_tick] linked calendar cleanup failed for reminder {}: {}",
-                reminder.id,
-                error
-            );
+    let limit = crate::constants::DUE_REMINDER_SWEEP_BATCH_MAX.min(inbound_tx.remaining_capacity());
+    if limit == 0 {
+        return;
+    }
+    let due = match remind_store.list_due(now, limit) {
+        Ok(due) => due,
+        Err(error) => {
+            log::warn!("[memory::remind_tick] failed to list due reminders: {error}");
+            return;
         }
+    };
+    for reminder in due {
         let loc = resolve_locale();
         let prefix = crate::i18n::tr(crate::i18n::Message::RemindPrefix, loc);
         let content = format!("{}{}", prefix, reminder.context);
-        if let Ok(msg) = PcMsg::new_inbound_with_ingress(
-            reminder.channel,
-            reminder.chat_id,
+        let Ok(msg) = PcMsg::new_inbound_with_ingress(
+            reminder.channel.as_str(),
+            reminder.chat_id.as_str(),
             content,
             false,
             crate::bus::IngressKind::System,
-        ) {
-            let _ = inbound_tx.send(msg);
+        ) else {
+            log::warn!(
+                "[memory::remind_tick] failed to build system inbound for reminder {}",
+                reminder.id
+            );
+            continue;
+        };
+        match inbound_tx.try_send(msg) {
+            Ok(()) => match remind_store.delete_due(&reminder) {
+                Ok(true) => {
+                    if let Err(error) = cleanup(&reminder) {
+                        log::warn!(
+                                "[memory::remind_tick] linked calendar cleanup failed for reminder {}: {}",
+                                reminder.id,
+                                error
+                            );
+                    }
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    log::warn!(
+                        "[memory::remind_tick] failed to delete delivered reminder {}: {}",
+                        reminder.id,
+                        error
+                    );
+                }
+            },
+            Err(std::sync::mpsc::TrySendError::Full(_))
+            | Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+                break;
+            }
         }
     }
 }
@@ -958,7 +997,7 @@ mod tests {
 
     #[derive(Default)]
     struct StubRemindAtStore {
-        next: Mutex<Option<ReminderItem>>,
+        items: Mutex<Vec<ReminderItem>>,
     }
 
     impl RemindAtStore for StubRemindAtStore {
@@ -966,16 +1005,47 @@ mod tests {
             Ok(None)
         }
 
-        fn upsert(&self, _reminder: &ReminderItem) -> Result<()> {
+        fn upsert(&self, reminder: &ReminderItem) -> Result<()> {
+            let mut items = self.items.lock().expect("items lock");
+            items.push(reminder.clone());
+            items.sort_by(|left, right| {
+                left.at_unix_secs
+                    .cmp(&right.at_unix_secs)
+                    .then_with(|| left.id.cmp(&right.id))
+            });
             Ok(())
         }
 
-        fn delete(&self, _channel: &str, _chat_id: &str, _id: &str) -> Result<bool> {
-            Ok(false)
+        fn delete(&self, channel: &str, chat_id: &str, id: &str) -> Result<bool> {
+            let mut items = self.items.lock().expect("items lock");
+            let Some(idx) = items.iter().position(|item| {
+                item.channel == channel && item.chat_id == chat_id && item.id == id
+            }) else {
+                return Ok(false);
+            };
+            items.remove(idx);
+            Ok(true)
         }
 
-        fn pop_due(&self, _now_unix_secs: u64) -> Result<Option<ReminderItem>> {
-            Ok(self.next.lock().expect("next lock").take())
+        fn list_due(&self, now_unix_secs: u64, limit: usize) -> Result<Vec<ReminderItem>> {
+            Ok(self
+                .items
+                .lock()
+                .expect("items lock")
+                .iter()
+                .filter(|item| item.at_unix_secs <= now_unix_secs)
+                .take(limit)
+                .cloned()
+                .collect())
+        }
+
+        fn delete_due(&self, reminder: &ReminderItem) -> Result<bool> {
+            let mut items = self.items.lock().expect("items lock");
+            let Some(idx) = items.iter().position(|item| item == reminder) else {
+                return Ok(false);
+            };
+            items.remove(idx);
+            Ok(true)
         }
 
         fn list_upcoming(
@@ -989,18 +1059,44 @@ mod tests {
         }
     }
 
+    impl StubRemindAtStore {
+        fn new(items: Vec<ReminderItem>) -> Self {
+            Self {
+                items: Mutex::new(items),
+            }
+        }
+
+        fn ids(&self) -> Vec<String> {
+            self.items
+                .lock()
+                .expect("items lock")
+                .iter()
+                .map(|item| item.id.clone())
+                .collect()
+        }
+    }
+
+    fn reminder(id: &str) -> ReminderItem {
+        ReminderItem {
+            id: id.to_string(),
+            channel: "qq_channel".to_string(),
+            chat_id: "chat-1".to_string(),
+            at_unix_secs: 1,
+            context: format!("reminder-{id}"),
+            ..ReminderItem::default()
+        }
+    }
+
     #[test]
     fn remind_tick_runs_cleanup_then_injects_message() {
-        let store = StubRemindAtStore {
-            next: Mutex::new(Some(ReminderItem {
-                id: "rem-1".to_string(),
-                channel: "qq_channel".to_string(),
-                chat_id: "chat-1".to_string(),
-                at_unix_secs: 1,
-                context: "喝水".to_string(),
-                ..ReminderItem::default()
-            })),
-        };
+        let store = StubRemindAtStore::new(vec![ReminderItem {
+            id: "rem-1".to_string(),
+            channel: "qq_channel".to_string(),
+            chat_id: "chat-1".to_string(),
+            at_unix_secs: 1,
+            context: "喝水".to_string(),
+            ..ReminderItem::default()
+        }]);
         let cleaned = Mutex::new(Vec::new());
         let (tx, rx, _) = new_inbound_channel(4);
         let resolve_locale: std::sync::Arc<dyn Fn() -> crate::i18n::Locale + Send + Sync> =
@@ -1026,5 +1122,67 @@ mod tests {
         let msg = rx.recv().expect("message");
         assert!(msg.content.contains("喝水"));
         assert_eq!(msg.ingress, crate::bus::IngressKind::System);
+    }
+
+    #[test]
+    fn remind_tick_processes_at_most_four_due_items_per_tick() {
+        let store =
+            StubRemindAtStore::new((0..5).map(|idx| reminder(&format!("rem-{idx}"))).collect());
+        let cleaned = Mutex::new(Vec::new());
+        let (tx, rx, _) = new_inbound_channel(16);
+        let resolve_locale: std::sync::Arc<dyn Fn() -> crate::i18n::Locale + Send + Sync> =
+            std::sync::Arc::new(|| crate::i18n::Locale::Zh);
+
+        super::remind_tick(
+            &store,
+            |reminder| {
+                cleaned
+                    .lock()
+                    .expect("cleaned lock")
+                    .push(reminder.id.clone());
+                Ok(())
+            },
+            &tx,
+            &resolve_locale,
+        );
+
+        let delivered = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+        assert_eq!(delivered.len(), 4);
+        assert_eq!(
+            cleaned.lock().expect("cleaned lock").as_slice(),
+            &[
+                "rem-0".to_string(),
+                "rem-1".to_string(),
+                "rem-2".to_string(),
+                "rem-3".to_string()
+            ]
+        );
+        assert_eq!(store.ids(), vec!["rem-4".to_string()]);
+    }
+
+    #[test]
+    fn remind_tick_requeues_when_system_inbound_is_disconnected() {
+        let store = StubRemindAtStore::new(vec![reminder("rem-1")]);
+        let cleaned = Mutex::new(Vec::new());
+        let (tx, rx, _) = new_inbound_channel(1);
+        drop(rx);
+        let resolve_locale: std::sync::Arc<dyn Fn() -> crate::i18n::Locale + Send + Sync> =
+            std::sync::Arc::new(|| crate::i18n::Locale::Zh);
+
+        super::remind_tick(
+            &store,
+            |reminder| {
+                cleaned
+                    .lock()
+                    .expect("cleaned lock")
+                    .push(reminder.id.clone());
+                Ok(())
+            },
+            &tx,
+            &resolve_locale,
+        );
+
+        assert!(cleaned.lock().expect("cleaned lock").is_empty());
+        assert_eq!(store.ids(), vec!["rem-1".to_string()]);
     }
 }

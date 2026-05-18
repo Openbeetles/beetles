@@ -13,6 +13,11 @@ pub const CHANNEL_SENDER_QUEUE_DEPTH: usize = 8;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub const CHANNEL_SENDER_QUEUE_DEPTH: usize = 32;
 
+/// Max due reminders/tasks injected into the system inbound queue per sweep.
+/// Bounded drain keeps overdue bursts from occupying the storage write-back worker.
+pub const DUE_REMINDER_SWEEP_BATCH_MAX: usize = 4;
+pub const DUE_TASK_SWEEP_BATCH_MAX: usize = 4;
+
 /// Voice event queue capacity between wake/sink producers and the voice session scheduler.
 pub const VOICE_EVENT_QUEUE_CAPACITY: usize = 4;
 

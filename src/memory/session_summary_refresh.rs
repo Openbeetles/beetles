@@ -152,6 +152,7 @@ pub(crate) fn run_session_summary_refresh_with_snapshot(
         owned_recent.as_slice()
     };
     let fallback = fallback_session_summary(recent, profile);
+
     let transcript = build_session_summary_transcript(recent, policy);
     let messages = [Message {
         role: Cow::Borrowed("user"),
@@ -332,23 +333,23 @@ mod tests {
     #[test]
     fn session_summary_refresh_threshold_is_programmatic() {
         assert!(!should_refresh_session_summary(
-            19,
+            39,
             0,
             MemoryProfile::Embedded
         ));
         assert!(!should_refresh_session_summary(
-            20,
-            15,
+            40,
+            21,
             MemoryProfile::Embedded
         ));
         assert!(should_refresh_session_summary(
+            40,
             20,
-            10,
             MemoryProfile::Embedded
         ));
         assert!(should_refresh_session_summary(
-            35,
-            20,
+            65,
+            40,
             MemoryProfile::Embedded
         ));
         assert!(should_refresh_session_summary(
@@ -454,7 +455,7 @@ mod tests {
                 session_summary_store: &summary_store,
             },
             "chat-1",
-            20,
+            40,
             MemoryProfile::Embedded,
         )
         .unwrap();
@@ -467,7 +468,7 @@ mod tests {
         );
         assert_eq!(
             summary_store.get_with_count("chat-1").unwrap(),
-            Some(("fresh summary".to_string(), 20))
+            Some(("fresh summary".to_string(), 40))
         );
     }
 
@@ -500,7 +501,7 @@ mod tests {
                 session_summary_store: &summary_store,
             },
             "chat-1",
-            20,
+            40,
             MemoryProfile::Embedded,
         )
         .unwrap();
@@ -563,7 +564,7 @@ mod tests {
                 session_summary_store: &FailingSummaryStore,
             },
             "chat-1",
-            20,
+            40,
             MemoryProfile::Embedded,
         )
         .unwrap();

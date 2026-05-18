@@ -115,7 +115,7 @@ impl TaskStore for StorageTaskStore {
         Ok(removed)
     }
 
-    fn claim_due(&self, now_unix_secs: u64, limit: usize) -> Result<Vec<TaskItem>> {
+    fn list_due_unnotified(&self, now_unix_secs: u64, limit: usize) -> Result<Vec<TaskItem>> {
         self.store.with_cached_mut(|map| {
             if limit == 0 {
                 return Ok(StoreOp::clean(Vec::new()));
@@ -140,16 +140,25 @@ impl TaskStore for StorageTaskStore {
             if due.len() > limit {
                 due.truncate(limit);
             }
-            if due.is_empty() {
-                return Ok(StoreOp::clean(Vec::new()));
-            }
-            for task in &due {
-                if let Some(item) = map.get_mut(&task.id) {
-                    item.0.due_notified_at_unix_secs = now_unix_secs;
-                }
-            }
-            Ok(StoreOp::dirty(due))
+            Ok(StoreOp::clean(due))
         })
+    }
+
+    fn mark_due_notified(&self, task: &TaskItem, notified_at_unix_secs: u64) -> Result<bool> {
+        let changed = self.store.with_cached_mut(|map| {
+            let Some(item) = map.get_mut(&task.id) else {
+                return Ok(StoreOp::clean(false));
+            };
+            if item.0 != *task {
+                return Ok(StoreOp::clean(false));
+            }
+            item.0.due_notified_at_unix_secs = notified_at_unix_secs;
+            Ok(StoreOp::dirty(true))
+        })?;
+        if changed {
+            crate::bg_timer::notify_deadline_changed();
+        }
+        Ok(changed)
     }
 
     fn next_due_at(&self) -> Result<Option<u64>> {
@@ -256,5 +265,32 @@ mod tests {
             .expect("updated task");
         assert_eq!(loaded.detail, "updated");
         assert_eq!(loaded.updated_at, 9_999);
+    }
+
+    #[test]
+    fn mark_due_notified_does_not_mark_updated_same_id_task() {
+        reset_test_store();
+        let store = StorageTaskStore::new_with_path(test_store_path);
+        let mut original = task("task-1", 1);
+        original.due_at_unix_secs = 1;
+        store.upsert(&original).unwrap();
+        let due = store
+            .list_due_unnotified(1, 1)
+            .unwrap()
+            .pop()
+            .expect("due task");
+
+        let mut updated = due.clone();
+        updated.due_at_unix_secs = 9_999;
+        updated.updated_at = 2;
+        store.upsert(&updated).unwrap();
+
+        assert!(!store.mark_due_notified(&due, 1).unwrap());
+        let loaded = store
+            .get("qq_channel", "chat-1", "task-1")
+            .unwrap()
+            .expect("updated task retained");
+        assert_eq!(loaded.due_at_unix_secs, 9_999);
+        assert_eq!(loaded.due_notified_at_unix_secs, 0);
     }
 }
