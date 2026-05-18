@@ -8,10 +8,11 @@ use crate::channels::inbound_backpressure::{self, EventIngressSource};
 use crate::error::{Error, Result};
 use crate::i18n::Locale;
 use crate::memory::{
-    derive_recent_persona_evidence, synthesize_session_message_records, AutonomyStrategy,
-    AutonomyStrategyStore, CoreRevisionLedger, CoreRevisionLedgerStore, ExecutionState,
-    ExecutionStateStore, FeltSignificance, FeltSignificanceStore, ImportantMessageStore,
-    InnerConflict, InnerConflictStore, InnerLife, InnerLifeStore, LongTermMemoryExtractionState,
+    compact_core_revision_ledger_for_profile, derive_recent_persona_evidence,
+    synthesize_session_message_records, AutonomyStrategy, AutonomyStrategyStore,
+    CoreRevisionLedger, CoreRevisionLedgerStore, ExecutionState, ExecutionStateStore,
+    FeltSignificance, FeltSignificanceStore, ImportantMessageStore, InnerConflict,
+    InnerConflictStore, InnerLife, InnerLifeStore, LongTermMemoryExtractionState,
     LongTermMemoryExtractionStateStore, MemoryProfile, MentalPrivacyState, MentalPrivacyStore,
     OuterVoice, OuterVoiceStore, RecentPersonaEvidence, RelationshipConstitution,
     RelationshipConstitutionStore, RelationshipPortfolio, RelationshipPortfolioStore,
@@ -1455,6 +1456,41 @@ define_buffered_chat_store!(
     CoreRevisionLedger,
     "core_revision_ledger_write_back"
 );
+
+pub struct ProfiledCoreRevisionLedgerStore {
+    inner: Arc<dyn CoreRevisionLedgerStore + Send + Sync>,
+    profile: MemoryProfile,
+}
+
+impl ProfiledCoreRevisionLedgerStore {
+    pub fn wrap(
+        inner: Arc<dyn CoreRevisionLedgerStore + Send + Sync>,
+        profile: MemoryProfile,
+    ) -> Arc<dyn CoreRevisionLedgerStore + Send + Sync> {
+        Arc::new(Self { inner, profile }) as Arc<dyn CoreRevisionLedgerStore + Send + Sync>
+    }
+
+    fn compact(&self, ledger: CoreRevisionLedger) -> CoreRevisionLedger {
+        compact_core_revision_ledger_for_profile(ledger, self.profile)
+    }
+}
+
+impl CoreRevisionLedgerStore for ProfiledCoreRevisionLedgerStore {
+    fn get(&self, scope_id: &str) -> Result<Option<CoreRevisionLedger>> {
+        self.inner
+            .get(scope_id)
+            .map(|ledger| ledger.map(|value| self.compact(value)))
+    }
+
+    fn set(&self, scope_id: &str, ledger: &CoreRevisionLedger) -> Result<()> {
+        let compacted = self.compact(ledger.clone());
+        self.inner.set(scope_id, &compacted)
+    }
+
+    fn clear(&self, scope_id: &str) -> Result<()> {
+        self.inner.clear(scope_id)
+    }
+}
 define_buffered_chat_store!(
     BufferedRelationshipConstitutionStore,
     RelationshipConstitutionStore,

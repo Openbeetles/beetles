@@ -120,6 +120,7 @@ pub use continuity_snapshot::{
     ContinuitySnapshotImportMode, ContinuitySnapshotImportOutcome, ContinuitySnapshotKindCount,
     ContinuitySnapshotManifest, ContinuitySnapshotMode,
 };
+pub(crate) use core_revision_ledger::compact_core_revision_ledger_for_profile;
 pub use core_revision_ledger::{
     append_core_revision_record, build_core_revision_timeline,
     compute_core_revision_governance_digest, core_revision_observation_due_at, correction_pressure,

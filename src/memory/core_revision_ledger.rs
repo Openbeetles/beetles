@@ -2,7 +2,7 @@
 
 use crate::util::truncate_content_to_max;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
 const CORE_REVISION_LEDGER_MAX_ENTRIES: usize = 24;
@@ -11,6 +11,13 @@ const CORE_REVISION_LEDGER_REASON_MAX_CHARS: usize = 180;
 const CORE_REVISION_LEDGER_RENDER_LIMIT: usize = 3;
 const CORE_REVISION_TIMELINE_RENDER_LIMIT: usize = 4;
 const CORE_REVISION_GOVERNANCE_WINDOW: usize = 6;
+const CORE_REVISION_LEDGER_EMBEDDED_RECENT_ENTRIES: usize = CORE_REVISION_GOVERNANCE_WINDOW;
+const CORE_REVISION_LEDGER_EMBEDDED_MAX_ENTRIES: usize =
+    CORE_REVISION_LEDGER_EMBEDDED_RECENT_ENTRIES + 1;
+const CORE_REVISION_LEDGER_EMBEDDED_CHANGE_MAX_CHARS: usize = 64;
+const CORE_REVISION_LEDGER_EMBEDDED_REASON_MAX_CHARS: usize = 80;
+const CORE_REVISION_LEDGER_EMBEDDED_CHANGE_LIMIT: usize = 4;
+const CORE_REVISION_LEDGER_EMBEDDED_SCOPE_MAX_CHARS: usize = 80;
 const CORE_REVISION_LOW_STABILITY_THRESHOLD: u8 = 55;
 const CORE_REVISION_CONSERVATIVE_STABILITY_THRESHOLD: u8 = 65;
 const CORE_REVISION_REJECTION_REPEAT_THRESHOLD: usize = 2;
@@ -276,6 +283,96 @@ pub fn append_core_revision_record(
         ledger.entries.drain(0..overflow);
     }
     ledger
+}
+
+pub(crate) fn compact_core_revision_ledger_for_profile(
+    mut ledger: CoreRevisionLedger,
+    profile: crate::memory::MemoryProfile,
+) -> CoreRevisionLedger {
+    if profile != crate::memory::MemoryProfile::Embedded {
+        return ledger;
+    }
+    normalize_core_revision_ledger(&mut ledger);
+    retain_embedded_core_revision_entries(&mut ledger);
+    for record in &mut ledger.entries {
+        compact_embedded_core_revision_record(record);
+    }
+    ledger
+}
+
+fn normalize_core_revision_ledger(ledger: &mut CoreRevisionLedger) {
+    for record in &mut ledger.entries {
+        normalize_record(record);
+    }
+    ledger.entries.sort_by_key(|entry| entry.reviewed_at);
+    if ledger.entries.len() > CORE_REVISION_LEDGER_MAX_ENTRIES {
+        let overflow = ledger.entries.len() - CORE_REVISION_LEDGER_MAX_ENTRIES;
+        ledger.entries.drain(0..overflow);
+    }
+}
+
+fn retain_embedded_core_revision_entries(ledger: &mut CoreRevisionLedger) {
+    if ledger.entries.len() <= CORE_REVISION_LEDGER_EMBEDDED_MAX_ENTRIES {
+        return;
+    }
+    let mut keep = BTreeSet::new();
+    let start = ledger
+        .entries
+        .len()
+        .saturating_sub(CORE_REVISION_LEDGER_EMBEDDED_RECENT_ENTRIES);
+    keep.extend(start..ledger.entries.len());
+    if let Some(latest_adopted_index) =
+        ledger
+            .entries
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(index, record)| {
+                matches!(record.outcome, CoreRevisionOutcome::Adopted).then_some(index)
+            })
+    {
+        keep.insert(latest_adopted_index);
+    }
+    ledger.entries = ledger
+        .entries
+        .iter()
+        .enumerate()
+        .filter_map(|(index, record)| keep.contains(&index).then_some(record.clone()))
+        .collect();
+    if ledger.entries.len() > CORE_REVISION_LEDGER_EMBEDDED_MAX_ENTRIES {
+        let overflow = ledger.entries.len() - CORE_REVISION_LEDGER_EMBEDDED_MAX_ENTRIES;
+        ledger.entries.drain(0..overflow);
+    }
+}
+
+fn compact_embedded_core_revision_record(record: &mut CoreRevisionRecord) {
+    record.relationship_scope_id = truncate_content_to_max(
+        record.relationship_scope_id.trim(),
+        CORE_REVISION_LEDGER_EMBEDDED_SCOPE_MAX_CHARS,
+    )
+    .into_owned();
+    record.source_layers.clear();
+    record.evidence_summary.clear();
+    record.counterevidence.clear();
+    record.rationale.clear();
+    record.adjudication_reason = truncate_content_to_max(
+        record.adjudication_reason.trim(),
+        CORE_REVISION_LEDGER_EMBEDDED_REASON_MAX_CHARS,
+    )
+    .into_owned();
+    compact_embedded_change_list(&mut record.accepted_changes);
+    compact_embedded_change_list(&mut record.rejected_changes);
+}
+
+fn compact_embedded_change_list(values: &mut Vec<CoreRevisionRecordChange>) {
+    for value in values.iter_mut() {
+        value.summary = truncate_content_to_max(
+            value.summary.trim(),
+            CORE_REVISION_LEDGER_EMBEDDED_CHANGE_MAX_CHARS,
+        )
+        .into_owned();
+    }
+    values.truncate(CORE_REVISION_LEDGER_EMBEDDED_CHANGE_LIMIT);
 }
 
 pub fn recent_adopted_revision(ledger: &CoreRevisionLedger) -> Option<&CoreRevisionRecord> {
@@ -943,5 +1040,111 @@ mod tests {
         assert!(block.contains("Recent timeline:"));
         assert!(block.contains("rev 4 adopted"));
         assert!(block.contains("changes: revise boundary doctrine"));
+    }
+
+    #[test]
+    fn embedded_core_revision_ledger_compaction_keeps_governance_signals_and_drops_heavy_text() {
+        let mut entries = vec![CoreRevisionRecord {
+            outcome: CoreRevisionOutcome::Adopted,
+            based_on_revision: 0,
+            resulting_revision: 1,
+            source_layers: vec![
+                "self_model".to_string(),
+                "recent_persona_evidence".to_string(),
+            ],
+            evidence_summary: vec!["x".repeat(240)],
+            counterevidence: vec!["y".repeat(240)],
+            accepted_changes: vec![CoreRevisionRecordChange {
+                kind: CoreRevisionActionKind::ReviseIdentityAnchor,
+                summary: "identity anchor adopted from stable evidence".to_string(),
+            }],
+            observation_due_at: 1_000,
+            adjudication_reason: "adopted_board_revision".to_string(),
+            rationale: "z".repeat(240),
+            stability_score: 72,
+            reviewed_at: 10,
+            ..CoreRevisionRecord::default()
+        }];
+        for idx in 2..=9 {
+            entries.push(CoreRevisionRecord {
+                outcome: if idx % 2 == 0 {
+                    CoreRevisionOutcome::Deferred
+                } else {
+                    CoreRevisionOutcome::Rejected
+                },
+                resulting_revision: idx,
+                source_layers: vec!["recent_transcript".to_string()],
+                evidence_summary: vec!["heavy evidence".repeat(20)],
+                counterevidence: vec!["heavy counterevidence".repeat(20)],
+                rejected_changes: vec![CoreRevisionRecordChange {
+                    kind: CoreRevisionActionKind::ReviseTruthDoctrine,
+                    summary: "truth doctrine rejected because signal stayed local".repeat(4),
+                }],
+                adjudication_reason: "gate blocked noisy local signal".repeat(4),
+                rationale: "heavy rationale".repeat(20),
+                stability_score: 68,
+                reviewed_at: idx * 10,
+                ..CoreRevisionRecord::default()
+            });
+        }
+        let ledger = CoreRevisionLedger {
+            entries,
+            updated_at: 90,
+        };
+
+        let compacted = compact_core_revision_ledger_for_profile(
+            ledger,
+            crate::memory::MemoryProfile::Embedded,
+        );
+
+        assert!(compacted.entries.len() <= 7);
+        assert!(compacted
+            .entries
+            .iter()
+            .any(|entry| entry.outcome == CoreRevisionOutcome::Adopted
+                && entry.resulting_revision == 1
+                && entry.observation_due_at == 1_000));
+        assert!(compacted.entries.iter().all(|entry| {
+            entry.source_layers.is_empty()
+                && entry.evidence_summary.is_empty()
+                && entry.counterevidence.is_empty()
+                && entry.rationale.is_empty()
+                && entry.adjudication_reason.len() <= 80
+        }));
+        assert!(compacted.entries.iter().all(|entry| {
+            entry
+                .accepted_changes
+                .iter()
+                .chain(entry.rejected_changes.iter())
+                .all(|change| change.summary.len() <= 64)
+        }));
+    }
+
+    #[test]
+    fn standard_core_revision_ledger_compaction_keeps_full_ledger() {
+        let ledger = CoreRevisionLedger {
+            entries: vec![CoreRevisionRecord {
+                outcome: CoreRevisionOutcome::Rejected,
+                source_layers: vec!["private_workspace".to_string()],
+                evidence_summary: vec!["full evidence should remain on LinuxFull".to_string()],
+                counterevidence: vec!["full counterevidence should remain on LinuxFull".to_string()],
+                rejected_changes: vec![CoreRevisionRecordChange {
+                    kind: CoreRevisionActionKind::ReviseRepairDoctrine,
+                    summary: "full rejected change summary should remain".to_string(),
+                }],
+                adjudication_reason: "full adjudication reason should remain".to_string(),
+                rationale: "full rationale should remain".to_string(),
+                reviewed_at: 10,
+                ..CoreRevisionRecord::default()
+            }],
+            updated_at: 10,
+        };
+
+        let compacted = compact_core_revision_ledger_for_profile(
+            ledger.clone(),
+            crate::memory::MemoryProfile::Standard,
+        );
+
+        assert_eq!(compacted, ledger);
     }
 }
