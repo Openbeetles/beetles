@@ -13,8 +13,8 @@ use crate::task_execution::{
     current_or_next_step, TaskRunRecord, TaskRunStatus, TaskStep, TaskStepStatus,
 };
 use serde::{Deserialize, Serialize};
-#[cfg(test)]
 use std::collections::HashMap;
+use std::sync::Mutex;
 
 pub const REL_PATH_ACTIVE_WORKS: &str = "memory/active_works.json";
 pub const REL_PATH_DETACHED_WORKS: &str = "memory/detached_works.json";
@@ -505,6 +505,164 @@ pub fn current_unix_ms() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|value| value.as_millis().min(u64::MAX as u128) as u64)
         .unwrap_or(0)
+}
+
+/// In-memory detached work store for profiles that intentionally do not
+/// persist background maintenance across reboot.
+pub struct VolatileDetachedWorkStore {
+    inner: Mutex<HashMap<String, DetachedWorkRecord>>,
+}
+
+impl VolatileDetachedWorkStore {
+    pub fn new() -> Self {
+        Self {
+            inner: Mutex::new(HashMap::new()),
+        }
+    }
+}
+
+impl Default for VolatileDetachedWorkStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl DetachedWorkStore for VolatileDetachedWorkStore {
+    fn get(&self, key: &DetachedWorkKey) -> Result<Option<DetachedWorkRecord>> {
+        Ok(self
+            .inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&key.storage_key())
+            .cloned())
+    }
+
+    fn list(&self) -> Result<Vec<DetachedWorkRecord>> {
+        Ok(self
+            .inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+            .cloned()
+            .collect())
+    }
+
+    fn upsert(
+        &self,
+        key: &DetachedWorkKey,
+        job: &PcMsg,
+        wake_at_ms: u64,
+        reason: &str,
+    ) -> Result<DetachedWorkUpsertOutcome> {
+        let storage_key = key.storage_key();
+        let reason = reason.trim();
+        let updated_at_ms = current_unix_ms();
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let next = match inner.get(&storage_key) {
+            Some(current)
+                if current.job == *job
+                    && current.wake_at_ms == wake_at_ms
+                    && current.last_reason == reason
+                    && current.state == DetachedWorkState::Pending =>
+            {
+                return Ok(DetachedWorkUpsertOutcome {
+                    changed: false,
+                    record: current.clone(),
+                });
+            }
+            Some(current) => DetachedWorkRecord {
+                key: key.clone(),
+                job: job.clone(),
+                state: DetachedWorkState::Pending,
+                wake_at_ms,
+                revision: current.revision.saturating_add(1),
+                last_reason: reason.to_string(),
+                updated_at_ms,
+            },
+            None => DetachedWorkRecord {
+                key: key.clone(),
+                job: job.clone(),
+                state: DetachedWorkState::Pending,
+                wake_at_ms,
+                revision: 1,
+                last_reason: reason.to_string(),
+                updated_at_ms,
+            },
+        };
+        inner.insert(storage_key, next.clone());
+        Ok(DetachedWorkUpsertOutcome {
+            changed: true,
+            record: next,
+        })
+    }
+
+    fn mark_queued(&self, key: &DetachedWorkKey, revision: u64) -> Result<bool> {
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(record) = inner.get_mut(&key.storage_key()) else {
+            return Ok(false);
+        };
+        if record.revision != revision || record.state != DetachedWorkState::Pending {
+            return Ok(false);
+        }
+        record.state = DetachedWorkState::Queued;
+        record.updated_at_ms = current_unix_ms();
+        Ok(true)
+    }
+
+    fn claim_running(
+        &self,
+        key: &DetachedWorkKey,
+        revision: u64,
+    ) -> Result<Option<DetachedWorkRecord>> {
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(record) = inner.get_mut(&key.storage_key()) else {
+            return Ok(None);
+        };
+        if record.revision != revision
+            || !matches!(
+                record.state,
+                DetachedWorkState::Pending | DetachedWorkState::Queued
+            )
+        {
+            return Ok(None);
+        }
+        record.state = DetachedWorkState::Running;
+        record.updated_at_ms = current_unix_ms();
+        Ok(Some(record.clone()))
+    }
+
+    fn reschedule(
+        &self,
+        key: &DetachedWorkKey,
+        revision: u64,
+        wake_at_ms: u64,
+        reason: &str,
+    ) -> Result<Option<DetachedWorkRecord>> {
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(record) = inner.get_mut(&key.storage_key()) else {
+            return Ok(None);
+        };
+        if record.revision != revision {
+            return Ok(None);
+        }
+        record.revision = record.revision.saturating_add(1);
+        record.state = DetachedWorkState::Pending;
+        record.wake_at_ms = wake_at_ms;
+        record.last_reason = reason.trim().to_string();
+        record.updated_at_ms = current_unix_ms();
+        Ok(Some(record.clone()))
+    }
+
+    fn finish(&self, key: &DetachedWorkKey, revision: u64) -> Result<()> {
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        if inner
+            .get(&key.storage_key())
+            .is_some_and(|record| record.revision == revision)
+        {
+            inner.remove(&key.storage_key());
+        }
+        Ok(())
+    }
 }
 
 fn foreground_status_from_task_run(

@@ -410,7 +410,6 @@ pub fn tool_effect_visible_in_mode(
         | crate::runtime::RuntimeMode::Pairing
         | crate::runtime::RuntimeMode::ConfigActive
         | crate::runtime::RuntimeMode::Maintenance
-        | crate::runtime::RuntimeMode::Upgrade
         | crate::runtime::RuntimeMode::RecoverySafeMode => matches!(
             effect_class,
             ToolEffectClass::LocalPure

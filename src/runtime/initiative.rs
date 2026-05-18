@@ -792,7 +792,6 @@ mod tests {
             config_plane_alive: false,
             config_active: false,
             config_activity_phase: crate::runtime::ConfigActivityPhase::Idle,
-            upgrade_active: false,
             channel_plane_alive: false,
             voice_plane_alive: false,
             agent_plane_alive: false,

@@ -625,18 +625,6 @@ impl HttpRouteSpec {
                     RouteRuntimeAdmission::Allowed
                 }
             }
-            crate::runtime::RuntimeMode::Upgrade => {
-                if self.allowed_in_upgrade_mode() {
-                    RouteRuntimeAdmission::Allowed
-                } else {
-                    RouteRuntimeAdmission::Rejected {
-                        status: 503,
-                        error_key: "runtime.route_blocked_by_upgrade",
-                        stage: "runtime_route_admission",
-                        reason: "upgrade_mode_allowlist",
-                    }
-                }
-            }
             crate::runtime::RuntimeMode::ConfigActive => {
                 if self.blocks_during_config_active() {
                     RouteRuntimeAdmission::Rejected {
@@ -667,21 +655,6 @@ impl HttpRouteSpec {
         allow(dead_code)
     )]
     fn allowed_in_recovery_safe_mode(self) -> bool {
-        self.method == RouteMethod::Options
-            || matches!(
-                (self.method, self.path),
-                (RouteMethod::Get, ROUTE_ROOT)
-                    | (RouteMethod::Get, ROUTE_HEALTH)
-                    | (RouteMethod::Get, ROUTE_CSRF_TOKEN)
-                    | (RouteMethod::Post, ROUTE_CONFIG_RESET)
-            )
-    }
-
-    #[cfg_attr(
-        not(any(target_arch = "xtensa", target_arch = "riscv32", test)),
-        allow(dead_code)
-    )]
-    fn allowed_in_upgrade_mode(self) -> bool {
         self.method == RouteMethod::Options
             || matches!(
                 (self.method, self.path),
@@ -1889,41 +1862,6 @@ mod tests {
         assert!(!operator_route_endpoints(None, false)
             .iter()
             .any(|endpoint| endpoint.contains(removed_ota_route)));
-    }
-
-    #[test]
-    fn route_runtime_mode_admission_upgrade_allows_health_and_recovery_but_blocks_heavy_routes() {
-        let mode =
-            crate::runtime::mode::snapshot_from_source(crate::runtime::mode::RuntimeModeSource {
-                upgrade_active: true,
-                ..crate::runtime::mode::RuntimeModeSource::default()
-            });
-
-        for (method, path) in [
-            ("GET", ROUTE_HEALTH),
-            ("GET", ROUTE_CSRF_TOKEN),
-            ("POST", ROUTE_CONFIG_RESET),
-        ] {
-            let spec = route_spec_for(method, path).expect("minimal recovery spec");
-            assert_eq!(
-                spec.runtime_mode_admission(mode),
-                RouteRuntimeAdmission::Allowed,
-                "{} {} should remain available during upgrade",
-                method,
-                path
-            );
-        }
-
-        let diagnose = route_spec_for("GET", ROUTE_DIAGNOSE).expect("diagnose");
-        assert_eq!(
-            diagnose.runtime_mode_admission(mode),
-            RouteRuntimeAdmission::Rejected {
-                status: 503,
-                error_key: "runtime.route_blocked_by_upgrade",
-                stage: "runtime_route_admission",
-                reason: "upgrade_mode_allowlist",
-            }
-        );
     }
 
     #[test]

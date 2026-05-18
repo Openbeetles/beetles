@@ -808,15 +808,18 @@ if ! rg -n '^coredump,[[:space:]]+data,[[:space:]]+coredump,' partitions.csv >/d
   exit 1
 fi
 
-if ! rg -n 'RuntimeMode::Upgrade' src/runtime/mode.rs src/platform/http_server/router/catalog.rs >/dev/null ||
-   ! rg -n 'upgrade_active' src/runtime/mode.rs src/runtime/thread_registry.rs src/state.rs >/dev/null ||
-   ! rg -n 'set_upgrade_active' src/runtime/governance.rs src/runtime/mod.rs src/state.rs >/dev/null; then
-  echo "FAIL: upgrade runtime mode is no longer connected to the global runtime source" >&2
+if rg -n 'RuntimeMode::Upgrade|upgrade_active|set_upgrade_active|UPGRADE_ACTIVE|runtime\.route_blocked_by_upgrade|allowed_in_upgrade_mode' src >/dev/null; then
+  echo "FAIL: upgrade runtime mode is a removed OTA-era contract and must stay absent" >&2
   exit 1
 fi
 
 if rg -n 'RouteExecutionClass::OtaRoute|ROUTE_OTA|RouteWorkerLane::Ota|OtaHttpWorker|PlaneId::Ota|http_ota_exec|/api/ota' src >/dev/null; then
   echo "FAIL: official OTA route/worker contract must stay removed until a real implementation is restored" >&2
+  exit 1
+fi
+
+if rg -n 'StorageDetachedWorkStore|REL_PATH_DETACHED_WORKS|memory/detached_works\.json' src/platform/esp32.rs >/dev/null; then
+  echo "FAIL: ESP must not inject persisted detached_work storage; use the volatile system queue/store boundary instead" >&2
   exit 1
 fi
 

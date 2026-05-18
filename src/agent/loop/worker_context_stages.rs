@@ -42,9 +42,7 @@ fn resolve_recent_messages_limit(
         crate::runtime::RuntimeMode::Maintenance
         | crate::runtime::RuntimeMode::ConfigActive
         | crate::runtime::RuntimeMode::RecoverySafeMode => base.min(8),
-        crate::runtime::RuntimeMode::Booting
-        | crate::runtime::RuntimeMode::Pairing
-        | crate::runtime::RuntimeMode::Upgrade => base.min(4),
+        crate::runtime::RuntimeMode::Booting | crate::runtime::RuntimeMode::Pairing => base.min(4),
     };
     let ingress_cap = match ingress {
         IngressKind::User => mode_cap,

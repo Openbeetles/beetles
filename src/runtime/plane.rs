@@ -95,7 +95,6 @@ const MODES_ALL: &[RuntimeMode] = &[
     RuntimeMode::ConfigActive,
     RuntimeMode::VoiceExclusive,
     RuntimeMode::Maintenance,
-    RuntimeMode::Upgrade,
     RuntimeMode::RecoverySafeMode,
 ];
 
@@ -128,7 +127,6 @@ const MODES_RECOVERY: &[RuntimeMode] = &[
     RuntimeMode::Normal,
     RuntimeMode::ConfigActive,
     RuntimeMode::RecoverySafeMode,
-    RuntimeMode::Upgrade,
 ];
 
 const MODES_DIAGNOSTIC: &[RuntimeMode] = &[

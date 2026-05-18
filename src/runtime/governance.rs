@@ -377,10 +377,6 @@ pub fn set_recovery_safe_mode_active(active: bool) {
     crate::state::set_recovery_safe_mode_active(active);
 }
 
-pub fn set_upgrade_active(active: bool) {
-    crate::state::set_upgrade_active(active);
-}
-
 #[cfg(test)]
 pub fn set_pairing_state_for_tests(known: bool, required: bool) {
     crate::state::set_pairing_state_known(known);
@@ -396,7 +392,6 @@ pub fn reset_runtime_governance_state_for_tests() {
     crate::state::set_pairing_state_known(false);
     crate::state::set_pairing_required(false);
     crate::state::set_recovery_safe_mode_active(false);
-    crate::state::set_upgrade_active(false);
     let mut state = config_activity_state()
         .lock()
         .unwrap_or_else(|error| error.into_inner());

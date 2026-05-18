@@ -20,12 +20,11 @@ use crate::platform::{
     storage::{
         storage_usage, CachedSkillMetaStore, CachedSkillStorage, StorageActiveWorkStore,
         StorageAutonomyStrategyStore, StorageCalendarStore, StorageContinuityCapsuleStore,
-        StorageCoreRevisionLedgerStore, StorageDetachedWorkStore, StorageExecutionStateStore,
-        StorageFeltSignificanceStore, StorageImportantMessageStore, StorageInnerConflictStore,
-        StorageInnerLifeStore, StorageLongTermMemoryExtractionStateStore,
-        StorageLongTermMemoryStore, StorageMemoryStore, StorageMentalPrivacyStore,
-        StorageOuterVoiceStore, StoragePendingRetryStore, StoragePrivateDocStore,
-        StoragePrivateGardenStore, StorageRelationshipConstitutionStore,
+        StorageCoreRevisionLedgerStore, StorageExecutionStateStore, StorageFeltSignificanceStore,
+        StorageImportantMessageStore, StorageInnerConflictStore, StorageInnerLifeStore,
+        StorageLongTermMemoryExtractionStateStore, StorageLongTermMemoryStore, StorageMemoryStore,
+        StorageMentalPrivacyStore, StorageOuterVoiceStore, StoragePendingRetryStore,
+        StoragePrivateDocStore, StoragePrivateGardenStore, StorageRelationshipConstitutionStore,
         StorageRelationshipPortfolioStore, StorageRelationshipTopologyStore, StorageRemindAtStore,
         StorageSelfAuthoredCoreStore, StorageSelfContinuityStore, StorageSelfModelStore,
         StorageSessionStore, StorageSessionSummaryStore, StorageSkillMetaStore,
@@ -95,7 +94,7 @@ pub struct Esp32Platform {
     task_execution_ledger_store: Arc<StorageTaskExecutionLedgerStore>,
     task_learning_store: Arc<StorageTaskLearningStore>,
     active_work_store: Arc<dyn crate::agent::ActiveWorkStore + Send + Sync>,
-    detached_work_store: Arc<StorageDetachedWorkStore>,
+    detached_work_store: Arc<dyn crate::agent::DetachedWorkStore + Send + Sync>,
     execution_state_store: Arc<dyn ExecutionStateStore + Send + Sync>,
     self_model_store: Arc<dyn SelfModelStore + Send + Sync>,
     self_authored_core_store: Arc<dyn SelfAuthoredCoreStore + Send + Sync>,
@@ -227,7 +226,7 @@ impl Esp32Platform {
             task_execution_ledger_store: Arc::new(StorageTaskExecutionLedgerStore::new()),
             task_learning_store: Arc::new(StorageTaskLearningStore::new()),
             active_work_store,
-            detached_work_store: Arc::new(StorageDetachedWorkStore::new()),
+            detached_work_store: Arc::new(crate::agent::VolatileDetachedWorkStore::new()),
             execution_state_store,
             self_model_store,
             self_authored_core_store,
@@ -421,7 +420,6 @@ impl Platform for Esp32Platform {
     }
     fn detached_work_store(&self) -> Arc<dyn crate::agent::DetachedWorkStore + Send + Sync> {
         Arc::clone(&self.detached_work_store)
-            as Arc<dyn crate::agent::DetachedWorkStore + Send + Sync>
     }
 
     fn execution_state_store(&self) -> Arc<dyn ExecutionStateStore + Send + Sync> {

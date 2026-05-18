@@ -218,6 +218,48 @@ fn build_system_llm_ctx<'a>(
     }
 }
 
+fn enqueue_long_term_memory_refresh_job(
+    detached_work_store: &dyn crate::agent::DetachedWorkStore,
+    system_inbound_tx: &SystemInboundTx,
+    chat_id: &str,
+    memory_profile: crate::memory::MemoryProfile,
+    reason: &'static str,
+) -> bool {
+    let job = match PcMsg::new_system(CHANNEL_LONG_TERM_MEMORY_REFRESH, chat_id, "") {
+        Ok(job) => job,
+        Err(error) => {
+            log::warn!("[agent_memory] refresh job build failed: {}", error);
+            return false;
+        }
+    };
+    let key = crate::agent::DetachedWorkKey::new(
+        "memory_refresh",
+        chat_id,
+        crate::agent::DetachedJobKind::LongTermMemoryRefresh,
+    );
+    if matches!(memory_profile, crate::memory::MemoryProfile::Embedded) {
+        let scheduled = crate::runtime::schedule_bounded_keyed_system_inbound_msg(
+            std::time::Instant::now(),
+            system_inbound_tx.clone(),
+            job,
+            std::time::Duration::from_millis(super::BACKGROUND_DEFER_DELAY_MS),
+            "long_term_memory_refresh",
+            key.storage_key(),
+            std::time::Duration::from_millis(crate::constants::POST_REPLY_BACKGROUND_MAX_DEFER_MS),
+        );
+        if !scheduled {
+            log::warn!("[agent_memory] refresh volatile enqueue failed: {}", reason);
+        }
+        return scheduled;
+    }
+    crate::agent::upsert_detached_work_job(detached_work_store, key, &job, 0, reason)
+        .map(|_| true)
+        .unwrap_or_else(|error| {
+            log::warn!("[agent_memory] refresh detached enqueue failed: {}", error);
+            false
+        })
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum DetachedJobRunDisposition {
     Completed,
@@ -321,7 +363,7 @@ fn run_post_reply_maintenance_job(
     http: &mut dyn PlatformHttpClient,
     worker_llm: &(dyn LlmClient + Send + Sync),
     config: &AgentLoopConfig,
-    _system_inbound_tx: &SystemInboundTx,
+    system_inbound_tx: &SystemInboundTx,
     msg: &PcMsg,
     current_background_agent_task_slots: u32,
 ) -> DetachedJobRunDisposition {
@@ -405,27 +447,14 @@ fn run_post_reply_maintenance_job(
             reuse_outcome_note: &payload.reuse_outcome_note,
             now_secs: payload.now_secs,
         },
-        || match PcMsg::new_system(CHANNEL_LONG_TERM_MEMORY_REFRESH, msg.chat_id.as_ref(), "") {
-            Ok(job) => crate::agent::upsert_detached_work_job(
+        || {
+            enqueue_long_term_memory_refresh_job(
                 config.runtime.detached_work_store.as_ref(),
-                crate::agent::DetachedWorkKey::new(
-                    "memory_refresh",
-                    msg.chat_id.as_ref(),
-                    crate::agent::DetachedJobKind::LongTermMemoryRefresh,
-                ),
-                &job,
-                0,
+                system_inbound_tx,
+                msg.chat_id.as_ref(),
+                config.runtime.memory_system_kind.memory_profile(),
                 "long_term_memory_refresh_enqueued",
             )
-            .map(|_| true)
-            .unwrap_or_else(|error| {
-                log::warn!("[agent_memory] refresh detached enqueue failed: {}", error);
-                false
-            }),
-            Err(error) => {
-                log::warn!("[agent_memory] refresh job build failed: {}", error);
-                false
-            }
         },
     );
     let maintenance_failed = maintenance_outcome.summary_result.is_err()
@@ -497,7 +526,7 @@ fn run_self_runtime_job(
     http: &mut dyn PlatformHttpClient,
     worker_llm: &(dyn LlmClient + Send + Sync),
     config: &AgentLoopConfig,
-    _system_inbound_tx: &SystemInboundTx,
+    system_inbound_tx: &SystemInboundTx,
     msg: &PcMsg,
     current_background_agent_task_slots: u32,
 ) -> DetachedJobRunDisposition {
@@ -720,30 +749,13 @@ fn run_self_runtime_job(
                 .then_some(decision.factual_reconcile_intent.as_str()),
         );
         if decision.request_factual_refresh {
-            match PcMsg::new_system(CHANNEL_LONG_TERM_MEMORY_REFRESH, msg.chat_id.as_ref(), "") {
-                Ok(job) => {
-                    let _ = crate::agent::upsert_detached_work_job(
-                        config.runtime.detached_work_store.as_ref(),
-                        crate::agent::DetachedWorkKey::new(
-                            "memory_refresh",
-                            msg.chat_id.as_ref(),
-                            crate::agent::DetachedJobKind::LongTermMemoryRefresh,
-                        ),
-                        &job,
-                        0,
-                        "self_runtime_factual_refresh_enqueued",
-                    )
-                    .map_err(|error| {
-                        log::warn!(
-                            "[self_runtime] factual refresh detached enqueue failed: {}",
-                            error
-                        );
-                    });
-                }
-                Err(error) => {
-                    log::warn!("[self_runtime] factual refresh job build failed: {}", error);
-                }
-            }
+            let _ = enqueue_long_term_memory_refresh_job(
+                config.runtime.detached_work_store.as_ref(),
+                system_inbound_tx,
+                msg.chat_id.as_ref(),
+                config.runtime.memory_system_kind.memory_profile(),
+                "self_runtime_factual_refresh_enqueued",
+            );
         }
     }
     match world_sense_result {
@@ -2460,6 +2472,71 @@ mod tests {
             store.get(&key).expect("load").is_none(),
             "embedded post-reply scheduling should not write detached-work storage state on agent_loop"
         );
+    }
+
+    #[test]
+    fn embedded_long_term_refresh_uses_volatile_system_queue() {
+        let (_state_guard, _delayed_guard) =
+            crate::runtime::delayed_task::delayed_task_test_scope();
+        let store = StubDetachedWorkStore::default();
+        let (system_inbound_tx, system_inbound_rx, _depth) = crate::bus::new_inbound_channel(4);
+
+        assert!(enqueue_long_term_memory_refresh_job(
+            &store,
+            &system_inbound_tx,
+            "chat-1",
+            crate::memory::MemoryProfile::Embedded,
+            "long_term_memory_refresh_enqueued",
+        ));
+
+        let key = DetachedWorkKey::new(
+            "memory_refresh",
+            "chat-1",
+            DetachedJobKind::LongTermMemoryRefresh,
+        );
+        assert!(
+            store.get(&key).expect("load").is_none(),
+            "embedded long-term refresh should not write detached-work storage state"
+        );
+
+        crate::runtime::delayed_task::service_delayed_tasks();
+        let job = system_inbound_rx
+            .try_recv()
+            .expect("embedded long-term refresh should enter volatile system queue");
+        assert_eq!(job.channel.as_ref(), CHANNEL_LONG_TERM_MEMORY_REFRESH);
+        assert_eq!(job.chat_id.as_ref(), "chat-1");
+    }
+
+    #[test]
+    fn standard_long_term_refresh_uses_detached_store() {
+        let (_state_guard, _delayed_guard) =
+            crate::runtime::delayed_task::delayed_task_test_scope();
+        let store = StubDetachedWorkStore::default();
+        let (system_inbound_tx, system_inbound_rx, _depth) = crate::bus::new_inbound_channel(4);
+
+        assert!(enqueue_long_term_memory_refresh_job(
+            &store,
+            &system_inbound_tx,
+            "chat-1",
+            crate::memory::MemoryProfile::Standard,
+            "long_term_memory_refresh_enqueued",
+        ));
+
+        let key = DetachedWorkKey::new(
+            "memory_refresh",
+            "chat-1",
+            DetachedJobKind::LongTermMemoryRefresh,
+        );
+        let stored = store
+            .get(&key)
+            .expect("load")
+            .expect("standard profile should persist detached refresh");
+        assert_eq!(
+            stored.job.channel.as_ref(),
+            CHANNEL_LONG_TERM_MEMORY_REFRESH
+        );
+        assert_eq!(stored.last_reason, "long_term_memory_refresh_enqueued");
+        assert!(system_inbound_rx.try_recv().is_err());
     }
 
     #[test]

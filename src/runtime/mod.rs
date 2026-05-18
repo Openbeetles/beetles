@@ -57,9 +57,9 @@ pub use frame_lease::{
 };
 pub use governance::{
     config_activity_active, config_activity_snapshot, set_recovery_safe_mode_active,
-    set_upgrade_active, sync_pairing_state_from_store, BackgroundMaintenanceGuard,
-    ConfigActivityGuard, ConfigActivityPhase, ConfigActivitySnapshot, ConfigPlaneGuard,
-    ConfigReadBurstGuard, CONFIG_ACTIVITY_WINDOW_SECS,
+    sync_pairing_state_from_store, BackgroundMaintenanceGuard, ConfigActivityGuard,
+    ConfigActivityPhase, ConfigActivitySnapshot, ConfigPlaneGuard, ConfigReadBurstGuard,
+    CONFIG_ACTIVITY_WINDOW_SECS,
 };
 pub use initiative::{
     initiative_tick, inspect_platform_initiative, InitiativeAction, InitiativeSignalSnapshot,

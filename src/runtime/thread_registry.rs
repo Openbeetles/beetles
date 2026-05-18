@@ -239,7 +239,6 @@ pub fn runtime_mode_source() -> crate::runtime::mode::RuntimeModeSource {
         config_plane_alive: crate::state::config_plane_active(),
         config_active: config_activity.active,
         config_activity_phase: config_activity.phase,
-        upgrade_active: crate::state::upgrade_active(),
         channel_plane_alive: plane.channel_plane_alive,
         voice_plane_alive: plane.voice_plane_alive,
         agent_plane_alive: plane.agent_plane_alive,
@@ -333,7 +332,7 @@ pub fn format_stack_risk_log_line() -> String {
 pub fn format_runtime_mode_log_line() -> String {
     let mode = runtime_mode_snapshot();
     format!(
-        "runtime_mode current_mode={} wifi_sta={} booting={} pairing_known={} pairing_required={} voice_exclusive={} bg_maintenance={} upgrade_active={} recovery_safe_mode={} config_plane={} config_active={} config_phase={} channel_plane={} voice_plane={} agent_plane={} ext_wss_connecting={} timers={} periodic_maintenance={} non_voice_outbound={} realtime_voice={} ext_wss_connect={} ext_wss_suspend={}",
+        "runtime_mode current_mode={} wifi_sta={} booting={} pairing_known={} pairing_required={} voice_exclusive={} bg_maintenance={} recovery_safe_mode={} config_plane={} config_active={} config_phase={} channel_plane={} voice_plane={} agent_plane={} ext_wss_connecting={} timers={} periodic_maintenance={} non_voice_outbound={} realtime_voice={} ext_wss_connect={} ext_wss_suspend={}",
         mode.current_mode.as_str(),
         mode.wifi_sta_connected,
         mode.boot_phase_active,
@@ -341,7 +340,6 @@ pub fn format_runtime_mode_log_line() -> String {
         mode.pairing_required,
         mode.voice_exclusive_active,
         mode.background_maintenance_active,
-        mode.upgrade_active,
         mode.recovery_safe_mode_active,
         mode.config_plane_alive,
         mode.config_active,
@@ -781,7 +779,6 @@ mod tests {
         crate::state::set_pairing_state_known(true);
         crate::state::set_pairing_required(true);
         crate::state::set_recovery_safe_mode_active(false);
-        crate::state::set_upgrade_active(false);
 
         let mode = runtime_mode_snapshot();
         assert!(mode.pairing_state_known);
@@ -789,25 +786,21 @@ mod tests {
         assert_eq!(mode.current_mode, crate::runtime::RuntimeMode::Pairing);
 
         crate::state::set_pairing_required(false);
-        crate::state::set_upgrade_active(true);
-        let upgrade_mode = runtime_mode_snapshot();
-        assert!(upgrade_mode.upgrade_active);
+        let normal_mode = runtime_mode_snapshot();
         assert_eq!(
-            upgrade_mode.current_mode,
-            crate::runtime::RuntimeMode::Upgrade
+            normal_mode.current_mode,
+            crate::runtime::RuntimeMode::Normal
         );
 
         crate::state::set_recovery_safe_mode_active(true);
         let recovery_mode = runtime_mode_snapshot();
         assert!(recovery_mode.recovery_safe_mode_active);
-        assert!(recovery_mode.upgrade_active);
         assert_eq!(
             recovery_mode.current_mode,
             crate::runtime::RuntimeMode::RecoverySafeMode
         );
 
         crate::state::set_recovery_safe_mode_active(false);
-        crate::state::set_upgrade_active(false);
         crate::state::set_pairing_state_known(false);
         reset_for_tests();
     }

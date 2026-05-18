@@ -234,7 +234,6 @@ mod tests {
             } else {
                 crate::runtime::ConfigActivityPhase::Idle
             },
-            upgrade_active: mode == RuntimeMode::Upgrade,
             channel_plane_alive: true,
             voice_plane_alive: false,
             agent_plane_alive: true,

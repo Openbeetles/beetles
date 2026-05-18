@@ -334,7 +334,6 @@ mod tests {
             } else {
                 crate::runtime::ConfigActivityPhase::Idle
             },
-            upgrade_active: mode == RuntimeMode::Upgrade,
             channel_plane_alive: false,
             voice_plane_alive: false,
             agent_plane_alive: false,
@@ -349,7 +348,6 @@ mod tests {
                     pairing_state_known: true,
                     background_maintenance_active: mode == RuntimeMode::Maintenance,
                     voice_exclusive_active: mode == RuntimeMode::VoiceExclusive,
-                    upgrade_active: mode == RuntimeMode::Upgrade,
                     recovery_safe_mode_active: mode == RuntimeMode::RecoverySafeMode,
                     ..crate::runtime::mode::RuntimeModeSource::default()
                 },

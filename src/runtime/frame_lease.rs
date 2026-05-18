@@ -37,7 +37,6 @@ impl FrameLeaseAdmission {
             RuntimeMode::Booting
             | RuntimeMode::Pairing
             | RuntimeMode::ConfigActive
-            | RuntimeMode::Upgrade
             | RuntimeMode::VoiceExclusive
             | RuntimeMode::Maintenance
             | RuntimeMode::RecoverySafeMode => self
@@ -237,7 +236,6 @@ mod tests {
             }
             RuntimeMode::Normal => {}
             RuntimeMode::ConfigActive => source.config_active = true,
-            RuntimeMode::Upgrade => source.upgrade_active = true,
             RuntimeMode::VoiceExclusive => source.voice_exclusive_active = true,
             RuntimeMode::Maintenance => source.background_maintenance_active = true,
             RuntimeMode::RecoverySafeMode => source.recovery_safe_mode_active = true,

@@ -25,7 +25,7 @@ pub use active_work::{
     live_foreground_state_for_chat, ActiveWorkKind, ActiveWorkRecord, ActiveWorkStore,
     BackgroundDisposition, DetachedJobKind, DetachedWorkKey, DetachedWorkRecord, DetachedWorkState,
     DetachedWorkStore, DetachedWorkUpsertOutcome, DetachedWorkWake, ForegroundWorkStatus,
-    LiveForegroundState, REL_PATH_ACTIVE_WORKS, REL_PATH_DETACHED_WORKS,
+    LiveForegroundState, VolatileDetachedWorkStore, REL_PATH_ACTIVE_WORKS, REL_PATH_DETACHED_WORKS,
 };
 pub(crate) use active_work::{
     current_unix_ms, due_detached_work_records, has_meaningful_foreground_work_for_chat,

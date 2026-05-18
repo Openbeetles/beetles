@@ -179,17 +179,6 @@ fn inspect_runtime_mode_plane(mode: RuntimeModeSnapshot) -> BeetleOsPlaneReport 
                 outstanding.push("maintenance_mode_without_background_flag".to_string());
             }
         }
-        RuntimeMode::Upgrade => {
-            if mode.action_budget.allow_external_wss_connect {
-                outstanding.push("upgrade_allows_external_wss_connect".to_string());
-            }
-            if mode.action_budget.allow_realtime_voice_connect {
-                outstanding.push("upgrade_allows_realtime_voice".to_string());
-            }
-            if mode.action_budget.allow_periodic_maintenance {
-                outstanding.push("upgrade_allows_periodic_maintenance".to_string());
-            }
-        }
         RuntimeMode::RecoverySafeMode => {
             if !mode.recovery_safe_mode_active {
                 outstanding.push("recovery_mode_without_safe_mode_flag".to_string());
@@ -451,17 +440,6 @@ mod tests {
                 allow_external_wss_connect: true,
                 require_external_wss_suspended: false,
             },
-            RuntimeMode::Upgrade => RuntimeModeActionBudget {
-                allow_periodic_maintenance: false,
-                allow_due_user_timers: true,
-                allow_heartbeat_injection: false,
-                allow_best_effort_delayed_tasks: false,
-                allow_idle_self_runtime: false,
-                allow_non_voice_outbound: true,
-                allow_realtime_voice_connect: false,
-                allow_external_wss_connect: false,
-                require_external_wss_suspended: true,
-            },
             RuntimeMode::RecoverySafeMode => RuntimeModeActionBudget {
                 allow_periodic_maintenance: false,
                 allow_due_user_timers: false,
@@ -489,7 +467,6 @@ mod tests {
             } else {
                 crate::runtime::ConfigActivityPhase::Idle
             },
-            upgrade_active: mode == RuntimeMode::Upgrade,
             channel_plane_alive: false,
             voice_plane_alive: false,
             agent_plane_alive: false,
