@@ -577,6 +577,20 @@ impl HttpRouteSpec {
         )
     }
 
+    #[cfg_attr(
+        not(any(target_arch = "xtensa", target_arch = "riscv32", test)),
+        allow(dead_code)
+    )]
+    pub(crate) fn uses_response_build_admission(self) -> bool {
+        matches!(
+            (self.method, self.path),
+            (
+                RouteMethod::Get,
+                ROUTE_SESSIONS | ROUTE_MEMORY_STATUS | ROUTE_DIAGNOSE | ROUTE_SYSTEM_INFO
+            )
+        )
+    }
+
     pub(crate) const fn with_config_activity(
         mut self,
         phase: crate::runtime::ConfigActivityPhase,
@@ -1356,13 +1370,44 @@ mod tests {
         assert_eq!(get.execution_class, RouteExecutionClass::ChatHistoryRoute);
         assert_eq!(get.operator_access, OperatorRouteAccess::AlwaysOn);
         assert_eq!(get.handler(), Some(RouteHandler::SessionsGet));
+        assert!(get.uses_response_build_admission());
 
         let post = route_spec_for("POST", ROUTE_SESSIONS).expect("sessions post route");
         assert!(matches!(post.body_mode, RouteBodyMode::Utf8(_)));
         assert_eq!(post.execution_class, RouteExecutionClass::StreamingRoute);
         assert_eq!(post.operator_access, OperatorRouteAccess::AlwaysOn);
         assert!(post.rejects_during_voice_exclusive());
+        assert!(!post.uses_response_build_admission());
         assert_eq!(post.handler(), Some(RouteHandler::SessionsPost));
+    }
+
+    #[test]
+    fn large_json_routes_declare_response_build_admission() {
+        for (method, path) in [
+            ("GET", ROUTE_SESSIONS),
+            ("GET", ROUTE_MEMORY_STATUS),
+            ("GET", ROUTE_DIAGNOSE),
+            ("GET", ROUTE_SYSTEM_INFO),
+        ] {
+            let spec = route_spec_for(method, path).expect("route spec");
+            assert!(
+                spec.uses_response_build_admission(),
+                "{method} {path} must be admitted before building a large response"
+            );
+        }
+
+        for (method, path) in [
+            ("GET", ROUTE_HEALTH),
+            ("GET", ROUTE_RESOURCE),
+            ("POST", ROUTE_SESSIONS),
+            ("DELETE", ROUTE_SESSIONS),
+        ] {
+            let spec = route_spec_for(method, path).expect("route spec");
+            assert!(
+                !spec.uses_response_build_admission(),
+                "{method} {path} must not be guarded by large response admission"
+            );
+        }
     }
 
     #[test]

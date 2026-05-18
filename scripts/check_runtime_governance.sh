@@ -70,6 +70,40 @@ if rg -n "$RESPONSE_BODY_INTO_VEC_HOT_PATH" src \
   exit 1
 fi
 
+if ! rg -n 'enum OutgoingBody' src/platform/http_server/router/types.rs >/dev/null ||
+   ! rg -n 'OutgoingBody::Bytes|Self::Bytes' src/platform/http_server/router/types.rs >/dev/null ||
+   ! rg -n 'OutgoingBody::Stream|Self::Stream' src/platform/http_server/router/types.rs >/dev/null; then
+  echo "FAIL: HTTP router output must stay a sum type: OutgoingBody::Bytes(ByteBuffer) | Stream(ChatStreamReceiver)" >&2
+  exit 1
+fi
+
+if rg -n 'pub body: Vec<u8>|pub stream: Option<.*ChatStreamReceiver' src/platform/http_server/router/types.rs >/dev/null; then
+  echo "FAIL: OutgoingResponse must not regress to body Vec plus optional stream dual-state" >&2
+  rg -n 'pub body: Vec<u8>|pub stream: Option<.*ChatStreamReceiver' src/platform/http_server/router/types.rs >&2
+  exit 1
+fi
+
+if rg -n 'serde_json::to_string\(&payload\)' src/platform/http_server/handlers/memory.rs >/dev/null ||
+   rg -n 'serde_json::to_string\(&response\)' src/platform/http_server/handlers/sessions.rs >/dev/null; then
+  echo "FAIL: large memory/session HTTP responses must serialize directly into ByteBuffer, not String/Vec first" >&2
+  rg -n 'serde_json::to_string\(&payload\)' src/platform/http_server/handlers/memory.rs >&2 || true
+  rg -n 'serde_json::to_string\(&response\)' src/platform/http_server/handlers/sessions.rs >&2 || true
+  exit 1
+fi
+
+if rg -n 'out\.body\.len\s*\(' src/platform/http_server/esp_transport.rs >/dev/null; then
+  echo "FAIL: ESP response pressure guard must inspect OutgoingBody through the sum-type API, not raw Vec len" >&2
+  rg -n 'out\.body\.len\s*\(' src/platform/http_server/esp_transport.rs >&2
+  exit 1
+fi
+
+if ! rg -n 'large_json_routes_declare_response_build_admission' src/platform/http_server/router/catalog.rs >/dev/null ||
+   ! rg -n 'detail_serializes_large_history_into_external_preferred_buffer' src/platform/http_server/handlers/sessions.rs >/dev/null ||
+   ! rg -n 'json_response_body_uses_single_byte_buffer_variant' src/platform/http_server/router/types.rs >/dev/null; then
+  echo "FAIL: HTTP OutgoingBody/large-response SRAM contract tests are missing" >&2
+  exit 1
+fi
+
 if rg -n '\bstate_fs\.read\s*\(' src/tools >/dev/null; then
   echo "FAIL: tool state-file reads must use StateFs::read_bytes()/ByteBuffer instead of heap Vec reads" >&2
   rg -n '\bstate_fs\.read\s*\(' src/tools >&2

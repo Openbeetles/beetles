@@ -2,7 +2,7 @@
 
 use super::api_contract;
 use super::common::{self, CORS_HEADERS};
-use super::router::{IncomingBody, IncomingRequest, OutgoingResponse, RestartAction};
+use super::router::{IncomingBody, IncomingRequest, OutgoingBody, OutgoingResponse, RestartAction};
 use crate::error::{Error, Result};
 use std::io::Read as _;
 use std::sync::Arc;
@@ -138,25 +138,28 @@ fn respond(log_tag: &'static str, request: tiny_http::Request, outgoing: Outgoin
             tiny_http::Header::from_bytes(key.as_bytes(), value.as_bytes()).ok()
         })
         .collect::<Vec<_>>();
-    if let Some(stream) = outgoing.stream {
-        let response = tiny_http::Response::new(
-            tiny_http::StatusCode(outgoing.status),
-            headers,
-            SseReceiverReader::new(stream),
-            None,
-            None,
-        );
-        if let Err(error) = request.respond(response) {
-            log::warn!("[{}] respond failed: {}", log_tag, error);
+    match outgoing.body {
+        OutgoingBody::Stream(stream) => {
+            let response = tiny_http::Response::new(
+                tiny_http::StatusCode(outgoing.status),
+                headers,
+                SseReceiverReader::new(stream),
+                None,
+                None,
+            );
+            if let Err(error) = request.respond(response) {
+                log::warn!("[{}] respond failed: {}", log_tag, error);
+            }
         }
-    } else {
-        let mut response = tiny_http::Response::from_data(outgoing.body)
-            .with_status_code(tiny_http::StatusCode(outgoing.status));
-        for header in headers {
-            response.add_header(header);
-        }
-        if let Err(error) = request.respond(response) {
-            log::warn!("[{}] respond failed: {}", log_tag, error);
+        OutgoingBody::Bytes(bytes) => {
+            let mut response = tiny_http::Response::from_data(bytes.into_vec())
+                .with_status_code(tiny_http::StatusCode(outgoing.status));
+            for header in headers {
+                response.add_header(header);
+            }
+            if let Err(error) = request.respond(response) {
+                log::warn!("[{}] respond failed: {}", log_tag, error);
+            }
         }
     }
 }

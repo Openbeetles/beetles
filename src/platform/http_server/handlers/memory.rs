@@ -145,7 +145,10 @@ struct MemoryStatusRequest {
 }
 
 /// Generate a structured memory/operator JSON body.
-pub fn body(ctx: &HandlerContext, uri: &str) -> Result<String, std::io::Error> {
+pub fn body(
+    ctx: &HandlerContext,
+    uri: &str,
+) -> Result<crate::platform::ByteBuffer, std::io::Error> {
     let request = parse_request(ctx, uri);
     if crate::platform::operator_surface::operator_surface_budget(
         request.memory_system_kind,
@@ -334,7 +337,7 @@ pub fn body(ctx: &HandlerContext, uri: &str) -> Result<String, std::io::Error> {
         operator_surface,
         inspection,
     };
-    serde_json::to_string(&payload).map_err(std::io::Error::other)
+    common::serialize_json_response(&payload)
 }
 
 fn build_trace_input(inspection: &MemoryDeepInspection) -> MemoryOperatorTraceInput {
@@ -606,7 +609,7 @@ mod tests {
         let _guard = memory_status_test_guard();
         let ctx = build_test_context();
         let payload = body(&ctx, "/api/memory/status").unwrap();
-        let parsed: Value = serde_json::from_str(&payload).unwrap();
+        let parsed: Value = serde_json::from_slice(payload.as_ref()).unwrap();
         assert_eq!(parsed["memory_system_kind"], "linux_full");
         assert!(parsed.get("inbound_depth").is_none());
         assert!(parsed.get("outbound_depth").is_none());
@@ -938,7 +941,7 @@ mod tests {
             "/api/memory/status?chat_id={chat_id}&channel=telegram&query={topic}&run_id={run_id}&snapshot_mode=full_restore&deep=1"
         );
         let payload = body(&ctx, &uri).unwrap();
-        let parsed: Value = serde_json::from_str(&payload).unwrap();
+        let parsed: Value = serde_json::from_slice(payload.as_ref()).unwrap();
         let inspection = &parsed["inspection"];
         assert_eq!(inspection["target"]["chat_id"], chat_id);
         assert_eq!(inspection["target"]["channel"], "telegram");
@@ -1054,7 +1057,7 @@ mod tests {
             .unwrap();
 
         let payload = body(&ctx, "/api/memory/status").unwrap();
-        let parsed: Value = serde_json::from_str(&payload).unwrap();
+        let parsed: Value = serde_json::from_slice(payload.as_ref()).unwrap();
 
         assert!(
             parsed["learning"]["runtime_skills"]["validated"]
@@ -1168,7 +1171,7 @@ mod tests {
             .unwrap();
 
         let payload = body(&ctx, "/api/memory/status").unwrap();
-        let parsed: Value = serde_json::from_str(&payload).unwrap();
+        let parsed: Value = serde_json::from_slice(payload.as_ref()).unwrap();
 
         assert_eq!(parsed["continuity_capsules"]["total"], 3);
         assert_eq!(parsed["continuity_capsules"]["active"], 2);
@@ -1202,7 +1205,7 @@ mod tests {
             .unwrap();
 
         let default_payload = body(&ctx, "/api/memory/status").unwrap();
-        let default_parsed: Value = serde_json::from_str(&default_payload).unwrap();
+        let default_parsed: Value = serde_json::from_slice(default_payload.as_ref()).unwrap();
         assert!(default_parsed.get("inspection").is_none());
 
         let targeted_without_deep = body(
@@ -1211,7 +1214,7 @@ mod tests {
         )
         .unwrap();
         let targeted_without_deep_parsed: Value =
-            serde_json::from_str(&targeted_without_deep).unwrap();
+            serde_json::from_slice(targeted_without_deep.as_ref()).unwrap();
         assert!(targeted_without_deep_parsed.get("inspection").is_none());
 
         let targeted_payload = body(
@@ -1219,7 +1222,7 @@ mod tests {
             &format!("/api/memory/status?chat_id={chat_id}&channel=telegram&query=memory&deep=1"),
         )
         .unwrap();
-        let targeted_parsed: Value = serde_json::from_str(&targeted_payload).unwrap();
+        let targeted_parsed: Value = serde_json::from_slice(targeted_payload.as_ref()).unwrap();
         assert_eq!(targeted_parsed["inspection"]["target"]["chat_id"], chat_id);
         assert_eq!(
             targeted_parsed["inspection"]["target"]["summary_present"],
@@ -1331,7 +1334,7 @@ mod tests {
             ),
         )
         .expect("legacy profile should be ignored");
-        let parsed: Value = serde_json::from_str(&payload).unwrap();
+        let parsed: Value = serde_json::from_slice(payload.as_ref()).unwrap();
 
         assert_eq!(parsed["memory_system_kind"], "linux_full");
     }

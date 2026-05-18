@@ -3,6 +3,7 @@
 use super::HandlerContext;
 use crate::bus::{MessageTransport, PcMsg};
 use crate::memory::{SessionMessageRecord, MAX_SESSION_ENTRIES};
+use crate::platform::http_server::common::serialize_json_response;
 use crate::platform::http_server::common::CORS_AND_EVENT_STREAM;
 use crate::platform::http_server::common::CORS_HEADERS;
 use crate::platform::http_server::router::{IncomingRequest, OutgoingResponse, RouterEnv};
@@ -23,7 +24,11 @@ struct SessionPostBody {
 }
 
 /// 返回会话列表产品投影。
-pub fn body(ctx: &HandlerContext, cursor: Option<&str>, limit: usize) -> Result<String, String> {
+pub fn body(
+    ctx: &HandlerContext,
+    cursor: Option<&str>,
+    limit: usize,
+) -> Result<crate::platform::ByteBuffer, String> {
     let all_ids = ctx
         .session_store
         .list_chat_ids()
@@ -50,7 +55,7 @@ pub fn body(ctx: &HandlerContext, cursor: Option<&str>, limit: usize) -> Result<
         "limit": limit,
     });
 
-    serde_json::to_string(&response).map_err(|e| e.to_string())
+    serialize_json_response(&response).map_err(|e| e.to_string())
 }
 
 /// 返回指定 chat_id 的消息历史产品投影。
@@ -59,7 +64,7 @@ pub fn detail(
     chat_id: &str,
     before: Option<&str>,
     limit: usize,
-) -> Result<String, String> {
+) -> Result<crate::platform::ByteBuffer, String> {
     let limit = limit.clamp(1, SESSION_MESSAGE_LIMIT_MAX);
     let records_limit = if before.is_some() {
         MAX_SESSION_ENTRIES
@@ -94,7 +99,7 @@ pub fn detail(
         "next_before": next_before,
         "limit": limit,
     });
-    serde_json::to_string(&response).map_err(|e| e.to_string())
+    serialize_json_response(&response).map_err(|e| e.to_string())
 }
 
 /// 创建 Configure UI chat SSE 响应并入队到唯一 agent loop。
@@ -285,7 +290,7 @@ mod tests {
     use super::*;
     use crate::bus::new_inbound_channel;
     use crate::platform::http_server::handlers::build_default_test_handler_context;
-    use crate::platform::http_server::router::{IncomingRequest, RouterEnv};
+    use crate::platform::http_server::router::{IncomingRequest, OutgoingBody, RouterEnv};
     use std::sync::Mutex;
 
     static RESOURCE_TEST_MUTEX: Mutex<()> = Mutex::new(());
@@ -326,8 +331,26 @@ mod tests {
         let response = post_stream(&ctx, &env, &stream_post_request());
 
         assert_eq!(response.status, 503);
-        assert!(response.stream.is_none());
+        assert!(!matches!(response.body, OutgoingBody::Stream(_)));
         assert!(inbound_rx.try_recv().is_err());
         apply_resource_snapshot(128_000, 64_000);
+    }
+
+    #[test]
+    fn detail_serializes_large_history_into_external_preferred_buffer() {
+        let ctx = build_default_test_handler_context();
+        let content = "x".repeat(1024);
+        for _ in 0..12 {
+            ctx.session_store
+                .append("chat-large", "assistant", &content)
+                .expect("append session record");
+        }
+
+        let payload = detail(&ctx, "chat-large", None, 12).expect("session detail");
+
+        assert!(payload.is_external_preferred());
+        let parsed: serde_json::Value =
+            serde_json::from_slice(payload.as_ref()).expect("session detail json");
+        assert_eq!(parsed["items"].as_array().map(Vec::len), Some(12));
     }
 }

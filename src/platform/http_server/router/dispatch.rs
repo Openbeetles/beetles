@@ -154,14 +154,7 @@ fn parse_provider_config_route(path: &str) -> Option<ProviderConfigRoute> {
 
 #[inline(never)]
 fn api_to_out(r: ApiResponse) -> OutgoingResponse {
-    OutgoingResponse {
-        status: r.status,
-        status_text: r.status_text,
-        headers: CORS_HEADERS,
-        body: r.body,
-        stream: None,
-        restart: RestartAction::None,
-    }
+    OutgoingResponse::json(r.status, r.status_text, CORS_HEADERS, r.body)
 }
 
 #[inline(never)]
@@ -627,14 +620,12 @@ fn dispatch_impl(
 
     // OPTIONS 预检：与 `resp_options!` 一致
     if method.eq_ignore_ascii_case("OPTIONS") {
-        return Ok(OutgoingResponse {
-            status: 200,
-            status_text: "OK",
-            headers: CORS_OPTIONS_HEADERS,
-            body: OPTIONS_BODY.to_vec(),
-            stream: None,
-            restart: RestartAction::None,
-        });
+        return Ok(OutgoingResponse::json(
+            200,
+            "OK",
+            CORS_OPTIONS_HEADERS,
+            OPTIONS_BODY.to_vec(),
+        ));
     }
 
     let memory_system_kind = ctx.platform.memory_system_kind();
@@ -1040,12 +1031,7 @@ fn dispatch_impl(
                 }
             };
             match result {
-                Ok(body) => Ok(OutgoingResponse::json(
-                    200,
-                    "OK",
-                    CORS_HEADERS,
-                    body.into_bytes(),
-                )),
+                Ok(body) => Ok(OutgoingResponse::json(200, "OK", CORS_HEADERS, body)),
                 Err(_) => Ok(api_to_out(ApiResponse::err_key_with_meta(
                     500,
                     "Internal Server Error",
@@ -1120,12 +1106,7 @@ fn dispatch_impl(
             }
             let body = handlers::memory::body(ctx, uri)
                 .map_err(|error| err_other("http_router_dispatch", error))?;
-            Ok(OutgoingResponse::json(
-                200,
-                "OK",
-                CORS_HEADERS,
-                body.into_bytes(),
-            ))
+            Ok(OutgoingResponse::json(200, "OK", CORS_HEADERS, body))
         }
         Some(RouteHandler::MemoryMaintenancePost) => {
             if let Some(o) = guard_pairing_csrf(store, uri, &incoming.headers) {
@@ -1278,7 +1259,9 @@ mod tests {
     use crate::platform::http_server::handlers::{
         build_default_test_handler_context, default_test_handler_context_guard, HandlerContext,
     };
-    use crate::platform::http_server::router::{IncomingBody, IncomingRequest, RouterEnv};
+    use crate::platform::http_server::router::{
+        IncomingBody, IncomingRequest, OutgoingBody, OutgoingResponse, RouterEnv,
+    };
     use crate::runtime::{OperatorMaintenanceAction, OperatorMaintenanceRequest};
     use serde_json::Value;
     use std::collections::HashMap;
@@ -1302,6 +1285,10 @@ mod tests {
             .expect("set pairing code");
         CSRF_INIT.get_or_init(|| crate::platform::csrf::init().expect("init csrf"));
         ctx
+    }
+
+    fn response_body(response: &OutgoingResponse) -> &[u8] {
+        response.body.as_bytes().expect("bytes response")
     }
 
     #[derive(Default)]
@@ -1479,7 +1466,8 @@ mod tests {
             .expect("dispatch sessions list");
 
         assert_eq!(response.status, 200);
-        let parsed: Value = serde_json::from_slice(&response.body).expect("parse sessions list");
+        let parsed: Value =
+            serde_json::from_slice(response_body(&response)).expect("parse sessions list");
         assert_eq!(parsed["limit"], 1);
         assert_eq!(parsed["next_cursor"], "1");
         assert!(
@@ -1519,7 +1507,8 @@ mod tests {
         .expect("dispatch session history");
 
         assert_eq!(response.status, 200);
-        let parsed: Value = serde_json::from_slice(&response.body).expect("parse session history");
+        let parsed: Value =
+            serde_json::from_slice(response_body(&response)).expect("parse session history");
         assert_eq!(parsed["limit"], 2);
         assert_eq!(parsed["next_before"], "msg_a1");
         assert_eq!(parsed["items"][0]["message_id"], "msg_a1");
@@ -1544,7 +1533,7 @@ mod tests {
         .expect("dispatch sessions without pairing");
 
         assert_eq!(response.status, 401);
-        let parsed: Value = serde_json::from_slice(&response.body).expect("parse error");
+        let parsed: Value = serde_json::from_slice(response_body(&response)).expect("parse error");
         assert_eq!(parsed["error_key"], "auth.pairing_invalid");
     }
 
@@ -1584,7 +1573,10 @@ mod tests {
             "headers={:?}",
             response.headers
         );
-        assert!(response.stream.is_some(), "POST /api/sessions must stream");
+        assert!(
+            matches!(response.body, OutgoingBody::Stream(_)),
+            "POST /api/sessions must stream"
+        );
         let queued = inbound_rx.try_recv().expect("queued chat turn");
         assert_eq!(
             queued.channel.as_ref(),
@@ -1625,7 +1617,7 @@ mod tests {
         let response = dispatch(&ctx, &env, request).expect("dispatch busy session stream");
 
         assert_eq!(response.status, 409);
-        let parsed: Value = serde_json::from_slice(&response.body).expect("parse error");
+        let parsed: Value = serde_json::from_slice(response_body(&response)).expect("parse error");
         assert_eq!(parsed["error_key"], "chat.stream_busy");
         assert!(inbound_rx.try_recv().is_err());
     }
@@ -1852,7 +1844,8 @@ mod tests {
         let response = dispatch(&ctx, &env, request).expect("dispatch llm config route");
         assert_eq!(response.status, 200);
 
-        let parsed: Value = serde_json::from_slice(&response.body).expect("parse llm segment");
+        let parsed: Value =
+            serde_json::from_slice(response_body(&response)).expect("parse llm segment");
         assert_eq!(parsed["llm_sources"][0]["provider"], "openai");
         assert_eq!(parsed["llm_sources"][0]["api_key"], "segment-key");
         assert_eq!(parsed["llm_sources"][0]["model"], "gpt-4o-mini");
@@ -1879,7 +1872,8 @@ mod tests {
             response.headers
         );
 
-        let parsed: Value = serde_json::from_slice(&response.body).expect("parse root body");
+        let parsed: Value =
+            serde_json::from_slice(response_body(&response)).expect("parse root body");
         assert_eq!(parsed["name"], "beetle");
     }
 
@@ -1893,7 +1887,8 @@ mod tests {
             .expect("dispatch channel connectivity");
 
         assert_eq!(response.status, 400);
-        let parsed: Value = serde_json::from_slice(&response.body).expect("parse response");
+        let parsed: Value =
+            serde_json::from_slice(response_body(&response)).expect("parse response");
         assert_eq!(parsed["error_key"], "common.missing_query_param");
         assert_eq!(parsed["query_param"], "channel");
     }
@@ -1912,7 +1907,8 @@ mod tests {
         .expect("dispatch channel connectivity");
 
         assert_eq!(response.status, 400);
-        let parsed: Value = serde_json::from_slice(&response.body).expect("parse response");
+        let parsed: Value =
+            serde_json::from_slice(response_body(&response)).expect("parse response");
         assert_eq!(parsed["error_key"], "channel.connectivity_channel_invalid");
         assert_eq!(parsed["channel"], "unknown");
     }
@@ -1940,7 +1936,8 @@ mod tests {
         let response = dispatch(&ctx, &env, request).expect("dispatch maintenance route");
         assert_eq!(response.status, 202);
 
-        let parsed: Value = serde_json::from_slice(&response.body).expect("parse response");
+        let parsed: Value =
+            serde_json::from_slice(response_body(&response)).expect("parse response");
         assert_eq!(parsed["accepted"], true);
         assert_eq!(parsed["action"], "run_repair_plan");
         assert_eq!(parsed["delivery"], "in_memory");
@@ -1962,14 +1959,15 @@ mod tests {
         let response = super::operator_window_required_response("/api/tools");
         assert_eq!(response.status, 403);
 
-        let parsed: Value = serde_json::from_slice(&response.body).expect("parse response");
+        let parsed: Value =
+            serde_json::from_slice(response_body(&response)).expect("parse response");
         assert_eq!(parsed["error_key"], "system.operator_window_required");
         assert_eq!(parsed["open_endpoint"], "POST /api/operator/window");
         assert_eq!(parsed["path"], "/api/tools");
         assert!(
             parsed.get("error").is_none(),
             "body={}",
-            String::from_utf8_lossy(&response.body)
+            String::from_utf8_lossy(response_body(&response))
         );
     }
 
@@ -1989,7 +1987,8 @@ mod tests {
                 "sessions_delete",
             ),
         ] {
-            let parsed: Value = serde_json::from_slice(&response.body).expect("parse response");
+            let parsed: Value =
+                serde_json::from_slice(response_body(&response)).expect("parse response");
             assert!(parsed.get("error_key").is_some(), "body={parsed}");
             assert!(
                 parsed.get("error").is_none(),
@@ -2008,7 +2007,8 @@ mod tests {
         let response = super::rejected_route_response(super::ROUTE_CONFIG_ACCOUNTS);
         assert_eq!(response.status, 501);
 
-        let parsed: Value = serde_json::from_slice(&response.body).expect("parse response");
+        let parsed: Value =
+            serde_json::from_slice(response_body(&response)).expect("parse response");
         assert_eq!(parsed["error_key"], "capability.unsupported");
         assert_eq!(parsed["path"], super::ROUTE_CONFIG_ACCOUNTS);
         assert!(
@@ -2036,7 +2036,8 @@ mod tests {
             .expect("dispatch accounts summary");
         assert_eq!(response.status, 200);
 
-        let parsed: Value = serde_json::from_slice(&response.body).expect("parse response");
+        let parsed: Value =
+            serde_json::from_slice(response_body(&response)).expect("parse response");
         assert!(
             parsed["items"].is_array(),
             "summary should expose items array"
@@ -2052,7 +2053,7 @@ mod tests {
                 .iter()
                 .any(|item| item["account_key"] == "test-http-mail-summary"),
             "body={}",
-            String::from_utf8_lossy(&response.body)
+            String::from_utf8_lossy(response_body(&response))
         );
         assert!(parsed["items"].as_array().expect("items array")[0]
             .get("provider_display_name")
@@ -2075,7 +2076,7 @@ mod tests {
             get_response.status,
             404,
             "body={}",
-            String::from_utf8_lossy(&get_response.body)
+            String::from_utf8_lossy(response_body(&get_response))
         );
 
         let post_response = dispatch(
@@ -2093,7 +2094,7 @@ mod tests {
             post_response.status,
             404,
             "body={}",
-            String::from_utf8_lossy(&post_response.body)
+            String::from_utf8_lossy(response_body(&post_response))
         );
     }
 
@@ -2136,13 +2137,14 @@ mod tests {
         .expect("dispatch filtered accounts");
         assert_eq!(response.status, 200);
 
-        let parsed: Value = serde_json::from_slice(&response.body).expect("parse response");
+        let parsed: Value =
+            serde_json::from_slice(response_body(&response)).expect("parse response");
         let items = parsed["items"].as_array().expect("items array");
         assert_eq!(
             items.len(),
             1,
             "body={}",
-            String::from_utf8_lossy(&response.body)
+            String::from_utf8_lossy(response_body(&response))
         );
         assert_eq!(items[0]["account_key"], "mail-feishu");
         assert!(items[0].get("provider_display_name").is_none());
@@ -2162,7 +2164,8 @@ mod tests {
             .expect("dispatch provider catalog");
         assert_eq!(response.status, 200);
 
-        let parsed: Value = serde_json::from_slice(&response.body).expect("parse response");
+        let parsed: Value =
+            serde_json::from_slice(response_body(&response)).expect("parse response");
         let items = parsed["items"].as_array().expect("items array");
         let imap = items
             .iter()
@@ -2177,7 +2180,7 @@ mod tests {
                 .iter()
                 .any(|field| field["key"] == "account_key"),
             "body={}",
-            String::from_utf8_lossy(&response.body)
+            String::from_utf8_lossy(response_body(&response))
         );
         let access_token = imap["config_fields"]
             .as_array()
@@ -2202,7 +2205,7 @@ mod tests {
                 .iter()
                 .any(|field| field["key"] == "mail_imap_host"),
             "body={}",
-            String::from_utf8_lossy(&response.body)
+            String::from_utf8_lossy(response_body(&response))
         );
     }
 
@@ -2227,10 +2230,11 @@ mod tests {
             response.status,
             200,
             "body={}",
-            String::from_utf8_lossy(&response.body)
+            String::from_utf8_lossy(response_body(&response))
         );
 
-        let parsed: Value = serde_json::from_slice(&response.body).expect("parse response");
+        let parsed: Value =
+            serde_json::from_slice(response_body(&response)).expect("parse response");
         assert_eq!(parsed["account"]["account_key"], "test-http-mail-detail");
         assert_eq!(
             parsed["account"]["display_name_key"],
@@ -2306,7 +2310,7 @@ mod tests {
             authed_get(&format!("/api/config/accounts/{account_key}")),
         )
         .expect("dispatch saved account detail");
-        let parsed: Value = serde_json::from_slice(&detail.body).expect("parse detail");
+        let parsed: Value = serde_json::from_slice(response_body(&detail)).expect("parse detail");
         assert_eq!(parsed["account"]["external_account_id"], "mailbox-123");
     }
 
@@ -2342,7 +2346,8 @@ mod tests {
         .expect("dispatch account upsert");
         assert_eq!(response.status, 200);
 
-        let parsed: Value = serde_json::from_slice(&response.body).expect("parse response");
+        let parsed: Value =
+            serde_json::from_slice(response_body(&response)).expect("parse response");
         assert_eq!(parsed["account"]["account_label"], "Upserted mail");
         assert_eq!(parsed["account"]["enabled_capabilities"][0], "mail");
     }
@@ -2381,10 +2386,11 @@ mod tests {
             response.status,
             200,
             "body={}",
-            String::from_utf8_lossy(&response.body)
+            String::from_utf8_lossy(response_body(&response))
         );
 
-        let parsed: Value = serde_json::from_slice(&response.body).expect("parse response");
+        let parsed: Value =
+            serde_json::from_slice(response_body(&response)).expect("parse response");
         let account_key = parsed["account"]["account_key"]
             .as_str()
             .expect("account_key string");
@@ -2440,9 +2446,10 @@ mod tests {
             response.status,
             400,
             "body={}",
-            String::from_utf8_lossy(&response.body)
+            String::from_utf8_lossy(response_body(&response))
         );
-        let parsed: Value = serde_json::from_slice(&response.body).expect("parse response");
+        let parsed: Value =
+            serde_json::from_slice(response_body(&response)).expect("parse response");
         assert_eq!(parsed["disposition"], "needs_user_facts");
         assert_eq!(parsed["reason"], "missing_user_facts");
         assert!(parsed["missing_fields"]
@@ -2485,9 +2492,10 @@ mod tests {
             response.status,
             400,
             "body={}",
-            String::from_utf8_lossy(&response.body)
+            String::from_utf8_lossy(response_body(&response))
         );
-        let parsed: Value = serde_json::from_slice(&response.body).expect("parse response");
+        let parsed: Value =
+            serde_json::from_slice(response_body(&response)).expect("parse response");
         assert_eq!(parsed["error_key"], "config.rejected");
         assert!(parsed.get("error").is_none());
     }
@@ -2543,9 +2551,10 @@ mod tests {
             response.status,
             400,
             "body={}",
-            String::from_utf8_lossy(&response.body)
+            String::from_utf8_lossy(response_body(&response))
         );
-        let parsed: Value = serde_json::from_slice(&response.body).expect("parse response");
+        let parsed: Value =
+            serde_json::from_slice(response_body(&response)).expect("parse response");
         assert_eq!(parsed["disposition"], "probe_failed");
         assert_eq!(parsed["reason"], "probe_error");
         assert_eq!(parsed["error_stage"], "office_probe_test");
@@ -2617,7 +2626,7 @@ mod tests {
             response.status,
             200,
             "body={}",
-            String::from_utf8_lossy(&response.body)
+            String::from_utf8_lossy(response_body(&response))
         );
 
         assert!(ctx
@@ -2643,7 +2652,8 @@ mod tests {
 
         let capabilities = dispatch(&ctx, &env, authed_get("/api/config/capabilities/mail"))
             .expect("dispatch capability detail");
-        let parsed: Value = serde_json::from_slice(&capabilities.body).expect("parse capability");
+        let parsed: Value =
+            serde_json::from_slice(response_body(&capabilities)).expect("parse capability");
         assert_eq!(parsed["selection_status"], "missing");
         assert!(parsed["selected_account_key"].is_null());
     }
@@ -2665,10 +2675,11 @@ mod tests {
             response.status,
             200,
             "body={}",
-            String::from_utf8_lossy(&response.body)
+            String::from_utf8_lossy(response_body(&response))
         );
 
-        let parsed: Value = serde_json::from_slice(&response.body).expect("parse response");
+        let parsed: Value =
+            serde_json::from_slice(response_body(&response)).expect("parse response");
         let items = parsed["items"].as_array().expect("items array");
         let mail = items
             .iter()
@@ -2700,10 +2711,11 @@ mod tests {
             response.status,
             200,
             "body={}",
-            String::from_utf8_lossy(&response.body)
+            String::from_utf8_lossy(response_body(&response))
         );
 
-        let parsed: Value = serde_json::from_slice(&response.body).expect("parse response");
+        let parsed: Value =
+            serde_json::from_slice(response_body(&response)).expect("parse response");
         assert_eq!(parsed["capability"], "mail");
         assert_eq!(
             parsed["selected_account_key"],
@@ -2732,10 +2744,11 @@ mod tests {
             response.status,
             400,
             "body={}",
-            String::from_utf8_lossy(&response.body)
+            String::from_utf8_lossy(response_body(&response))
         );
 
-        let parsed: Value = serde_json::from_slice(&response.body).expect("parse response");
+        let parsed: Value =
+            serde_json::from_slice(response_body(&response)).expect("parse response");
         assert_eq!(parsed["error_key"], "office.capability_invalid");
         assert!(parsed.get("error").is_none());
     }
@@ -2760,10 +2773,11 @@ mod tests {
             response.status,
             400,
             "body={}",
-            String::from_utf8_lossy(&response.body)
+            String::from_utf8_lossy(response_body(&response))
         );
 
-        let parsed: Value = serde_json::from_slice(&response.body).expect("parse response");
+        let parsed: Value =
+            serde_json::from_slice(response_body(&response)).expect("parse response");
         assert_eq!(parsed["error_key"], "office.capability_invalid");
         assert!(parsed.get("error").is_none());
     }

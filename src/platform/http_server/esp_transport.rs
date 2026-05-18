@@ -20,7 +20,7 @@ use crate::platform::http_server::router::{
         MEMORY_AND_SKILL_ROUTE_SPECS, OBSERVABILITY_ROUTE_SPECS, PAIRING_AND_CONFIG_ROUTE_SPECS,
         ROOT_ROUTE_SPECS,
     },
-    IncomingBody, IncomingRequest, OutgoingResponse, RestartAction, RouterEnv,
+    IncomingBody, IncomingRequest, OutgoingBody, OutgoingResponse, RestartAction, RouterEnv,
 };
 use crate::platform::ConfigStore;
 use embedded_io::Write as _;
@@ -596,11 +596,11 @@ fn route_worker_reject_response(
         "socket_reserve".to_string(),
         serde_json::Value::from(contract.socket_reserve as u64),
     );
-    OutgoingResponse {
-        status: contract.reject_status,
-        status_text: status_text(contract.reject_status),
-        headers: CORS_HEADERS,
-        body: ApiResponse::err_key_with_meta(
+    OutgoingResponse::json(
+        contract.reject_status,
+        status_text(contract.reject_status),
+        CORS_HEADERS,
+        ApiResponse::err_key_with_meta(
             contract.reject_status,
             status_text(contract.reject_status),
             route_worker_reject_error_key(stage),
@@ -611,9 +611,7 @@ fn route_worker_reject_response(
             extra,
         )
         .body,
-        stream: None,
-        restart: RestartAction::None,
-    }
+    )
 }
 
 fn api_response_to_outgoing(r: ApiResponse) -> OutgoingResponse {
@@ -630,14 +628,12 @@ fn routed_error_response(_store: &dyn ConfigStore, error: crate::error::Error) -
         (500, "Internal Server Error")
     };
     log::warn!("{}: {}", stage, detail);
-    OutgoingResponse {
+    OutgoingResponse::json(
         status,
         status_text,
-        headers: CORS_HEADERS,
-        body: ApiResponse::err_key(status, status_text, error_key).body,
-        stream: None,
-        restart: RestartAction::None,
-    }
+        CORS_HEADERS,
+        ApiResponse::err_key(status, status_text, error_key).body,
+    )
 }
 
 fn dispatch_incoming(
@@ -884,11 +880,15 @@ fn route_runtime_admission_response(
     ))
 }
 
-fn response_pressure_reject(out: &OutgoingResponse) -> Option<ApiResponse> {
-    let is_stream = out.stream.is_some();
-    if is_stream || out.status >= 400 || out.body.len() < ESP_LARGE_RESPONSE_GUARD_BYTES {
-        return None;
-    }
+fn response_build_guarded_route(spec: HttpRouteSpec) -> bool {
+    spec.uses_response_build_admission()
+}
+
+fn response_pressure_reject_api(
+    stage: &'static str,
+    body_len: Option<usize>,
+    path: Option<&str>,
+) -> Option<ApiResponse> {
     let resource = crate::orchestrator::resource_light_snapshot();
     let largest = resource.heap_largest_block_internal as usize;
     if resource.pressure != crate::orchestrator::pressure::PressureLevel::Critical
@@ -898,18 +898,34 @@ fn response_pressure_reject(out: &OutgoingResponse) -> Option<ApiResponse> {
     }
 
     crate::metrics::record_http_route_reject();
-    log::warn!(
-        "[http_server] response write refused under pressure: status={} body_len={} pressure={:?} largest_block={}",
-        out.status,
-        out.body.len(),
-        resource.pressure,
-        largest
-    );
+    if let Some(body_len) = body_len {
+        log::warn!(
+            "[http_server] response write refused under pressure: body_len={} pressure={:?} largest_block={}",
+            body_len,
+            resource.pressure,
+            largest
+        );
+    } else {
+        log::warn!(
+            "[http_server] response build refused under pressure: path={} pressure={:?} largest_block={}",
+            path.unwrap_or("<unknown>"),
+            resource.pressure,
+            largest
+        );
+    }
     let mut extra = serde_json::Map::new();
-    extra.insert(
-        "body_len".to_string(),
-        serde_json::Value::from(out.body.len() as u64),
-    );
+    if let Some(path) = path {
+        extra.insert(
+            "path".to_string(),
+            serde_json::Value::String(path.to_string()),
+        );
+    }
+    if let Some(body_len) = body_len {
+        extra.insert(
+            "body_len".to_string(),
+            serde_json::Value::from(body_len as u64),
+        );
+    }
     extra.insert(
         "pressure".to_string(),
         serde_json::Value::String(format!("{:?}", resource.pressure)),
@@ -922,12 +938,29 @@ fn response_pressure_reject(out: &OutgoingResponse) -> Option<ApiResponse> {
         503,
         "Service Unavailable",
         "http.response_pressure",
-        Some("http_response_pressure"),
+        Some(stage),
         None,
         None,
         None,
         extra,
     ))
+}
+
+fn response_build_admission_reject(spec: HttpRouteSpec) -> Option<ApiResponse> {
+    if !response_build_guarded_route(spec) {
+        return None;
+    }
+    response_pressure_reject_api("http_response_build_admission", None, Some(spec.path))
+}
+
+fn response_pressure_reject(out: &OutgoingResponse) -> Option<ApiResponse> {
+    let Some(body_len) = out.body.bytes_len() else {
+        return None;
+    };
+    if out.status >= 400 || body_len < ESP_LARGE_RESPONSE_GUARD_BYTES {
+        return None;
+    }
+    response_pressure_reject_api("http_response_pressure", Some(body_len), None)
 }
 
 #[inline(never)]
@@ -944,13 +977,17 @@ fn write_outgoing<C: Connection>(
     let mut resp = req
         .into_response(out.status, Some(out.status_text), out.headers)
         .map_err(common::to_io)?;
-    if let Some(stream) = out.stream {
-        for chunk in stream {
-            crate::platform::task_wdt::feed_current_task();
-            resp.write_all(&chunk).map_err(common::to_io)?;
+    match out.body {
+        OutgoingBody::Stream(stream) => {
+            for chunk in stream {
+                crate::platform::task_wdt::feed_current_task();
+                resp.write_all(&chunk).map_err(common::to_io)?;
+            }
         }
-    } else {
-        resp.write_all(&out.body).map_err(common::to_io)?;
+        OutgoingBody::Bytes(bytes) => {
+            crate::platform::task_wdt::feed_current_task();
+            resp.write_all(bytes.as_ref()).map_err(common::to_io)?;
+        }
     }
     if out.restart == RestartAction::After300Ms {
         let scheduled = crate::runtime::schedule_restart_with_continuity_flush(
@@ -998,10 +1035,12 @@ fn esp_dispatch_route<C: Connection>(
     let mut config_read_burst_guard = spec
         .tracks_config_read_burst()
         .then(|| crate::runtime::ConfigReadBurstGuard::enter(spec.path));
-    if !matches!(
-        spec.execution_class,
-        RouteExecutionClass::ImmediateRoute | RouteExecutionClass::RejectedRoute
-    ) {
+    if spec.uses_response_build_admission()
+        || !matches!(
+            spec.execution_class,
+            RouteExecutionClass::ImmediateRoute | RouteExecutionClass::RejectedRoute
+        )
+    {
         if let Some(response) = router::auth::worker_route_pre_admission_response(
             store.as_ref(),
             ctx.platform.memory_system_kind(),
@@ -1011,6 +1050,9 @@ fn esp_dispatch_route<C: Connection>(
         ) {
             return write_api_resp(req, response);
         }
+    }
+    if let Some(response) = response_build_admission_reject(spec) {
+        return write_api_resp(req, response);
     }
     let mut config_activity_guard = match spec.config_activity_phase() {
         Some(phase) => match crate::runtime::ConfigActivityGuard::try_enter(phase, spec.path) {
@@ -1192,6 +1234,24 @@ mod tests {
     use serde_json::Value;
     use std::sync::Arc;
 
+    fn apply_response_build_pressure(internal: u32, largest: u32) {
+        crate::orchestrator::apply_memory_snapshot(crate::platform::MemorySnapshot {
+            heap_free_internal: internal,
+            heap_min_free_internal: internal,
+            heap_free_spiram: 8 * 1024 * 1024,
+            heap_total_spiram: 8 * 1024 * 1024,
+            heap_min_free_spiram: 8 * 1024 * 1024,
+            heap_largest_block_spiram: 8 * 1024 * 1024,
+            heap_largest_block: largest,
+        });
+    }
+
+    fn outgoing_response_body(
+        response: &crate::platform::http_server::router::OutgoingResponse,
+    ) -> &[u8] {
+        response.body.as_bytes().expect("bytes response")
+    }
+
     fn execution_class_for(path: &str, method: Method) -> Option<RouteExecutionClass> {
         for routes in [
             ROOT_ROUTES,
@@ -1224,6 +1284,36 @@ mod tests {
             super::route_worker_reject_error_key("http_route_worker_submit"),
             "http.route_worker_busy"
         );
+    }
+
+    #[test]
+    fn response_build_admission_rejects_large_history_route_before_dispatch_under_pressure() {
+        let _guard = crate::orchestrator::metrics_test_guard();
+        apply_response_build_pressure(4 * 1024, 2 * 1024);
+        let spec = crate::platform::http_server::router::catalog::route_spec_for(
+            "GET",
+            "/api/memory/status",
+        )
+        .expect("memory status route");
+
+        let reject = super::response_build_admission_reject(spec)
+            .expect("memory status should reject before body build");
+
+        assert_eq!(reject.status, 503);
+        let parsed: Value = serde_json::from_slice(&reject.body).expect("parse reject body");
+        assert_eq!(parsed["error_key"], "http.response_pressure");
+        assert_eq!(parsed["error_stage"], "http_response_build_admission");
+    }
+
+    #[test]
+    fn response_build_admission_does_not_reject_streaming_sessions_route() {
+        let _guard = crate::orchestrator::metrics_test_guard();
+        apply_response_build_pressure(4 * 1024, 2 * 1024);
+        let spec =
+            crate::platform::http_server::router::catalog::route_spec_for("POST", "/api/sessions")
+                .expect("session stream route");
+
+        assert!(super::response_build_admission_reject(spec).is_none());
     }
 
     #[test]
@@ -1269,13 +1359,14 @@ mod tests {
         );
 
         assert_eq!(out.status, 401);
-        let parsed: Value = serde_json::from_slice(&out.body).expect("parse auth response");
+        let parsed: Value =
+            serde_json::from_slice(outgoing_response_body(&out)).expect("parse auth response");
         assert_eq!(parsed["error_key"], "auth.pairing_required");
         assert_ne!(parsed["error_key"], "http.route_worker_busy");
         assert!(
-            !String::from_utf8_lossy(&out.body).contains("internal_free"),
+            !String::from_utf8_lossy(outgoing_response_body(&out)).contains("internal_free"),
             "auth failure must not leak heap details: {}",
-            String::from_utf8_lossy(&out.body)
+            String::from_utf8_lossy(outgoing_response_body(&out))
         );
     }
 

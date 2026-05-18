@@ -2,6 +2,7 @@
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
 use embedded_io::Read;
+use serde::Serialize;
 use std::fmt::Debug;
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
 use std::io::Write;
@@ -233,6 +234,17 @@ pub fn name_from_uri(uri: &str) -> Option<String> {
 /// 将任意错误转为 std::io::Error，供 handler 闭包统一返回 HandlerResult。
 pub fn to_io<E: Debug>(e: E) -> std::io::Error {
     std::io::Error::other(format!("{:?}", e))
+}
+
+/// Serialize an HTTP JSON response into the shared output byte buffer.
+/// 大响应直接写入 `ByteBuffer`，超过阈值后由缓冲层迁移到外部优先分配。
+pub fn serialize_json_response<T>(value: &T) -> std::io::Result<crate::platform::ByteBuffer>
+where
+    T: Serialize + ?Sized,
+{
+    let mut data = crate::platform::ByteBuffer::with_capacity(1024);
+    serde_json::to_writer(&mut data, value).map_err(std::io::Error::other)?;
+    Ok(data)
 }
 
 /// Handler 闭包返回类型。
