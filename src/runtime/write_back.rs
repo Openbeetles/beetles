@@ -1342,12 +1342,101 @@ macro_rules! define_buffered_chat_store {
     };
 }
 
-define_buffered_chat_store!(
-    BufferedExecutionStateStore,
-    ExecutionStateStore,
-    ExecutionState,
-    "execution_state_write_back"
-);
+pub struct BufferedExecutionStateStore {
+    inner: Arc<dyn ExecutionStateStore + Send + Sync>,
+    pending: Arc<PendingMapBuffer<ExecutionState>>,
+}
+
+impl BufferedExecutionStateStore {
+    pub fn wrap(
+        inner: Arc<dyn ExecutionStateStore + Send + Sync>,
+    ) -> Arc<dyn ExecutionStateStore + Send + Sync> {
+        Arc::new(Self {
+            inner,
+            pending: Arc::new(PendingMapBuffer::new("execution_state_write_back")),
+        }) as Arc<dyn ExecutionStateStore + Send + Sync>
+    }
+
+    fn schedule_flush(&self) {
+        schedule_map_flush(
+            Arc::clone(&self.inner),
+            Arc::clone(&self.pending),
+            Self::apply_pending,
+        );
+    }
+
+    fn apply_pending(
+        inner: &(dyn ExecutionStateStore + Send + Sync),
+        chat_id: &str,
+        value: PendingValue<ExecutionState>,
+    ) -> Result<()> {
+        match value {
+            PendingValue::Set(value) => inner.set(chat_id, &value),
+            PendingValue::Clear => inner.clear(chat_id),
+        }
+    }
+}
+
+impl ExecutionStateStore for BufferedExecutionStateStore {
+    fn get(&self, chat_id: &str) -> Result<Option<ExecutionState>> {
+        if let Some(value) = self.pending.peek(chat_id) {
+            return Ok(value);
+        }
+        self.inner.get(chat_id)
+    }
+
+    fn set(&self, chat_id: &str, state: &ExecutionState) -> Result<()> {
+        match self.pending.peek(chat_id) {
+            Some(Some(pending)) if pending == *state => return Ok(()),
+            Some(_) => {}
+            None => {
+                if self
+                    .inner
+                    .get(chat_id)
+                    .map(|existing| existing.as_ref() == Some(state))
+                    .unwrap_or_else(|error| {
+                        log::warn!(
+                            "[write_back:execution_state_write_back] read-before-set failed chat_id={}: {}",
+                            chat_id,
+                            error
+                        );
+                        false
+                    })
+                {
+                    return Ok(());
+                }
+            }
+        }
+        self.pending.store_set(chat_id, state.clone());
+        self.schedule_flush();
+        Ok(())
+    }
+
+    fn clear(&self, chat_id: &str) -> Result<()> {
+        if let Some(value) = self.pending.peek(chat_id) {
+            if value.is_none() {
+                return Ok(());
+            }
+        } else if self
+            .inner
+            .get(chat_id)
+            .map(|existing| existing.is_none())
+            .unwrap_or_else(|error| {
+                log::warn!(
+                    "[write_back:execution_state_write_back] read-before-clear failed chat_id={}: {}",
+                    chat_id,
+                    error
+                );
+                false
+            })
+        {
+            return Ok(());
+        }
+        self.pending.store_clear(chat_id);
+        self.schedule_flush();
+        Ok(())
+    }
+}
 define_buffered_chat_store!(
     BufferedSelfModelStore,
     SelfModelStore,
@@ -2566,6 +2655,76 @@ mod tests {
         store.set("chat", &state).unwrap();
         let got = store.get("chat").unwrap().unwrap();
         assert_eq!(got.goal, "goal");
+    }
+
+    #[test]
+    fn buffered_execution_state_skips_empty_clear_before_flush() {
+        let _write_back_guard = write_back_test_guard();
+        reset_write_back_queue_for_tests();
+        let (_state_guard, _delayed_guard) =
+            crate::runtime::delayed_task::delayed_task_test_scope();
+        let inner: Arc<dyn ExecutionStateStore + Send + Sync> =
+            Arc::new(StubExecutionStateStore::default());
+        let store = BufferedExecutionStateStore::wrap(inner);
+
+        store.clear("chat").unwrap();
+
+        assert!(!queued_write_back_labels_for_tests().contains(&"execution_state_write_back"));
+    }
+
+    #[test]
+    fn buffered_execution_state_skips_unchanged_set_before_flush() {
+        let _write_back_guard = write_back_test_guard();
+        reset_write_back_queue_for_tests();
+        let (_state_guard, _delayed_guard) =
+            crate::runtime::delayed_task::delayed_task_test_scope();
+        let inner = Arc::new(StubExecutionStateStore::default());
+        let state = ExecutionState {
+            status: ExecutionStatus::Active,
+            goal: "goal".to_string(),
+            progress: String::new(),
+            blocker: String::new(),
+            next_action: "next".to_string(),
+            last_output: String::new(),
+            updated_at: 0,
+            ..ExecutionState::default()
+        };
+        inner.set("chat", &state).unwrap();
+        let trait_inner: Arc<dyn ExecutionStateStore + Send + Sync> = inner;
+        let store = BufferedExecutionStateStore::wrap(trait_inner);
+
+        store.set("chat", &state).unwrap();
+
+        assert!(!queued_write_back_labels_for_tests().contains(&"execution_state_write_back"));
+    }
+
+    #[test]
+    fn buffered_execution_state_set_overrides_pending_clear() {
+        let _write_back_guard = write_back_test_guard();
+        reset_write_back_queue_for_tests();
+        let (_state_guard, _delayed_guard) =
+            crate::runtime::delayed_task::delayed_task_test_scope();
+        let inner = Arc::new(StubExecutionStateStore::default());
+        let state = ExecutionState {
+            status: ExecutionStatus::Active,
+            goal: "goal".to_string(),
+            progress: String::new(),
+            blocker: String::new(),
+            next_action: "next".to_string(),
+            last_output: String::new(),
+            updated_at: 0,
+            ..ExecutionState::default()
+        };
+        inner.set("chat", &state).unwrap();
+        let trait_inner: Arc<dyn ExecutionStateStore + Send + Sync> = inner;
+        let store = BufferedExecutionStateStore::wrap(trait_inner);
+
+        store.clear("chat").unwrap();
+        store.set("chat", &state).unwrap();
+
+        let got = store.get("chat").unwrap().unwrap();
+        assert_eq!(got.goal, "goal");
+        assert!(queued_write_back_labels_for_tests().contains(&"execution_state_write_back"));
     }
 
     #[test]
