@@ -92,8 +92,8 @@ use super::{
     InnerConflict, InnerConflictRefreshCandidate, InnerConflictRefreshOutcome, InnerConflictStore,
     InnerLifeRefreshContext, InnerLifeRefreshInput, InnerLifeRefreshOutcome, InnerLifeStore,
     InternalMemoryLayerFocus, LongTermMemoryStore, MemoryGovernanceContext, MemoryGovernanceInput,
-    MemoryHygieneContext, MemoryProfile, MemoryStore, MentalPrivacyStore, OuterVoiceRefreshContext,
-    OuterVoiceRefreshInput, OuterVoiceRefreshOutcome, OuterVoiceStore,
+    MemoryHygieneContext, MemoryProfile, MemoryStore, MemorySystemKind, MentalPrivacyStore,
+    OuterVoiceRefreshContext, OuterVoiceRefreshInput, OuterVoiceRefreshOutcome, OuterVoiceStore,
     PersonalityGovernanceInspectionInput, PrivateDocStore, PrivateDocWorkspaceRefreshContext,
     PrivateDocWorkspaceRefreshInput, PrivateDocWorkspaceRefreshOutcome,
     PrivateGardenGovernanceContext, PrivateGardenGovernanceInput, PrivateGardenGovernanceOutcome,
@@ -468,6 +468,33 @@ fn apply_self_runtime_authority_plan(
     retain_runtime_sources_for_authority(&mut decision.outer_voice_sources, authority_plan);
 }
 
+fn clear_self_model_refresh(decision: &mut SelfRuntimeDecision) {
+    decision.refresh_self_model = false;
+    decision.self_model_intent.clear();
+    decision.self_model_sources.clear();
+}
+
+fn apply_embedded_self_model_refresh_gate(
+    decision: &mut SelfRuntimeDecision,
+    memory_system_kind: MemorySystemKind,
+    payload: &SelfRuntimeJobPayload,
+    recent_persona: Option<&crate::memory::RecentPersonaEvidence>,
+) {
+    if memory_system_kind != MemorySystemKind::EspCompact || !decision.refresh_self_model {
+        return;
+    }
+    if payload.trigger == SelfRuntimeTrigger::OperatorRequested {
+        return;
+    }
+    let allowed_post_reply = payload.trigger == SelfRuntimeTrigger::PostReply
+        && self_runtime_has_turn_material(payload)
+        && (decision.boundary_flush
+            || recent_persona.is_some_and(|evidence| evidence.has_promotable_growth_signals()));
+    if !allowed_post_reply {
+        clear_self_model_refresh(decision);
+    }
+}
+
 fn run_self_runtime_method_distillation(
     task_run_store: &dyn TaskRunStore,
     task_artifact_store: &dyn TaskArtifactStore,
@@ -797,6 +824,12 @@ fn execute_self_runtime_actions(
                 state.recent_persona_evidence.is_some(),
             );
             apply_self_runtime_authority_plan(&mut decision, authority_plan);
+            apply_embedded_self_model_refresh_gate(
+                &mut decision,
+                ctx.memory_system_kind,
+                payload,
+                state.recent_persona_evidence.as_ref(),
+            );
             apply_inner_conflict_upward_distillation_gate(
                 &mut decision,
                 state.inner_conflict.as_ref(),
@@ -1039,6 +1072,9 @@ fn execute_self_runtime_actions(
     apply_self_runtime_post_finalize_gates(
         &mut decision,
         authority_plan,
+        ctx.memory_system_kind,
+        payload,
+        state.recent_persona_evidence.as_ref(),
         refreshed_inner_conflict.as_ref(),
         payload.now_secs,
     );
@@ -1110,6 +1146,9 @@ fn execute_self_runtime_actions(
     apply_self_runtime_post_finalize_gates(
         &mut decision,
         authority_plan,
+        ctx.memory_system_kind,
+        payload,
+        state.recent_persona_evidence.as_ref(),
         refreshed_inner_conflict.as_ref(),
         payload.now_secs,
     );
@@ -1185,6 +1224,9 @@ fn execute_self_runtime_actions(
     apply_self_runtime_post_finalize_gates(
         &mut decision,
         authority_plan,
+        ctx.memory_system_kind,
+        payload,
+        state.recent_persona_evidence.as_ref(),
         refreshed_inner_conflict.as_ref(),
         payload.now_secs,
     );
@@ -1267,6 +1309,9 @@ fn execute_self_runtime_actions(
     apply_self_runtime_post_finalize_gates(
         &mut decision,
         authority_plan,
+        ctx.memory_system_kind,
+        payload,
+        state.recent_persona_evidence.as_ref(),
         refreshed_inner_conflict.as_ref(),
         payload.now_secs,
     );
@@ -2065,6 +2110,9 @@ fn apply_inner_conflict_upward_distillation_gate(
 fn apply_self_runtime_post_finalize_gates(
     decision: &mut Option<SelfRuntimeDecision>,
     authority_plan: SelfRuntimeAuthorityPlan,
+    memory_system_kind: MemorySystemKind,
+    payload: &SelfRuntimeJobPayload,
+    recent_persona: Option<&crate::memory::RecentPersonaEvidence>,
     conflict: Option<&InnerConflict>,
     now_secs: u64,
 ) {
@@ -2072,6 +2120,7 @@ fn apply_self_runtime_post_finalize_gates(
         return;
     };
     apply_self_runtime_authority_plan(decision, authority_plan);
+    apply_embedded_self_model_refresh_gate(decision, memory_system_kind, payload, recent_persona);
     apply_inner_conflict_upward_distillation_gate(decision, conflict, now_secs);
 }
 
@@ -3992,6 +4041,134 @@ mod tests {
                 ..crate::memory::RecentPersonaEvidence::default()
             }),
         ));
+    }
+
+    #[test]
+    fn embedded_self_model_gate_rejects_idle_and_operational_only_post_reply() {
+        let idle_payload = SelfRuntimeJobPayload {
+            trigger: SelfRuntimeTrigger::IdleTick,
+            source_channel: "self_runtime_idle".to_string(),
+            user_content: String::new(),
+            reply_content: String::new(),
+            tool_calls: 0,
+            external_content_used: false,
+            now_secs: 1_000,
+        };
+        let mut idle_decision = SelfRuntimeDecision {
+            refresh_self_model: true,
+            self_model_intent: "distill idle private material".to_string(),
+            self_model_sources: vec!["inner_life".to_string()],
+            ..SelfRuntimeDecision::default()
+        };
+        apply_embedded_self_model_refresh_gate(
+            &mut idle_decision,
+            MemorySystemKind::EspCompact,
+            &idle_payload,
+            Some(&crate::memory::RecentPersonaEvidence {
+                repeated_relationship_posture: "stable warm boundary".to_string(),
+                updated_at: 100,
+                ..crate::memory::RecentPersonaEvidence::default()
+            }),
+        );
+        assert!(!idle_decision.refresh_self_model);
+        assert!(idle_decision.self_model_intent.is_empty());
+        assert!(idle_decision.self_model_sources.is_empty());
+
+        let post_reply_payload = SelfRuntimeJobPayload {
+            trigger: SelfRuntimeTrigger::PostReply,
+            source_channel: "qq_channel".to_string(),
+            user_content: "user turn".to_string(),
+            reply_content: "reply turn".to_string(),
+            tool_calls: 2,
+            external_content_used: false,
+            now_secs: 1_000,
+        };
+        let operational_only = crate::memory::RecentPersonaEvidence {
+            sampled_turns: 6,
+            meaningful_turns: 6,
+            repeated_response_mode: "compact".to_string(),
+            repeated_task_scope: "implementation".to_string(),
+            pressure_pattern: "normal=6".to_string(),
+            tool_usage_pattern: "tool_calls=6".to_string(),
+            updated_at: 120,
+            ..crate::memory::RecentPersonaEvidence::default()
+        };
+        let mut operational_decision = SelfRuntimeDecision {
+            refresh_self_model: true,
+            self_model_intent: "promote tool-heavy turn".to_string(),
+            self_model_sources: vec!["recent_persona_evidence".to_string()],
+            ..SelfRuntimeDecision::default()
+        };
+        apply_embedded_self_model_refresh_gate(
+            &mut operational_decision,
+            MemorySystemKind::EspCompact,
+            &post_reply_payload,
+            Some(&operational_only),
+        );
+        assert!(!operational_decision.refresh_self_model);
+        assert!(operational_decision.self_model_intent.is_empty());
+        assert!(operational_decision.self_model_sources.is_empty());
+    }
+
+    #[test]
+    fn embedded_self_model_gate_allows_promotable_post_reply_and_operator_request() {
+        let post_reply_payload = SelfRuntimeJobPayload {
+            trigger: SelfRuntimeTrigger::PostReply,
+            source_channel: "qq_channel".to_string(),
+            user_content: "user turn".to_string(),
+            reply_content: "reply turn".to_string(),
+            tool_calls: 0,
+            external_content_used: false,
+            now_secs: 1_000,
+        };
+        let promotable = crate::memory::RecentPersonaEvidence {
+            repeated_relationship_posture: "stable warm boundary".to_string(),
+            updated_at: 200,
+            ..crate::memory::RecentPersonaEvidence::default()
+        };
+        let mut post_reply_decision = SelfRuntimeDecision {
+            refresh_self_model: true,
+            self_model_intent: "distill repeated relationship posture".to_string(),
+            self_model_sources: vec!["recent_persona_evidence".to_string()],
+            ..SelfRuntimeDecision::default()
+        };
+        apply_embedded_self_model_refresh_gate(
+            &mut post_reply_decision,
+            MemorySystemKind::EspCompact,
+            &post_reply_payload,
+            Some(&promotable),
+        );
+        assert!(post_reply_decision.refresh_self_model);
+        assert!(post_reply_decision
+            .self_model_intent
+            .contains("relationship posture"));
+        assert_eq!(
+            post_reply_decision.self_model_sources,
+            vec!["recent_persona_evidence".to_string()]
+        );
+
+        let operator_payload = SelfRuntimeJobPayload {
+            trigger: SelfRuntimeTrigger::OperatorRequested,
+            source_channel: "operator".to_string(),
+            user_content: String::new(),
+            reply_content: String::new(),
+            tool_calls: 0,
+            external_content_used: false,
+            now_secs: 1_000,
+        };
+        let mut operator_decision = SelfRuntimeDecision {
+            refresh_self_model: true,
+            self_model_intent: "operator requested self-model repair".to_string(),
+            self_model_sources: vec!["inner_life".to_string()],
+            ..SelfRuntimeDecision::default()
+        };
+        apply_embedded_self_model_refresh_gate(
+            &mut operator_decision,
+            MemorySystemKind::EspCompact,
+            &operator_payload,
+            None,
+        );
+        assert!(operator_decision.refresh_self_model);
     }
 
     #[test]

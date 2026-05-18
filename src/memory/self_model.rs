@@ -183,6 +183,10 @@ pub(crate) fn should_refresh_self_model(
         .should_refresh(input, has_existing_model)
 }
 
+fn self_model_refresh_uses_thick_grounding(profile: MemoryProfile) -> bool {
+    matches!(profile, MemoryProfile::Standard)
+}
+
 pub fn render_self_model_block(model: &SelfModel, max_len: usize) -> Option<String> {
     let normalized = normalize_self_model(model.clone(), model.updated_at)?;
     if !normalized.is_meaningful() {
@@ -454,18 +458,20 @@ fn build_self_model_refresh_input(
         input.push_str(shared_factual_block.trim());
         input.push('\n');
     }
-    if let Some(block) = render_internal_memory_topology_block(
-        existing_model,
-        private_workspace,
-        private_garden_docs,
-        now_secs,
-        profile,
-        InternalMemoryLayerFocus::SelfModel,
-        policy.factual_grounding_max_len.saturating_mul(2),
-    ) {
-        input.push('\n');
-        input.push_str(block.trim());
-        input.push('\n');
+    if self_model_refresh_uses_thick_grounding(profile) {
+        if let Some(block) = render_internal_memory_topology_block(
+            existing_model,
+            private_workspace,
+            private_garden_docs,
+            now_secs,
+            profile,
+            InternalMemoryLayerFocus::SelfModel,
+            policy.factual_grounding_max_len.saturating_mul(2),
+        ) {
+            input.push('\n');
+            input.push_str(block.trim());
+            input.push('\n');
+        }
     }
     if let Some(block) = render_private_memory_boundary_block(
         "self_model",
@@ -491,7 +497,7 @@ fn build_self_model_refresh_input(
         input.push_str(intent);
         input.push('\n');
     }
-    if !migration_sources.is_empty() {
+    if self_model_refresh_uses_thick_grounding(profile) && !migration_sources.is_empty() {
         input.push_str("\n## Migration Hints\n");
         for source in migration_sources {
             let source = source.trim();
@@ -1034,14 +1040,30 @@ mod tests {
     }
 
     #[test]
-    fn self_model_refresh_input_includes_migration_hints() {
+    fn embedded_self_model_refresh_input_omits_thick_private_grounding_and_migration_hints() {
+        let private_workspace = PrivateDocWorkspace {
+            inner_journal: Some(crate::memory::PrivateDocEntry {
+                content: "private workspace raw note that belongs to LinuxFull".to_string(),
+                updated_at: 10,
+                revision: 1,
+            }),
+            updated_at: 10,
+            ..PrivateDocWorkspace::default()
+        };
+        let private_garden_docs = vec![PrivateGardenDocRecord {
+            path: "journal/current.md".to_string(),
+            updated_at: 11,
+            revision: 1,
+            bytes: 48,
+            preview: "private garden raw draft".to_string(),
+        }];
         let input = build_self_model_refresh_input(
             None,
             Some("summary"),
             None,
             None,
-            None,
-            &[],
+            Some(&private_workspace),
+            &private_garden_docs,
             None,
             Some("沉淀稳定连续性"),
             &[
@@ -1054,6 +1076,54 @@ mod tests {
             memory_policy(MemoryProfile::Embedded).self_model,
         );
 
+        assert!(!input.contains("## Internal Memory Topology"));
+        assert!(!input.contains("private workspace raw note"));
+        assert!(!input.contains("private garden raw draft"));
+        assert!(!input.contains("## Migration Hints"));
+        assert!(!input.contains("private_docs.inner_journal"));
+        assert!(!input.contains("private_garden:journal/current.md"));
+    }
+
+    #[test]
+    fn standard_self_model_refresh_input_keeps_thick_private_grounding_and_migration_hints() {
+        let private_workspace = PrivateDocWorkspace {
+            inner_journal: Some(crate::memory::PrivateDocEntry {
+                content: "private workspace raw note for full runtime".to_string(),
+                updated_at: 10,
+                revision: 1,
+            }),
+            updated_at: 10,
+            ..PrivateDocWorkspace::default()
+        };
+        let private_garden_docs = vec![PrivateGardenDocRecord {
+            path: "journal/current.md".to_string(),
+            updated_at: 11,
+            revision: 1,
+            bytes: 48,
+            preview: "private garden raw draft".to_string(),
+        }];
+        let input = build_self_model_refresh_input(
+            None,
+            Some("summary"),
+            None,
+            None,
+            Some(&private_workspace),
+            &private_garden_docs,
+            None,
+            Some("沉淀稳定连续性"),
+            &[
+                "private_docs.inner_journal".to_string(),
+                "private_garden:journal/current.md".to_string(),
+            ],
+            10,
+            MemoryProfile::Standard,
+            &[],
+            memory_policy(MemoryProfile::Standard).self_model,
+        );
+
+        assert!(input.contains("## Internal Memory Topology"));
+        assert!(input.contains("private_docs:"));
+        assert!(input.contains("private_garden:"));
         assert!(input.contains("## Migration Hints"));
         assert!(input.contains("private_docs.inner_journal"));
         assert!(input.contains("private_garden:journal/current.md"));
