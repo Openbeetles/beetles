@@ -490,7 +490,10 @@ pub(crate) fn load_constitutional_stage(
     let recent_persona_evidence = should_load_recent_persona_evidence_for_prompt(params, seed)
         .then(|| {
             load_optional_with_health(health, "recent_persona_evidence", || {
-                load_recent_persona_evidence(params.turn_ledger_store, &seed.relationship_id)
+                load_recent_persona_evidence(
+                    params.turn_continuity_evidence_store,
+                    &seed.relationship_id,
+                )
             })
         })
         .flatten();

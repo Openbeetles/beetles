@@ -247,8 +247,7 @@ check_no_prod_pattern_before_tests \
   "reply_finalize" \
   "reply finalization must not perform direct storage repair, compaction, or file rewrite"
 
-if ! rg -n 'schedule_session_gc_runs_on_write_back_worker' src/runtime/write_back.rs >/dev/null ||
-   ! rg -n 'service_write_back_tasks_runs_due_work_off_caller_thread' src/runtime/write_back.rs >/dev/null ||
+if ! rg -n 'service_write_back_tasks_runs_due_work_off_caller_thread' src/runtime/write_back.rs >/dev/null ||
    ! rg -n 'scheduler_storage_ticks_run_on_write_back_worker' src/runtime/write_back.rs >/dev/null ||
    ! rg -n 'periodic_storage_maintenance_defers_when_worker_stack_would_break_tls_floor' src/runtime/write_back.rs >/dev/null ||
    ! rg -n 'read_paths_do_not_touch_or_rewrite_long_term_memory_file' src/platform/storage/long_term_memory.rs >/dev/null ||

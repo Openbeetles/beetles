@@ -5,7 +5,9 @@ use crate::bus::{IngressKind, MessageBodyKind, MessageTransport, PcMsg};
 use crate::error::Result;
 use crate::util::truncate_content_to_max;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fmt::Write as _;
+use std::sync::Mutex;
 
 use super::{
     derive_recent_persona_evidence, MentalPrivacyDisclosureAdjudication, MentalPrivacyShareAction,
@@ -710,6 +712,50 @@ pub trait TurnLedgerStore: Send + Sync {
             &ledgers,
             RECENT_PERSONA_EVIDENCE_MEANINGFUL_TURNS,
         ))
+    }
+}
+
+/// In-memory turn ledger store for profiles that should not persist full ledger history.
+pub struct VolatileTurnLedgerStore {
+    max_chats: usize,
+    values: Mutex<HashMap<String, TurnLedger>>,
+}
+
+impl VolatileTurnLedgerStore {
+    /// Create a bounded volatile ledger store, clearing older chat entries when the cap is reached.
+    pub fn new(max_chats: usize) -> Self {
+        Self {
+            max_chats: max_chats.max(1),
+            values: Mutex::new(HashMap::new()),
+        }
+    }
+}
+
+impl TurnLedgerStore for VolatileTurnLedgerStore {
+    fn get(&self, chat_id: &str) -> Result<Option<TurnLedger>> {
+        Ok(self
+            .values
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(chat_id)
+            .cloned())
+    }
+
+    fn set(&self, chat_id: &str, ledger: &TurnLedger) -> Result<()> {
+        let mut values = self.values.lock().unwrap_or_else(|e| e.into_inner());
+        if !values.contains_key(chat_id) && values.len() >= self.max_chats {
+            values.clear();
+        }
+        values.insert(chat_id.to_string(), ledger.clone());
+        Ok(())
+    }
+
+    fn clear(&self, chat_id: &str) -> Result<()> {
+        self.values
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(chat_id);
+        Ok(())
     }
 }
 

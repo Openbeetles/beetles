@@ -15,6 +15,25 @@ pub(super) fn persist_turn_ledger(
     }
 }
 
+pub(super) fn persist_turn_continuity_evidence(
+    store: &dyn crate::memory::TurnContinuityEvidenceStore,
+    chat_id: &str,
+    ledger: &TurnLedger,
+    stage: &str,
+) {
+    let Some(evidence) = crate::memory::TurnContinuityEvidence::from_turn_ledger(ledger) else {
+        return;
+    };
+    if let Err(error) = store.append(chat_id, &evidence) {
+        log::warn!(
+            "[agent_turn] failed to persist continuity evidence stage={} chat_id={}: {}",
+            stage,
+            chat_id,
+            error
+        );
+    }
+}
+
 pub(super) fn build_turn_delivery_ledger(report: DeliveryReport) -> TurnDeliveryLedger {
     TurnDeliveryLedger {
         append_only_ack_sent: report.append_only_ack_sent,

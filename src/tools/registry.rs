@@ -1373,6 +1373,7 @@ fn register_core_tools(
         Arc::clone(&services.self_authored_core_store),
         Arc::clone(&services.core_revision_ledger_store),
         Arc::clone(&services.self_continuity_store),
+        Arc::clone(&services.turn_continuity_evidence_store),
         Arc::clone(&services.turn_ledger_store),
         Arc::clone(&services.relationship_constitution_store),
         Arc::clone(&services.relationship_portfolio_store),

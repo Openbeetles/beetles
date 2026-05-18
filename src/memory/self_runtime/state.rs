@@ -185,7 +185,10 @@ pub(super) fn load_self_runtime_state(
         .flatten();
     let recent_persona_evidence =
         load_optional_store("recent_persona_evidence", &mut load_health, || {
-            load_recent_persona_evidence(ctx.turn_ledger_store, &active_relationship_scope_id)
+            load_recent_persona_evidence(
+                ctx.turn_continuity_evidence_store,
+                &active_relationship_scope_id,
+            )
         });
     let sandbox_probe_text =
         load_self_runtime_sandbox_probe_text(ctx, &active_relationship_scope_id, profile);
@@ -490,7 +493,7 @@ pub(super) fn sync_self_runtime_relationship_topology(
         }
     };
     let recent_persona_evidence = match load_recent_persona_evidence(
-        ctx.turn_ledger_store,
+        ctx.turn_continuity_evidence_store,
         &relationship_id,
     ) {
         Ok(value) => value,

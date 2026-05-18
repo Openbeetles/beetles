@@ -54,6 +54,8 @@ pub struct RuntimeServices {
     pub important_message_store: Arc<dyn crate::memory::ImportantMessageStore + Send + Sync>,
     pub remind_at_store: Arc<dyn crate::memory::RemindAtStore + Send + Sync>,
     pub session_summary_store: Arc<dyn crate::memory::SessionSummaryStore + Send + Sync>,
+    pub turn_continuity_evidence_store:
+        Arc<dyn crate::memory::TurnContinuityEvidenceStore + Send + Sync>,
     pub turn_ledger_store: Arc<dyn crate::memory::TurnLedgerStore + Send + Sync>,
     pub emotion_signal_store: Arc<crate::memory::MemoryEmotionSignalStore>,
 }
@@ -105,6 +107,7 @@ impl RuntimeServices {
             important_message_store: platform.important_message_store(),
             remind_at_store: platform.remind_at_store(),
             session_summary_store: platform.session_summary_store(),
+            turn_continuity_evidence_store: platform.turn_continuity_evidence_store(),
             turn_ledger_store: platform.turn_ledger_store(),
             emotion_signal_store: Arc::new(crate::memory::MemoryEmotionSignalStore::new()),
             platform,
@@ -126,6 +129,7 @@ mod tests {
         let platform_felt_significance_store = platform.felt_significance_store();
         let platform_temperament_continuity_store = platform.temperament_continuity_store();
         let platform_inner_conflict_store = platform.inner_conflict_store();
+        let platform_turn_continuity_evidence_store = platform.turn_continuity_evidence_store();
 
         assert!(Arc::ptr_eq(&services.platform, &clone.platform));
         assert!(Arc::ptr_eq(&services.memory_store, &clone.memory_store));
@@ -144,6 +148,10 @@ mod tests {
             &clone.inner_conflict_store
         ));
         assert!(Arc::ptr_eq(
+            &services.turn_continuity_evidence_store,
+            &clone.turn_continuity_evidence_store
+        ));
+        assert!(Arc::ptr_eq(
             &services.felt_significance_store,
             &platform_felt_significance_store
         ));
@@ -154,6 +162,10 @@ mod tests {
         assert!(Arc::ptr_eq(
             &services.inner_conflict_store,
             &platform_inner_conflict_store
+        ));
+        assert!(Arc::ptr_eq(
+            &services.turn_continuity_evidence_store,
+            &platform_turn_continuity_evidence_store
         ));
     }
 }

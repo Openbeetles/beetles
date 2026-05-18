@@ -1237,60 +1237,6 @@ impl SessionStore for StorageSessionStore {
         self.ensure_chat_ids_loaded()
     }
 
-    fn gc_stale(&self, max_age_secs: u64) -> Result<usize> {
-        let mut p = state_mount_path();
-        p.push(REL_PATH_SESSIONS_DIR);
-        ensure_sessions_dir_exists("session_gc")?;
-        let names = match list_dir(&p) {
-            Ok(n) => n,
-            Err(_) => return Ok(0),
-        };
-        let now = std::time::SystemTime::now();
-        let mut removed = 0usize;
-        for name in &names {
-            if !name.ends_with(SESSION_FILE_EXT) {
-                continue;
-            }
-            p.push(name);
-            let stale = match std::fs::metadata(p.as_path()) {
-                Ok(meta) => match meta.modified() {
-                    Ok(mtime) => now
-                        .duration_since(mtime)
-                        .map(|d| d.as_secs() > max_age_secs)
-                        .unwrap_or(false),
-                    Err(_) => false,
-                },
-                Err(_) => false,
-            };
-            if stale {
-                let chat_id = resolve_chat_id_from_session_filename(&mut p, name);
-                if super::remove_file(&p).is_err() {
-                    p.pop();
-                    continue;
-                }
-                if let Some(chat_id) = chat_id {
-                    self.counts
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .remove(chat_id.as_str());
-                    self.recent
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .remove(chat_id.as_str());
-                    self.note_chat_id_removed(&chat_id);
-                }
-                cleanup_legacy_count_sidecar(&p);
-                removed += 1;
-                log::info!("[{}] gc: removed stale session file {:?}", TAG, name);
-            }
-            p.pop();
-        }
-        if removed > 0 {
-            log::info!("[{}] gc: cleaned {} stale session files", TAG, removed);
-        }
-        Ok(removed)
-    }
-
     fn delete(&self, chat_id: &str) -> Result<()> {
         let (path, _) = session_path(chat_id)?;
         self.counts

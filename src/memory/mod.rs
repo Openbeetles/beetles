@@ -65,6 +65,7 @@ mod shared_memory_governance;
 mod skill_routing;
 mod subject_shell;
 mod temperament_continuity;
+mod turn_continuity_evidence;
 mod turn_ledger;
 mod work_continuity;
 mod world_sense;
@@ -328,8 +329,8 @@ pub(crate) use recall_router::{
     PromptRecallRouterDecision,
 };
 pub use recent_persona_evidence::{
-    derive_recent_persona_evidence, load_recent_persona_evidence,
-    render_recent_persona_evidence_block, RecentPersonaEvidence,
+    derive_recent_persona_evidence, derive_recent_persona_evidence_from_continuity_evidence,
+    load_recent_persona_evidence, render_recent_persona_evidence_block, RecentPersonaEvidence,
     RECENT_PERSONA_EVIDENCE_HISTORY_LOOKBACK, RECENT_PERSONA_EVIDENCE_MEANINGFUL_TURNS,
 };
 pub use relationship_constitution::{
@@ -417,6 +418,10 @@ pub use temperament_continuity::{
     TemperamentContinuityRefreshOutcome, TEMPERAMENT_CONTINUITY_SYSTEM_CONTRACT,
     TEMPERAMENT_CONTINUITY_TOTAL_CHAR_LIMIT,
 };
+pub use turn_continuity_evidence::{
+    TurnContinuityEvidence, TurnContinuityEvidenceStore, REL_PATH_TURN_CONTINUITY_EVIDENCE,
+    TURN_CONTINUITY_EVIDENCE_HISTORY_MAX_ITEMS,
+};
 pub use turn_ledger::{
     build_turn_ledger_start, build_turn_persona_disclosure_ledger,
     build_turn_persona_priority_ledger, normalize_turn_observation_text,
@@ -432,8 +437,8 @@ pub use turn_ledger::{
     TurnPersonaLedger, TurnPersonaPressureLevel, TurnPersonaPriorityLedger,
     TurnPersonaReviewLedger, TurnReasoningIntentLedger, TurnSoulFeedbackLedger,
     TurnSoulInitiativeLedger, TurnSoulReplyLedger, TurnSoulStrategyLedger, TurnSubjectStateLedger,
-    TurnToolPathLedger, REL_PATH_TURN_LEDGERS, REL_PATH_TURN_LEDGER_HISTORY,
-    TURN_LEDGER_HISTORY_MAX_ITEMS,
+    TurnToolPathLedger, VolatileTurnLedgerStore, REL_PATH_TURN_LEDGERS,
+    REL_PATH_TURN_LEDGER_HISTORY, TURN_LEDGER_HISTORY_MAX_ITEMS,
 };
 pub use work_continuity::{
     build_work_continuity_record, render_work_continuity_block, WorkContinuityRecord,
@@ -828,10 +833,6 @@ pub trait SessionStore: Send + Sync {
     fn clear(&self, chat_id: &str) -> Result<()>;
     /// 列举所有会话的 chat_id（如 sessions 目录下 *.jsonl 文件名去掉后缀）。用于 GET /api/sessions。
     fn list_chat_ids(&self) -> Result<Vec<String>>;
-    /// 清理超过 max_age_secs 未修改的会话文件，返回清理数量。默认 no-op。
-    fn gc_stale(&self, _max_age_secs: u64) -> Result<usize> {
-        Ok(0)
-    }
     /// 删除指定 chat_id 的会话文件。默认调用 clear。
     fn delete(&self, chat_id: &str) -> Result<()> {
         self.clear(chat_id)

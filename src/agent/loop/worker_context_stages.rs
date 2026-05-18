@@ -396,6 +396,7 @@ pub(super) fn load_prepare_prompt_memory(
         mental_privacy_store: config.runtime.mental_privacy_store.as_ref(),
         remind_store: config.runtime.remind_at_store.as_ref(),
         task_store: config.runtime.task_store.as_ref(),
+        turn_continuity_evidence_store: config.runtime.turn_continuity_evidence_store.as_ref(),
         turn_ledger_store: config.runtime.turn_ledger_store.as_ref(),
         skill_storage: config.runtime.skill_storage.as_ref(),
         continuity_capsule_store: config.runtime.continuity_capsule_store.as_ref(),
@@ -419,7 +420,7 @@ pub(super) fn load_prepare_prompt_memory(
         runtime_stage.participation_plan,
     ) {
         match load_recent_persona_evidence(
-            config.runtime.turn_ledger_store.as_ref(),
+            config.runtime.turn_continuity_evidence_store.as_ref(),
             &runtime_stage.relationship_id,
         ) {
             Ok(value) => value,

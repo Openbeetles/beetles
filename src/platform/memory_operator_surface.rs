@@ -709,8 +709,8 @@ fn build_policy_view(
         .relationship_topology_store()
         .get(board_subject_scope_id())?;
     let recent_persona_evidence = platform
-        .turn_ledger_store()
-        .recent_persona_evidence(target.chat_id.as_str())?;
+        .turn_continuity_evidence_store()
+        .recent_persona_evidence(target.scope_id.as_str())?;
     let latest_turn_soul_feedback = platform
         .turn_ledger_store()
         .get(target.scope_id.as_str())?

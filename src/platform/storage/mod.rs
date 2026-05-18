@@ -794,6 +794,7 @@ pub mod skill_storage;
 pub mod task_execution;
 pub mod task_store;
 pub mod temperament_continuity;
+pub mod turn_continuity_evidence;
 pub mod turn_ledger;
 pub mod world_sense;
 pub use turn_ledger::StorageTurnLedgerStore;
@@ -838,6 +839,7 @@ pub use task_execution::{
 };
 pub use task_store::StorageTaskStore;
 pub use temperament_continuity::StorageTemperamentContinuityStore;
+pub use turn_continuity_evidence::StorageTurnContinuityEvidenceStore;
 pub use world_sense::StorageWorldSenseStore;
 
 #[cfg(test)]

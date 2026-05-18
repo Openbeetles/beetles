@@ -642,6 +642,7 @@ fn run_self_runtime_job(
             task_run_store: config.runtime.task_run_store.as_ref(),
             task_artifact_store: config.runtime.task_artifact_store.as_ref(),
             task_learning_store: config.runtime.task_learning_store.as_ref(),
+            turn_continuity_evidence_store: config.runtime.turn_continuity_evidence_store.as_ref(),
             turn_ledger_store: config.runtime.turn_ledger_store.as_ref(),
             skill_storage: config.runtime.skill_storage.as_ref(),
         },

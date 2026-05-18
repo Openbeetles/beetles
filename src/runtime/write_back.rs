@@ -18,8 +18,8 @@ use crate::memory::{
     RelationshipTopology, RelationshipTopologyStore, RemindAtStore, SelfAuthoredCore,
     SelfAuthoredCoreStore, SelfContinuity, SelfContinuityStore, SelfModel, SelfModelStore,
     SessionMessage, SessionMessageRecord, SessionStore, SessionSummaryStore, TemperamentContinuity,
-    TemperamentContinuityStore, TurnLedger, TurnLedgerStore, WorldSense, WorldSenseStore,
-    RECENT_PERSONA_EVIDENCE_MEANINGFUL_TURNS,
+    TemperamentContinuityStore, TurnContinuityEvidence, TurnContinuityEvidenceStore, TurnLedger,
+    TurnLedgerStore, WorldSense, WorldSenseStore, RECENT_PERSONA_EVIDENCE_MEANINGFUL_TURNS,
 };
 use crate::platform::Platform;
 use crate::task::TaskStore;
@@ -144,11 +144,11 @@ const BUFFERED_RUNTIME_WRITE_BACK_LABELS: &[&str] = &[
     "relationship_topology_write_back",
     "long_term_extraction_state_write_back",
     "active_work_write_back",
+    "turn_continuity_evidence_write_back",
     "turn_ledger_write_back",
     "session_summary_write_back",
     "important_message_write_back",
     "session_store",
-    "session_gc_write_back",
     "due_reminder_sweep_write_back",
     "due_task_sweep_write_back",
     "self_runtime_idle_tick_write_back",
@@ -180,7 +180,6 @@ pub struct WriteBackSnapshot {
 /// Storage maintenance jobs that must run on the governed write-back plane.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum StorageMaintenanceTaskKind {
-    SessionGc,
     DueReminderSweep,
     DueTaskSweep,
     SelfRuntimeIdleTick,
@@ -190,7 +189,6 @@ pub(crate) enum StorageMaintenanceTaskKind {
 impl StorageMaintenanceTaskKind {
     fn label(self) -> &'static str {
         match self {
-            Self::SessionGc => "session_gc_write_back",
             Self::DueReminderSweep => "due_reminder_sweep_write_back",
             Self::DueTaskSweep => "due_task_sweep_write_back",
             Self::SelfRuntimeIdleTick => "self_runtime_idle_tick_write_back",
@@ -199,10 +197,7 @@ impl StorageMaintenanceTaskKind {
     }
 
     fn requires_periodic_idle_headroom(self) -> bool {
-        matches!(
-            self,
-            Self::SessionGc | Self::SelfRuntimeIdleTick | Self::InitiativeTick
-        )
+        matches!(self, Self::SelfRuntimeIdleTick | Self::InitiativeTick)
     }
 }
 
@@ -283,7 +278,6 @@ fn is_coalescible_write_back_label(label: &str) -> bool {
             | "active_work_write_back"
             | "session_summary_write_back"
             | "session_store"
-            | "session_gc_write_back"
             | "due_reminder_sweep_write_back"
             | "due_task_sweep_write_back"
             | "self_runtime_idle_tick_write_back"
@@ -453,20 +447,6 @@ pub(crate) fn schedule_storage_maintenance_task(
     } else {
         StorageMaintenanceScheduleResult::QueueFull
     }
-}
-
-pub(crate) fn schedule_session_gc(
-    session_store: Arc<dyn SessionStore + Send + Sync>,
-    max_age_secs: u64,
-) -> bool {
-    schedule_storage_maintenance_task(StorageMaintenanceTaskKind::SessionGc, move || {
-        match session_store.gc_stale(max_age_secs) {
-            Ok(n) if n > 0 => log::info!("[write_back] session GC removed {} stale files", n),
-            Err(error) => log::warn!("[write_back] session GC error: {}", error),
-            _ => {}
-        }
-    })
-    .is_queued()
 }
 
 pub(crate) fn schedule_due_reminder_sweep<C>(
@@ -1471,6 +1451,239 @@ define_buffered_chat_store!(
     "active_work_write_back"
 );
 
+#[derive(Clone)]
+enum PendingEvidenceValue {
+    Append(Vec<TurnContinuityEvidence>),
+    Clear,
+    Replace(Vec<TurnContinuityEvidence>),
+}
+
+struct PendingEvidenceBuffer {
+    pending: Mutex<HashMap<String, PendingEvidenceValue>>,
+    flush_scheduled: AtomicBool,
+}
+
+impl PendingEvidenceBuffer {
+    fn new() -> Self {
+        Self {
+            pending: Mutex::new(HashMap::new()),
+            flush_scheduled: AtomicBool::new(false),
+        }
+    }
+
+    fn append(&self, chat_id: &str, evidence: TurnContinuityEvidence) {
+        let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+        match pending.get_mut(chat_id) {
+            Some(PendingEvidenceValue::Append(items))
+            | Some(PendingEvidenceValue::Replace(items)) => items.push(evidence),
+            Some(PendingEvidenceValue::Clear) => {
+                pending.insert(
+                    chat_id.to_string(),
+                    PendingEvidenceValue::Replace(vec![evidence]),
+                );
+            }
+            None => {
+                pending.insert(
+                    chat_id.to_string(),
+                    PendingEvidenceValue::Append(vec![evidence]),
+                );
+            }
+        }
+    }
+
+    fn clear(&self, chat_id: &str) {
+        self.pending
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(chat_id.to_string(), PendingEvidenceValue::Clear);
+    }
+
+    fn peek(&self, chat_id: &str) -> Option<PendingEvidenceValue> {
+        self.pending
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(chat_id)
+            .cloned()
+    }
+
+    fn take_all(&self) -> HashMap<String, PendingEvidenceValue> {
+        std::mem::take(&mut *self.pending.lock().unwrap_or_else(|e| e.into_inner()))
+    }
+
+    fn restore_missing(&self, drained: HashMap<String, PendingEvidenceValue>) {
+        let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+        for (chat_id, value) in drained {
+            match pending.entry(chat_id) {
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    entry.insert(value);
+                }
+                std::collections::hash_map::Entry::Occupied(mut entry) => {
+                    let current = entry.get_mut();
+                    match current {
+                        PendingEvidenceValue::Clear | PendingEvidenceValue::Replace(_) => {
+                            // A later clear/replace supersedes older failed evidence writes.
+                        }
+                        PendingEvidenceValue::Append(current_items) => match value {
+                            PendingEvidenceValue::Append(mut older_items) => {
+                                older_items.append(current_items);
+                                *current_items = older_items;
+                            }
+                            PendingEvidenceValue::Clear => {
+                                let newer_items = std::mem::take(current_items);
+                                *current = PendingEvidenceValue::Replace(newer_items);
+                            }
+                            PendingEvidenceValue::Replace(mut older_items) => {
+                                older_items.append(current_items);
+                                *current = PendingEvidenceValue::Replace(older_items);
+                            }
+                        },
+                    }
+                }
+            }
+        }
+    }
+
+    fn has_pending(&self) -> bool {
+        !self
+            .pending
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_empty()
+    }
+
+    fn try_mark_scheduled(&self) -> bool {
+        !self.flush_scheduled.swap(true, Ordering::AcqRel)
+    }
+
+    fn clear_scheduled(&self) {
+        self.flush_scheduled.store(false, Ordering::Release);
+    }
+}
+
+pub struct BufferedTurnContinuityEvidenceStore {
+    inner: Arc<dyn TurnContinuityEvidenceStore + Send + Sync>,
+    pending: Arc<PendingEvidenceBuffer>,
+}
+
+impl BufferedTurnContinuityEvidenceStore {
+    pub fn wrap(
+        inner: Arc<dyn TurnContinuityEvidenceStore + Send + Sync>,
+    ) -> Arc<dyn TurnContinuityEvidenceStore + Send + Sync> {
+        Arc::new(Self {
+            inner,
+            pending: Arc::new(PendingEvidenceBuffer::new()),
+        }) as Arc<dyn TurnContinuityEvidenceStore + Send + Sync>
+    }
+
+    fn schedule_flush(&self) {
+        schedule_turn_continuity_evidence_flush(Arc::clone(&self.inner), Arc::clone(&self.pending));
+    }
+}
+
+impl TurnContinuityEvidenceStore for BufferedTurnContinuityEvidenceStore {
+    fn append(&self, chat_id: &str, evidence: &TurnContinuityEvidence) -> Result<()> {
+        self.pending.append(chat_id, evidence.clone());
+        self.schedule_flush();
+        Ok(())
+    }
+
+    fn clear(&self, chat_id: &str) -> Result<()> {
+        self.pending.clear(chat_id);
+        self.schedule_flush();
+        Ok(())
+    }
+
+    fn list_recent(&self, chat_id: &str, limit: usize) -> Result<Vec<TurnContinuityEvidence>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let pending = self.pending.peek(chat_id);
+        let mut recent = match pending.as_ref() {
+            Some(PendingEvidenceValue::Clear) | Some(PendingEvidenceValue::Replace(_)) => {
+                Vec::new()
+            }
+            _ => self.inner.list_recent(chat_id, limit)?,
+        };
+        if let Some(PendingEvidenceValue::Append(items) | PendingEvidenceValue::Replace(items)) =
+            pending
+        {
+            for evidence in items {
+                recent.insert(0, evidence);
+            }
+        }
+        recent.truncate(limit);
+        Ok(recent)
+    }
+}
+
+fn schedule_turn_continuity_evidence_flush(
+    inner: Arc<dyn TurnContinuityEvidenceStore + Send + Sync>,
+    pending: Arc<PendingEvidenceBuffer>,
+) {
+    if !pending.try_mark_scheduled() {
+        return;
+    }
+    let due_at = Instant::now() + Duration::from_millis(WRITE_BACK_DELAY_MS);
+    let task_inner = Arc::clone(&inner);
+    let task_pending = Arc::clone(&pending);
+    let task = Box::new(move || flush_turn_continuity_evidence(task_inner, task_pending));
+    if !schedule_write_back_task("turn_continuity_evidence_write_back", due_at, task) {
+        pending.clear_scheduled();
+    }
+}
+
+fn flush_turn_continuity_evidence(
+    inner: Arc<dyn TurnContinuityEvidenceStore + Send + Sync>,
+    pending: Arc<PendingEvidenceBuffer>,
+) {
+    let drained = pending.take_all();
+    if drained.is_empty() {
+        pending.clear_scheduled();
+        return;
+    }
+    let mut failed = HashMap::new();
+    for (chat_id, value) in drained {
+        let result = match value.clone() {
+            PendingEvidenceValue::Append(items) => (|| {
+                for evidence in items {
+                    inner.append(&chat_id, &evidence)?;
+                }
+                Ok(())
+            })(),
+            PendingEvidenceValue::Clear => inner.clear(&chat_id),
+            PendingEvidenceValue::Replace(items) => inner.clear(&chat_id).and_then(|()| {
+                for evidence in items {
+                    inner.append(&chat_id, &evidence)?;
+                }
+                Ok(())
+            }),
+        };
+        if let Err(error) = result {
+            log::warn!(
+                "[write_back:turn_continuity_evidence_write_back] flush failed chat_id={}: {}",
+                chat_id,
+                error
+            );
+            if should_retry_write_back_error(&error) {
+                failed.insert(chat_id, value);
+            } else {
+                log::warn!(
+                    "[write_back:turn_continuity_evidence_write_back] dropping non-retryable pending write chat_id={} stage={}",
+                    chat_id,
+                    error.stage()
+                );
+            }
+        }
+    }
+    if !failed.is_empty() {
+        pending.restore_missing(failed);
+    }
+    pending.clear_scheduled();
+    if pending.has_pending() {
+        schedule_turn_continuity_evidence_flush(inner, pending);
+    }
+}
+
 pub struct BufferedTurnLedgerStore {
     inner: Arc<dyn TurnLedgerStore + Send + Sync>,
     pending: Arc<PendingMapBuffer<TurnLedger>>,
@@ -2062,11 +2275,6 @@ impl SessionStore for BufferedSessionStore {
         Ok(out)
     }
 
-    fn gc_stale(&self, max_age_secs: u64) -> Result<usize> {
-        flush_session_store(Arc::clone(&self.inner), Arc::clone(&self.pending));
-        self.inner.gc_stale(max_age_secs)
-    }
-
     fn delete(&self, chat_id: &str) -> Result<()> {
         self.clear(chat_id)
     }
@@ -2155,14 +2363,52 @@ mod tests {
     #[derive(Default)]
     struct StubSessionStore {
         entries: Mutex<HashMap<String, Vec<SessionMessage>>>,
-        gc_calls: AtomicUsize,
-        gc_thread_tx: Mutex<Option<std::sync::mpsc::Sender<std::thread::ThreadId>>>,
     }
 
     #[derive(Default)]
     struct CountingTurnLedgerStore {
         list_recent_calls: AtomicUsize,
         set_calls: AtomicUsize,
+    }
+
+    #[derive(Default)]
+    struct StubTurnContinuityEvidenceStore {
+        list_recent_calls: AtomicUsize,
+        values: Mutex<HashMap<String, Vec<TurnContinuityEvidence>>>,
+    }
+
+    impl TurnContinuityEvidenceStore for StubTurnContinuityEvidenceStore {
+        fn append(&self, chat_id: &str, evidence: &TurnContinuityEvidence) -> Result<()> {
+            self.values
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .entry(chat_id.to_string())
+                .or_default()
+                .push(evidence.clone());
+            Ok(())
+        }
+
+        fn clear(&self, chat_id: &str) -> Result<()> {
+            self.values
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(chat_id);
+            Ok(())
+        }
+
+        fn list_recent(&self, chat_id: &str, limit: usize) -> Result<Vec<TurnContinuityEvidence>> {
+            self.list_recent_calls.fetch_add(1, Ordering::Relaxed);
+            let mut items = self
+                .values
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(chat_id)
+                .cloned()
+                .unwrap_or_default();
+            items.reverse();
+            items.truncate(limit);
+            Ok(items)
+        }
     }
 
     impl TurnLedgerStore for CountingTurnLedgerStore {
@@ -2200,6 +2446,16 @@ mod tests {
                 ..crate::memory::TurnPersonaLedger::default()
             }),
             ..TurnLedger::default()
+        }
+    }
+
+    fn continuity_evidence_at(observed_at_ms: u64) -> TurnContinuityEvidence {
+        TurnContinuityEvidence {
+            observed_at_ms,
+            status: TurnLedgerStatus::Answered,
+            final_reply_delivered: true,
+            canonical_reply_source: "final_answer".to_string(),
+            ..TurnContinuityEvidence::default()
         }
     }
 
@@ -2270,19 +2526,6 @@ mod tests {
                 .keys()
                 .cloned()
                 .collect())
-        }
-
-        fn gc_stale(&self, _max_age_secs: u64) -> Result<usize> {
-            self.gc_calls.fetch_add(1, Ordering::Relaxed);
-            if let Some(tx) = self
-                .gc_thread_tx
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .take()
-            {
-                let _ = tx.send(std::thread::current().id());
-            }
-            Ok(1)
         }
     }
 
@@ -2472,6 +2715,80 @@ mod tests {
             0,
             "pending terminal evidence must not scan persisted history"
         );
+    }
+
+    #[test]
+    fn buffered_turn_continuity_evidence_lists_pending_appends_newest_first() {
+        let _write_back_guard = write_back_test_guard();
+        reset_write_back_queue_for_tests();
+        let (_state_guard, _delayed_guard) =
+            crate::runtime::delayed_task::delayed_task_test_scope();
+        let inner = Arc::new(StubTurnContinuityEvidenceStore::default());
+        let store = BufferedTurnContinuityEvidenceStore::wrap(
+            inner as Arc<dyn TurnContinuityEvidenceStore + Send + Sync>,
+        );
+
+        store
+            .append("chat", &continuity_evidence_at(1_000))
+            .unwrap();
+        store
+            .append("chat", &continuity_evidence_at(2_000))
+            .unwrap();
+
+        let recent = store.list_recent("chat", 2).unwrap();
+        assert_eq!(
+            recent
+                .iter()
+                .map(|evidence| evidence.observed_at_ms)
+                .collect::<Vec<_>>(),
+            vec![2_000, 1_000]
+        );
+    }
+
+    #[test]
+    fn turn_continuity_evidence_restore_preserves_failed_append_before_new_append() {
+        let pending = PendingEvidenceBuffer::new();
+        pending.append("chat", continuity_evidence_at(3_000));
+        let mut drained = HashMap::new();
+        drained.insert(
+            "chat".to_string(),
+            PendingEvidenceValue::Append(vec![
+                continuity_evidence_at(1_000),
+                continuity_evidence_at(2_000),
+            ]),
+        );
+
+        pending.restore_missing(drained);
+
+        let PendingEvidenceValue::Append(items) = pending.peek("chat").expect("pending evidence")
+        else {
+            panic!("expected append evidence");
+        };
+        assert_eq!(
+            items
+                .iter()
+                .map(|evidence| evidence.observed_at_ms)
+                .collect::<Vec<_>>(),
+            vec![1_000, 2_000, 3_000]
+        );
+    }
+
+    #[test]
+    fn turn_continuity_evidence_restore_keeps_later_clear_over_failed_append() {
+        let pending = PendingEvidenceBuffer::new();
+        pending.clear("chat");
+        let mut drained = HashMap::new();
+        drained.insert(
+            "chat".to_string(),
+            PendingEvidenceValue::Append(vec![continuity_evidence_at(1_000)]),
+        );
+
+        pending.restore_missing(drained);
+
+        assert!(matches!(
+            pending.peek("chat").expect("pending evidence"),
+            PendingEvidenceValue::Clear
+        ));
     }
 
     #[test]
@@ -2760,34 +3077,6 @@ mod tests {
 
         WRITE_BACK_TEST_AUTO_SERVICE.store(false, Ordering::Release);
         reset_write_back_queue_for_tests();
-    }
-
-    #[test]
-    fn schedule_session_gc_runs_on_write_back_worker() {
-        let _write_back_guard = write_back_test_guard();
-        let _write_back_admission = write_back_admission_override_for_tests(true);
-        let _periodic_admission = periodic_storage_maintenance_admission_override_for_tests(true);
-        reset_write_back_queue_for_tests();
-        let caller_thread = std::thread::current().id();
-        let (tx, rx) = std::sync::mpsc::channel();
-        let store = Arc::new(StubSessionStore {
-            gc_thread_tx: Mutex::new(Some(tx)),
-            ..StubSessionStore::default()
-        });
-        let session_store: Arc<dyn SessionStore + Send + Sync> = store.clone();
-
-        assert!(schedule_session_gc(session_store, 60));
-        mark_write_back_quiet_window_stable_for_tests();
-        service_write_back_tasks();
-        let worker_thread = rx
-            .recv_timeout(Duration::from_secs(1))
-            .expect("session GC should be serviced by the write-back plane");
-
-        assert_ne!(
-            worker_thread, caller_thread,
-            "session GC must not perform storage remove on the scheduler caller stack"
-        );
-        assert_eq!(store.gc_calls.load(Ordering::Relaxed), 1);
     }
 
     #[test]

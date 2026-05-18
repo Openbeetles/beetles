@@ -14,7 +14,8 @@ use crate::memory::{
     MemoryHygieneContext, MemoryProfile, MemoryStore, PersonalityGovernanceInspectionInput,
     RelationshipConstitutionStore, RelationshipPortfolioStore, RelationshipSelectionTarget,
     RelationshipTopologyStore, SelfAuthoredCoreStore, SelfContinuityStore, SelfModelStore,
-    SessionStore, SessionSummaryStore, TurnLedgerStore, WorkingRecallInspectionInput,
+    SessionStore, SessionSummaryStore, TurnContinuityEvidenceStore, TurnLedgerStore,
+    WorkingRecallInspectionInput,
 };
 use crate::platform::{SkillStorage, StateFs};
 use crate::task_execution::{
@@ -45,6 +46,7 @@ pub struct ContinuitySnapshotTool {
     self_authored_core_store: Arc<dyn SelfAuthoredCoreStore + Send + Sync>,
     core_revision_ledger_store: Arc<dyn CoreRevisionLedgerStore + Send + Sync>,
     self_continuity_store: Arc<dyn SelfContinuityStore + Send + Sync>,
+    turn_continuity_evidence_store: Arc<dyn TurnContinuityEvidenceStore + Send + Sync>,
     turn_ledger_store: Arc<dyn TurnLedgerStore + Send + Sync>,
     relationship_constitution_store: Arc<dyn RelationshipConstitutionStore + Send + Sync>,
     relationship_portfolio_store: Arc<dyn RelationshipPortfolioStore + Send + Sync>,
@@ -71,6 +73,7 @@ impl ContinuitySnapshotTool {
         self_authored_core_store: Arc<dyn SelfAuthoredCoreStore + Send + Sync>,
         core_revision_ledger_store: Arc<dyn CoreRevisionLedgerStore + Send + Sync>,
         self_continuity_store: Arc<dyn SelfContinuityStore + Send + Sync>,
+        turn_continuity_evidence_store: Arc<dyn TurnContinuityEvidenceStore + Send + Sync>,
         turn_ledger_store: Arc<dyn TurnLedgerStore + Send + Sync>,
         relationship_constitution_store: Arc<dyn RelationshipConstitutionStore + Send + Sync>,
         relationship_portfolio_store: Arc<dyn RelationshipPortfolioStore + Send + Sync>,
@@ -95,6 +98,7 @@ impl ContinuitySnapshotTool {
             self_authored_core_store,
             core_revision_ledger_store,
             self_continuity_store,
+            turn_continuity_evidence_store,
             turn_ledger_store,
             relationship_constitution_store,
             relationship_portfolio_store,
@@ -208,7 +212,7 @@ impl Tool for ContinuitySnapshotTool {
                     .relationship_constitution_store
                     .get(&relationship_scope_id)?;
                 let recent_persona_evidence = load_recent_persona_evidence(
-                    self.turn_ledger_store.as_ref(),
+                    self.turn_continuity_evidence_store.as_ref(),
                     &relationship_scope_id,
                 )?;
                 let inspection =

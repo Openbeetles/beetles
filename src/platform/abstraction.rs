@@ -11,8 +11,8 @@ use crate::memory::{
     MemorySystemKind, MentalPrivacyStore, OuterVoiceStore, PendingRetryStore, PrivateDocStore,
     PrivateGardenStore, RelationshipConstitutionStore, RelationshipPortfolioStore,
     RelationshipTopologyStore, RemindAtStore, SelfAuthoredCoreStore, SelfContinuityStore,
-    SelfModelStore, SessionStore, SessionSummaryStore, TemperamentContinuityStore, TurnLedgerStore,
-    WorldSenseStore,
+    SelfModelStore, SessionStore, SessionSummaryStore, TemperamentContinuityStore,
+    TurnContinuityEvidenceStore, TurnLedgerStore, WorldSenseStore,
 };
 #[cfg(feature = "capability_office")]
 use crate::office::{OfficeCredentialStore, OfficeRuntimeStatusStore};
@@ -685,6 +685,7 @@ pub trait Platform: Send + Sync + PlatformCamera {
     fn important_message_store(&self) -> Arc<dyn ImportantMessageStore + Send + Sync>;
     fn remind_at_store(&self) -> Arc<dyn RemindAtStore + Send + Sync>;
     fn session_summary_store(&self) -> Arc<dyn SessionSummaryStore + Send + Sync>;
+    fn turn_continuity_evidence_store(&self) -> Arc<dyn TurnContinuityEvidenceStore + Send + Sync>;
     fn turn_ledger_store(&self) -> Arc<dyn TurnLedgerStore + Send + Sync>;
     fn skill_storage(&self) -> Arc<dyn SkillStorage + Send + Sync>;
     fn skill_meta_store(&self) -> Arc<dyn SkillMetaStore + Send + Sync>;

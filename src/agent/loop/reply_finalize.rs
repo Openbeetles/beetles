@@ -859,6 +859,12 @@ pub(super) fn complete_turn_boxed(
         &ctx.turn_ledger,
         "finish",
     );
+    super::turn_finalize::persist_turn_continuity_evidence(
+        ctx.config.runtime.turn_continuity_evidence_store.as_ref(),
+        &crate::memory::relationship_scope_id(&ctx.msg.channel, &ctx.msg.chat_id),
+        &ctx.turn_ledger,
+        "finish",
+    );
     if let Some(adjudication) = finalized.adversarial_arena_adjudication.as_ref() {
         crate::reasoning::append_adversarial_arena_event(
             crate::agent::adversarial_arena::build_turn_adversarial_arena_timeline_event(

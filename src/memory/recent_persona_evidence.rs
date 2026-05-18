@@ -7,7 +7,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
-use super::{turn_ledger_observed_at_ms, TurnLedger, TurnLedgerStore, TurnPersonaPressureLevel};
+use super::{
+    TurnContinuityEvidence, TurnContinuityEvidenceStore, TurnLedger, TurnPersonaPressureLevel,
+};
 
 pub const RECENT_PERSONA_EVIDENCE_MEANINGFUL_TURNS: usize = 12;
 pub const RECENT_PERSONA_EVIDENCE_HISTORY_LOOKBACK: usize = 32;
@@ -120,7 +122,7 @@ impl RecentPersonaEvidence {
 }
 
 pub fn load_recent_persona_evidence(
-    store: &dyn TurnLedgerStore,
+    store: &dyn TurnContinuityEvidenceStore,
     chat_id: &str,
 ) -> Result<Option<RecentPersonaEvidence>> {
     store.recent_persona_evidence(chat_id)
@@ -130,21 +132,32 @@ pub fn derive_recent_persona_evidence(
     ledgers: &[TurnLedger],
     max_meaningful_turns: usize,
 ) -> Option<RecentPersonaEvidence> {
+    let evidence = ledgers
+        .iter()
+        .filter_map(TurnContinuityEvidence::from_turn_ledger)
+        .collect::<Vec<_>>();
+    derive_recent_persona_evidence_from_continuity_evidence(&evidence, max_meaningful_turns)
+}
+
+pub fn derive_recent_persona_evidence_from_continuity_evidence(
+    evidence: &[TurnContinuityEvidence],
+    max_meaningful_turns: usize,
+) -> Option<RecentPersonaEvidence> {
     if max_meaningful_turns == 0 {
         return None;
     }
-    let mut relevant = ledgers
+    let mut relevant = evidence
         .iter()
-        .filter(|ledger| {
-            ledger.ingress == IngressKind::User
-                && ledger.status.is_terminal()
-                && ledger
+        .filter(|item| {
+            item.ingress == IngressKind::User
+                && item.status.is_terminal()
+                && item
                     .persona
                     .as_ref()
                     .is_some_and(|persona| persona.is_meaningful())
         })
         .collect::<Vec<_>>();
-    relevant.sort_by_key(|ledger| std::cmp::Reverse(turn_ledger_observed_at_ms(ledger)));
+    relevant.sort_by_key(|evidence| std::cmp::Reverse(evidence.observed_at_ms));
     if relevant.is_empty() {
         return None;
     }
@@ -158,7 +171,7 @@ pub fn derive_recent_persona_evidence(
     let meaningful_turns = sampled_turns;
     let updated_at = relevant
         .iter()
-        .map(|ledger| turn_ledger_observed_at_ms(ledger))
+        .map(|evidence| evidence.observed_at_ms)
         .max()
         .unwrap_or(0)
         / 1000;
@@ -230,12 +243,12 @@ pub fn derive_recent_persona_evidence(
     evidence.is_meaningful().then_some(evidence)
 }
 
-fn ledger_supports_promotable_persona_growth(ledger: &TurnLedger) -> bool {
-    ledger.ingress == IngressKind::User
-        && ledger.status == super::TurnLedgerStatus::Answered
-        && ledger.final_reply_delivered
-        && !ledger.canonical_reply_source.trim().is_empty()
-        && ledger
+fn ledger_supports_promotable_persona_growth(evidence: &TurnContinuityEvidence) -> bool {
+    evidence.ingress == IngressKind::User
+        && evidence.status == super::TurnLedgerStatus::Answered
+        && evidence.final_reply_delivered
+        && !evidence.canonical_reply_source.trim().is_empty()
+        && evidence
             .persona
             .as_ref()
             .is_some_and(|persona| persona.pressure != TurnPersonaPressureLevel::Critical)
@@ -357,7 +370,7 @@ impl ShareActionLabel for super::MentalPrivacyShareAction {
     }
 }
 
-fn summarize_pressure_pattern(ledgers: &[&TurnLedger]) -> String {
+fn summarize_pressure_pattern(ledgers: &[&TurnContinuityEvidence]) -> String {
     let mut counts = [0usize; 3];
     for ledger in ledgers {
         let Some(persona) = ledger.persona.as_ref() else {
@@ -382,7 +395,7 @@ fn summarize_pressure_pattern(ledgers: &[&TurnLedger]) -> String {
     parts.join(" ")
 }
 
-fn summarize_tool_usage_pattern(ledgers: &[&TurnLedger]) -> String {
+fn summarize_tool_usage_pattern(ledgers: &[&TurnContinuityEvidence]) -> String {
     let tool_turns = ledgers
         .iter()
         .filter(|ledger| {
@@ -403,7 +416,7 @@ fn summarize_tool_usage_pattern(ledgers: &[&TurnLedger]) -> String {
     }
 }
 
-fn collect_volatility_flags(ledgers: &[&TurnLedger]) -> Vec<String> {
+fn collect_volatility_flags(ledgers: &[&TurnContinuityEvidence]) -> Vec<String> {
     let mut flags = Vec::new();
     if distinct_count(
         ledgers
@@ -655,17 +668,42 @@ mod tests {
         assert!(evidence.has_operational_trace_signals());
     }
 
+    #[test]
+    fn derive_recent_persona_evidence_accepts_turn_continuity_evidence() {
+        let first = build_persona_ledger("brief", TurnPersonaPressureLevel::Normal);
+        let mut second = build_persona_ledger("brief", TurnPersonaPressureLevel::Normal);
+        second.updated_at_ms = 3_000;
+        second.finished_at_ms = 3_000;
+        let first_evidence = TurnContinuityEvidence::from_turn_ledger(&first)
+            .expect("terminal persona ledger should produce continuity evidence");
+        let second_evidence = TurnContinuityEvidence::from_turn_ledger(&second)
+            .expect("terminal persona ledger should produce continuity evidence");
+
+        let derived = derive_recent_persona_evidence_from_continuity_evidence(
+            &[first_evidence, second_evidence],
+            12,
+        )
+        .expect("recent persona evidence");
+
+        assert_eq!(derived.meaningful_turns, 2);
+        assert_eq!(derived.repeated_task_scope, "brief");
+        assert_eq!(
+            derived.repeated_priority_order,
+            vec![
+                "self_authored_core".to_string(),
+                "boundary".to_string(),
+                "user_contract".to_string()
+            ]
+        );
+    }
+
     struct FastPathStore {
         list_recent_calls: AtomicUsize,
         evidence: Option<RecentPersonaEvidence>,
     }
 
-    impl TurnLedgerStore for FastPathStore {
-        fn get(&self, _chat_id: &str) -> Result<Option<TurnLedger>> {
-            Ok(None)
-        }
-
-        fn set(&self, _chat_id: &str, _ledger: &TurnLedger) -> Result<()> {
+    impl TurnContinuityEvidenceStore for FastPathStore {
+        fn append(&self, _chat_id: &str, _evidence: &TurnContinuityEvidence) -> Result<()> {
             Ok(())
         }
 
@@ -673,7 +711,11 @@ mod tests {
             Ok(())
         }
 
-        fn list_recent(&self, _chat_id: &str, _limit: usize) -> Result<Vec<TurnLedger>> {
+        fn list_recent(
+            &self,
+            _chat_id: &str,
+            _limit: usize,
+        ) -> Result<Vec<TurnContinuityEvidence>> {
             self.list_recent_calls.fetch_add(1, Ordering::Relaxed);
             Ok(Vec::new())
         }
@@ -684,7 +726,7 @@ mod tests {
     }
 
     #[test]
-    fn load_recent_persona_evidence_prefers_store_fast_path() {
+    fn load_recent_persona_evidence_uses_continuity_evidence_store_fast_path() {
         let expected = RecentPersonaEvidence {
             meaningful_turns: 4,
             repeated_reply_scope: "brief".to_string(),

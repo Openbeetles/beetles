@@ -287,6 +287,44 @@ impl TurnLedgerStore for HarnessTurnLedgerStore {
 }
 
 #[derive(Default)]
+struct HarnessTurnContinuityEvidenceStore {
+    evidence: Mutex<HashMap<String, Vec<TurnContinuityEvidence>>>,
+}
+
+impl TurnContinuityEvidenceStore for HarnessTurnContinuityEvidenceStore {
+    fn append(&self, chat_id: &str, evidence: &TurnContinuityEvidence) -> Result<()> {
+        self.evidence
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry(chat_id.to_string())
+            .or_default()
+            .push(evidence.clone());
+        Ok(())
+    }
+
+    fn clear(&self, chat_id: &str) -> Result<()> {
+        self.evidence
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(chat_id);
+        Ok(())
+    }
+
+    fn list_recent(&self, chat_id: &str, limit: usize) -> Result<Vec<TurnContinuityEvidence>> {
+        let mut items = self
+            .evidence
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(chat_id)
+            .cloned()
+            .unwrap_or_default();
+        items.reverse();
+        items.truncate(limit);
+        Ok(items)
+    }
+}
+
+#[derive(Default)]
 struct HarnessLongTermMemoryExtractionStateStore {
     state: Mutex<Option<LongTermMemoryExtractionState>>,
 }
@@ -363,6 +401,7 @@ struct HarnessStores {
     memory: Arc<HarnessMemoryStore>,
     long_term: Arc<HarnessLongTermMemoryStore>,
     turn_ledger: HarnessTurnLedgerStore,
+    turn_continuity_evidence: HarnessTurnContinuityEvidenceStore,
     extraction_state: HarnessLongTermMemoryExtractionStateStore,
     skills: Arc<HarnessSkillStorage>,
     summary: EmptySessionSummaryStore,
@@ -437,6 +476,7 @@ impl HarnessStores {
             mental_privacy_store: &self.mental_privacy,
             remind_store: &self.reminders,
             task_store: &self.tasks,
+            turn_continuity_evidence_store: &self.turn_continuity_evidence,
             turn_ledger_store: &self.turn_ledger,
             skill_storage: self.skills.as_ref(),
             continuity_capsule_store: &self.continuity,

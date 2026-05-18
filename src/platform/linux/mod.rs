@@ -31,7 +31,8 @@ use crate::platform::{
         StorageSessionStore, StorageSessionSummaryStore, StorageSkillMetaStore,
         StorageSkillStorage, StorageTaskArtifactStore, StorageTaskExecutionLedgerStore,
         StorageTaskLearningStore, StorageTaskRunStore, StorageTaskStore,
-        StorageTemperamentContinuityStore, StorageTurnLedgerStore, StorageWorldSenseStore,
+        StorageTemperamentContinuityStore, StorageTurnContinuityEvidenceStore,
+        StorageTurnLedgerStore, StorageWorldSenseStore,
     },
     NvsConfigStore,
 };
@@ -43,7 +44,7 @@ use crate::runtime::write_back::{
     BufferedRelationshipPortfolioStore, BufferedRelationshipTopologyStore,
     BufferedSelfAuthoredCoreStore, BufferedSelfContinuityStore, BufferedSelfModelStore,
     BufferedSessionStore, BufferedSessionSummaryStore, BufferedTemperamentContinuityStore,
-    BufferedTurnLedgerStore, BufferedWorldSenseStore,
+    BufferedTurnContinuityEvidenceStore, BufferedTurnLedgerStore, BufferedWorldSenseStore,
 };
 use crate::{
     calendar::CalendarStore,
@@ -57,7 +58,7 @@ use crate::{
         PrivateGardenStore, RelationshipConstitutionStore, RelationshipPortfolioStore,
         RelationshipTopologyStore, RemindAtStore, SelfAuthoredCoreStore, SelfContinuityStore,
         SelfModelStore, SessionStore, SessionSummaryStore, TemperamentContinuityStore,
-        TurnLedgerStore, WorldSenseStore,
+        TurnContinuityEvidenceStore, TurnLedgerStore, WorldSenseStore,
     },
     task::TaskStore,
     task_execution::{
@@ -122,6 +123,7 @@ pub struct LinuxPlatform {
     important_message_store: Arc<dyn ImportantMessageStore + Send + Sync>,
     remind_at_store: Arc<StorageRemindAtStore>,
     session_summary_store: Arc<dyn SessionSummaryStore + Send + Sync>,
+    turn_continuity_evidence_store: Arc<dyn TurnContinuityEvidenceStore + Send + Sync>,
     turn_ledger_store: Arc<dyn TurnLedgerStore + Send + Sync>,
     wifi_scan_handle: Mutex<Option<Arc<dyn crate::platform::WifiScan + Send + Sync>>>,
     hardware_discovery_handle: Arc<dyn HardwareDiscovery + Send + Sync>,
@@ -199,6 +201,10 @@ impl LinuxPlatform {
         let session_summary_store =
             BufferedSessionSummaryStore::wrap(Arc::new(StorageSessionSummaryStore::new())
                 as Arc<dyn SessionSummaryStore + Send + Sync>);
+        let turn_continuity_evidence_store = BufferedTurnContinuityEvidenceStore::wrap(Arc::new(
+            StorageTurnContinuityEvidenceStore::new(),
+        )
+            as Arc<dyn TurnContinuityEvidenceStore + Send + Sync>);
         let turn_ledger_store = BufferedTurnLedgerStore::wrap(
             Arc::new(StorageTurnLedgerStore::new()) as Arc<dyn TurnLedgerStore + Send + Sync>,
         );
@@ -246,6 +252,7 @@ impl LinuxPlatform {
             important_message_store,
             remind_at_store: Arc::new(StorageRemindAtStore::new()),
             session_summary_store,
+            turn_continuity_evidence_store,
             turn_ledger_store,
             wifi_scan_handle: Mutex::new(None),
             hardware_discovery_handle: Arc::new(hardware_discovery::LinuxHardwareDiscovery::new()),
@@ -515,6 +522,10 @@ impl Platform for LinuxPlatform {
 
     fn session_summary_store(&self) -> Arc<dyn SessionSummaryStore + Send + Sync> {
         Arc::clone(&self.session_summary_store)
+    }
+
+    fn turn_continuity_evidence_store(&self) -> Arc<dyn TurnContinuityEvidenceStore + Send + Sync> {
+        Arc::clone(&self.turn_continuity_evidence_store)
     }
 
     fn turn_ledger_store(&self) -> Arc<dyn TurnLedgerStore + Send + Sync> {

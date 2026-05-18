@@ -107,9 +107,9 @@ use super::{
     SelfModelRefreshOutcome, SelfModelStore, SelfRuntimeAuthorityPlan, SelfState, SessionStore,
     SessionSummaryStore, SharedFactualPlaneSnapshot, SharedFactualReconcileAction, SubjectShell,
     SubjectShellCompileInput, TemperamentContinuity, TemperamentContinuityRefreshCandidate,
-    TemperamentContinuityRefreshOutcome, TemperamentContinuityStore, TurnLedgerStore,
-    WorldSenseRefreshContext, WorldSenseRefreshInput, WorldSenseRefreshOutcome, WorldSenseStore,
-    WorldSnapshotContext,
+    TemperamentContinuityRefreshOutcome, TemperamentContinuityStore, TurnContinuityEvidenceStore,
+    TurnLedgerStore, WorldSenseRefreshContext, WorldSenseRefreshInput, WorldSenseRefreshOutcome,
+    WorldSenseStore, WorldSnapshotContext,
 };
 
 pub const SELF_RUNTIME_SYSTEM_PROMPT: &str = "You govern the assistant's inward autonomy runtime. Respect the current autonomy strategy unless the latest world state, self-state, or recent multi-turn persona evidence clearly requires a different emphasis. Return JSON only: one object with fields refresh_inner_life, inner_life_intent, refresh_private_docs, private_docs_intent, private_docs_action, refresh_private_garden, private_garden_intent, private_garden_action, refresh_self_model, self_model_intent, self_model_sources, refresh_self_continuity, self_continuity_intent, self_continuity_sources, refresh_self_authored_core, self_authored_core_intent, self_authored_core_sources, refresh_boundary_persona, boundary_persona_intent, refresh_outer_voice, outer_voice_intent, outer_voice_sources, boundary_flush, boundary_flush_reason, request_factual_refresh, factual_reconcile_action, factual_reconcile_intent. Use true only when that layer should change now. Runtime governance actions are hold, rewrite, compress, or cleanup. factual_reconcile_action is hold, reinforce, correct, conflict, or stale. self_model, self_continuity, self_authored_core, boundary_persona, and outer_voice are upward distillation layers: refresh them only when private evolution or newer world/boundary state has produced a better stable core that should influence future main replies. self_authored_core is the board-level core above chat relationships; do not promote one-turn spikes or one-chat quirks into it. Relationship portfolio is the board-level governance layer above relationship overlays. Relationship constitution is the formal board-to-relation contract: respect it when deciding how much a relation may drift, which local layers need realignment, and whether any relation may push upward into board-level distillation. Source lists should name the layers that actually deserve upward distillation, such as inner_life, private_docs, private_garden, self_model, self_continuity, self_authored_core, boundary_persona, outer_voice, world_sense, autonomy_strategy, recent_persona_evidence, or recent_transcript. Treat recent persona evidence as multi-turn support, never as one-turn automatic promotion authority. Operational traces such as task scope, response mode, pressure, tool usage, or reply scope are not enough to justify upward distillation on their own. Favor autonomy, but do not churn memory without gain.";
@@ -238,6 +238,7 @@ pub struct SelfRuntimeContext<'a> {
     pub task_run_store: &'a dyn TaskRunStore,
     pub task_artifact_store: &'a dyn TaskArtifactStore,
     pub task_learning_store: &'a dyn TaskLearningStore,
+    pub turn_continuity_evidence_store: &'a dyn TurnContinuityEvidenceStore,
     pub turn_ledger_store: &'a dyn TurnLedgerStore,
     pub skill_storage: &'a dyn SkillStorage,
 }

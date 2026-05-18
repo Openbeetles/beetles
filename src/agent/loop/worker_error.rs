@@ -111,6 +111,12 @@ pub(super) fn handle_worker_path_error(
                 .chat_streams
                 .emit_error(stream_id, "chat.failed", Some(error.stage()));
         }
+        persist_turn_continuity_evidence(
+            config.runtime.turn_continuity_evidence_store.as_ref(),
+            &relationship_id,
+            turn_ledger,
+            "error_stream",
+        );
         return;
     }
 
@@ -147,4 +153,10 @@ pub(super) fn handle_worker_path_error(
             );
         }
     }
+    persist_turn_continuity_evidence(
+        config.runtime.turn_continuity_evidence_store.as_ref(),
+        &relationship_id,
+        turn_ledger,
+        "error_reply",
+    );
 }

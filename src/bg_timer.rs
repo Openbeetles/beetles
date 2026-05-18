@@ -203,17 +203,6 @@ pub fn run_bg_timer(ctx: BgTimerContext) -> std::io::Result<crate::util::TaskHan
                         &ctx.resolve_locale,
                         &mut heartbeat_state,
                     );
-                    if runtime_mode.action_budget.allow_periodic_maintenance
-                        && heartbeat_state.should_schedule_session_gc()
-                    {
-                        let scheduled = crate::runtime::write_back::schedule_session_gc(
-                            Arc::clone(&ctx.session_store),
-                            crate::constants::SESSION_GC_MAX_AGE_SECS,
-                        );
-                        if !scheduled {
-                            log::debug!("[{}] session GC not queued by write-back scheduler", TAG);
-                        }
-                    }
                     advance_periodic_deadline(&mut next_heartbeat_at, heartbeat_interval, now);
                 }
 

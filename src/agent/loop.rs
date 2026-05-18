@@ -110,7 +110,7 @@ use self::reply_finalize::{complete_turn_boxed, finalize_turn_boxed};
 use self::task_execution::try_run_task_execution;
 use self::tool_round::execute_tool_use_round;
 use self::turn_execution::execute_turn_boxed;
-use self::turn_finalize::persist_turn_ledger;
+use self::turn_finalize::{persist_turn_continuity_evidence, persist_turn_ledger};
 use self::worker_error::handle_worker_path_error;
 use super::deliberation::{
     compile_turn_deliberation_gate, render_turn_deliberation_gate_block, TurnDeliberationGate,
@@ -2147,8 +2147,9 @@ mod tests {
         MentalPrivacyStore, OuterVoiceStore, PendingRetryStore, PrivateDocStore, PrivateGardenDoc,
         PrivateGardenDocRecord, PrivateGardenStore, RelationshipTopologyStore, SelfContinuityStore,
         SelfModelStore, SessionMessage, SessionStore, SessionSummaryStore,
-        TemperamentContinuityStore, TurnBlockerLedger, TurnDeliberationClass, TurnLedger,
-        TurnLedgerStore, TurnPersonaPressureLevel, WorldSenseStore,
+        TemperamentContinuityStore, TurnBlockerLedger, TurnContinuityEvidence,
+        TurnContinuityEvidenceStore, TurnDeliberationClass, TurnLedger, TurnLedgerStore,
+        TurnPersonaPressureLevel, WorldSenseStore,
     };
     use crate::platform::{PlatformHttpClient, ResponseBody};
     use crate::tools::{
@@ -3341,6 +3342,26 @@ mod tests {
         }
     }
 
+    struct StubTurnContinuityEvidenceStore;
+
+    impl TurnContinuityEvidenceStore for StubTurnContinuityEvidenceStore {
+        fn append(&self, _chat_id: &str, _evidence: &TurnContinuityEvidence) -> Result<()> {
+            Ok(())
+        }
+
+        fn clear(&self, _chat_id: &str) -> Result<()> {
+            Ok(())
+        }
+
+        fn list_recent(
+            &self,
+            _chat_id: &str,
+            _limit: usize,
+        ) -> Result<Vec<TurnContinuityEvidence>> {
+            Ok(Vec::new())
+        }
+    }
+
     #[derive(Default)]
     struct RecordingTurnLedgerStore {
         entries: Mutex<HashMap<String, TurnLedger>>,
@@ -3370,6 +3391,44 @@ mod tests {
                 .unwrap_or_else(|e| e.into_inner())
                 .remove(chat_id);
             Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct RecordingTurnContinuityEvidenceStore {
+        entries: Mutex<HashMap<String, Vec<TurnContinuityEvidence>>>,
+    }
+
+    impl TurnContinuityEvidenceStore for RecordingTurnContinuityEvidenceStore {
+        fn append(&self, chat_id: &str, evidence: &TurnContinuityEvidence) -> Result<()> {
+            self.entries
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .entry(chat_id.to_string())
+                .or_default()
+                .push(evidence.clone());
+            Ok(())
+        }
+
+        fn clear(&self, chat_id: &str) -> Result<()> {
+            self.entries
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(chat_id);
+            Ok(())
+        }
+
+        fn list_recent(&self, chat_id: &str, limit: usize) -> Result<Vec<TurnContinuityEvidence>> {
+            let mut items = self
+                .entries
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(chat_id)
+                .cloned()
+                .unwrap_or_default();
+            items.reverse();
+            items.truncate(limit);
+            Ok(items)
         }
     }
 
@@ -3954,6 +4013,7 @@ mod tests {
                 important_message_store: Arc::new(StubImportantMessageStore),
                 remind_at_store: Arc::new(StubRemindAtStore),
                 session_summary_store: Arc::new(StubSessionSummaryStore),
+                turn_continuity_evidence_store: Arc::new(StubTurnContinuityEvidenceStore),
                 turn_ledger_store: Arc::new(StubTurnLedgerStore),
                 emotion_signal_store: Arc::new(crate::memory::MemoryEmotionSignalStore::new()),
                 platform,
@@ -5833,9 +5893,13 @@ mod tests {
     #[test]
     fn complete_turn_persists_inbound_provenance_and_reply_sources() {
         let turn_ledger_store = Arc::new(RecordingTurnLedgerStore::default());
+        let turn_continuity_evidence_store =
+            Arc::new(RecordingTurnContinuityEvidenceStore::default());
         let mut config = test_agent_loop_config();
         config.runtime.turn_ledger_store =
             Arc::clone(&turn_ledger_store) as Arc<dyn TurnLedgerStore + Send + Sync>;
+        config.runtime.turn_continuity_evidence_store = Arc::clone(&turn_continuity_evidence_store)
+            as Arc<dyn TurnContinuityEvidenceStore + Send + Sync>;
         let (system_inbound_tx, _system_inbound_rx, _) = crate::bus::new_inbound_channel(8);
         let (_outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
         let mut msg =
@@ -5939,6 +6003,12 @@ mod tests {
         assert_eq!(stored.outbound_source, "reply");
         assert_eq!(stored.canonical_reply_source, "final_answer");
         assert_eq!(stored.reason, "final_answer");
+        let evidence = turn_continuity_evidence_store
+            .list_recent(&relationship_id, 1)
+            .expect("turn continuity evidence get");
+        assert_eq!(evidence.len(), 1);
+        assert_eq!(evidence[0].canonical_reply_source, "final_answer");
+        assert!(evidence[0].final_reply_delivered);
     }
 
     #[test]

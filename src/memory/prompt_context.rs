@@ -18,7 +18,7 @@ use super::{
     PromptRecallRouterDecision, RelationshipConstitutionStore, RelationshipPortfolioStore,
     RelationshipTopologyStore, RemindAtStore, SelfAuthoredCoreStore, SelfContinuityStore,
     SelfModelStore, SessionMessage, SessionStore, SessionSummaryStore, TemperamentContinuityStore,
-    TurnLedgerStore, WorldSenseStore,
+    TurnContinuityEvidenceStore, TurnLedgerStore, WorldSenseStore,
 };
 
 pub struct PromptMemoryContext {
@@ -319,6 +319,7 @@ pub struct PromptMemoryContextParams<'a> {
     pub mental_privacy_store: &'a dyn MentalPrivacyStore,
     pub remind_store: &'a dyn RemindAtStore,
     pub task_store: &'a dyn TaskStore,
+    pub turn_continuity_evidence_store: &'a dyn TurnContinuityEvidenceStore,
     pub turn_ledger_store: &'a dyn TurnLedgerStore,
     pub skill_storage: &'a dyn SkillStorage,
     pub continuity_capsule_store: &'a dyn ContinuityCapsuleStore,
@@ -445,10 +446,10 @@ mod tests {
         RelationshipConstitutionStore, RelationshipTopology, RelationshipTopologyStore,
         SelfAuthoredCore, SelfAuthoredCoreStore, SelfContinuity, SelfContinuityStore, SelfModel,
         SelfModelStore, SessionMessage, SessionStore, SessionSummaryStore, TemperamentContinuity,
-        TemperamentContinuityStore, TurnBlockerLedger, TurnDeliberationClass, TurnExecutionClass,
-        TurnLedger, TurnLedgerStatus, TurnLedgerStore, TurnModeSnapshotLedger,
-        TurnObservationLedger, TurnPersonaPressureLevel, TurnToolPathLedger, WorldSense,
-        WorldSenseStore,
+        TemperamentContinuityStore, TurnBlockerLedger, TurnContinuityEvidence,
+        TurnContinuityEvidenceStore, TurnDeliberationClass, TurnExecutionClass, TurnLedger,
+        TurnLedgerStatus, TurnLedgerStore, TurnModeSnapshotLedger, TurnObservationLedger,
+        TurnPersonaPressureLevel, TurnToolPathLedger, WorldSense, WorldSenseStore,
     };
     use crate::platform::SkillStorage;
     use crate::task::{TaskItem, TaskQuery, TaskStore};
@@ -785,6 +786,7 @@ mod tests {
             mental_privacy_store: &StubMentalPrivacyStore::default(),
             remind_store: &StubRemindAtStore,
             task_store: &StubTaskStore,
+            turn_continuity_evidence_store: &StubTurnContinuityEvidenceStore::default(),
             turn_ledger_store: &StubTurnLedgerStore::default(),
             skill_storage: &StubSkillStorage::default(),
             continuity_capsule_store: &StubContinuityCapsuleStore::default(),
@@ -858,6 +860,7 @@ mod tests {
             mental_privacy_store: &StubMentalPrivacyStore::default(),
             remind_store: &ErrorRemindAtStore,
             task_store: &ErrorTaskStore,
+            turn_continuity_evidence_store: &StubTurnContinuityEvidenceStore::default(),
             turn_ledger_store: &StubTurnLedgerStore::default(),
             skill_storage: &StubSkillStorage::default(),
             continuity_capsule_store: &StubContinuityCapsuleStore::default(),
@@ -875,7 +878,7 @@ mod tests {
     }
 
     #[test]
-    fn prompt_memory_records_unreadable_turn_ledger_layers_as_health_issues() {
+    fn prompt_memory_records_unreadable_turn_continuity_layers_as_health_issues() {
         let context = load_prompt_memory_context(PromptMemoryContextParams {
             chat_id: "chat-1",
             current_channel: "qq_channel",
@@ -914,6 +917,7 @@ mod tests {
             mental_privacy_store: &StubMentalPrivacyStore::default(),
             remind_store: &StubRemindAtStore,
             task_store: &StubTaskStore,
+            turn_continuity_evidence_store: &ErrorTurnContinuityEvidenceStore,
             turn_ledger_store: &ErrorTurnLedgerStore,
             skill_storage: &StubSkillStorage::default(),
             continuity_capsule_store: &StubContinuityCapsuleStore::default(),
@@ -1061,6 +1065,7 @@ mod tests {
             mental_privacy_store: &StubMentalPrivacyStore::default(),
             remind_store: &StubRemindAtStore,
             task_store: &StubTaskStore,
+            turn_continuity_evidence_store: &StubTurnContinuityEvidenceStore::default(),
             turn_ledger_store: &StubTurnLedgerStore::default(),
             skill_storage: &StubSkillStorage::default(),
             continuity_capsule_store: &StubContinuityCapsuleStore::default(),
@@ -1122,6 +1127,7 @@ mod tests {
             mental_privacy_store: &StubMentalPrivacyStore::default(),
             remind_store: &StubRemindAtStore,
             task_store: &StubTaskStore,
+            turn_continuity_evidence_store: &StubTurnContinuityEvidenceStore::default(),
             turn_ledger_store: &StubTurnLedgerStore::default(),
             skill_storage: &StubSkillStorage::default(),
             continuity_capsule_store: &StubContinuityCapsuleStore::default(),
@@ -1203,6 +1209,7 @@ mod tests {
             mental_privacy_store: &mental_privacy_store,
             remind_store: &StubRemindAtStore,
             task_store: &StubTaskStore,
+            turn_continuity_evidence_store: &StubTurnContinuityEvidenceStore::default(),
             turn_ledger_store: &StubTurnLedgerStore::default(),
             skill_storage: &StubSkillStorage::default(),
             continuity_capsule_store: &StubContinuityCapsuleStore::default(),
@@ -1281,6 +1288,7 @@ mod tests {
             mental_privacy_store: &StubMentalPrivacyStore::default(),
             remind_store: &StubRemindAtStore,
             task_store: &StubTaskStore,
+            turn_continuity_evidence_store: &StubTurnContinuityEvidenceStore::default(),
             turn_ledger_store: &turn_ledger_store,
             skill_storage: &StubSkillStorage::default(),
             continuity_capsule_store: &StubContinuityCapsuleStore::default(),
@@ -1344,6 +1352,7 @@ mod tests {
             mental_privacy_store: &StubMentalPrivacyStore::default(),
             remind_store: &StubRemindAtStore,
             task_store: &StubTaskStore,
+            turn_continuity_evidence_store: &StubTurnContinuityEvidenceStore::default(),
             turn_ledger_store: &turn_ledger_store,
             skill_storage: &StubSkillStorage::default(),
             continuity_capsule_store: &StubContinuityCapsuleStore::default(),
@@ -1428,6 +1437,7 @@ mod tests {
             mental_privacy_store: &mental_privacy_store,
             remind_store: &StubRemindAtStore,
             task_store: &StubTaskStore,
+            turn_continuity_evidence_store: &StubTurnContinuityEvidenceStore::default(),
             turn_ledger_store: &StubTurnLedgerStore::default(),
             skill_storage: &StubSkillStorage::default(),
             continuity_capsule_store: &StubContinuityCapsuleStore::default(),
@@ -1512,6 +1522,7 @@ mod tests {
             mental_privacy_store: &StubMentalPrivacyStore::default(),
             remind_store: &StubRemindAtStore,
             task_store: &StubTaskStore,
+            turn_continuity_evidence_store: &StubTurnContinuityEvidenceStore::default(),
             turn_ledger_store: &StubTurnLedgerStore::default(),
             skill_storage: &StubSkillStorage::default(),
             continuity_capsule_store: &StubContinuityCapsuleStore::default(),
@@ -1602,6 +1613,7 @@ mod tests {
             mental_privacy_store: &StubMentalPrivacyStore::default(),
             remind_store: &StubRemindAtStore,
             task_store: &StubTaskStore,
+            turn_continuity_evidence_store: &StubTurnContinuityEvidenceStore::default(),
             turn_ledger_store: &StubTurnLedgerStore::default(),
             skill_storage: &StubSkillStorage::default(),
             continuity_capsule_store: &StubContinuityCapsuleStore::default(),
@@ -1727,9 +1739,53 @@ mod tests {
 
     struct ErrorTurnLedgerStore;
 
+    struct ErrorTurnContinuityEvidenceStore;
+
     impl CountingTurnLedgerStore {
         fn list_recent_calls(&self) -> u32 {
             self.list_recent_calls.load(Ordering::Relaxed)
+        }
+    }
+
+    #[derive(Default)]
+    struct StubTurnContinuityEvidenceStore;
+
+    impl TurnContinuityEvidenceStore for StubTurnContinuityEvidenceStore {
+        fn append(&self, _chat_id: &str, _evidence: &TurnContinuityEvidence) -> Result<()> {
+            Ok(())
+        }
+
+        fn clear(&self, _chat_id: &str) -> Result<()> {
+            Ok(())
+        }
+
+        fn list_recent(
+            &self,
+            _chat_id: &str,
+            _limit: usize,
+        ) -> Result<Vec<TurnContinuityEvidence>> {
+            Ok(Vec::new())
+        }
+    }
+
+    impl TurnContinuityEvidenceStore for ErrorTurnContinuityEvidenceStore {
+        fn append(&self, _chat_id: &str, _evidence: &TurnContinuityEvidence) -> Result<()> {
+            Ok(())
+        }
+
+        fn clear(&self, _chat_id: &str) -> Result<()> {
+            Ok(())
+        }
+
+        fn list_recent(
+            &self,
+            _chat_id: &str,
+            _limit: usize,
+        ) -> Result<Vec<TurnContinuityEvidence>> {
+            Err(crate::error::Error::config(
+                "recent_persona_evidence_read",
+                "evidence unreadable",
+            ))
         }
     }
 
@@ -3290,6 +3346,7 @@ mod tests {
             mental_privacy_store: &mental_privacy_store,
             remind_store: &remind_store,
             task_store: &task_store,
+            turn_continuity_evidence_store: &StubTurnContinuityEvidenceStore::default(),
             turn_ledger_store: &turn_ledger_store,
             skill_storage: &skill_storage,
             continuity_capsule_store: &continuity_capsule_store,
@@ -3538,6 +3595,7 @@ mod tests {
             mental_privacy_store: &mental_privacy_store,
             remind_store: &remind_store,
             task_store: &task_store,
+            turn_continuity_evidence_store: &StubTurnContinuityEvidenceStore::default(),
             turn_ledger_store: &turn_ledger_store,
             skill_storage: &skill_storage,
             continuity_capsule_store: &continuity_capsule_store,
@@ -3732,6 +3790,7 @@ mod tests {
             mental_privacy_store: &mental_privacy_store,
             remind_store: &remind_store,
             task_store: &task_store,
+            turn_continuity_evidence_store: &StubTurnContinuityEvidenceStore::default(),
             turn_ledger_store: &turn_ledger_store,
             skill_storage: &skill_storage,
             continuity_capsule_store: &continuity_capsule_store,
@@ -3867,6 +3926,7 @@ mod tests {
             mental_privacy_store: &mental_privacy_store,
             remind_store: &remind_store,
             task_store: &task_store,
+            turn_continuity_evidence_store: &StubTurnContinuityEvidenceStore::default(),
             turn_ledger_store: &turn_ledger_store,
             skill_storage: &skill_storage,
             continuity_capsule_store: &continuity_capsule_store,
@@ -3978,6 +4038,7 @@ mod tests {
             mental_privacy_store: &mental_privacy_store,
             remind_store: &StubRemindAtStore,
             task_store: &StubTaskStore,
+            turn_continuity_evidence_store: &StubTurnContinuityEvidenceStore::default(),
             turn_ledger_store: &turn_ledger_store,
             skill_storage: &skill_storage,
             continuity_capsule_store: &continuity_capsule_store,
@@ -4059,6 +4120,7 @@ mod tests {
             mental_privacy_store: &mental_privacy_store,
             remind_store: &StubRemindAtStore,
             task_store: &StubTaskStore,
+            turn_continuity_evidence_store: &StubTurnContinuityEvidenceStore::default(),
             turn_ledger_store: &turn_ledger_store,
             skill_storage: &skill_storage,
             continuity_capsule_store: &continuity_capsule_store,
@@ -4190,6 +4252,7 @@ mod tests {
             mental_privacy_store: &StubMentalPrivacyStore::default(),
             remind_store: &StubRemindAtStore,
             task_store: &StubTaskStore,
+            turn_continuity_evidence_store: &StubTurnContinuityEvidenceStore::default(),
             turn_ledger_store: &StubTurnLedgerStore::default(),
             skill_storage: &StubSkillStorage::default(),
             continuity_capsule_store: &continuity_capsule_store,
@@ -4346,6 +4409,7 @@ mod tests {
             mental_privacy_store: &StubMentalPrivacyStore::default(),
             remind_store: &StubRemindAtStore,
             task_store: &StubTaskStore,
+            turn_continuity_evidence_store: &StubTurnContinuityEvidenceStore::default(),
             turn_ledger_store: &turn_ledger_store,
             skill_storage: &StubSkillStorage::default(),
             continuity_capsule_store: &continuity_capsule_store,
@@ -4481,6 +4545,7 @@ mod tests {
             mental_privacy_store: &StubMentalPrivacyStore::default(),
             remind_store: &StubRemindAtStore,
             task_store: &StubTaskStore,
+            turn_continuity_evidence_store: &StubTurnContinuityEvidenceStore::default(),
             turn_ledger_store: &StubTurnLedgerStore::default(),
             skill_storage: &skill_storage,
             continuity_capsule_store: &continuity_capsule_store,
@@ -4586,6 +4651,7 @@ mod tests {
             mental_privacy_store: &StubMentalPrivacyStore::default(),
             remind_store: &StubRemindAtStore,
             task_store: &StubTaskStore,
+            turn_continuity_evidence_store: &StubTurnContinuityEvidenceStore::default(),
             turn_ledger_store: &StubTurnLedgerStore::default(),
             skill_storage: &StubSkillStorage::default(),
             continuity_capsule_store: &continuity_capsule_store,
@@ -4841,6 +4907,7 @@ mod tests {
             mental_privacy_store: &StubMentalPrivacyStore::default(),
             remind_store: &StubRemindAtStore,
             task_store: &StubTaskStore,
+            turn_continuity_evidence_store: &StubTurnContinuityEvidenceStore::default(),
             turn_ledger_store: &StubTurnLedgerStore::default(),
             skill_storage: &StubSkillStorage::default(),
             continuity_capsule_store: &continuity_capsule_store,
@@ -4953,6 +5020,7 @@ mod tests {
             mental_privacy_store: &StubMentalPrivacyStore::default(),
             remind_store: &StubRemindAtStore,
             task_store: &StubTaskStore,
+            turn_continuity_evidence_store: &StubTurnContinuityEvidenceStore::default(),
             turn_ledger_store: &StubTurnLedgerStore::default(),
             skill_storage: &skill_storage,
             continuity_capsule_store: &continuity_capsule_store,
@@ -5049,6 +5117,7 @@ mod tests {
             mental_privacy_store: &StubMentalPrivacyStore::default(),
             remind_store: &StubRemindAtStore,
             task_store: &StubTaskStore,
+            turn_continuity_evidence_store: &StubTurnContinuityEvidenceStore::default(),
             turn_ledger_store: &StubTurnLedgerStore::default(),
             skill_storage: &StubSkillStorage::default(),
             continuity_capsule_store: &continuity_capsule_store,
@@ -5145,6 +5214,7 @@ mod tests {
             mental_privacy_store: &StubMentalPrivacyStore::default(),
             remind_store: &StubRemindAtStore,
             task_store: &StubTaskStore,
+            turn_continuity_evidence_store: &StubTurnContinuityEvidenceStore::default(),
             turn_ledger_store: &StubTurnLedgerStore::default(),
             skill_storage: &StubSkillStorage::default(),
             continuity_capsule_store: &continuity_capsule_store,

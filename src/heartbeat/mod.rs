@@ -39,11 +39,6 @@ impl HeartbeatTickState {
     pub fn new() -> Self {
         Self { round: 0 }
     }
-
-    pub(crate) fn should_schedule_session_gc(&self) -> bool {
-        self.round
-            .is_multiple_of(crate::constants::SESSION_GC_INTERVAL_ROUNDS)
-    }
 }
 
 /// 单次 heartbeat tick：日志、队列深度、轻量存储指标、待办注入等。
