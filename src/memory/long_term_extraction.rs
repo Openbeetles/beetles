@@ -260,6 +260,7 @@ pub fn build_long_term_memory_extraction_input(
     profile: MemoryProfile,
 ) -> String {
     let policy = memory_policy(profile).long_term_extraction;
+    let include_thick_grounding = long_term_memory_extraction_uses_thick_grounding(profile);
     let transcript = build_long_term_memory_extraction_transcript(recent, policy);
     let existing_memory = store
         .recall(
@@ -287,6 +288,11 @@ pub fn build_long_term_memory_extraction_input(
         input.push_str("\n\n");
     }
 
+    let factual_governance_brief = if include_thick_grounding {
+        factual_governance_brief
+    } else {
+        None
+    };
     if let Some(factual_governance_brief) = factual_governance_brief
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -295,6 +301,11 @@ pub fn build_long_term_memory_extraction_input(
         input.push_str("\n\n");
     }
 
+    let archive_evidence = if include_thick_grounding {
+        archive_evidence
+    } else {
+        None
+    };
     if let Some(archive_evidence) = archive_evidence
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -306,6 +317,10 @@ pub fn build_long_term_memory_extraction_input(
     input.push_str("## Recent conversation\n");
     input.push_str(transcript.trim());
     input
+}
+
+fn long_term_memory_extraction_uses_thick_grounding(profile: MemoryProfile) -> bool {
+    matches!(profile, MemoryProfile::Standard)
 }
 
 fn build_extraction_existing_memory_grounding(
@@ -1368,38 +1383,48 @@ fn extract_long_term_memory(
         .find(|message| message.role.eq_ignore_ascii_case("user"))
         .map(|message| message.content.as_str())
         .unwrap_or("");
-    let archive_evidence = build_archive_evidence_block(
-        ctx.session_store,
-        ctx.memory_store,
-        ctx.turn_ledger_store,
-        chat_id,
-        archive_query,
-        memory_policy(profile)
-            .long_term_recall
-            .block_max_len_cap
-            .min(768),
-        profile,
-    );
-    let governance = run_memory_governance_kernel(
-        MemoryGovernanceContext {
-            session_store: ctx.session_store,
-            long_term_memory_store: ctx.long_term_memory_store,
-            memory_store: ctx.memory_store,
-            turn_ledger_store: ctx.turn_ledger_store,
-        },
-        MemoryGovernanceInput {
+    let include_thick_grounding = long_term_memory_extraction_uses_thick_grounding(profile);
+    let archive_evidence = if include_thick_grounding {
+        build_archive_evidence_block(
+            ctx.session_store,
+            ctx.memory_store,
+            ctx.turn_ledger_store,
             chat_id,
-            query_hint: archive_query,
-            summary_text: session_summary.as_deref(),
-            recent: &recent,
-            max_len: memory_policy(profile)
+            archive_query,
+            memory_policy(profile)
                 .long_term_recall
                 .block_max_len_cap
                 .min(768),
             profile,
-            external_content_used: false,
-        },
-    );
+        )
+    } else {
+        None
+    };
+    let governance_extraction_brief = if include_thick_grounding {
+        run_memory_governance_kernel(
+            MemoryGovernanceContext {
+                session_store: ctx.session_store,
+                long_term_memory_store: ctx.long_term_memory_store,
+                memory_store: ctx.memory_store,
+                turn_ledger_store: ctx.turn_ledger_store,
+            },
+            MemoryGovernanceInput {
+                chat_id,
+                query_hint: archive_query,
+                summary_text: session_summary.as_deref(),
+                recent: &recent,
+                max_len: memory_policy(profile)
+                    .long_term_recall
+                    .block_max_len_cap
+                    .min(768),
+                profile,
+                external_content_used: false,
+            },
+        )
+        .extraction_brief
+    } else {
+        None
+    };
     let messages = [Message {
         role: Cow::Borrowed("user"),
         content: build_long_term_memory_extraction_input(
@@ -1407,7 +1432,7 @@ fn extract_long_term_memory(
             chat_id,
             &recent,
             session_summary.as_deref(),
-            governance.extraction_brief.as_deref(),
+            governance_extraction_brief.as_deref(),
             archive_evidence.as_deref(),
             profile,
         ),
@@ -1428,16 +1453,18 @@ fn extract_long_term_memory(
             draft.source_revision.get_or_insert(source_revision);
         }
     }
-    enrich_drafts_with_archive_evidence(
-        &mut parsed.upserts,
-        ctx.session_store,
-        ctx.memory_store,
-        ctx.turn_ledger_store,
-        chat_id,
-        &recent,
-        session_summary.as_deref(),
-        now_secs,
-    );
+    if include_thick_grounding {
+        enrich_drafts_with_archive_evidence(
+            &mut parsed.upserts,
+            ctx.session_store,
+            ctx.memory_store,
+            ctx.turn_ledger_store,
+            chat_id,
+            &recent,
+            session_summary.as_deref(),
+            now_secs,
+        );
+    }
     let extraction =
         prepare_long_term_memory_extraction(ctx.long_term_memory_store, &parsed, chat_id);
     if extraction.upserts.is_empty()
@@ -2003,6 +2030,50 @@ mod tests {
         assert!(input.contains("## Recent conversation"));
         assert!(input.contains("USER: 最近我们在做长期记忆重构。"));
         assert!(input.contains("ASSISTANT: 这轮先把提取输入和解析从 agent loop 里拆出去。"));
+    }
+
+    #[test]
+    fn embedded_extraction_input_omits_thick_archive_and_governance_grounding() {
+        let store = StubLongTermMemoryStore {
+            recall_entries: vec![test_entry(
+                "pref:response_style",
+                LongTermMemoryKind::Preference,
+                "response_style",
+                "用户偏好直接回答。",
+                vec!["直接"],
+                Some("chat-1"),
+                10,
+                20,
+            )],
+            ..Default::default()
+        };
+        let recent = vec![
+            SessionMessage {
+                role: "user".to_string(),
+                content: "以后这个项目都按当前发布闸口走。".to_string(),
+            },
+            SessionMessage {
+                role: "assistant".to_string(),
+                content: "我会把这个作为后续发布流程的长期约束。".to_string(),
+            },
+        ];
+        let input = build_long_term_memory_extraction_input(
+            &store,
+            "chat-1",
+            &recent,
+            Some("当前项目正在收口 ESP 长期记忆提取。"),
+            Some("## Shared factual reconcile\n- thick governance evidence should stay out"),
+            Some("## Archive evidence\n- thick archive evidence should stay out"),
+            MemoryProfile::Embedded,
+        );
+
+        assert!(input.contains("## Session summary"));
+        assert!(input.contains("## Existing memory slots"));
+        assert!(input.contains("## Recent conversation"));
+        assert!(!input.contains("## Shared factual reconcile"));
+        assert!(!input.contains("## Archive evidence"));
+        assert!(!input.contains("thick governance evidence should stay out"));
+        assert!(!input.contains("thick archive evidence should stay out"));
     }
 
     #[test]
