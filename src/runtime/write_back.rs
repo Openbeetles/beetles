@@ -8,11 +8,11 @@ use crate::channels::inbound_backpressure::{self, EventIngressSource};
 use crate::error::{Error, Result};
 use crate::i18n::Locale;
 use crate::memory::{
-    compact_core_revision_ledger_for_profile, derive_recent_persona_evidence,
-    synthesize_session_message_records, AutonomyStrategy, AutonomyStrategyStore,
-    CoreRevisionLedger, CoreRevisionLedgerStore, ExecutionState, ExecutionStateStore,
-    FeltSignificance, FeltSignificanceStore, ImportantMessageStore, InnerConflict,
-    InnerConflictStore, InnerLife, InnerLifeStore, LongTermMemoryExtractionState,
+    compact_core_revision_ledger_for_profile, compact_relationship_constitution_for_profile,
+    derive_recent_persona_evidence, synthesize_session_message_records, AutonomyStrategy,
+    AutonomyStrategyStore, CoreRevisionLedger, CoreRevisionLedgerStore, ExecutionState,
+    ExecutionStateStore, FeltSignificance, FeltSignificanceStore, ImportantMessageStore,
+    InnerConflict, InnerConflictStore, InnerLife, InnerLifeStore, LongTermMemoryExtractionState,
     LongTermMemoryExtractionStateStore, MemoryProfile, MentalPrivacyState, MentalPrivacyStore,
     OuterVoice, OuterVoiceStore, RecentPersonaEvidence, RelationshipConstitution,
     RelationshipConstitutionStore, RelationshipPortfolio, RelationshipPortfolioStore,
@@ -1497,6 +1497,41 @@ define_buffered_chat_store!(
     RelationshipConstitution,
     "relationship_constitution_write_back"
 );
+
+pub struct ProfiledRelationshipConstitutionStore {
+    inner: Arc<dyn RelationshipConstitutionStore + Send + Sync>,
+    profile: MemoryProfile,
+}
+
+impl ProfiledRelationshipConstitutionStore {
+    pub fn wrap(
+        inner: Arc<dyn RelationshipConstitutionStore + Send + Sync>,
+        profile: MemoryProfile,
+    ) -> Arc<dyn RelationshipConstitutionStore + Send + Sync> {
+        Arc::new(Self { inner, profile }) as Arc<dyn RelationshipConstitutionStore + Send + Sync>
+    }
+
+    fn compact(&self, constitution: RelationshipConstitution) -> RelationshipConstitution {
+        compact_relationship_constitution_for_profile(constitution, self.profile)
+    }
+}
+
+impl RelationshipConstitutionStore for ProfiledRelationshipConstitutionStore {
+    fn get(&self, scope_id: &str) -> Result<Option<RelationshipConstitution>> {
+        self.inner
+            .get(scope_id)
+            .map(|constitution| constitution.map(|value| self.compact(value)))
+    }
+
+    fn set(&self, scope_id: &str, constitution: &RelationshipConstitution) -> Result<()> {
+        let compacted = self.compact(constitution.clone());
+        self.inner.set(scope_id, &compacted)
+    }
+
+    fn clear(&self, scope_id: &str) -> Result<()> {
+        self.inner.clear(scope_id)
+    }
+}
 define_buffered_chat_store!(
     BufferedWorldSenseStore,
     WorldSenseStore,
@@ -2421,6 +2456,55 @@ mod tests {
         }
     }
 
+    #[test]
+    fn profiled_relationship_constitution_store_compacts_embedded_get_and_set() {
+        let inner = Arc::new(StubRelationshipConstitutionStore::default());
+        let store = ProfiledRelationshipConstitutionStore::wrap(
+            inner.clone() as Arc<dyn RelationshipConstitutionStore + Send + Sync>,
+            MemoryProfile::Embedded,
+        );
+        let thick = RelationshipConstitution {
+            scope_id: "rel:qq:c1".to_string(),
+            channel: "qq".to_string(),
+            chat_id: "c1".to_string(),
+            inherited_priority_constitution: vec![
+                "p0 ".repeat(50),
+                "p1 ".repeat(50),
+                "p2 ".repeat(50),
+                "p3 ".repeat(50),
+            ],
+            boundary_floor: "boundary ".repeat(50),
+            deviation_reason: "deviation ".repeat(30),
+            drift_flags: vec![
+                "reply_scope_drift ".repeat(8),
+                "disclosure_drift ".repeat(8),
+                "boundary_drift ".repeat(8),
+                "volatility_drift ".repeat(8),
+                "priority_drift ".repeat(8),
+            ],
+            ..RelationshipConstitution::default()
+        };
+
+        store.set("rel:qq:c1", &thick).expect("set");
+        let stored = inner
+            .get("rel:qq:c1")
+            .expect("inner get")
+            .expect("stored constitution");
+        assert_eq!(stored.inherited_priority_constitution.len(), 3);
+        assert!(stored.boundary_floor.chars().count() <= 96);
+        assert!(stored.deviation_reason.chars().count() <= 80);
+        assert_eq!(stored.drift_flags.len(), 4);
+
+        inner.set("legacy", &thick).expect("seed legacy");
+        let read = store
+            .get("legacy")
+            .expect("profiled get")
+            .expect("legacy constitution");
+        assert_eq!(read.inherited_priority_constitution.len(), 3);
+        assert!(read.boundary_floor.chars().count() <= 96);
+        assert_eq!(read.drift_flags.len(), 4);
+    }
+
     #[derive(Default)]
     struct StubExecutionStateStore {
         values: Mutex<HashMap<String, ExecutionState>>,
@@ -2429,6 +2513,11 @@ mod tests {
     #[derive(Default)]
     struct StubActiveWorkStore {
         values: Mutex<HashMap<String, ActiveWorkRecord>>,
+    }
+
+    #[derive(Default)]
+    struct StubRelationshipConstitutionStore {
+        values: Mutex<HashMap<String, RelationshipConstitution>>,
     }
 
     impl ExecutionStateStore for StubExecutionStateStore {
@@ -2481,6 +2570,33 @@ mod tests {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .remove(chat_id);
+            Ok(())
+        }
+    }
+
+    impl RelationshipConstitutionStore for StubRelationshipConstitutionStore {
+        fn get(&self, scope_id: &str) -> Result<Option<RelationshipConstitution>> {
+            Ok(self
+                .values
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(scope_id)
+                .cloned())
+        }
+
+        fn set(&self, scope_id: &str, constitution: &RelationshipConstitution) -> Result<()> {
+            self.values
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(scope_id.to_string(), constitution.clone());
+            Ok(())
+        }
+
+        fn clear(&self, scope_id: &str) -> Result<()> {
+            self.values
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(scope_id);
             Ok(())
         }
     }

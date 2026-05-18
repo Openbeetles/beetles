@@ -45,6 +45,7 @@ use crate::runtime::write_back::{
     BufferedSelfAuthoredCoreStore, BufferedSelfContinuityStore, BufferedSelfModelStore,
     BufferedSessionStore, BufferedSessionSummaryStore, BufferedTemperamentContinuityStore,
     BufferedTurnContinuityEvidenceStore, BufferedWorldSenseStore, ProfiledCoreRevisionLedgerStore,
+    ProfiledRelationshipConstitutionStore,
 };
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 use crate::{
@@ -151,9 +152,12 @@ impl Esp32Platform {
                 as Arc<dyn CoreRevisionLedgerStore + Send + Sync>),
             crate::memory::MemoryProfile::Embedded,
         );
-        let relationship_constitution_store = BufferedRelationshipConstitutionStore::wrap(
-            Arc::new(StorageRelationshipConstitutionStore::new())
-                as Arc<dyn RelationshipConstitutionStore + Send + Sync>,
+        let relationship_constitution_store = ProfiledRelationshipConstitutionStore::wrap(
+            BufferedRelationshipConstitutionStore::wrap(Arc::new(
+                StorageRelationshipConstitutionStore::new(),
+            )
+                as Arc<dyn RelationshipConstitutionStore + Send + Sync>),
+            crate::memory::MemoryProfile::Embedded,
         );
         let world_sense_store = BufferedWorldSenseStore::wrap(
             Arc::new(StorageWorldSenseStore::new()) as Arc<dyn WorldSenseStore + Send + Sync>,

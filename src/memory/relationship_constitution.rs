@@ -15,6 +15,16 @@ use super::{
 const RELATIONSHIP_CONSTITUTION_TEXT_MAX_CHARS: usize = 160;
 const RELATIONSHIP_CONSTITUTION_REASON_MAX_CHARS: usize = 120;
 const RELATIONSHIP_CONSTITUTION_MAX_OVERRIDES: usize = 5;
+const RELATIONSHIP_CONSTITUTION_EMBEDDED_PRIORITY_MAX_ENTRIES: usize = 3;
+const RELATIONSHIP_CONSTITUTION_EMBEDDED_PRIORITY_MAX_CHARS: usize = 80;
+const RELATIONSHIP_CONSTITUTION_EMBEDDED_POSTURE_MAX_CHARS: usize = 96;
+const RELATIONSHIP_CONSTITUTION_EMBEDDED_FLOOR_MAX_CHARS: usize = 96;
+const RELATIONSHIP_CONSTITUTION_EMBEDDED_OVERRIDE_MAX_ENTRIES: usize = 3;
+const RELATIONSHIP_CONSTITUTION_EMBEDDED_OVERRIDE_VALUE_MAX_CHARS: usize = 80;
+const RELATIONSHIP_CONSTITUTION_EMBEDDED_OVERRIDE_REASON_MAX_CHARS: usize = 64;
+const RELATIONSHIP_CONSTITUTION_EMBEDDED_DEVIATION_MAX_CHARS: usize = 80;
+const RELATIONSHIP_CONSTITUTION_EMBEDDED_DRIFT_FLAG_MAX_ENTRIES: usize = 4;
+const RELATIONSHIP_CONSTITUTION_EMBEDDED_DRIFT_FLAG_MAX_CHARS: usize = 48;
 
 pub const REL_PATH_RELATIONSHIP_CONSTITUTIONS: &str = "memory/relationship_constitutions.json";
 
@@ -122,6 +132,98 @@ impl RelationshipConstitution {
             && !self.channel.trim().is_empty()
             && !self.chat_id.trim().is_empty()
     }
+}
+
+pub(crate) fn compact_relationship_constitution_for_profile(
+    mut constitution: RelationshipConstitution,
+    profile: crate::memory::MemoryProfile,
+) -> RelationshipConstitution {
+    if profile != crate::memory::MemoryProfile::Embedded {
+        return constitution;
+    }
+    compact_embedded_relationship_constitution(&mut constitution);
+    constitution
+}
+
+fn compact_embedded_relationship_constitution(constitution: &mut RelationshipConstitution) {
+    compact_text(
+        &mut constitution.scope_id,
+        RELATIONSHIP_CONSTITUTION_TEXT_MAX_CHARS,
+    );
+    compact_text(
+        &mut constitution.channel,
+        RELATIONSHIP_CONSTITUTION_TEXT_MAX_CHARS,
+    );
+    compact_text(
+        &mut constitution.chat_id,
+        RELATIONSHIP_CONSTITUTION_TEXT_MAX_CHARS,
+    );
+    compact_text_list(
+        &mut constitution.inherited_priority_constitution,
+        RELATIONSHIP_CONSTITUTION_EMBEDDED_PRIORITY_MAX_ENTRIES,
+        RELATIONSHIP_CONSTITUTION_EMBEDDED_PRIORITY_MAX_CHARS,
+    );
+    compact_text(
+        &mut constitution.inherited_response_mode,
+        RELATIONSHIP_CONSTITUTION_EMBEDDED_POSTURE_MAX_CHARS,
+    );
+    compact_text(
+        &mut constitution.inherited_initiative_posture,
+        RELATIONSHIP_CONSTITUTION_EMBEDDED_POSTURE_MAX_CHARS,
+    );
+    compact_text(
+        &mut constitution.inherited_relationship_posture,
+        RELATIONSHIP_CONSTITUTION_EMBEDDED_POSTURE_MAX_CHARS,
+    );
+    compact_text(
+        &mut constitution.boundary_floor,
+        RELATIONSHIP_CONSTITUTION_EMBEDDED_FLOOR_MAX_CHARS,
+    );
+    compact_text(
+        &mut constitution.truth_floor,
+        RELATIONSHIP_CONSTITUTION_EMBEDDED_FLOOR_MAX_CHARS,
+    );
+    compact_text(
+        &mut constitution.self_preservation_floor,
+        RELATIONSHIP_CONSTITUTION_EMBEDDED_FLOOR_MAX_CHARS,
+    );
+    compact_text(
+        &mut constitution.repair_floor,
+        RELATIONSHIP_CONSTITUTION_EMBEDDED_FLOOR_MAX_CHARS,
+    );
+    for override_entry in &mut constitution.active_overrides {
+        compact_text(
+            &mut override_entry.value,
+            RELATIONSHIP_CONSTITUTION_EMBEDDED_OVERRIDE_VALUE_MAX_CHARS,
+        );
+        compact_text(
+            &mut override_entry.reason,
+            RELATIONSHIP_CONSTITUTION_EMBEDDED_OVERRIDE_REASON_MAX_CHARS,
+        );
+    }
+    constitution
+        .active_overrides
+        .truncate(RELATIONSHIP_CONSTITUTION_EMBEDDED_OVERRIDE_MAX_ENTRIES);
+    compact_text(
+        &mut constitution.deviation_reason,
+        RELATIONSHIP_CONSTITUTION_EMBEDDED_DEVIATION_MAX_CHARS,
+    );
+    compact_text_list(
+        &mut constitution.drift_flags,
+        RELATIONSHIP_CONSTITUTION_EMBEDDED_DRIFT_FLAG_MAX_ENTRIES,
+        RELATIONSHIP_CONSTITUTION_EMBEDDED_DRIFT_FLAG_MAX_CHARS,
+    );
+}
+
+fn compact_text(value: &mut String, max_chars: usize) {
+    *value = truncate_content_to_max(value.trim(), max_chars).into_owned();
+}
+
+fn compact_text_list(values: &mut Vec<String>, max_entries: usize, max_chars: usize) {
+    for value in values.iter_mut() {
+        compact_text(value, max_chars);
+    }
+    values.truncate(max_entries);
 }
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -1207,13 +1309,15 @@ fn boundary_disclosure_label(style: BoundaryDisclosureStyle) -> &'static str {
 mod tests {
     use super::{
         audit_relationship_constitution, clamp_boundary_persona_to_constitution,
-        derive_relationship_constitution, enforce_relationship_constitution_share_action,
-        render_relationship_constitution_block, RelationshipConstitution,
-        RelationshipConstitutionAlignment, RelationshipConstitutionSyncInput,
-        RelationshipDisclosureAllowance, RelationshipTaskScopeCeiling,
+        compact_relationship_constitution_for_profile, derive_relationship_constitution,
+        enforce_relationship_constitution_share_action, render_relationship_constitution_block,
+        RelationshipBoundaryShift, RelationshipConstitution, RelationshipConstitutionAlignment,
+        RelationshipConstitutionOverride, RelationshipConstitutionOverrideDomain,
+        RelationshipConstitutionSyncInput, RelationshipDisclosureAllowance,
+        RelationshipOuterVoiceShift, RelationshipTaskScopeCeiling,
     };
     use crate::memory::{
-        BoundaryDisclosureStyle, BoundaryPersonaPosture, MentalPrivacyShareAction,
+        BoundaryDisclosureStyle, BoundaryPersonaPosture, MemoryProfile, MentalPrivacyShareAction,
         MentalPrivacyState, RecentPersonaEvidence, RelationshipGovernanceState,
         RelationshipInheritanceMode, RelationshipPortfolio, RelationshipPortfolioEntry,
         RelationshipTopology, RelationshipTopologyEntry, SelfAuthoredCore,
@@ -1423,5 +1527,163 @@ mod tests {
             .iter()
             .any(|flag| flag == "reply_scope_drift"));
         assert!(audit.has_material_drift());
+    }
+
+    fn long_text(prefix: &str, repeat: usize) -> String {
+        std::iter::repeat_n(prefix, repeat)
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    fn thick_relationship_constitution() -> RelationshipConstitution {
+        RelationshipConstitution {
+            scope_id: "rel:qq:c1".to_string(),
+            channel: "qq".to_string(),
+            chat_id: "c1".to_string(),
+            board_revision: 7,
+            governance_state: RelationshipGovernanceState::Maintain,
+            inheritance_mode: RelationshipInheritanceMode::Guarded,
+            alignment: RelationshipConstitutionAlignment::RealignNow,
+            inherited_priority_constitution: vec![
+                long_text("priority-a", 20),
+                long_text("priority-b", 20),
+                long_text("priority-c", 20),
+                long_text("priority-d", 20),
+            ],
+            inherited_response_mode: long_text("response-mode", 20),
+            inherited_initiative_posture: long_text("initiative-posture", 20),
+            inherited_relationship_posture: long_text("relationship-posture", 20),
+            task_scope_ceiling: RelationshipTaskScopeCeiling::Brief,
+            allowed_outer_voice_shift: RelationshipOuterVoiceShift::Limited,
+            allowed_boundary_shift: RelationshipBoundaryShift::SummaryOnly,
+            disclosure_allowance: RelationshipDisclosureAllowance::ExplainedOnly,
+            boundary_floor: long_text("boundary-floor", 24),
+            truth_floor: long_text("truth-floor", 24),
+            self_preservation_floor: long_text("self-preservation-floor", 24),
+            repair_floor: long_text("repair-floor", 24),
+            active_overrides: vec![
+                RelationshipConstitutionOverride {
+                    domain: RelationshipConstitutionOverrideDomain::ResponseMode,
+                    value: long_text("override-value-a", 16),
+                    reason: long_text("override-reason-a", 16),
+                },
+                RelationshipConstitutionOverride {
+                    domain: RelationshipConstitutionOverrideDomain::ReplyScope,
+                    value: long_text("override-value-b", 16),
+                    reason: long_text("override-reason-b", 16),
+                },
+                RelationshipConstitutionOverride {
+                    domain: RelationshipConstitutionOverrideDomain::Disclosure,
+                    value: long_text("override-value-c", 16),
+                    reason: long_text("override-reason-c", 16),
+                },
+                RelationshipConstitutionOverride {
+                    domain: RelationshipConstitutionOverrideDomain::OuterVoice,
+                    value: long_text("override-value-d", 16),
+                    reason: long_text("override-reason-d", 16),
+                },
+            ],
+            deviation_reason: long_text("deviation", 24),
+            next_review_at: 1_000,
+            must_realign: true,
+            erosion_risk: 84,
+            drift_score: 52,
+            review_overdue: true,
+            drift_flags: vec![
+                long_text("reply-scope-drift", 8),
+                long_text("disclosure-drift", 8),
+                long_text("boundary-drift", 8),
+                long_text("volatility-drift", 8),
+                long_text("priority-drift", 8),
+            ],
+            realignment_count: 2,
+            last_realigned_at: 700,
+            updated_at: 900,
+        }
+    }
+
+    #[test]
+    fn embedded_relationship_constitution_compaction_keeps_governance_signals_and_drops_heavy_text()
+    {
+        let compacted = compact_relationship_constitution_for_profile(
+            thick_relationship_constitution(),
+            MemoryProfile::Embedded,
+        );
+
+        assert_eq!(compacted.scope_id, "rel:qq:c1");
+        assert_eq!(compacted.channel, "qq");
+        assert_eq!(compacted.chat_id, "c1");
+        assert_eq!(compacted.board_revision, 7);
+        assert_eq!(
+            compacted.governance_state,
+            RelationshipGovernanceState::Maintain
+        );
+        assert_eq!(
+            compacted.inheritance_mode,
+            RelationshipInheritanceMode::Guarded
+        );
+        assert_eq!(
+            compacted.alignment,
+            RelationshipConstitutionAlignment::RealignNow
+        );
+        assert_eq!(
+            compacted.task_scope_ceiling,
+            RelationshipTaskScopeCeiling::Brief
+        );
+        assert_eq!(
+            compacted.allowed_outer_voice_shift,
+            RelationshipOuterVoiceShift::Limited
+        );
+        assert_eq!(
+            compacted.allowed_boundary_shift,
+            RelationshipBoundaryShift::SummaryOnly
+        );
+        assert_eq!(
+            compacted.disclosure_allowance,
+            RelationshipDisclosureAllowance::ExplainedOnly
+        );
+        assert!(compacted.must_realign);
+        assert_eq!(compacted.erosion_risk, 84);
+        assert_eq!(compacted.drift_score, 52);
+        assert!(compacted.review_overdue);
+        assert_eq!(compacted.next_review_at, 1_000);
+        assert_eq!(compacted.realignment_count, 2);
+        assert_eq!(compacted.last_realigned_at, 700);
+        assert_eq!(compacted.updated_at, 900);
+
+        assert_eq!(compacted.inherited_priority_constitution.len(), 3);
+        assert!(compacted
+            .inherited_priority_constitution
+            .iter()
+            .all(|value: &String| value.chars().count() <= 80));
+        assert!(compacted.inherited_response_mode.chars().count() <= 96);
+        assert!(compacted.inherited_initiative_posture.chars().count() <= 96);
+        assert!(compacted.inherited_relationship_posture.chars().count() <= 96);
+        assert!(compacted.boundary_floor.chars().count() <= 96);
+        assert!(compacted.truth_floor.chars().count() <= 96);
+        assert!(compacted.self_preservation_floor.chars().count() <= 96);
+        assert!(compacted.repair_floor.chars().count() <= 96);
+        assert!(compacted.deviation_reason.chars().count() <= 80);
+        assert_eq!(compacted.active_overrides.len(), 3);
+        assert!(compacted
+            .active_overrides
+            .iter()
+            .all(|entry| entry.value.chars().count() <= 80 && entry.reason.chars().count() <= 64));
+        assert_eq!(compacted.drift_flags.len(), 4);
+        assert!(compacted
+            .drift_flags
+            .iter()
+            .all(|flag: &String| flag.chars().count() <= 48));
+    }
+
+    #[test]
+    fn standard_relationship_constitution_compaction_keeps_full_contract() {
+        let constitution = thick_relationship_constitution();
+        let compacted = compact_relationship_constitution_for_profile(
+            constitution.clone(),
+            MemoryProfile::Standard,
+        );
+
+        assert_eq!(compacted, constitution);
     }
 }

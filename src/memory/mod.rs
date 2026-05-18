@@ -334,6 +334,7 @@ pub use recent_persona_evidence::{
     load_recent_persona_evidence, render_recent_persona_evidence_block, RecentPersonaEvidence,
     RECENT_PERSONA_EVIDENCE_HISTORY_LOOKBACK, RECENT_PERSONA_EVIDENCE_MEANINGFUL_TURNS,
 };
+pub(crate) use relationship_constitution::compact_relationship_constitution_for_profile;
 pub use relationship_constitution::{
     audit_relationship_constitution, clamp_boundary_persona_to_constitution,
     derive_relationship_constitution, enforce_relationship_constitution_share_action,
