@@ -384,6 +384,7 @@ Top-level fields:
 
 - `hardware_devices`
 - `i2c_bus`
+- `i2s_bus`
 - `i2c_devices`
 - `i2c_sensors`
 
@@ -393,6 +394,7 @@ Minimal example:
 {
   "hardware_devices": [],
   "i2c_bus": null,
+  "i2s_bus": null,
   "i2c_devices": [],
   "i2c_sensors": []
 }
@@ -408,6 +410,7 @@ Generic AHT20 example:
     "scl_pin": 22,
     "freq_hz": 100000
   },
+  "i2s_bus": null,
   "i2c_devices": [],
   "i2c_sensors": [
     {
@@ -454,9 +457,11 @@ Top-level fields:
 
 - `version`
 - `enabled`
+- `topology`
 - `service_provider`
 - `microphone`
 - `speaker`
+- `codec`
 - `vad`
 - `wake_word` (currently Beetle's built-in acoustic wake backend; external wake backends are future extension points and are not configured in this round)
 - `speech`
@@ -467,6 +472,12 @@ Top-level fields:
 
 `wake_word` currently keeps the top-level object name for compatibility. Its current shape is:
 `enabled`, `enter_threshold`, `leave_threshold`, `reference_suppress_ratio`, `zcr_min`, `zcr_max`, `min_speech_band_ratio`, `min_active_ms`, `hangover_ms`, `cooldown_ms`, `keyword` (legacy read-only compatibility), and `wake_prompt`. The configure-ui only exposes the acoustic parameters and `wake_prompt`.
+
+`topology` currently supports `discrete_i2s` and `i2s_codec`. In `i2s_codec` mode, `codec` contains `input_codec`, `output_codec`, `input_addr`, `output_addr`, `pa_pin`, and `input_reference`. The current ESP-BOX-3 codec path supports ES7210 input and ES8311 output.
+
+For `audio.topology = "i2s_codec"` with ES7210 input reference enabled, the old acoustic defaults are normalized to the ESP-BOX-3 sensitivity profile on save/runtime load: `enter_threshold=0.01`, `leave_threshold=0.005`, `zcr_max=0.65`, `min_speech_band_ratio=0.35`, and `min_active_ms=120`.
+
+In the same mode, the device reads ES7210 multi-channel input and feeds the currently active input channel to the built-in acoustic wake backend. Users do not need to configure a TDM channel index manually.
 
 Optional query parameter: `restart=1`
 

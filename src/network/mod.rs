@@ -59,6 +59,10 @@ static EXTERNAL_WSS_MANAGED_PRESENT: AtomicBool = AtomicBool::new(false);
 static EXTERNAL_WSS_SUSPEND_REQUEST_COUNT: AtomicU32 = AtomicU32::new(0);
 static EXTERNAL_WSS_VOICE_SUSPEND_REQUEST_COUNT: AtomicU32 = AtomicU32::new(0);
 static EXTERNAL_WSS_CONFIG_SUSPEND_REQUEST_COUNT: AtomicU32 = AtomicU32::new(0);
+static EXTERNAL_WSS_WORKER_EVICT_REQUEST_COUNT: AtomicU32 = AtomicU32::new(0);
+static EXTERNAL_WSS_WORKER_EVICT_VOICE_REQUEST_COUNT: AtomicU32 = AtomicU32::new(0);
+static EXTERNAL_WSS_WORKER_EVICT_CONFIG_REQUEST_COUNT: AtomicU32 = AtomicU32::new(0);
+static EXTERNAL_WSS_WORKER_EVICT_OUTBOUND_REQUEST_COUNT: AtomicU32 = AtomicU32::new(0);
 static EXTERNAL_WSS_SUSPENDED: AtomicBool = AtomicBool::new(false);
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 static TLS_PERMIT: Mutex<()> = Mutex::new(());
@@ -197,6 +201,7 @@ pub enum TransportWssProfile {
 pub enum ExternalWssSuspendReason {
     VoiceExclusive,
     ConfigPersisting,
+    OutboundHttpRecovery,
 }
 
 impl ExternalWssSuspendReason {
@@ -204,6 +209,7 @@ impl ExternalWssSuspendReason {
         match self {
             Self::VoiceExclusive => "voice_exclusive_suspend",
             Self::ConfigPersisting => "config_persisting_suspend",
+            Self::OutboundHttpRecovery => "outbound_http_recovery_suspend",
         }
     }
 }
@@ -310,6 +316,12 @@ pub struct ExternalWssSuspendGuard {
     reason: ExternalWssSuspendReason,
 }
 
+/// Scoped external WSS worker eviction request for voice-exclusive resource windows.
+pub struct ExternalWssWorkerEvictGuard {
+    active: bool,
+    reason: ExternalWssSuspendReason,
+}
+
 #[derive(Debug)]
 struct VoiceExclusiveLeaseGuard {
     owner: crate::runtime::lease::LeaseOwner,
@@ -330,6 +342,15 @@ impl Drop for ExternalWssSuspendGuard {
     fn drop(&mut self) {
         if self.active {
             release_external_wss_suspend_request(self.reason);
+            self.active = false;
+        }
+    }
+}
+
+impl Drop for ExternalWssWorkerEvictGuard {
+    fn drop(&mut self) {
+        if self.active {
+            release_external_wss_worker_evict_request(self.reason);
             self.active = false;
         }
     }
@@ -660,6 +681,7 @@ fn ensure_outbound_network_ready(stage: &'static str, operation: &'static str) -
 /// RAII guard for entering voice-exclusive transport ownership.
 pub struct VoiceExclusiveTransportGuard {
     log_tag: &'static str,
+    worker_evict_guard: Option<ExternalWssWorkerEvictGuard>,
     suspend_guard: Option<ExternalWssSuspendGuard>,
     voice_exclusive_lease: Option<VoiceExclusiveLeaseGuard>,
 }
@@ -669,6 +691,8 @@ impl VoiceExclusiveTransportGuard {
         let voice_exclusive_lease = acquire_voice_exclusive_lease()?;
         let suspend_guard =
             begin_external_wss_suspend_request(ExternalWssSuspendReason::VoiceExclusive);
+        let worker_evict_guard =
+            begin_external_wss_worker_evict_request(ExternalWssSuspendReason::VoiceExclusive);
         crate::state::set_voice_exclusive_active(true);
         log::info!(
             "[{}] realtime session switching runtime mode (external WSS suspended)",
@@ -676,6 +700,7 @@ impl VoiceExclusiveTransportGuard {
         );
         if let Err(error) = wait_for_external_wss_to_suspend_and_drain(platform, log_tag) {
             crate::state::set_voice_exclusive_active(false);
+            drop(worker_evict_guard);
             drop(suspend_guard);
             drop(voice_exclusive_lease);
             return Err(error);
@@ -686,6 +711,7 @@ impl VoiceExclusiveTransportGuard {
         );
         Ok(Self {
             log_tag,
+            worker_evict_guard: Some(worker_evict_guard),
             suspend_guard: Some(suspend_guard),
             voice_exclusive_lease: Some(voice_exclusive_lease),
         })
@@ -695,6 +721,7 @@ impl VoiceExclusiveTransportGuard {
 impl Drop for VoiceExclusiveTransportGuard {
     fn drop(&mut self) {
         crate::state::set_voice_exclusive_active(false);
+        self.worker_evict_guard.take();
         self.suspend_guard.take();
         self.voice_exclusive_lease.take();
         log::info!(
@@ -757,15 +784,29 @@ pub fn external_wss_network_suspend_reason(
 
 pub fn set_external_wss_managed_present(active: bool) {
     EXTERNAL_WSS_MANAGED_PRESENT.store(active, Ordering::Relaxed);
-    if !active {
+    if active {
+        EXTERNAL_WSS_SUSPENDED.store(false, Ordering::Relaxed);
+    } else {
         EXTERNAL_WSS_SUSPEND_REQUEST_COUNT.store(0, Ordering::Relaxed);
         EXTERNAL_WSS_VOICE_SUSPEND_REQUEST_COUNT.store(0, Ordering::Relaxed);
         EXTERNAL_WSS_CONFIG_SUSPEND_REQUEST_COUNT.store(0, Ordering::Relaxed);
+        EXTERNAL_WSS_WORKER_EVICT_REQUEST_COUNT.store(0, Ordering::Relaxed);
+        EXTERNAL_WSS_WORKER_EVICT_VOICE_REQUEST_COUNT.store(0, Ordering::Relaxed);
+        EXTERNAL_WSS_WORKER_EVICT_CONFIG_REQUEST_COUNT.store(0, Ordering::Relaxed);
+        EXTERNAL_WSS_WORKER_EVICT_OUTBOUND_REQUEST_COUNT.store(0, Ordering::Relaxed);
         EXTERNAL_WSS_CONNECTING_COUNT.store(0, Ordering::Relaxed);
         EXTERNAL_WSS_SUSPENDED.store(false, Ordering::Relaxed);
         let _ = crate::runtime::lease::release_kind(crate::runtime::lease::LeaseKind::ExternalWss);
-        let _ = crate::runtime::lease::release_kind(crate::runtime::lease::LeaseKind::TlsHandshake);
     }
+    crate::bg_timer::notify_deadline_changed();
+}
+
+pub fn mark_external_wss_worker_unloaded() {
+    EXTERNAL_WSS_MANAGED_PRESENT.store(false, Ordering::Relaxed);
+    EXTERNAL_WSS_CONNECTING_COUNT.store(0, Ordering::Relaxed);
+    EXTERNAL_WSS_SUSPENDED.store(true, Ordering::Relaxed);
+    let _ = crate::runtime::lease::release_kind(crate::runtime::lease::LeaseKind::ExternalWss);
+    crate::bg_timer::notify_deadline_changed();
 }
 
 pub fn external_wss_managed_present() -> bool {
@@ -796,6 +837,16 @@ pub fn begin_external_wss_suspend_request(
     }
 }
 
+pub fn begin_external_wss_worker_evict_request(
+    reason: ExternalWssSuspendReason,
+) -> ExternalWssWorkerEvictGuard {
+    request_external_wss_worker_evict_for_reason(reason);
+    ExternalWssWorkerEvictGuard {
+        active: true,
+        reason,
+    }
+}
+
 fn release_external_wss_suspend_request(reason: ExternalWssSuspendReason) {
     decrement_external_wss_suspend_reason(reason);
     let _ = EXTERNAL_WSS_SUSPEND_REQUEST_COUNT.fetch_update(
@@ -808,6 +859,31 @@ fn release_external_wss_suspend_request(reason: ExternalWssSuspendReason) {
         EXTERNAL_WSS_VOICE_SUSPEND_REQUEST_COUNT.store(0, Ordering::Relaxed);
         EXTERNAL_WSS_CONFIG_SUSPEND_REQUEST_COUNT.store(0, Ordering::Relaxed);
     }
+    crate::bg_timer::notify_deadline_changed();
+}
+
+fn request_external_wss_worker_evict_for_reason(reason: ExternalWssSuspendReason) {
+    increment_external_wss_worker_evict_reason(reason);
+    EXTERNAL_WSS_WORKER_EVICT_REQUEST_COUNT.fetch_add(1, Ordering::Relaxed);
+    crate::bg_timer::notify_deadline_changed();
+}
+
+fn release_external_wss_worker_evict_request(reason: ExternalWssSuspendReason) {
+    decrement_external_wss_worker_evict_reason(reason);
+    let _ = EXTERNAL_WSS_WORKER_EVICT_REQUEST_COUNT.fetch_update(
+        Ordering::Relaxed,
+        Ordering::Relaxed,
+        |count| count.checked_sub(1),
+    );
+    if !external_wss_worker_evict_requested() {
+        EXTERNAL_WSS_WORKER_EVICT_VOICE_REQUEST_COUNT.store(0, Ordering::Relaxed);
+        EXTERNAL_WSS_WORKER_EVICT_CONFIG_REQUEST_COUNT.store(0, Ordering::Relaxed);
+        EXTERNAL_WSS_WORKER_EVICT_OUTBOUND_REQUEST_COUNT.store(0, Ordering::Relaxed);
+        if !external_wss_suspend_requested() {
+            EXTERNAL_WSS_SUSPENDED.store(false, Ordering::Relaxed);
+        }
+    }
+    crate::bg_timer::notify_deadline_changed();
 }
 
 fn increment_external_wss_suspend_reason(reason: ExternalWssSuspendReason) {
@@ -818,6 +894,7 @@ fn increment_external_wss_suspend_reason(reason: ExternalWssSuspendReason) {
         ExternalWssSuspendReason::ConfigPersisting => {
             EXTERNAL_WSS_CONFIG_SUSPEND_REQUEST_COUNT.fetch_add(1, Ordering::Relaxed);
         }
+        ExternalWssSuspendReason::OutboundHttpRecovery => {}
     }
 }
 
@@ -825,6 +902,36 @@ fn decrement_external_wss_suspend_reason(reason: ExternalWssSuspendReason) {
     let counter = match reason {
         ExternalWssSuspendReason::VoiceExclusive => &EXTERNAL_WSS_VOICE_SUSPEND_REQUEST_COUNT,
         ExternalWssSuspendReason::ConfigPersisting => &EXTERNAL_WSS_CONFIG_SUSPEND_REQUEST_COUNT,
+        ExternalWssSuspendReason::OutboundHttpRecovery => return,
+    };
+    let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
+        count.checked_sub(1)
+    });
+}
+
+fn increment_external_wss_worker_evict_reason(reason: ExternalWssSuspendReason) {
+    match reason {
+        ExternalWssSuspendReason::VoiceExclusive => {
+            EXTERNAL_WSS_WORKER_EVICT_VOICE_REQUEST_COUNT.fetch_add(1, Ordering::Relaxed);
+        }
+        ExternalWssSuspendReason::ConfigPersisting => {
+            EXTERNAL_WSS_WORKER_EVICT_CONFIG_REQUEST_COUNT.fetch_add(1, Ordering::Relaxed);
+        }
+        ExternalWssSuspendReason::OutboundHttpRecovery => {
+            EXTERNAL_WSS_WORKER_EVICT_OUTBOUND_REQUEST_COUNT.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+}
+
+fn decrement_external_wss_worker_evict_reason(reason: ExternalWssSuspendReason) {
+    let counter = match reason {
+        ExternalWssSuspendReason::VoiceExclusive => &EXTERNAL_WSS_WORKER_EVICT_VOICE_REQUEST_COUNT,
+        ExternalWssSuspendReason::ConfigPersisting => {
+            &EXTERNAL_WSS_WORKER_EVICT_CONFIG_REQUEST_COUNT
+        }
+        ExternalWssSuspendReason::OutboundHttpRecovery => {
+            &EXTERNAL_WSS_WORKER_EVICT_OUTBOUND_REQUEST_COUNT
+        }
     };
     let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
         count.checked_sub(1)
@@ -833,6 +940,10 @@ fn decrement_external_wss_suspend_reason(reason: ExternalWssSuspendReason) {
 
 pub fn external_wss_suspend_requested() -> bool {
     EXTERNAL_WSS_SUSPEND_REQUEST_COUNT.load(Ordering::Relaxed) > 0
+}
+
+pub fn external_wss_worker_evict_requested() -> bool {
+    EXTERNAL_WSS_WORKER_EVICT_REQUEST_COUNT.load(Ordering::Relaxed) > 0
 }
 
 pub fn set_external_wss_suspended(active: bool) {
@@ -853,6 +964,18 @@ pub fn external_wss_suspend_reason() -> Option<ExternalWssSuspendReason> {
     }
 }
 
+pub fn external_wss_worker_evict_reason() -> Option<ExternalWssSuspendReason> {
+    if EXTERNAL_WSS_WORKER_EVICT_VOICE_REQUEST_COUNT.load(Ordering::Relaxed) > 0 {
+        Some(ExternalWssSuspendReason::VoiceExclusive)
+    } else if EXTERNAL_WSS_WORKER_EVICT_CONFIG_REQUEST_COUNT.load(Ordering::Relaxed) > 0 {
+        Some(ExternalWssSuspendReason::ConfigPersisting)
+    } else if EXTERNAL_WSS_WORKER_EVICT_OUTBOUND_REQUEST_COUNT.load(Ordering::Relaxed) > 0 {
+        Some(ExternalWssSuspendReason::OutboundHttpRecovery)
+    } else {
+        None
+    }
+}
+
 fn external_wss_suspend_target_drained() -> bool {
     active_external_wss_count() == 0
         && active_external_wss_lease_count() == 0
@@ -860,6 +983,25 @@ fn external_wss_suspend_target_drained() -> bool {
         && (!external_wss_managed_present()
             || external_wss_suspended()
             || external_wss_suspend_requested())
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+fn realtime_voice_pre_spawn_largest_floor() -> usize {
+    realtime_voice_pre_spawn_largest_floor_value()
+}
+
+#[cfg(test)]
+fn realtime_voice_pre_spawn_largest_floor_for_tests() -> usize {
+    realtime_voice_pre_spawn_largest_floor_value()
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
+fn realtime_voice_pre_spawn_largest_floor_value() -> usize {
+    // This gate runs before the connect worker exists. It must prove the worker
+    // can be allocated, but the worker re-checks the TLS largest-block floor
+    // after its stack is actually allocated and before the handshake starts.
+    crate::constants::TLS_ADMISSION_MIN_LARGEST_BLOCK_BYTES
+        .max(crate::util::STACK_VOICE_REALTIME_CONNECT)
 }
 
 /// Wait until the external WSS plane is not established or handshaking.
@@ -930,6 +1072,10 @@ fn wait_for_external_wss_suspend_with_timeout(
 pub fn wait_for_external_wss_resume(tag: &str) {
     let mut logged = false;
     while external_wss_suspend_requested() {
+        if external_wss_worker_evict_requested() {
+            set_external_wss_suspended(true);
+            return;
+        }
         if !logged {
             log::info!(
                 "[{}] external WSS suspended reason={}",
@@ -963,6 +1109,7 @@ fn wait_for_external_wss_to_suspend_and_drain(
         let active_wss = active_wss_count();
         let active_wss_leases = active_external_wss_lease_count();
         let connecting_wss = external_wss_connecting_count();
+        let active_outbound_workers = crate::channels::active_os_outbound_worker_count();
         let mode_switched = external_wss_suspend_target_drained();
         let snap = platform.memory_snapshot();
         let min_free = if snap.heap_free_spiram > 0 {
@@ -970,13 +1117,17 @@ fn wait_for_external_wss_to_suspend_and_drain(
         } else {
             TLS_ADMISSION_NO_PSRAM_MIN_BYTES as u32
         };
+        let min_largest = realtime_voice_pre_spawn_largest_floor() as u32;
         let enough_free = snap.heap_free_internal >= min_free;
-        let enough_largest = snap.heap_free_spiram == 0
-            || snap.heap_largest_block >= TLS_ADMISSION_MIN_LARGEST_BLOCK_BYTES as u32;
+        let enough_largest = snap.heap_free_spiram == 0 || snap.heap_largest_block >= min_largest;
+        let worker_evicted =
+            !external_wss_worker_evict_requested() || !external_wss_managed_present();
         if mode_switched
             && active_wss == 0
             && active_wss_leases == 0
             && connecting_wss == 0
+            && active_outbound_workers == 0
+            && worker_evicted
             && enough_free
             && enough_largest
         {
@@ -986,25 +1137,31 @@ fn wait_for_external_wss_to_suspend_and_drain(
             return Err(Error::config(
                 "voice_exclusive_wss_drain_timeout",
                 format!(
-                    "external WSS did not drain before realtime connect active_wss={} active_wss_leases={} connecting_wss={} free={} largest={} spiram={}",
+                    "external WSS did not drain before realtime connect active_wss={} active_wss_leases={} connecting_wss={} active_outbound_workers={} worker_evicted={} free={} largest={} largest_min={} spiram={}",
                     active_wss,
                     active_wss_leases,
                     connecting_wss,
+                    active_outbound_workers,
+                    worker_evicted,
                     snap.heap_free_internal,
                     snap.heap_largest_block,
+                    min_largest,
                     snap.heap_free_spiram
                 ),
             ));
         }
         if Instant::now() >= next_warn_at {
             log::warn!(
-                "[{}] waiting for external WSS suspend/resources before realtime connect active_wss={} active_wss_leases={} connecting_wss={} free={} largest={} spiram={}",
+                "[{}] waiting for external WSS suspend/resources before realtime connect active_wss={} active_wss_leases={} connecting_wss={} active_outbound_workers={} worker_evicted={} free={} largest={} largest_min={} spiram={}",
                 log_tag,
                 active_wss,
                 active_wss_leases,
                 connecting_wss,
+                active_outbound_workers,
+                worker_evicted,
                 snap.heap_free_internal,
                 snap.heap_largest_block,
+                min_largest,
                 snap.heap_free_spiram
             );
             next_warn_at = Instant::now() + Duration::from_millis(REALTIME_WSS_DRAIN_WAIT_MS);
@@ -1140,8 +1297,20 @@ where
     Conn: FnMut(&str) -> Result<C>,
 {
     loop {
+        if external_wss_worker_evict_requested() {
+            return Err(Error::config(
+                "external_wss_worker_evict",
+                "external WSS worker evicted for voice-exclusive resource window",
+            ));
+        }
         ensure_outbound_network_ready("external_wss_network_ready", "external WSS connect")?;
         wait_for_external_wss_resume("external_wss_connect");
+        if external_wss_worker_evict_requested() {
+            return Err(Error::config(
+                "external_wss_worker_evict",
+                "external WSS worker evicted for voice-exclusive resource window",
+            ));
+        }
         let _connect_guard = begin_external_wss_connect_attempt();
         if external_wss_suspend_requested() {
             continue;
@@ -1360,6 +1529,34 @@ mod tests {
     }
 
     #[test]
+    fn voice_exclusive_evict_request_round_trips() {
+        let _guard = crate::state::test_state_guard();
+        set_external_wss_managed_present(false);
+        assert!(!external_wss_worker_evict_requested());
+
+        let evict =
+            begin_external_wss_worker_evict_request(ExternalWssSuspendReason::VoiceExclusive);
+        assert!(external_wss_worker_evict_requested());
+        assert_eq!(
+            external_wss_worker_evict_reason().map(ExternalWssSuspendReason::as_str),
+            Some("voice_exclusive_suspend")
+        );
+
+        drop(evict);
+        assert!(!external_wss_worker_evict_requested());
+        assert_eq!(external_wss_worker_evict_reason(), None);
+    }
+
+    #[test]
+    fn realtime_pre_spawn_largest_floor_uses_two_stage_tls_admission() {
+        assert_eq!(
+            realtime_voice_pre_spawn_largest_floor_for_tests(),
+            crate::constants::TLS_ADMISSION_MIN_LARGEST_BLOCK_BYTES
+                .max(crate::util::STACK_VOICE_REALTIME_CONNECT)
+        );
+    }
+
+    #[test]
     fn external_wss_lease_blocks_other_channel_until_drop() {
         let _guard = crate::state::test_state_guard();
         let _lease_guard = crate::runtime::lease::lease_test_guard();
@@ -1463,6 +1660,34 @@ mod tests {
                 crate::runtime::lease::LeaseKind::TlsHandshake
             ),
             0
+        );
+    }
+
+    #[test]
+    fn external_wss_worker_unload_does_not_release_other_tls_handshake_owner() {
+        let _guard = crate::state::test_state_guard();
+        let _lease_guard = crate::runtime::lease::lease_test_guard();
+        let owner = crate::runtime::lease::LeaseOwner::new("http", "config_save");
+        let _lease = crate::runtime::lease::try_acquire(
+            crate::runtime::lease::LeaseKind::TlsHandshake,
+            owner,
+            crate::runtime::lease::LeaseMode::Exclusive,
+            None,
+        );
+        assert_eq!(
+            crate::runtime::lease::active_count_for_kind(
+                crate::runtime::lease::LeaseKind::TlsHandshake
+            ),
+            1
+        );
+
+        mark_external_wss_worker_unloaded();
+
+        assert_eq!(
+            crate::runtime::lease::active_count_for_kind(
+                crate::runtime::lease::LeaseKind::TlsHandshake
+            ),
+            1
         );
     }
 

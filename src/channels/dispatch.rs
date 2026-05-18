@@ -39,8 +39,12 @@ use crate::util::truncate_content_to_max;
     feature = "qq_channel"
 ))]
 use crate::util::STACK_CHANNEL_SENDER;
+#[cfg(any(feature = "telegram", feature = "feishu", feature = "qq_channel", test))]
+use crate::util::{spawn_guarded_with_profile_handle, HttpThreadRole, SpawnCore, TaskHandle};
 use std::collections::HashMap;
 use std::collections::VecDeque;
+#[cfg(any(feature = "telegram", feature = "feishu", feature = "qq_channel", test))]
+use std::sync::atomic::{AtomicU32, Ordering};
 #[cfg(any(
     feature = "telegram",
     feature = "feishu",
@@ -50,6 +54,8 @@ use std::collections::VecDeque;
 ))]
 use std::sync::mpsc;
 use std::sync::Arc;
+#[cfg(any(feature = "telegram", feature = "feishu", feature = "qq_channel", test))]
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 /// 出站发送抽象；各通道实现此 trait，由 main 注册到 ChannelSinks。
@@ -208,6 +214,8 @@ const SEND_RETRY: u32 = 2;
 const SEND_RETRY: u32 = 3;
 
 const SEND_RETRY_DELAY_MS: u64 = 500;
+#[cfg(any(feature = "telegram", feature = "feishu", feature = "qq_channel", test))]
+const OS_OUTBOUND_IDLE_EXIT_MS: u64 = 1_500;
 
 fn is_channel_in_cooldown(channel: &str) -> bool {
     !crate::orchestrator::is_channel_healthy_pub(channel)
@@ -247,9 +255,7 @@ fn apply_primary_outbound_admission(
         AdmissionDecision::Accept => PrimaryOutboundAdmission::Proceed,
         AdmissionDecision::Defer { delay_ms } => {
             log::info!("[{}] outbound deferred {}ms (pressure)", tag, delay_ms);
-            std::thread::sleep(std::time::Duration::from_millis(delay_ms));
-            crate::platform::task_wdt::feed_current_task();
-            PrimaryOutboundAdmission::Proceed
+            PrimaryOutboundAdmission::Deferred
         }
         AdmissionDecision::Reject { reason } => {
             log::info!(
@@ -261,6 +267,42 @@ fn apply_primary_outbound_admission(
             );
             PrimaryOutboundAdmission::Deferred
         }
+    }
+}
+
+#[cfg(any(feature = "telegram", feature = "feishu", feature = "qq_channel", test))]
+fn ensure_outbound_http_recovery_wss_evict(
+    tag: &str,
+    evict_guard: &mut Option<crate::network::ExternalWssWorkerEvictGuard>,
+) {
+    if evict_guard.is_some()
+        || !crate::network::external_wss_managed_present()
+        || (crate::network::active_external_wss_count() == 0
+            && crate::network::external_wss_connecting_count() == 0)
+        || crate::orchestrator::current_tls_fragmentation_risk()
+            != crate::orchestrator::TlsFragmentationRisk::Critical
+    {
+        return;
+    }
+    log::info!(
+        "[{}] requesting external WSS worker evict for outbound HTTP recovery",
+        tag
+    );
+    *evict_guard = Some(crate::network::begin_external_wss_worker_evict_request(
+        crate::network::ExternalWssSuspendReason::OutboundHttpRecovery,
+    ));
+}
+
+#[cfg(any(feature = "telegram", feature = "feishu", feature = "qq_channel", test))]
+fn release_outbound_http_recovery_wss_evict(
+    tag: &str,
+    evict_guard: &mut Option<crate::network::ExternalWssWorkerEvictGuard>,
+) {
+    if evict_guard.take().is_some() {
+        log::info!(
+            "[{}] released external WSS worker evict after outbound buffer drained",
+            tag
+        );
     }
 }
 
@@ -665,9 +707,39 @@ fn dispatch_or_buffer_via_sink(
 }
 
 #[cfg(any(feature = "telegram", feature = "feishu", feature = "qq_channel", test))]
+static ACTIVE_OS_OUTBOUND_WORKER_COUNT: AtomicU32 = AtomicU32::new(0);
+
+#[cfg(not(any(feature = "telegram", feature = "feishu", feature = "qq_channel", test)))]
+pub fn active_os_outbound_worker_count() -> u32 {
+    0
+}
+
+#[cfg(any(feature = "telegram", feature = "feishu", feature = "qq_channel", test))]
+pub fn active_os_outbound_worker_count() -> u32 {
+    ACTIVE_OS_OUTBOUND_WORKER_COUNT.load(Ordering::Relaxed)
+}
+
+#[cfg(any(feature = "telegram", feature = "feishu", feature = "qq_channel", test))]
+struct OsOutboundWorkerActiveGuard;
+
+#[cfg(any(feature = "telegram", feature = "feishu", feature = "qq_channel", test))]
+impl Drop for OsOutboundWorkerActiveGuard {
+    fn drop(&mut self) {
+        ACTIVE_OS_OUTBOUND_WORKER_COUNT.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+#[cfg(any(feature = "telegram", feature = "feishu", feature = "qq_channel", test))]
+fn begin_os_outbound_worker_active() -> OsOutboundWorkerActiveGuard {
+    ACTIVE_OS_OUTBOUND_WORKER_COUNT.fetch_add(1, Ordering::Relaxed);
+    OsOutboundWorkerActiveGuard
+}
+
+#[cfg(any(feature = "telegram", feature = "feishu", feature = "qq_channel", test))]
+#[derive(Clone)]
 pub struct ActiveOutboundDriverConfig {
     channel: String,
-    driver_builder: Box<dyn FnOnce() -> Box<dyn super::send::ActiveChannelSender> + Send>,
+    driver_builder: Arc<dyn Fn() -> Box<dyn super::send::ActiveChannelSender> + Send + Sync>,
 }
 
 #[cfg(any(feature = "telegram", feature = "feishu", feature = "qq_channel", test))]
@@ -867,11 +939,98 @@ pub fn run_os_outbound_worker(
     local_sinks: Arc<ChannelSinks>,
     capability_registry: Arc<ChannelCapabilityRegistry>,
 ) {
+    run_os_outbound_worker_inner(
+        move |timeout| outbound_rx.recv_timeout(timeout),
+        active,
+        local_sinks,
+        capability_registry,
+        false,
+        VecDeque::new(),
+        None,
+    );
+}
+
+#[cfg(any(feature = "telegram", feature = "feishu", feature = "qq_channel", test))]
+fn run_os_outbound_worker_from_shared_rx(
+    outbound_rx: Arc<Mutex<OutboundRx>>,
+    active: ActiveOutboundDriverConfig,
+    local_sinks: Arc<ChannelSinks>,
+    capability_registry: Arc<ChannelCapabilityRegistry>,
+    prefetched: VecDeque<PcMsg>,
+    supervisor_pending: Arc<Mutex<VecDeque<PcMsg>>>,
+) {
+    run_os_outbound_worker_inner(
+        move |timeout| {
+            let rx = outbound_rx
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            rx.recv_timeout(timeout)
+        },
+        active,
+        local_sinks,
+        capability_registry,
+        true,
+        prefetched,
+        Some(supervisor_pending),
+    );
+}
+
+#[cfg(any(feature = "telegram", feature = "feishu", feature = "qq_channel", test))]
+fn should_stop_os_outbound_for_runtime_gate(
+    allow_runtime_idle_exit: bool,
+    allow_non_voice_outbound: bool,
+) -> bool {
+    allow_runtime_idle_exit && !allow_non_voice_outbound
+}
+
+#[cfg(any(feature = "telegram", feature = "feishu", feature = "qq_channel", test))]
+fn restore_os_outbound_prefetch(pending: &mut VecDeque<PcMsg>, mut prefetched: VecDeque<PcMsg>) {
+    while let Some(msg) = prefetched.pop_back() {
+        pending.push_front(msg);
+    }
+}
+
+#[cfg(any(feature = "telegram", feature = "feishu", feature = "qq_channel", test))]
+fn return_os_outbound_worker_backlog(
+    supervisor_pending: Option<&Arc<Mutex<VecDeque<PcMsg>>>>,
+    prefetched: &mut VecDeque<PcMsg>,
+    cooldown_buffer: &mut VecDeque<PcMsg>,
+) {
+    let Some(supervisor_pending) = supervisor_pending else {
+        return;
+    };
+    let mut returned = VecDeque::new();
+    returned.append(cooldown_buffer);
+    returned.append(prefetched);
+    if returned.is_empty() {
+        return;
+    }
+    let mut pending = supervisor_pending
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    restore_os_outbound_prefetch(&mut pending, returned);
+}
+
+#[cfg(any(feature = "telegram", feature = "feishu", feature = "qq_channel", test))]
+fn run_os_outbound_worker_inner<F>(
+    mut recv_timeout: F,
+    active: ActiveOutboundDriverConfig,
+    local_sinks: Arc<ChannelSinks>,
+    capability_registry: Arc<ChannelCapabilityRegistry>,
+    allow_runtime_idle_exit: bool,
+    mut prefetched: VecDeque<PcMsg>,
+    supervisor_pending: Option<Arc<Mutex<VecDeque<PcMsg>>>>,
+) where
+    F: FnMut(Duration) -> std::result::Result<PcMsg, std::sync::mpsc::RecvTimeoutError>,
+{
     const TAG: &str = "os_outbound";
+    let _active_guard = begin_os_outbound_worker_active();
     let active_channel: Arc<str> = Arc::from(active.channel.as_str());
     let mut active_driver = (active.driver_builder)();
     let mut cooldown_buffer: VecDeque<crate::bus::PcMsg> = VecDeque::new();
     let mut replay_gate = DeferredReplayGate::default();
+    let mut outbound_recovery_wss_evict_guard = None;
+    let mut idle_started_at: Option<Instant> = None;
 
     loop {
         crate::platform::task_wdt::feed_current_task();
@@ -906,23 +1065,67 @@ pub fn run_os_outbound_worker(
             );
             if cooldown_buffer.is_empty() {
                 replay_gate.clear();
+                release_outbound_http_recovery_wss_evict(
+                    TAG,
+                    &mut outbound_recovery_wss_evict_guard,
+                );
             } else {
+                ensure_outbound_http_recovery_wss_evict(
+                    TAG,
+                    &mut outbound_recovery_wss_evict_guard,
+                );
                 replay_gate.defer(Duration::from_millis(deferred_buffer_replay_delay_ms()));
             }
         }
 
-        let msg = match outbound_rx.recv_timeout(Duration::from_millis(DISPATCH_POLL_MAX_WAIT_MS)) {
-            Ok(m) => m,
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
-            Err(error) => {
-                log::warn!(
-                    "[{}] outbound disconnected, worker exiting: {:?}",
-                    TAG,
-                    error
-                );
-                break;
+        let allow_non_voice_outbound = crate::runtime::thread_registry::runtime_mode_snapshot()
+            .action_budget
+            .allow_non_voice_outbound;
+        if should_stop_os_outbound_for_runtime_gate(
+            allow_runtime_idle_exit,
+            allow_non_voice_outbound,
+        ) {
+            return_os_outbound_worker_backlog(
+                supervisor_pending.as_ref(),
+                &mut prefetched,
+                &mut cooldown_buffer,
+            );
+            log::info!(
+                "[{}] runtime gate disabled non-voice outbound; worker exiting idle for resource window",
+                TAG
+            );
+            break;
+        }
+
+        let msg = if let Some(prefetched) = prefetched.pop_front() {
+            prefetched
+        } else {
+            match recv_timeout(Duration::from_millis(DISPATCH_POLL_MAX_WAIT_MS)) {
+                Ok(m) => m,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    if allow_runtime_idle_exit && cooldown_buffer.is_empty() {
+                        let now = Instant::now();
+                        let started_at = *idle_started_at.get_or_insert(now);
+                        if now.duration_since(started_at)
+                            >= Duration::from_millis(OS_OUTBOUND_IDLE_EXIT_MS)
+                        {
+                            log::info!("[{}] idle timeout reached; worker exiting", TAG);
+                            break;
+                        }
+                    }
+                    continue;
+                }
+                Err(error) => {
+                    log::warn!(
+                        "[{}] outbound disconnected, worker exiting: {:?}",
+                        TAG,
+                        error
+                    );
+                    break;
+                }
             }
         };
+        idle_started_at = None;
 
         let content = truncate_content_to_max(&msg.content, MAX_CONTENT_LEN);
         if content.trim() == "SILENT" || msg.channel.as_ref() == "cron" {
@@ -957,6 +1160,10 @@ pub fn run_os_outbound_worker(
                     msg.channel,
                     reason
                 );
+                ensure_outbound_http_recovery_wss_evict(
+                    TAG,
+                    &mut outbound_recovery_wss_evict_guard,
+                );
                 buffer_deferred_msg_without_replay(TAG, &mut cooldown_buffer, msg);
                 replay_gate.defer(Duration::from_millis(deferred_buffer_replay_delay_ms()));
             }
@@ -972,6 +1179,10 @@ pub fn run_os_outbound_worker(
                     msg.channel
                 );
             } else {
+                ensure_outbound_http_recovery_wss_evict(
+                    TAG,
+                    &mut outbound_recovery_wss_evict_guard,
+                );
                 buffer_deferred_msg_without_replay(TAG, &mut cooldown_buffer, msg);
                 replay_gate.defer(Duration::from_millis(deferred_buffer_replay_delay_ms()));
             }
@@ -986,10 +1197,106 @@ pub fn run_os_outbound_worker(
         ) {
             DispatchOutcome::Sent | DispatchOutcome::Failed => {}
             DispatchOutcome::Deferred => {
+                ensure_outbound_http_recovery_wss_evict(
+                    TAG,
+                    &mut outbound_recovery_wss_evict_guard,
+                );
                 buffer_deferred_msg_without_replay(TAG, &mut cooldown_buffer, msg);
                 replay_gate.defer(Duration::from_millis(deferred_buffer_replay_delay_ms()));
             }
         }
+    }
+}
+
+#[cfg(any(feature = "telegram", feature = "feishu", feature = "qq_channel", test))]
+/// 常驻小栈出站监管器：持有 OS outbound receiver，按 runtime mode 拉起/卸载重栈 HTTP sender。
+pub fn run_os_outbound_supervisor(
+    outbound_rx: OutboundRx,
+    active: ActiveOutboundDriverConfig,
+    local_sinks: Arc<ChannelSinks>,
+    capability_registry: Arc<ChannelCapabilityRegistry>,
+) {
+    const TAG: &str = "os_outbound_supervisor";
+    let outbound_rx = Arc::new(Mutex::new(outbound_rx));
+    let supervisor_pending: Arc<Mutex<VecDeque<PcMsg>>> = Arc::new(Mutex::new(VecDeque::new()));
+    let mut worker_handle: Option<TaskHandle> = None;
+
+    loop {
+        crate::platform::task_wdt::feed_current_task();
+        if worker_handle
+            .as_ref()
+            .is_some_and(crate::util::TaskHandle::is_finished)
+        {
+            if let Some(handle) = worker_handle.take() {
+                let _ = handle.join();
+            }
+        }
+
+        let allow_non_voice_outbound = crate::runtime::thread_registry::runtime_mode_snapshot()
+            .action_budget
+            .allow_non_voice_outbound;
+        if allow_non_voice_outbound && worker_handle.is_none() {
+            let prefetched = {
+                let mut pending = supervisor_pending
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                if let Some(msg) = pending.pop_front() {
+                    VecDeque::from([msg])
+                } else {
+                    drop(pending);
+                    let rx = outbound_rx
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner());
+                    match rx.try_recv() {
+                        Ok(msg) => VecDeque::from([msg]),
+                        Err(std::sync::mpsc::TryRecvError::Empty) => {
+                            std::thread::sleep(Duration::from_millis(DISPATCH_POLL_MAX_WAIT_MS));
+                            continue;
+                        }
+                        Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                            log::warn!("[{}] outbound disconnected, supervisor exiting", TAG);
+                            break;
+                        }
+                    }
+                }
+            };
+            let worker_rx = Arc::clone(&outbound_rx);
+            let worker_pending = Arc::clone(&supervisor_pending);
+            let active = active.clone();
+            let sinks = Arc::clone(&local_sinks);
+            let registry = Arc::clone(&capability_registry);
+            let prefetched_for_worker = prefetched.clone();
+            match spawn_guarded_with_profile_handle(
+                "os_outbound",
+                crate::util::STACK_OS_OUTBOUND,
+                Some(SpawnCore::Core0),
+                HttpThreadRole::Io,
+                move || {
+                    run_os_outbound_worker_from_shared_rx(
+                        worker_rx,
+                        active,
+                        sinks,
+                        registry,
+                        prefetched_for_worker,
+                        worker_pending,
+                    )
+                },
+            ) {
+                Ok(handle) => {
+                    log::info!("[{}] started os_outbound worker", TAG);
+                    worker_handle = Some(handle);
+                }
+                Err(error) => {
+                    log::warn!("[{}] os_outbound worker spawn failed: {}", TAG, error);
+                    let mut pending = supervisor_pending
+                        .lock()
+                        .unwrap_or_else(|lock_error| lock_error.into_inner());
+                    restore_os_outbound_prefetch(&mut pending, prefetched);
+                }
+            }
+        }
+
+        std::thread::sleep(Duration::from_millis(DISPATCH_POLL_MAX_WAIT_MS));
     }
 }
 
@@ -1009,7 +1316,12 @@ pub fn build_esp_active_outbound_driver(
             driver_builder: {
                 let token = config.tg_token.clone();
                 let create_http = Arc::clone(&create_http);
-                Box::new(move || super::telegram::telegram_outbound_driver(token, create_http))
+                Arc::new(move || {
+                    super::telegram::telegram_outbound_driver(
+                        token.clone(),
+                        Arc::clone(&create_http),
+                    )
+                })
             },
         }),
         #[cfg(feature = "feishu")]
@@ -1023,8 +1335,12 @@ pub fn build_esp_active_outbound_driver(
                     let app_id = config.feishu_app_id.clone();
                     let app_secret = config.feishu_app_secret.clone();
                     let create_http = Arc::clone(&create_http);
-                    Box::new(move || {
-                        super::feishu::feishu_outbound_driver(app_id, app_secret, create_http)
+                    Arc::new(move || {
+                        super::feishu::feishu_outbound_driver(
+                            app_id.clone(),
+                            app_secret.clone(),
+                            Arc::clone(&create_http),
+                        )
                     })
                 },
             })
@@ -1042,13 +1358,13 @@ pub fn build_esp_active_outbound_driver(
                     let msg_id_cache = Arc::clone(qq_msg_id_cache);
                     let token_cache = qq_token_cache.clone();
                     let create_http = Arc::clone(&create_http);
-                    Box::new(move || {
+                    Arc::new(move || {
                         super::qq::qq_outbound_driver(
-                            app_id,
-                            secret,
-                            msg_id_cache,
-                            token_cache,
-                            create_http,
+                            app_id.clone(),
+                            secret.clone(),
+                            Arc::clone(&msg_id_cache),
+                            token_cache.clone(),
+                            Arc::clone(&create_http),
                         )
                     })
                 },
@@ -1092,7 +1408,7 @@ pub struct DingtalkRxConfig {
 
 #[cfg(feature = "wecom")]
 pub struct WecomRxConfig {
-    pub rx: mpsc::Receiver<super::send::QueuedOutboundMessage>,
+    pub rx: Arc<Mutex<mpsc::Receiver<super::send::QueuedOutboundMessage>>>,
     pub bot_id: String,
     pub bot_secret: String,
     pub websocket_url: String,
@@ -1216,7 +1532,7 @@ pub fn build_channel_sinks(
         let (tx, rx) = mpsc::sync_channel::<super::send::QueuedOutboundMessage>(SENDER_QUEUE_DEPTH);
         sinks.register("wecom", Box::new(QueuedSink::new(tx, "wecom_send_queue")));
         Some(WecomRxConfig {
-            rx,
+            rx: Arc::new(Mutex::new(rx)),
             bot_id: config.wecom_bot_id.clone(),
             bot_secret: config.wecom_bot_secret.clone(),
             websocket_url: config.wecom_ws_url.clone(),
@@ -1444,7 +1760,7 @@ mod tests {
     use crate::error::{Error, Result};
     use std::collections::VecDeque;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
 
     fn build_msg(channel: &str, chat_id: &str, content: &str) -> PcMsg {
         PcMsg::new(channel, chat_id, content).expect("pcmsg")
@@ -1503,6 +1819,52 @@ mod tests {
         };
 
         assert!(super::should_defer_primary_send_error_immediately(&error));
+    }
+
+    #[test]
+    fn os_outbound_runtime_gate_exits_when_non_voice_outbound_is_disabled() {
+        assert!(super::should_stop_os_outbound_for_runtime_gate(true, false));
+        assert!(!super::should_stop_os_outbound_for_runtime_gate(true, true));
+        assert!(!super::should_stop_os_outbound_for_runtime_gate(
+            false, false
+        ));
+    }
+
+    #[test]
+    fn supervisor_prefetch_restore_preserves_message_order() {
+        let mut pending = VecDeque::from([build_msg("qq_channel", "chat-0", "older")]);
+        let prefetched = VecDeque::from([
+            build_msg("qq_channel", "chat-1", "first"),
+            build_msg("qq_channel", "chat-2", "second"),
+        ]);
+
+        super::restore_os_outbound_prefetch(&mut pending, prefetched);
+
+        let contents: Vec<_> = pending.iter().map(|msg| msg.content.as_str()).collect();
+        assert_eq!(contents, vec!["first", "second", "older"]);
+    }
+
+    #[test]
+    fn worker_backlog_returns_deferred_and_prefetched_to_supervisor() {
+        let supervisor_pending = Arc::new(Mutex::new(VecDeque::from([build_msg(
+            "qq_channel",
+            "chat-0",
+            "older",
+        )])));
+        let mut prefetched = VecDeque::from([build_msg("qq_channel", "chat-2", "prefetched")]);
+        let mut cooldown_buffer = VecDeque::from([build_msg("qq_channel", "chat-1", "deferred")]);
+
+        super::return_os_outbound_worker_backlog(
+            Some(&supervisor_pending),
+            &mut prefetched,
+            &mut cooldown_buffer,
+        );
+
+        assert!(prefetched.is_empty());
+        assert!(cooldown_buffer.is_empty());
+        let pending = supervisor_pending.lock().expect("pending");
+        let contents: Vec<_> = pending.iter().map(|msg| msg.content.as_str()).collect();
+        assert_eq!(contents, vec!["deferred", "prefetched", "older"]);
     }
 
     struct TlsAdmissionFailingActiveDriver {

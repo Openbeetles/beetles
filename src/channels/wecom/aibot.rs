@@ -10,7 +10,8 @@ use crate::channels::send::{
     record_outbound_http_failure, record_outbound_http_success, QueuedOutboundMessage,
 };
 use crate::channels::wss_gateway::{
-    external_wss_connect_gate, external_wss_session_stop_reason, WssConnection, WssEvent,
+    external_wss_connect_gate, external_wss_session_stop_reason,
+    external_wss_worker_should_exit_for_evict, WssConnection, WssEvent,
 };
 use crate::channels::ChannelHttpClient;
 use crate::config::AppConfig;
@@ -71,7 +72,7 @@ pub struct WecomAibotLoopConfig {
     pub pending_retry: Arc<dyn PendingRetryStore + Send + Sync>,
     /// Outbound messages routed to the AI Bot owner.
     /// 路由给 AI Bot owner 的出站消息。
-    pub outbound_rx: std::sync::mpsc::Receiver<QueuedOutboundMessage>,
+    pub outbound_rx: Arc<Mutex<std::sync::mpsc::Receiver<QueuedOutboundMessage>>>,
     /// Chat route cache used to map Beetle chat ids back to WeCom routes.
     /// 用于把 Beetle chat id 映射回企业微信路由的缓存。
     pub route_store: WecomAibotRouteStore,
@@ -508,8 +509,14 @@ where
     let mut pending_outbound: Option<QueuedOutboundMessage> = None;
     let mut waiting_for_wall_clock = false;
     loop {
+        if external_wss_worker_should_exit_for_evict(TAG, TAG) {
+            return;
+        }
         if !external_wss_connect_gate(TAG, TAG, &mut waiting_for_wall_clock) {
             continue;
+        }
+        if external_wss_worker_should_exit_for_evict(TAG, TAG) {
+            return;
         }
         mark_wss_lifecycle(
             crate::runtime::PlaneLifecycleState::Starting,
@@ -520,7 +527,12 @@ where
             Err(error) => {
                 mark_wss_lifecycle(crate::runtime::PlaneLifecycleState::Failed, "connect");
                 log::warn!("[{}] connect failed: {}", TAG, error);
-                std::thread::sleep(Duration::from_secs(backoff_secs));
+                if external_wss_worker_should_exit_for_evict(TAG, TAG) {
+                    return;
+                }
+                if sleep_backoff_or_worker_evict(backoff_secs) {
+                    return;
+                }
                 backoff_secs = (backoff_secs * 2).min(BACKOFF_MAX_SECS);
                 continue;
             }
@@ -529,7 +541,12 @@ where
         if let Err(error) = send_json_command(&mut conn, &subscribe_command(&bot_id, &bot_secret)) {
             mark_wss_lifecycle(crate::runtime::PlaneLifecycleState::Failed, "subscribe");
             log::warn!("[{}] subscribe failed: {}", TAG, error);
-            std::thread::sleep(Duration::from_secs(backoff_secs));
+            if external_wss_worker_should_exit_for_evict(TAG, TAG) {
+                return;
+            }
+            if sleep_backoff_or_worker_evict(backoff_secs) {
+                return;
+            }
             continue;
         }
         mark_wss_lifecycle(
@@ -538,13 +555,19 @@ where
         );
         let mut last_ping = Instant::now();
         'session: loop {
+            if external_wss_worker_should_exit_for_evict(TAG, TAG) {
+                return;
+            }
             if external_wss_session_stop_reason(TAG, TAG).is_some() {
                 break 'session;
             }
-            while let Some(message) = pending_outbound
-                .take()
-                .or_else(|| outbound_rx.try_recv().ok())
-            {
+            while let Some(message) = pending_outbound.take().or_else(|| {
+                outbound_rx
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .try_recv()
+                    .ok()
+            }) {
                 let command = match build_outbound_command(&message, &route_store) {
                     Ok(command) => command,
                     Err(error) => {
@@ -602,8 +625,25 @@ where
                 }
             }
         }
-        std::thread::sleep(Duration::from_secs(backoff_secs));
+        if sleep_backoff_or_worker_evict(backoff_secs) {
+            return;
+        }
     }
+}
+
+fn sleep_backoff_or_worker_evict(backoff_secs: u64) -> bool {
+    let total = Duration::from_secs(backoff_secs);
+    let chunk = Duration::from_millis(50);
+    let started = Instant::now();
+    while started.elapsed() < total {
+        if external_wss_worker_should_exit_for_evict(TAG, TAG) {
+            return true;
+        }
+        let remaining = total.saturating_sub(started.elapsed());
+        std::thread::sleep(remaining.min(chunk));
+        crate::platform::task_wdt::feed_current_task();
+    }
+    false
 }
 
 #[cfg(test)]
@@ -710,6 +750,23 @@ mod tests {
         assert_eq!(command["body"]["chatid"], "chat-2");
         assert_eq!(command["body"]["msgtype"], "markdown");
         assert_eq!(command["body"]["markdown"]["content"], "active text");
+    }
+
+    #[test]
+    fn wecom_backoff_sleep_returns_early_when_worker_evict_is_requested() {
+        let _guard = crate::state::test_state_guard();
+        crate::network::set_external_wss_managed_present(true);
+        let evict = crate::network::begin_external_wss_worker_evict_request(
+            crate::network::ExternalWssSuspendReason::VoiceExclusive,
+        );
+        let started = std::time::Instant::now();
+
+        assert!(super::sleep_backoff_or_worker_evict(1));
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(500),
+            "WeCom backoff sleep must not block realtime admission"
+        );
+        drop(evict);
     }
 
     #[test]

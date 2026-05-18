@@ -11,7 +11,7 @@
 
 use crate::audio::baidu_token::BaiduTokenCache;
 use crate::audio::pipeline::{
-    acquire_audio_lease, capture_and_transcribe, speak_text, AudioLeaseOwner,
+    acquire_audio_lease, capture_and_transcribe, speak_text, AudioLeaseGuard, AudioLeaseOwner,
 };
 use crate::audio::realtime::{
     connect_realtime_session, run_connected_realtime_session, ConnectedRealtimeSession,
@@ -48,6 +48,31 @@ pub enum VoiceEvent {
 enum VoiceWorkerTask {
     WakeInteraction,
     Speak(String),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum VoiceWorkerStartKind {
+    SpawnWorker,
+    PrepareRealtimeTransportThenSpawnConnect,
+}
+
+struct RealtimeSessionOwnership {
+    _audio_input_call: crate::orchestrator::RuntimeCapabilityCallGuard,
+    _audio_output_call: crate::orchestrator::RuntimeCapabilityCallGuard,
+    _audio_input_lease: AudioLeaseGuard,
+    _audio_output_lease: AudioLeaseGuard,
+    _voice_transport: VoiceExclusiveTransportGuard,
+    _wake_reset: WakeSessionResetGuard,
+}
+
+struct PreparedRealtimeSession {
+    connected: ConnectedRealtimeSession,
+    _ownership: RealtimeSessionOwnership,
+}
+
+enum VoiceWorkerMessage {
+    Done,
+    RealtimePrepared(crate::Result<PreparedRealtimeSession>),
 }
 
 #[derive(Default)]
@@ -95,7 +120,7 @@ pub fn run_voice_session(cfg: VoiceSessionConfig, rx: Receiver<VoiceEvent>) {
         audio_realtime_enabled(&cfg.audio_cfg)
     );
 
-    let (done_tx, done_rx) = mpsc::channel::<()>();
+    let (worker_tx, worker_rx) = mpsc::channel::<VoiceWorkerMessage>();
     let mut worker_busy = false;
     let mut worker_handle: Option<TaskHandle> = None;
     let mut pending = PendingVoiceEvents::default();
@@ -103,15 +128,25 @@ pub fn run_voice_session(cfg: VoiceSessionConfig, rx: Receiver<VoiceEvent>) {
 
     loop {
         crate::platform::task_wdt::feed_current_task();
-        drain_worker_done(&mut worker_handle, &done_rx, &mut worker_busy);
+        drain_worker_messages(
+            &cfg,
+            &worker_tx,
+            &mut worker_handle,
+            &worker_rx,
+            &mut worker_busy,
+        );
         let now = Instant::now();
         if !worker_busy && retry_gate.can_retry(now) {
             if let Some(task) = take_pending_voice_task(&mut pending) {
-                match spawn_voice_session_worker(cfg.clone(), task.clone(), done_tx.clone()) {
-                    Ok(handle) => {
+                match spawn_voice_session_worker(cfg.clone(), task.clone(), worker_tx.clone()) {
+                    Ok(Some(handle)) => {
                         retry_gate.clear();
                         worker_handle = Some(handle);
                         worker_busy = true;
+                        continue;
+                    }
+                    Ok(None) => {
+                        retry_gate.clear();
                         continue;
                     }
                     Err(error) => {
@@ -152,37 +187,108 @@ pub fn run_voice_session(cfg: VoiceSessionConfig, rx: Receiver<VoiceEvent>) {
 fn spawn_voice_session_worker(
     cfg: VoiceSessionConfig,
     task: VoiceWorkerTask,
-    done_tx: mpsc::Sender<()>,
-) -> std::io::Result<TaskHandle> {
-    let (name, stack_size) = voice_worker_spawn_profile(&cfg, &task);
-    spawn_guarded_with_profile_handle(
-        name,
-        stack_size,
-        Some(SpawnCore::Core1),
-        HttpThreadRole::Background,
-        move || run_voice_session_worker(cfg, task, done_tx),
-    )
+    worker_tx: mpsc::Sender<VoiceWorkerMessage>,
+) -> crate::Result<Option<TaskHandle>> {
+    match voice_worker_start_kind(audio_realtime_enabled(&cfg.audio_cfg), &task) {
+        VoiceWorkerStartKind::SpawnWorker => {
+            let (name, stack_size) = voice_worker_spawn_profile(&task);
+            spawn_guarded_with_profile_handle(
+                name,
+                stack_size,
+                Some(SpawnCore::Core1),
+                HttpThreadRole::Background,
+                move || run_voice_session_worker(cfg, task, worker_tx),
+            )
+            .map(Some)
+            .map_err(|error| crate::Error::io("voice_session_worker_spawn", error))
+        }
+        VoiceWorkerStartKind::PrepareRealtimeTransportThenSpawnConnect => {
+            let ownership = match prepare_realtime_session_ownership(&cfg) {
+                Ok(ownership) => ownership,
+                Err(error) => {
+                    log::warn!(
+                        "[{}] realtime voice transport admission failed: {}",
+                        TAG,
+                        error
+                    );
+                    crate::metrics::record_voice_tool_failure("voice_session_realtime");
+                    return Ok(None);
+                }
+            };
+            spawn_guarded_with_profile_handle(
+                "voice_realtime_connect",
+                STACK_VOICE_REALTIME_CONNECT,
+                Some(SpawnCore::Core1),
+                HttpThreadRole::Background,
+                move || run_realtime_connect_worker(cfg, ownership, worker_tx),
+            )
+            .map(Some)
+            .map_err(|error| crate::Error::io("voice_realtime_connect_spawn", error))
+        }
+    }
 }
 
-fn voice_worker_spawn_profile(
-    cfg: &VoiceSessionConfig,
-    task: &VoiceWorkerTask,
-) -> (&'static str, usize) {
-    if matches!(task, VoiceWorkerTask::WakeInteraction) && audio_realtime_enabled(&cfg.audio_cfg) {
-        ("voice_realtime", STACK_VOICE_REALTIME)
+fn voice_worker_start_kind(realtime_enabled: bool, task: &VoiceWorkerTask) -> VoiceWorkerStartKind {
+    if realtime_enabled && matches!(task, VoiceWorkerTask::WakeInteraction) {
+        VoiceWorkerStartKind::PrepareRealtimeTransportThenSpawnConnect
     } else {
-        ("voice_session_worker", STACK_VOICE_SESSION)
+        VoiceWorkerStartKind::SpawnWorker
+    }
+}
+
+fn voice_worker_spawn_profile(task: &VoiceWorkerTask) -> (&'static str, usize) {
+    match task {
+        VoiceWorkerTask::WakeInteraction | VoiceWorkerTask::Speak(_) => {
+            ("voice_session_worker", STACK_VOICE_SESSION)
+        }
     }
 }
 
 fn run_voice_session_worker(
     cfg: VoiceSessionConfig,
     task: VoiceWorkerTask,
-    done_tx: mpsc::Sender<()>,
+    worker_tx: mpsc::Sender<VoiceWorkerMessage>,
 ) {
     run_voice_task(&cfg, task);
-    let _ = done_tx.send(());
+    let _ = worker_tx.send(VoiceWorkerMessage::Done);
     log::info!("[{}] worker stopped", TAG);
+}
+
+fn run_realtime_connect_worker(
+    cfg: VoiceSessionConfig,
+    ownership: RealtimeSessionOwnership,
+    worker_tx: mpsc::Sender<VoiceWorkerMessage>,
+) {
+    let result = connect_prepared_realtime_session(&cfg, ownership);
+    if let Err(error) = &result {
+        log::warn!("[{}] realtime voice connect failed: {}", TAG, error);
+        crate::metrics::record_voice_tool_failure("voice_session_realtime");
+    }
+    if worker_tx
+        .send(VoiceWorkerMessage::RealtimePrepared(result))
+        .is_err()
+    {
+        log::warn!("[{}] realtime prepare result receiver dropped", TAG);
+    }
+    log::info!("[{}] realtime connect worker stopped", TAG);
+}
+
+fn spawn_prepared_realtime_session_worker(
+    cfg: VoiceSessionConfig,
+    prepared: PreparedRealtimeSession,
+    worker_tx: mpsc::Sender<VoiceWorkerMessage>,
+) -> std::io::Result<TaskHandle> {
+    spawn_guarded_with_profile_handle(
+        "voice_realtime",
+        STACK_VOICE_REALTIME,
+        Some(SpawnCore::Core1),
+        HttpThreadRole::Background,
+        move || {
+            run_prepared_realtime_session(&cfg, prepared);
+            let _ = worker_tx.send(VoiceWorkerMessage::Done);
+            log::info!("[{}] worker stopped", TAG);
+        },
+    )
 }
 
 fn run_voice_task(cfg: &VoiceSessionConfig, task: VoiceWorkerTask) {
@@ -210,41 +316,101 @@ fn run_voice_task(cfg: &VoiceSessionConfig, task: VoiceWorkerTask) {
     }
 }
 
-fn connect_realtime_session_via_worker(
-    cfg: &VoiceSessionConfig,
-) -> crate::Result<ConnectedRealtimeSession> {
-    let (result_tx, result_rx) = mpsc::sync_channel(1);
-    let platform = Arc::clone(&cfg.platform);
-    let audio_cfg = cfg.audio_cfg.clone();
-    let handle = spawn_guarded_with_profile_handle(
-        "voice_realtime_connect",
-        STACK_VOICE_REALTIME_CONNECT,
-        Some(SpawnCore::Core1),
-        HttpThreadRole::Background,
-        move || {
-            let result = connect_realtime_session(platform.as_ref(), &audio_cfg, TAG);
-            if result_tx.send(result).is_err() {
-                log::warn!("[{}] realtime connect result receiver dropped", TAG);
-            }
-        },
-    )
-    .map_err(|error| crate::Error::io("voice_realtime_connect_spawn", error))?;
-
-    let result = result_rx.recv().map_err(|error| {
-        crate::Error::io(
-            "voice_realtime_connect_recv",
-            std::io::Error::other(error.to_string()),
-        )
-    })?;
-    let _ = handle.join();
-    result
-}
-
 struct WakeSessionResetGuard;
 
 impl Drop for WakeSessionResetGuard {
     fn drop(&mut self) {
         crate::wake::reset_after_session();
+    }
+}
+
+fn prepare_realtime_session_ownership(
+    cfg: &VoiceSessionConfig,
+) -> crate::Result<RealtimeSessionOwnership> {
+    let wake_reset = WakeSessionResetGuard;
+    log::info!("[{}] wake triggered, starting voice interaction", TAG);
+    let duplex_caps = cfg.platform.audio_duplex_capabilities();
+
+    if !duplex_caps.can_run_realtime_session() {
+        return Err(crate::Error::config(
+            "voice_realtime_audio_contract",
+            format!(
+                "realtime session unavailable under audio contract profile={}",
+                duplex_caps.profile().as_str()
+            ),
+        ));
+    }
+    let runtime_mode = crate::runtime::thread_registry::runtime_mode_snapshot();
+    if !runtime_mode.action_budget.allow_realtime_voice_connect {
+        return Err(crate::Error::config(
+            "voice_realtime_mode_budget",
+            format!(
+                "skip realtime voice connect under runtime_mode={}",
+                runtime_mode.current_mode.as_str()
+            ),
+        ));
+    }
+    let audio_input_call = crate::orchestrator::try_begin_runtime_capability_call(
+        crate::orchestrator::RUNTIME_CAPABILITY_AUDIO_INPUT,
+    )?;
+    let audio_output_call = crate::orchestrator::try_begin_runtime_capability_call(
+        crate::orchestrator::RUNTIME_CAPABILITY_AUDIO_OUTPUT,
+    )?;
+    let audio_input_lease = acquire_audio_lease(
+        crate::runtime::lease::LeaseKind::AudioInput,
+        AudioLeaseOwner::VoiceRealtime,
+    )?;
+    let audio_output_lease = acquire_audio_lease(
+        crate::runtime::lease::LeaseKind::AudioOutput,
+        AudioLeaseOwner::VoiceRealtime,
+    )?;
+    let voice_transport = VoiceExclusiveTransportGuard::enter(cfg.platform.as_ref(), TAG)?;
+
+    Ok(RealtimeSessionOwnership {
+        _audio_input_call: audio_input_call,
+        _audio_output_call: audio_output_call,
+        _audio_input_lease: audio_input_lease,
+        _audio_output_lease: audio_output_lease,
+        _voice_transport: voice_transport,
+        _wake_reset: wake_reset,
+    })
+}
+
+fn connect_prepared_realtime_session(
+    cfg: &VoiceSessionConfig,
+    ownership: RealtimeSessionOwnership,
+) -> crate::Result<PreparedRealtimeSession> {
+    let connected = connect_realtime_session(cfg.platform.as_ref(), &cfg.audio_cfg, TAG)?;
+
+    Ok(PreparedRealtimeSession {
+        connected,
+        _ownership: ownership,
+    })
+}
+
+fn run_prepared_realtime_session(cfg: &VoiceSessionConfig, prepared: PreparedRealtimeSession) {
+    let PreparedRealtimeSession {
+        connected,
+        _ownership,
+    } = prepared;
+    match run_connected_realtime_session(cfg.platform.as_ref(), &cfg.audio_cfg, connected) {
+        Ok(session) => {
+            log::info!(
+                "[{}] realtime session finished turns={} input_ms={} output_ms={} duration_ms={}",
+                TAG,
+                session.turns_completed,
+                session.input_audio_ms,
+                session.output_audio_ms,
+                session.session_ms
+            );
+            if session.output_audio_ms > 0 {
+                crate::metrics::record_voice_output_play_ms(session.output_audio_ms);
+            }
+        }
+        Err(error) => {
+            log::warn!("[{}] realtime voice session failed: {}", TAG, error);
+            crate::metrics::record_voice_tool_failure("voice_session_realtime");
+        }
     }
 }
 
@@ -258,81 +424,11 @@ fn handle_wake_interaction<F>(
         &dyn Fn() -> crate::error::Result<Box<dyn PlatformHttpClient>>,
     ) -> bool,
 {
-    let _wake_reset = WakeSessionResetGuard;
-    log::info!("[{}] wake triggered, starting voice interaction", TAG);
-    let duplex_caps = cfg.platform.audio_duplex_capabilities();
-
     if audio_realtime_enabled(&cfg.audio_cfg) {
-        if !duplex_caps.can_run_realtime_session() {
-            log::warn!(
-                "[{}] realtime session unavailable under audio contract profile={}",
-                TAG,
-                duplex_caps.profile().as_str()
-            );
-            return;
-        }
-        let runtime_mode = crate::runtime::thread_registry::runtime_mode_snapshot();
-        if !runtime_mode.action_budget.allow_realtime_voice_connect {
-            log::info!(
-                "[{}] skip realtime voice connect under runtime_mode={}",
-                TAG,
-                runtime_mode.current_mode.as_str()
-            );
-            return;
-        }
-        let _audio_input_call = match crate::orchestrator::try_begin_runtime_capability_call(
-            crate::orchestrator::RUNTIME_CAPABILITY_AUDIO_INPUT,
-        ) {
-            Ok(guard) => guard,
-            Err(error) => {
-                log::warn!(
-                    "[{}] realtime audio input capability denied: {}",
-                    TAG,
-                    error
-                );
-                crate::metrics::record_voice_tool_failure("voice_session_realtime");
-                return;
-            }
-        };
-        let _audio_output_call = match crate::orchestrator::try_begin_runtime_capability_call(
-            crate::orchestrator::RUNTIME_CAPABILITY_AUDIO_OUTPUT,
-        ) {
-            Ok(guard) => guard,
-            Err(error) => {
-                log::warn!(
-                    "[{}] realtime audio output capability denied: {}",
-                    TAG,
-                    error
-                );
-                crate::metrics::record_voice_tool_failure("voice_session_realtime");
-                return;
-            }
-        };
-        let _audio_input_lease = match acquire_audio_lease(
-            crate::runtime::lease::LeaseKind::AudioInput,
-            AudioLeaseOwner::VoiceRealtime,
-        ) {
-            Ok(lease) => lease,
-            Err(error) => {
-                log::warn!("[{}] realtime audio input lease denied: {}", TAG, error);
-                crate::metrics::record_voice_tool_failure("voice_session_realtime");
-                return;
-            }
-        };
-        let _audio_output_lease = match acquire_audio_lease(
-            crate::runtime::lease::LeaseKind::AudioOutput,
-            AudioLeaseOwner::VoiceRealtime,
-        ) {
-            Ok(lease) => lease,
-            Err(error) => {
-                log::warn!("[{}] realtime audio output lease denied: {}", TAG, error);
-                crate::metrics::record_voice_tool_failure("voice_session_realtime");
-                return;
-            }
-        };
-        let _voice_transport = match VoiceExclusiveTransportGuard::enter(cfg.platform.as_ref(), TAG)
+        match prepare_realtime_session_ownership(cfg)
+            .and_then(|ownership| connect_prepared_realtime_session(cfg, ownership))
         {
-            Ok(guard) => guard,
+            Ok(prepared) => run_prepared_realtime_session(cfg, prepared),
             Err(error) => {
                 log::warn!(
                     "[{}] realtime voice transport admission failed: {}",
@@ -340,32 +436,14 @@ fn handle_wake_interaction<F>(
                     error
                 );
                 crate::metrics::record_voice_tool_failure("voice_session_realtime");
-                return;
-            }
-        };
-        match connect_realtime_session_via_worker(cfg).and_then(|connected| {
-            run_connected_realtime_session(cfg.platform.as_ref(), &cfg.audio_cfg, connected)
-        }) {
-            Ok(session) => {
-                log::info!(
-                    "[{}] realtime session finished turns={} input_ms={} output_ms={} duration_ms={}",
-                    TAG,
-                    session.turns_completed,
-                    session.input_audio_ms,
-                    session.output_audio_ms,
-                    session.session_ms
-                );
-                if session.output_audio_ms > 0 {
-                    crate::metrics::record_voice_output_play_ms(session.output_audio_ms);
-                }
-            }
-            Err(error) => {
-                log::warn!("[{}] realtime voice session failed: {}", TAG, error);
-                crate::metrics::record_voice_tool_failure("voice_session_realtime");
             }
         }
         return;
     }
+
+    let _wake_reset = WakeSessionResetGuard;
+    log::info!("[{}] wake triggered, starting voice interaction", TAG);
+    let duplex_caps = cfg.platform.audio_duplex_capabilities();
 
     let make_http = || cfg.network.open_http_client(HttpClientClass::Background);
     if !ensure_http(http, &make_http) {
@@ -515,15 +593,50 @@ fn handle_speak<F>(
     }
 }
 
-fn drain_worker_done(
+fn drain_worker_messages(
+    cfg: &VoiceSessionConfig,
+    worker_tx: &mpsc::Sender<VoiceWorkerMessage>,
     worker_handle: &mut Option<TaskHandle>,
-    done_rx: &mpsc::Receiver<()>,
+    worker_rx: &mpsc::Receiver<VoiceWorkerMessage>,
     worker_busy: &mut bool,
 ) {
-    while done_rx.try_recv().is_ok() {
-        *worker_busy = false;
-        if let Some(handle) = worker_handle.take() {
-            let _ = handle.join();
+    while let Ok(message) = worker_rx.try_recv() {
+        match message {
+            VoiceWorkerMessage::Done => {
+                *worker_busy = false;
+                if let Some(handle) = worker_handle.take() {
+                    let _ = handle.join();
+                }
+            }
+            VoiceWorkerMessage::RealtimePrepared(result) => {
+                if let Some(handle) = worker_handle.take() {
+                    let _ = handle.join();
+                }
+                match result {
+                    Ok(prepared) => match spawn_prepared_realtime_session_worker(
+                        cfg.clone(),
+                        prepared,
+                        worker_tx.clone(),
+                    ) {
+                        Ok(handle) => {
+                            *worker_busy = true;
+                            *worker_handle = Some(handle);
+                        }
+                        Err(error) => {
+                            *worker_busy = false;
+                            log::error!(
+                                "[{}] failed to start realtime session worker: {}",
+                                TAG,
+                                error
+                            );
+                            crate::metrics::record_voice_tool_failure("voice_session_realtime");
+                        }
+                    },
+                    Err(_) => {
+                        *worker_busy = false;
+                    }
+                }
+            }
         }
     }
 }
@@ -626,5 +739,21 @@ mod tests {
         gate.clear();
 
         assert!(gate.can_retry(Instant::now()));
+    }
+
+    #[test]
+    fn realtime_wake_prepares_transport_before_session_worker() {
+        assert_eq!(
+            voice_worker_start_kind(true, &VoiceWorkerTask::WakeInteraction),
+            VoiceWorkerStartKind::PrepareRealtimeTransportThenSpawnConnect
+        );
+        assert_eq!(
+            voice_worker_start_kind(false, &VoiceWorkerTask::WakeInteraction),
+            VoiceWorkerStartKind::SpawnWorker
+        );
+        assert_eq!(
+            voice_worker_start_kind(true, &VoiceWorkerTask::Speak("reply".to_string())),
+            VoiceWorkerStartKind::SpawnWorker
+        );
     }
 }

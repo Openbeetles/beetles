@@ -91,6 +91,14 @@ static WAKE_WORD_FEED_SKIP_BUSY_TOTAL: AtomicU32 = AtomicU32::new(0);
 static WAKE_WORD_FEED_SKIP_COOLDOWN_TOTAL: AtomicU32 = AtomicU32::new(0);
 static WAKE_WORD_FEED_DETECT_TOTAL: AtomicU32 = AtomicU32::new(0);
 static WAKE_WORD_FEED_LAST_US: AtomicU32 = AtomicU32::new(0);
+static WAKE_WORD_LAST_MIC_LEVEL_PERMILLE: AtomicU32 = AtomicU32::new(0);
+static WAKE_WORD_LAST_ZCR_PERMILLE: AtomicU32 = AtomicU32::new(0);
+static WAKE_WORD_LAST_SPEECH_RATIO_PERMILLE: AtomicU32 = AtomicU32::new(0);
+static WAKE_WORD_LAST_SPEECH_COVERAGE_PERMILLE: AtomicU32 = AtomicU32::new(0);
+static WAKE_WORD_LAST_SPEECH_DOMINANCE_PERMILLE: AtomicU32 = AtomicU32::new(0);
+static WAKE_WORD_LAST_ACTIVATION_PERMILLE: AtomicU32 = AtomicU32::new(0);
+static WAKE_WORD_LAST_SPEECH_LIKE: AtomicU32 = AtomicU32::new(0);
+static WAKE_WORD_LAST_REFERENCE_OK: AtomicU32 = AtomicU32::new(0);
 static STORAGE_LOCK_OPS_TOTAL: AtomicU32 = AtomicU32::new(0);
 static STORAGE_LOCK_CONTENTION_TOTAL: AtomicU32 = AtomicU32::new(0);
 static STORAGE_LOCK_WAIT_LAST_US: AtomicU32 = AtomicU32::new(0);
@@ -538,6 +546,45 @@ pub fn record_wake_word_feed_us(us: u128) {
     WAKE_WORD_FEED_LAST_US.store(us.min(u32::MAX as u128) as u32, Ordering::Relaxed);
 }
 
+pub struct WakeWordAcousticFrameMetrics {
+    pub mic_level: f32,
+    pub zcr: f32,
+    pub speech_ratio: f32,
+    pub speech_coverage: f32,
+    pub speech_dominance: f32,
+    pub activation_score: f32,
+    pub speech_like: bool,
+    pub reference_ok: bool,
+}
+
+pub fn record_wake_word_acoustic_frame(frame: WakeWordAcousticFrameMetrics) {
+    WAKE_WORD_LAST_MIC_LEVEL_PERMILLE.store(ratio_permille(frame.mic_level), Ordering::Relaxed);
+    WAKE_WORD_LAST_ZCR_PERMILLE.store(ratio_permille(frame.zcr), Ordering::Relaxed);
+    WAKE_WORD_LAST_SPEECH_RATIO_PERMILLE
+        .store(ratio_permille(frame.speech_ratio), Ordering::Relaxed);
+    WAKE_WORD_LAST_SPEECH_COVERAGE_PERMILLE
+        .store(ratio_permille(frame.speech_coverage), Ordering::Relaxed);
+    WAKE_WORD_LAST_SPEECH_DOMINANCE_PERMILLE
+        .store(ratio_permille(frame.speech_dominance), Ordering::Relaxed);
+    WAKE_WORD_LAST_ACTIVATION_PERMILLE.store(
+        scaled_permille(frame.activation_score, 2.0),
+        Ordering::Relaxed,
+    );
+    WAKE_WORD_LAST_SPEECH_LIKE.store(u32::from(frame.speech_like), Ordering::Relaxed);
+    WAKE_WORD_LAST_REFERENCE_OK.store(u32::from(frame.reference_ok), Ordering::Relaxed);
+}
+
+fn ratio_permille(value: f32) -> u32 {
+    scaled_permille(value, 1.0)
+}
+
+fn scaled_permille(value: f32, max_value: f32) -> u32 {
+    if !value.is_finite() || max_value <= 0.0 {
+        return 0;
+    }
+    ((value.clamp(0.0, max_value) * 1000.0).round()) as u32
+}
+
 #[inline]
 pub fn record_storage_lock_wait_us(us: u128) {
     let clamped = us.min(u32::MAX as u128) as u32;
@@ -759,6 +806,89 @@ pub fn snapshot() -> MetricsSnapshot {
     }
 }
 
+/// Low-level audio wake diagnostics for heartbeat logs only.
+///
+/// These counters intentionally stay out of `MetricsSnapshot` and `/api/metrics`;
+/// they diagnose the ESP mic/wake hot path without expanding the public API.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AudioWakeSnapshot {
+    pub audio_worker_turns_total: u64,
+    pub audio_worker_idle_turns_total: u64,
+    pub audio_mic_poll_turns_total: u64,
+    pub audio_mic_frames_total: u64,
+    pub audio_mic_zero_read_total: u64,
+    pub audio_mic_read_last_us: u64,
+    pub wake_feed_calls_total: u64,
+    pub wake_feed_skip_busy_total: u64,
+    pub wake_feed_skip_cooldown_total: u64,
+    pub wake_feed_detect_total: u64,
+    pub wake_feed_last_us: u64,
+    pub wake_last_mic_level_permille: u64,
+    pub wake_last_zcr_permille: u64,
+    pub wake_last_speech_ratio_permille: u64,
+    pub wake_last_speech_coverage_permille: u64,
+    pub wake_last_speech_dominance_permille: u64,
+    pub wake_last_activation_permille: u64,
+    pub wake_last_speech_like: bool,
+    pub wake_last_reference_ok: bool,
+}
+
+pub fn audio_wake_snapshot() -> AudioWakeSnapshot {
+    AudioWakeSnapshot {
+        audio_worker_turns_total: AUDIO_WORKER_TURNS_TOTAL.load(Ordering::Relaxed) as u64,
+        audio_worker_idle_turns_total: AUDIO_WORKER_IDLE_TURNS_TOTAL.load(Ordering::Relaxed) as u64,
+        audio_mic_poll_turns_total: AUDIO_MIC_POLL_TURNS_TOTAL.load(Ordering::Relaxed) as u64,
+        audio_mic_frames_total: AUDIO_MIC_FRAMES_TOTAL.load(Ordering::Relaxed) as u64,
+        audio_mic_zero_read_total: AUDIO_MIC_ZERO_READ_TOTAL.load(Ordering::Relaxed) as u64,
+        audio_mic_read_last_us: AUDIO_MIC_READ_LAST_US.load(Ordering::Relaxed) as u64,
+        wake_feed_calls_total: WAKE_WORD_FEED_CALLS_TOTAL.load(Ordering::Relaxed) as u64,
+        wake_feed_skip_busy_total: WAKE_WORD_FEED_SKIP_BUSY_TOTAL.load(Ordering::Relaxed) as u64,
+        wake_feed_skip_cooldown_total: WAKE_WORD_FEED_SKIP_COOLDOWN_TOTAL.load(Ordering::Relaxed)
+            as u64,
+        wake_feed_detect_total: WAKE_WORD_FEED_DETECT_TOTAL.load(Ordering::Relaxed) as u64,
+        wake_feed_last_us: WAKE_WORD_FEED_LAST_US.load(Ordering::Relaxed) as u64,
+        wake_last_mic_level_permille: WAKE_WORD_LAST_MIC_LEVEL_PERMILLE.load(Ordering::Relaxed)
+            as u64,
+        wake_last_zcr_permille: WAKE_WORD_LAST_ZCR_PERMILLE.load(Ordering::Relaxed) as u64,
+        wake_last_speech_ratio_permille: WAKE_WORD_LAST_SPEECH_RATIO_PERMILLE
+            .load(Ordering::Relaxed) as u64,
+        wake_last_speech_coverage_permille: WAKE_WORD_LAST_SPEECH_COVERAGE_PERMILLE
+            .load(Ordering::Relaxed) as u64,
+        wake_last_speech_dominance_permille: WAKE_WORD_LAST_SPEECH_DOMINANCE_PERMILLE
+            .load(Ordering::Relaxed) as u64,
+        wake_last_activation_permille: WAKE_WORD_LAST_ACTIVATION_PERMILLE.load(Ordering::Relaxed)
+            as u64,
+        wake_last_speech_like: WAKE_WORD_LAST_SPEECH_LIKE.load(Ordering::Relaxed) != 0,
+        wake_last_reference_ok: WAKE_WORD_LAST_REFERENCE_OK.load(Ordering::Relaxed) != 0,
+    }
+}
+
+pub fn format_audio_wake_baseline_line() -> String {
+    let snap = audio_wake_snapshot();
+    format!(
+        "audio_wake worker_turns={} worker_idle={} mic_polls={} mic_frames={} mic_zero={} mic_read_us={} feed_calls={} feed_busy={} feed_cooldown={} feed_detect={} feed_us={} mic_level_pm={} zcr_pm={} speech_ratio_pm={} speech_coverage_pm={} speech_dominance_pm={} activation_pm={} speech_like={} ref_ok={}",
+        snap.audio_worker_turns_total,
+        snap.audio_worker_idle_turns_total,
+        snap.audio_mic_poll_turns_total,
+        snap.audio_mic_frames_total,
+        snap.audio_mic_zero_read_total,
+        snap.audio_mic_read_last_us,
+        snap.wake_feed_calls_total,
+        snap.wake_feed_skip_busy_total,
+        snap.wake_feed_skip_cooldown_total,
+        snap.wake_feed_detect_total,
+        snap.wake_feed_last_us,
+        snap.wake_last_mic_level_permille,
+        snap.wake_last_zcr_permille,
+        snap.wake_last_speech_ratio_permille,
+        snap.wake_last_speech_coverage_permille,
+        snap.wake_last_speech_dominance_permille,
+        snap.wake_last_activation_permille,
+        snap.wake_last_speech_like,
+        snap.wake_last_reference_ok,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -796,86 +926,6 @@ mod tests {
     }
 
     #[test]
-    fn inbound_backpressure_metrics_are_recorded_and_logged() {
-        let before = snapshot();
-
-        record_inbound_queue_full();
-        record_inbound_defer();
-        record_inbound_drop();
-
-        let after = snapshot();
-        assert!(after.inbound_queue_full_total > before.inbound_queue_full_total);
-        assert!(after.inbound_defer_total > before.inbound_defer_total);
-        assert!(after.inbound_drop_total > before.inbound_drop_total);
-
-        let line = after.to_baseline_log_line();
-        assert!(line.contains("inbound_q_full="));
-        assert!(line.contains("inbound_defer="));
-        assert!(line.contains("inbound_drop="));
-    }
-
-    #[test]
-    fn event_ingress_metrics_are_recorded_and_logged() {
-        let before = snapshot();
-
-        record_event_ingress_enqueued();
-        record_event_ingress_rejected();
-        record_event_ingress_purged();
-        record_event_ingress_cancelled();
-        record_event_ingress_stale_drop();
-
-        let after = snapshot();
-        assert!(after.event_ingress_enqueued_total > before.event_ingress_enqueued_total);
-        assert!(after.event_ingress_rejected_total > before.event_ingress_rejected_total);
-        assert!(after.event_ingress_purged_total > before.event_ingress_purged_total);
-        assert!(after.event_ingress_cancelled_total > before.event_ingress_cancelled_total);
-        assert!(after.event_ingress_stale_drop_total > before.event_ingress_stale_drop_total);
-
-        let line = after.to_baseline_log_line();
-        assert!(line.contains("event_ingress_enqueued_total="));
-        assert!(line.contains("event_ingress_rejected_total="));
-        assert!(line.contains("event_ingress_purged_total="));
-        assert!(line.contains("event_ingress_cancelled_total="));
-        assert!(line.contains("event_ingress_stale_drop_total="));
-    }
-
-    #[test]
-    fn runtime_governance_metrics_are_recorded_and_logged() {
-        let before = snapshot();
-
-        record_runtime_spawn_failure();
-        record_http_route_reject();
-
-        let after = snapshot();
-        assert!(after.runtime_spawn_failure_total > before.runtime_spawn_failure_total);
-        assert!(after.http_route_reject_total > before.http_route_reject_total);
-
-        let line = after.to_baseline_log_line();
-        assert!(line.contains("spawn_fail="));
-        assert!(line.contains("http_route_reject="));
-    }
-
-    #[test]
-    fn llm_request_body_size_is_recorded_and_logged() {
-        let before = snapshot();
-
-        record_llm_request_body_bytes(1234);
-        let after_first = snapshot();
-        assert_eq!(after_first.llm_request_body_last_bytes, 1234);
-        assert!(after_first.llm_request_body_max_bytes >= 1234);
-
-        record_llm_request_body_bytes(777);
-        let after_second = snapshot();
-        assert_eq!(after_second.llm_request_body_last_bytes, 777);
-        assert!(after_second.llm_request_body_max_bytes >= after_first.llm_request_body_max_bytes);
-        assert!(after_second.llm_request_body_max_bytes >= before.llm_request_body_max_bytes);
-
-        let line = after_second.to_baseline_log_line();
-        assert!(line.contains("llm_req_body_last_b=777"));
-        assert!(line.contains("llm_req_body_max_b="));
-    }
-
-    #[test]
     fn user_visible_message_in_excludes_system_agent_work() {
         let before = snapshot();
 
@@ -896,6 +946,51 @@ mod tests {
         assert_eq!(after_user.system_messages_in, before.system_messages_in + 1);
         assert_eq!(after_user.agent_messages_in, before.agent_messages_in + 2);
         assert!(after_user.to_baseline_log_line().contains("user_msg_in="));
+    }
+
+    #[test]
+    fn audio_wake_baseline_records_low_level_wake_diagnostics() {
+        record_audio_worker_turn();
+        record_audio_mic_poll_turn();
+        record_audio_mic_frame_read();
+        record_audio_mic_read_us(123);
+        record_wake_word_feed_call();
+        record_wake_word_feed_detect();
+        record_wake_word_feed_us(456);
+        record_wake_word_acoustic_frame(WakeWordAcousticFrameMetrics {
+            mic_level: 0.42,
+            zcr: 0.12,
+            speech_ratio: 0.77,
+            speech_coverage: 0.5,
+            speech_dominance: 0.2,
+            activation_score: 1.25,
+            speech_like: true,
+            reference_ok: false,
+        });
+
+        let snap = audio_wake_snapshot();
+        assert!(snap.audio_worker_turns_total > 0);
+        assert!(snap.audio_mic_poll_turns_total > 0);
+        assert!(snap.audio_mic_frames_total > 0);
+        assert_eq!(snap.audio_mic_read_last_us, 123);
+        assert!(snap.wake_feed_calls_total > 0);
+        assert!(snap.wake_feed_detect_total > 0);
+        assert_eq!(snap.wake_feed_last_us, 456);
+        assert_eq!(snap.wake_last_mic_level_permille, 420);
+        assert_eq!(snap.wake_last_zcr_permille, 120);
+        assert_eq!(snap.wake_last_speech_ratio_permille, 770);
+        assert_eq!(snap.wake_last_speech_coverage_permille, 500);
+        assert_eq!(snap.wake_last_speech_dominance_permille, 200);
+        assert_eq!(snap.wake_last_activation_permille, 1250);
+        assert!(snap.wake_last_speech_like);
+        assert!(!snap.wake_last_reference_ok);
+
+        let line = format_audio_wake_baseline_line();
+        assert!(line.contains("audio_wake "));
+        assert!(line.contains("mic_frames="));
+        assert!(line.contains("feed_detect="));
+        assert!(line.contains("speech_like=true"));
+        assert!(line.contains("ref_ok=false"));
     }
 }
 

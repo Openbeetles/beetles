@@ -19,6 +19,11 @@ const KEEPALIVE_MIN_SPEECH_BIN_COVERAGE: f32 = 0.25;
 const MAX_SPEECH_BIN_DOMINANCE: f32 = 0.78;
 const KEEPALIVE_MAX_SPEECH_BIN_DOMINANCE: f32 = 0.90;
 const BAND_ACTIVITY_FLOOR_RATIO: f32 = 0.18;
+const LOW_SNR_CODEC_ENTER_THRESHOLD_MAX: f32 = 0.02;
+const LOW_SNR_ROOM_SPEECH_RAW_GAIN: f32 = 1.15;
+const LOW_SNR_ROOM_SPEECH_ZCR_MIN: f32 = 0.04;
+const LOW_SNR_ROOM_SPEECH_RATIO_MIN_FACTOR: f32 = 0.12;
+const LOW_SNR_ROOM_SPEECH_MIN_COVERAGE: f32 = 0.25;
 const SPEECH_BAND_HZ: [f32; 4] = [500.0, 1000.0, 1800.0, 2600.0];
 const NOISE_BAND_HZ: [f32; 4] = [150.0, 250.0, 4000.0, 5500.0];
 
@@ -35,22 +40,25 @@ pub struct AcousticWakeConfig {
     pub min_active_ms: u32,
     pub hangover_ms: u32,
     pub cooldown_ms: u32,
+    pub low_snr_codec_profile: bool,
 }
 
 impl AcousticWakeConfig {
     /// Build acoustic wake parameters from the persisted audio config.
     pub fn from_audio_config(audio: &AudioSegment) -> Self {
+        let wake = crate::config::audio_wake_word_config_for_runtime(audio);
         Self {
             sample_rate_hz: audio.microphone.sample_rate.max(8_000),
-            enter_threshold: audio.wake_word.enter_threshold,
-            leave_threshold: audio.wake_word.leave_threshold,
-            reference_suppress_ratio: audio.wake_word.reference_suppress_ratio,
-            zcr_min: audio.wake_word.zcr_min,
-            zcr_max: audio.wake_word.zcr_max,
-            min_speech_band_ratio: audio.wake_word.min_speech_band_ratio,
-            min_active_ms: audio.wake_word.min_active_ms,
-            hangover_ms: audio.wake_word.hangover_ms,
-            cooldown_ms: audio.wake_word.cooldown_ms,
+            enter_threshold: wake.enter_threshold,
+            leave_threshold: wake.leave_threshold,
+            reference_suppress_ratio: wake.reference_suppress_ratio,
+            zcr_min: wake.zcr_min,
+            zcr_max: wake.zcr_max,
+            min_speech_band_ratio: wake.min_speech_band_ratio,
+            min_active_ms: wake.min_active_ms,
+            hangover_ms: wake.hangover_ms,
+            cooldown_ms: wake.cooldown_ms,
+            low_snr_codec_profile: crate::config::audio_uses_es7210_codec_wake_profile(audio),
         }
     }
 
@@ -67,6 +75,7 @@ impl AcousticWakeConfig {
             min_active_ms: 240,
             hangover_ms: 500,
             cooldown_ms: 1000,
+            low_snr_codec_profile: false,
         }
     }
 }
@@ -158,13 +167,23 @@ impl AcousticWakeBackend {
             || ref_level <= self.config.leave_threshold
             || mic_level >= ref_level * self.config.reference_suppress_ratio;
 
-        let speech_like = mic_level >= dynamic_threshold
+        let strict_speech_like = mic_level >= dynamic_threshold
             && zcr >= self.config.zcr_min
             && zcr <= self.config.zcr_max
             && speech_summary.speech_ratio >= self.config.min_speech_band_ratio
             && speech_summary.speech_bin_coverage >= MIN_SPEECH_BIN_COVERAGE
             && speech_summary.dominant_speech_share <= MAX_SPEECH_BIN_DOMINANCE
             && reference_ok;
+        let room_speech_like = low_snr_codec_room_speech_like(
+            &self.config,
+            mic_rms,
+            mic_level,
+            dynamic_threshold,
+            zcr,
+            speech_summary,
+            reference_ok,
+        );
+        let speech_like = strict_speech_like || room_speech_like;
         let weak_keepalive = mic_level
             >= self
                 .config
@@ -205,6 +224,18 @@ impl AcousticWakeBackend {
                 );
             }
         }
+        crate::metrics::record_wake_word_acoustic_frame(
+            crate::metrics::WakeWordAcousticFrameMetrics {
+                mic_level,
+                zcr,
+                speech_ratio: speech_summary.speech_ratio,
+                speech_coverage: speech_summary.speech_bin_coverage,
+                speech_dominance: speech_summary.dominant_speech_share,
+                activation_score: self.activation_score,
+                speech_like,
+                reference_ok,
+            },
+        );
 
         if self.activation_score < 1.0 {
             crate::metrics::record_wake_word_feed_us(feed_start.elapsed().as_micros());
@@ -269,6 +300,31 @@ fn update_noise_floor(noise_floor: &mut f32, bootstrap_frames: &mut u32, mic_lev
     *noise_floor =
         ((1.0 - alpha) * baseline + (alpha * mic_level)).clamp(MIN_NOISE_FLOOR, MAX_NOISE_FLOOR);
     *bootstrap_frames = bootstrap_frames.saturating_add(1);
+}
+
+fn low_snr_codec_room_speech_like(
+    config: &AcousticWakeConfig,
+    mic_rms: f32,
+    mic_level: f32,
+    dynamic_threshold: f32,
+    zcr: f32,
+    speech_summary: SpeechBandSummary,
+    reference_ok: bool,
+) -> bool {
+    if !config.low_snr_codec_profile
+        || config.enter_threshold > LOW_SNR_CODEC_ENTER_THRESHOLD_MAX
+        || !reference_ok
+    {
+        return false;
+    }
+    let level_ok = mic_level >= dynamic_threshold
+        || mic_rms >= dynamic_threshold * LOW_SNR_ROOM_SPEECH_RAW_GAIN;
+    let ratio_min = config.min_speech_band_ratio * LOW_SNR_ROOM_SPEECH_RATIO_MIN_FACTOR;
+    level_ok
+        && zcr >= config.zcr_min.max(LOW_SNR_ROOM_SPEECH_ZCR_MIN)
+        && zcr <= config.zcr_max
+        && speech_summary.speech_ratio >= ratio_min
+        && speech_summary.speech_bin_coverage >= LOW_SNR_ROOM_SPEECH_MIN_COVERAGE
 }
 
 fn zero_crossing_rate(pcm: &[i16]) -> f32 {
@@ -404,6 +460,16 @@ fn synth_voice_like_alt(sample_rate_hz: u32, frames: usize, amplitude: f32) -> V
 }
 
 #[cfg(test)]
+fn synth_esp_box3_room_speech(sample_rate_hz: u32, frames: usize, amplitude: f32) -> Vec<i16> {
+    synth_mix(
+        sample_rate_hz,
+        &[(220.0, 0.34), (440.0, 0.28), (720.0, 0.22), (1440.0, 0.16)],
+        frames,
+        amplitude,
+    )
+}
+
+#[cfg(test)]
 fn scale_pcm(pcm: &[i16], gain: f32) -> Vec<i16> {
     pcm.iter()
         .map(|sample| ((*sample as f32) * gain).clamp(i16::MIN as f32, i16::MAX as f32) as i16)
@@ -413,6 +479,10 @@ fn scale_pcm(pcm: &[i16], gain: f32) -> Vec<i16> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{
+        default_disabled_audio_segment, AUDIO_CODEC_INPUT_ES7210, AUDIO_CODEC_OUTPUT_ES8311,
+        AUDIO_TOPOLOGY_I2S_CODEC,
+    };
 
     #[test]
     fn acoustic_backend_emits_trigger_for_near_end_speech() {
@@ -538,5 +608,92 @@ mod tests {
 
         assert_eq!(backend.feed_pcm_i16(&mic, &reference, true), None);
         assert_eq!(backend.feed_pcm_i16(&mic, &reference, true), None);
+    }
+
+    #[test]
+    fn es7210_codec_profile_triggers_on_esp_box3_normal_speech_level() {
+        let mut audio = default_disabled_audio_segment();
+        audio.enabled = true;
+        audio.topology = AUDIO_TOPOLOGY_I2S_CODEC.to_string();
+        audio.microphone.enabled = true;
+        audio.microphone.sample_rate = 24_000;
+        audio.speaker.enabled = true;
+        audio.speaker.sample_rate = 24_000;
+        audio.codec.input_codec = Some(AUDIO_CODEC_INPUT_ES7210.to_string());
+        audio.codec.output_codec = Some(AUDIO_CODEC_OUTPUT_ES8311.to_string());
+        audio.codec.input_reference = true;
+        audio.wake_word.enabled = true;
+
+        let config = AcousticWakeConfig::from_audio_config(&audio);
+        let sample_rate_hz = config.sample_rate_hz;
+        let mut backend = AcousticWakeBackend::new(config);
+        let speech = synth_voice_like(sample_rate_hz, 320, 0.05);
+
+        let mut event = None;
+        for _ in 0..12 {
+            event = backend.feed_pcm_i16(&speech, &[], false);
+            if event.is_some() {
+                break;
+            }
+        }
+        assert_eq!(event, Some(WakeEvent::TriggerStart));
+    }
+
+    #[test]
+    fn es7210_codec_profile_accepts_room_level_box3_speech_harmonics() {
+        let mut audio = default_disabled_audio_segment();
+        audio.enabled = true;
+        audio.topology = AUDIO_TOPOLOGY_I2S_CODEC.to_string();
+        audio.microphone.enabled = true;
+        audio.microphone.sample_rate = 24_000;
+        audio.speaker.enabled = true;
+        audio.speaker.sample_rate = 24_000;
+        audio.codec.input_codec = Some(AUDIO_CODEC_INPUT_ES7210.to_string());
+        audio.codec.output_codec = Some(AUDIO_CODEC_OUTPUT_ES8311.to_string());
+        audio.codec.input_reference = true;
+        audio.wake_word.enabled = true;
+
+        let config = AcousticWakeConfig::from_audio_config(&audio);
+        let sample_rate_hz = config.sample_rate_hz;
+        let mut backend = AcousticWakeBackend::new(config);
+        let speech = synth_esp_box3_room_speech(sample_rate_hz, 480, 0.045);
+
+        let mut event = None;
+        for _ in 0..10 {
+            event = backend.feed_pcm_i16(&speech, &[], false);
+            if event.is_some() {
+                break;
+            }
+        }
+        assert_eq!(event, Some(WakeEvent::TriggerStart));
+    }
+
+    #[test]
+    fn low_snr_room_speech_fallback_is_codec_profile_only() {
+        let config = AcousticWakeConfig {
+            sample_rate_hz: 24_000,
+            enter_threshold: 0.01,
+            leave_threshold: 0.005,
+            reference_suppress_ratio: 1.8,
+            zcr_min: 0.02,
+            zcr_max: 0.65,
+            min_speech_band_ratio: 0.35,
+            min_active_ms: 120,
+            hangover_ms: 250,
+            cooldown_ms: 1000,
+            low_snr_codec_profile: false,
+        };
+        let sample_rate_hz = config.sample_rate_hz;
+        let mut backend = AcousticWakeBackend::new(config);
+        let speech = synth_esp_box3_room_speech(sample_rate_hz, 480, 0.045);
+
+        let mut event = None;
+        for _ in 0..10 {
+            event = backend.feed_pcm_i16(&speech, &[], false);
+            if event.is_some() {
+                break;
+            }
+        }
+        assert_eq!(event, None);
     }
 }

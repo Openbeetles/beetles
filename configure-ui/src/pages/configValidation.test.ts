@@ -157,7 +157,7 @@ test("validateHardwareSegment accepts valid i2s bus config", () => {
     ...defaultHardwareSegment(),
     i2s_bus: {
       mclk_pin: 2,
-      ws_pin: 47,
+      ws_pin: 45,
       bclk_pin: 17,
       din_pin: 16,
       dout_pin: 15,
@@ -172,7 +172,7 @@ test("validateHardwareSegment rejects duplicate i2s bus pins", () => {
     ...defaultHardwareSegment(),
     i2s_bus: {
       mclk_pin: 2,
-      ws_pin: 47,
+      ws_pin: 45,
       bclk_pin: 17,
       din_pin: 17,
       dout_pin: 15,
@@ -305,7 +305,7 @@ test("validateAudioConfig requires codec fields for i2s codec topology", () => {
       i2c_bus: { sda_pin: 21, scl_pin: 22, freq_hz: 100000 },
       i2s_bus: {
         mclk_pin: 2,
-        ws_pin: 47,
+        ws_pin: 45,
         bclk_pin: 17,
         din_pin: 16,
         dout_pin: 15,
@@ -346,7 +346,7 @@ test("validateAudioConfig skips legacy pin checks for i2s codec topology", () =>
       i2c_bus: { sda_pin: 21, scl_pin: 22, freq_hz: 100000 },
       i2s_bus: {
         mclk_pin: 2,
-        ws_pin: 47,
+        ws_pin: 45,
         bclk_pin: 17,
         din_pin: 16,
         dout_pin: 15,
@@ -408,7 +408,7 @@ test("validateAudioConfig requires equal mic and speaker sample rates for i2s co
       i2c_bus: { sda_pin: 21, scl_pin: 22, freq_hz: 100000 },
       i2s_bus: {
         mclk_pin: 2,
-        ws_pin: 47,
+        ws_pin: 45,
         bclk_pin: 17,
         din_pin: 16,
         dout_pin: 15,

@@ -11,9 +11,21 @@ pub struct ThreadPlan {
 
 pub fn thread_plan(name: &str) -> ThreadPlan {
     match name {
-        "wifi_worker" | "dispatch" | "os_outbound" | "tg_poll" | "feishu_ws" | "qq_ws"
-        | "wecom_aibot" | "dingtalk_stream" | "tg_sender" | "fs_sender" | "dt_sender"
-        | "wc_sender" | "qq_sender" | "config_plane_watch" => ThreadPlan {
+        "wifi_worker"
+        | "dispatch"
+        | "os_outbound"
+        | "os_outbound_supervisor"
+        | "tg_poll"
+        | "feishu_ws"
+        | "qq_ws"
+        | "wecom_aibot"
+        | "dingtalk_stream"
+        | "tg_sender"
+        | "fs_sender"
+        | "dt_sender"
+        | "wc_sender"
+        | "qq_sender"
+        | "config_plane_watch" => ThreadPlan {
             core: Some(SpawnCore::Core0),
             role: HttpThreadRole::Io,
         },
@@ -65,6 +77,7 @@ pub fn stack_budget_for_thread(name: &str) -> Option<usize> {
             Some(crate::util::STACK_CHANNEL_SENDER)
         }
         "os_outbound" => Some(crate::util::STACK_OS_OUTBOUND),
+        "os_outbound_supervisor" => Some(crate::util::STACK_DISPATCH),
         "dispatch" => Some(crate::util::STACK_DISPATCH),
         "agent_loop" => Some(crate::util::STACK_AGENT_LOOP),
         "display" => Some(crate::util::STACK_DISPLAY),
@@ -141,7 +154,11 @@ mod tests {
 
     #[test]
     fn startup_io_workers_have_explicit_core_and_io_role() {
-        for name in ["wifi_worker", "config_plane_watch"] {
+        for name in [
+            "wifi_worker",
+            "config_plane_watch",
+            "os_outbound_supervisor",
+        ] {
             let plan = super::thread_plan(name);
 
             assert_eq!(plan.core, Some(crate::util::SpawnCore::Core0));

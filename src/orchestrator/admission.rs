@@ -378,17 +378,12 @@ pub(crate) fn should_accept_outbound_with_mode(
         };
     }
     let pressure = PressureLevel::from_byte(state.pressure_level.load(Ordering::Relaxed));
+    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
     let congested = is_queue_congested(state);
     match pressure {
-        PressureLevel::Critical => {
-            if congested {
-                AdmissionDecision::Defer {
-                    delay_ms: OUTBOUND_DEFER_DELAY_MS,
-                }
-            } else {
-                AdmissionDecision::Accept
-            }
-        }
+        PressureLevel::Critical => AdmissionDecision::Defer {
+            delay_ms: OUTBOUND_DEFER_DELAY_MS,
+        },
         PressureLevel::Cautious => {
             // Linux Cautious 不做出站延迟——已有真实内存阈值保障，避免无意义拖慢。
             #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
@@ -432,7 +427,10 @@ pub fn background_outbound_yield_ms(state: &OrchestratorState) -> u64 {
 mod tests {
     use super::*;
     use crate::bus::IngressKind;
-    use crate::constants::{LLM_RETRY_LATER_DELAY_MS, TLS_ADMISSION_MIN_INTERNAL_BYTES};
+    use crate::constants::{
+        LLM_RETRY_LATER_DELAY_MS, TLS_ADMISSION_MIN_INTERNAL_BYTES,
+        TLS_ADMISSION_MIN_LARGEST_BLOCK_BYTES,
+    };
     use crate::runtime::system_work::{
         CHANNEL_CRON, CHANNEL_POST_REPLY_MAINTENANCE, CHANNEL_SELF_RUNTIME,
     };
@@ -577,6 +575,22 @@ mod tests {
         assert!(matches!(
             should_accept_inbound_with_mode(&s, "qq_channel", IngressKind::System, normal_mode()),
             AdmissionDecision::Accept
+        ));
+    }
+
+    #[test]
+    fn critical_defers_outbound_even_without_queue_congestion() {
+        let s = state_with_heap(
+            200_000,
+            (TLS_ADMISSION_MIN_LARGEST_BLOCK_BYTES as u32).saturating_sub(1024),
+            PressureLevel::Critical,
+        );
+
+        assert!(matches!(
+            should_accept_outbound_with_mode(&s, "qq_channel", normal_mode()),
+            AdmissionDecision::Defer {
+                delay_ms: OUTBOUND_DEFER_DELAY_MS
+            }
         ));
     }
 

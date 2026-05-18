@@ -939,7 +939,7 @@ pub fn is_private_url(url: &str) -> bool {
 // | wifi_worker                           | STACK_WIFI_WORKER      | 8 KB  | n/a   | ← ESP WiFi driver + scan + STA keepalive owner
 // | http_snapshot_exec                     | STACK_HTTP_SNAPSHOT_WORKER | 24 KB | 24 KB | ← local read-only snapshots; P4 smoke exposed >20 KB use, S3 soak remains the ESP baseline gate
 // | http_chat_history_exec                 | STACK_HTTP_CHAT_HISTORY_WORKER | 31 KB | 31 KB | ← product chat history; S3 LittleFS read path needs config-class stack without global snapshot admission floor
-// | http_config_exec                       | STACK_HTTP_CONFIG_WORKER | 28 KB | 32 KB | ← config writes must fit normal post-startup largest-block budget
+// | http_config_exec                       | STACK_HTTP_CONFIG_WORKER | 32 KB | 32 KB | ← config writes must fit normal post-startup largest-block budget
 // | http_diag_exec                         | STACK_HTTP_DIAG_WORKER   | 28 KB | 32 KB | ← scan/diagnostic lane after first-screen fan-out was moved off this worker
 // | dispatch                              | STACK_DISPATCH         | 6 KB  | 6 KB  | ← 常驻逻辑只做 admission/retry/cooldown，不承接重执行链
 // | bg_timer                              | STACK_BG_TIMER         | 16 KB | 96 KB | ← heartbeat + cron + delayed-task wake; no storage/serde flush closures execute on this plane
@@ -1552,7 +1552,7 @@ mod thread_stack_budget_tests {
     #[test]
     fn http_config_worker_stack_covers_s3_durable_config_write_depth() {
         const S3_CONFIG_WRITE_OVERFLOW_STACK_BYTES: usize = 31 * 1024;
-        const MIN_CONFIG_WRITE_HEADROOM_BYTES: usize = 1 * 1024;
+        const MIN_CONFIG_WRITE_HEADROOM_BYTES: usize = 1024;
         const S3_CONFIG_SAVE_NORMAL_LARGEST_BLOCK_BYTES: usize = 32 * 1024;
 
         const {

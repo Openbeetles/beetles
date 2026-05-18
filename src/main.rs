@@ -38,8 +38,6 @@ use beetle::send_chat_action;
     feature = "qq_channel"
 ))]
 use beetle::util::STACK_CHANNEL_WS;
-#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-use beetle::util::STACK_OS_OUTBOUND;
 use beetle::util::STACK_VOICE_CONTROL;
 use beetle::util::{STACK_AGENT_LOOP, STACK_DISPATCH};
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
@@ -457,13 +455,10 @@ where
 
 #[cfg(any(
     feature = "telegram",
-    feature = "feishu",
     all(
         feature = "dingtalk",
         not(any(target_arch = "xtensa", target_arch = "riscv32"))
     ),
-    feature = "wecom",
-    feature = "qq_channel",
     test
 ))]
 fn spawn_required_planned_thread<F>(
@@ -480,6 +475,22 @@ where
     finalize_required_thread_start(tag, started_label, stage, || {
         spawn_planned_handle(name, stack_size, f)
     })
+}
+
+#[cfg(any(feature = "feishu", feature = "qq_channel", feature = "wecom", test))]
+fn spawn_supervised_channel_wss_thread(
+    tag: &str,
+    owner: &'static str,
+    started_label: &str,
+    _stage: &'static str,
+    spawner: Arc<dyn Fn() -> beetle::Result<beetle::util::TaskHandle> + Send + Sync>,
+) -> beetle::Result<()> {
+    let handle = spawner()?;
+    beetle::runtime::register_channel_wss_supervisor(owner, handle, spawner);
+    log::info!("[{}] {}", tag, started_label);
+    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+    beetle::orchestrator::log_startup_memory_checkpoint(_stage);
+    Ok(())
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -3591,13 +3602,16 @@ fn start_communication_planes(assembly: &mut PreparedRuntimeAssembly) -> beetle:
             let http_factory = assembly
                 .network_governor
                 .http_factory(HttpClientClass::Background);
-            spawn_required_planned_thread(
-                TAG,
-                "feishu_ws",
-                STACK_CHANNEL_WS,
-                "Feishu WS loop started",
-                "feishu_ws_spawn",
-                move || {
+            let feishu_spawner: Arc<
+                dyn Fn() -> beetle::Result<beetle::util::TaskHandle> + Send + Sync,
+            > = Arc::new(move || {
+                let tx = tx.clone();
+                let id = id.clone();
+                let sec = sec.clone();
+                let allowed = allowed.clone();
+                let pending = Arc::clone(&pending);
+                let http_factory = Arc::clone(&http_factory);
+                spawn_planned_handle("feishu_ws", STACK_CHANNEL_WS, move || {
                     run_feishu_ws_loop(
                         id,
                         sec,
@@ -3607,7 +3621,15 @@ fn start_communication_planes(assembly: &mut PreparedRuntimeAssembly) -> beetle:
                         move || http_factory(),
                         |url| beetle::network::connect_external_wss(url, "feishu_ws"),
                     )
-                },
+                })
+                .map_err(|error| beetle::Error::io("feishu_ws_spawn", error))
+            });
+            spawn_supervised_channel_wss_thread(
+                TAG,
+                "feishu_ws",
+                "Feishu WS loop started",
+                "feishu_ws_spawn",
+                feishu_spawner,
             )?;
         } else if enabled_channel == "feishu" {
             log::warn!(
@@ -3632,13 +3654,19 @@ fn start_communication_planes(assembly: &mut PreparedRuntimeAssembly) -> beetle:
                 let http_factory = assembly
                     .network_governor
                     .http_factory(HttpClientClass::Background);
-                spawn_required_planned_thread(
-                    TAG,
-                    "qq_ws",
-                    STACK_CHANNEL_WS,
-                    "QQ WS loop started",
-                    "qq_ws_spawn",
-                    move || {
+                let qq_spawner: Arc<
+                    dyn Fn() -> beetle::Result<beetle::util::TaskHandle> + Send + Sync,
+                > = Arc::new(move || {
+                    let qq_tx = qq_tx.clone();
+                    let qq_id = qq_id.clone();
+                    let qq_sec = qq_sec.clone();
+                    let qq_cache_ws = Arc::clone(&qq_cache_ws);
+                    let qq_inbound_dedup_ws = Arc::clone(&qq_inbound_dedup_ws);
+                    let qq_token_cache_ws = qq_token_cache_ws.clone();
+                    let qq_ws_status = qq_ws_status.clone();
+                    let qq_pending = Arc::clone(&qq_pending);
+                    let http_factory = Arc::clone(&http_factory);
+                    spawn_planned_handle("qq_ws", STACK_CHANNEL_WS, move || {
                         beetle::run_qq_ws_loop(
                             beetle::QqWsLoopConfig {
                                 app_id: qq_id,
@@ -3653,7 +3681,15 @@ fn start_communication_planes(assembly: &mut PreparedRuntimeAssembly) -> beetle:
                             move || http_factory(),
                             |url| beetle::network::connect_external_wss(url, "qq_ws"),
                         )
-                    },
+                    })
+                    .map_err(|error| beetle::Error::io("qq_ws_spawn", error))
+                });
+                spawn_supervised_channel_wss_thread(
+                    TAG,
+                    "qq_ws",
+                    "QQ WS loop started",
+                    "qq_ws_spawn",
+                    qq_spawner,
                 )?;
             }
         }
@@ -3709,13 +3745,17 @@ fn start_communication_planes(assembly: &mut PreparedRuntimeAssembly) -> beetle:
             let wc_pending = Arc::clone(&assembly.runtime.pending_retry_store);
             let wc_route_store = c.route_store;
             let wc_rx = c.rx;
-            spawn_required_planned_thread(
-                TAG,
-                "wecom_aibot",
-                STACK_CHANNEL_WS,
-                "WeCom AI Bot loop started",
-                "wecom_aibot_spawn",
-                move || {
+            let wecom_spawner: Arc<
+                dyn Fn() -> beetle::Result<beetle::util::TaskHandle> + Send + Sync,
+            > = Arc::new(move || {
+                let wc_bot_id = wc_bot_id.clone();
+                let wc_bot_secret = wc_bot_secret.clone();
+                let wc_websocket_url = wc_websocket_url.clone();
+                let wc_inbound_tx = wc_inbound_tx.clone();
+                let wc_pending = Arc::clone(&wc_pending);
+                let wc_route_store = Arc::clone(&wc_route_store);
+                let wc_rx = Arc::clone(&wc_rx);
+                spawn_planned_handle("wecom_aibot", STACK_CHANNEL_WS, move || {
                     beetle::run_wecom_aibot_loop(
                         beetle::WecomAibotLoopConfig {
                             bot_id: wc_bot_id,
@@ -3728,7 +3768,15 @@ fn start_communication_planes(assembly: &mut PreparedRuntimeAssembly) -> beetle:
                         },
                         |url| beetle::network::connect_external_wss(url, "wecom_aibot"),
                     )
-                },
+                })
+                .map_err(|error| beetle::Error::io("wecom_aibot_spawn", error))
+            });
+            spawn_supervised_channel_wss_thread(
+                TAG,
+                "wecom_aibot",
+                "WeCom AI Bot loop started",
+                "wecom_aibot_spawn",
+                wecom_spawner,
             )?;
         } else {
             log::warn!(
@@ -3762,16 +3810,16 @@ fn start_communication_planes(assembly: &mut PreparedRuntimeAssembly) -> beetle:
         #[cfg(not(any(feature = "telegram", feature = "feishu", feature = "qq_channel")))]
         let active_outbound = None;
         if let Some(active_outbound) = active_outbound {
-            spawn_planned_handle("os_outbound", STACK_OS_OUTBOUND, move || {
-                beetle::channels::run_os_outbound_worker(
+            spawn_planned_handle("os_outbound_supervisor", STACK_DISPATCH, move || {
+                beetle::channels::run_os_outbound_supervisor(
                     outbound_rx_for_dispatch,
                     active_outbound,
                     sinks_clone,
                     channel_capability_registry,
                 )
             })
-            .map_err(|error| beetle::Error::io("os_outbound_spawn", error))?;
-            beetle::orchestrator::log_startup_memory_checkpoint("os_outbound_spawn");
+            .map_err(|error| beetle::Error::io("os_outbound_supervisor_spawn", error))?;
+            beetle::orchestrator::log_startup_memory_checkpoint("os_outbound_supervisor_spawn");
             true
         } else {
             spawn_planned_handle("dispatch", STACK_DISPATCH, move || {

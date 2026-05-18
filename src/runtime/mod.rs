@@ -3,6 +3,7 @@
 
 pub mod acceptance;
 pub mod agent_supervision;
+pub mod channel_wss_supervision;
 pub mod continuity_flush;
 pub mod delayed_task;
 pub mod execution_budget;
@@ -37,6 +38,9 @@ pub use acceptance::{
     BeetleOsPlane, BeetleOsPlaneReport,
 };
 pub use agent_supervision::{register_agent_loop_guard, service_agent_loop_guard};
+pub use channel_wss_supervision::{
+    register_channel_wss_supervisor, service_channel_wss_supervisors,
+};
 pub use continuity_flush::{
     flush_reboot_continuity_bundle, request_restart_with_continuity_flush,
     schedule_restart_with_continuity_flush,

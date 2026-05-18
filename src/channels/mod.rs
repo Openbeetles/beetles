@@ -57,6 +57,7 @@ pub use dingtalk::run_dingtalk_stream_loop;
 pub use dingtalk::DingtalkSessionStore;
 #[cfg(feature = "dingtalk")]
 pub use dingtalk::{flush_dingtalk_sends, run_dingtalk_sender_loop};
+pub use dispatch::active_os_outbound_worker_count;
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 #[cfg(any(feature = "telegram", feature = "feishu", feature = "qq_channel"))]
 pub use dispatch::build_esp_active_outbound_driver;
@@ -71,7 +72,9 @@ pub use dispatch::QueuedSink;
 pub use dispatch::{build_channel_sinks, spawn_sender_threads, ChannelRxSet};
 pub use dispatch::{run_dispatch, ChannelSinks, MessageSink};
 #[cfg(any(feature = "telegram", feature = "feishu", feature = "qq_channel", test))]
-pub use dispatch::{run_os_outbound_worker, ActiveOutboundDriverConfig};
+pub use dispatch::{
+    run_os_outbound_supervisor, run_os_outbound_worker, ActiveOutboundDriverConfig,
+};
 #[cfg(feature = "feishu")]
 pub use feishu::run_feishu_ws_loop;
 #[cfg(feature = "feishu")]

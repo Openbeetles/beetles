@@ -1252,6 +1252,13 @@ fn default_wake_cooldown_ms() -> u32 {
     1000
 }
 
+const ES7210_WAKE_ENTER_THRESHOLD: f32 = 0.01;
+const ES7210_WAKE_LEAVE_THRESHOLD: f32 = 0.005;
+const ES7210_WAKE_ZCR_MAX: f32 = 0.65;
+const ES7210_WAKE_MIN_SPEECH_BAND_RATIO: f32 = 0.35;
+const ES7210_WAKE_MIN_ACTIVE_MS: u32 = 120;
+const WAKE_FLOAT_EQ_EPSILON: f32 = 0.000_1;
+
 fn default_wake_prompt() -> String {
     "你好，我在听，请说。".to_string()
 }
@@ -1919,6 +1926,7 @@ fn normalize_audio_segment(seg: &mut AudioSegment) {
     seg.topology = seg.topology.trim().to_ascii_lowercase();
     trim_optional_nonempty(&mut seg.codec.input_codec);
     trim_optional_nonempty(&mut seg.codec.output_codec);
+    normalize_es7210_codec_wake_defaults(seg);
 }
 
 fn trim_optional_nonempty(field: &mut Option<String>) {
@@ -1930,6 +1938,74 @@ fn trim_optional_nonempty(field: &mut Option<String>) {
             *value = trimmed.to_string();
         }
     }
+}
+
+fn float_nearly_eq(left: f32, right: f32) -> bool {
+    (left - right).abs() <= WAKE_FLOAT_EQ_EPSILON
+}
+
+fn audio_uses_es7210_codec_input(seg: &AudioSegment) -> bool {
+    seg.topology == AUDIO_TOPOLOGY_I2S_CODEC
+        && seg.codec.input_reference
+        && seg
+            .codec
+            .input_codec
+            .as_deref()
+            .is_some_and(|value| value == AUDIO_CODEC_INPUT_ES7210)
+}
+
+pub(crate) fn audio_uses_es7210_codec_wake_profile(seg: &AudioSegment) -> bool {
+    let mut seg = seg.clone();
+    normalize_audio_segment(&mut seg);
+    seg.wake_word.enabled
+        && audio_uses_es7210_codec_input(&seg)
+        && float_nearly_eq(seg.wake_word.enter_threshold, ES7210_WAKE_ENTER_THRESHOLD)
+        && float_nearly_eq(seg.wake_word.leave_threshold, ES7210_WAKE_LEAVE_THRESHOLD)
+        && float_nearly_eq(seg.wake_word.zcr_max, ES7210_WAKE_ZCR_MAX)
+        && float_nearly_eq(
+            seg.wake_word.min_speech_band_ratio,
+            ES7210_WAKE_MIN_SPEECH_BAND_RATIO,
+        )
+        && seg.wake_word.min_active_ms == ES7210_WAKE_MIN_ACTIVE_MS
+}
+
+fn wake_word_uses_legacy_acoustic_defaults(wake: &AudioWakeWordConfig) -> bool {
+    float_nearly_eq(wake.enter_threshold, default_wake_enter_threshold())
+        && float_nearly_eq(wake.leave_threshold, default_wake_leave_threshold())
+        && float_nearly_eq(
+            wake.reference_suppress_ratio,
+            default_wake_reference_suppress_ratio(),
+        )
+        && float_nearly_eq(wake.zcr_min, default_wake_zcr_min())
+        && float_nearly_eq(wake.zcr_max, default_wake_zcr_max())
+        && float_nearly_eq(
+            wake.min_speech_band_ratio,
+            default_wake_min_speech_band_ratio(),
+        )
+        && wake.min_active_ms == default_wake_min_active_ms()
+        && wake.hangover_ms == default_wake_hangover_ms()
+        && wake.cooldown_ms == default_wake_cooldown_ms()
+}
+
+fn normalize_es7210_codec_wake_defaults(seg: &mut AudioSegment) {
+    if !seg.wake_word.enabled
+        || !audio_uses_es7210_codec_input(seg)
+        || !wake_word_uses_legacy_acoustic_defaults(&seg.wake_word)
+    {
+        return;
+    }
+
+    seg.wake_word.enter_threshold = ES7210_WAKE_ENTER_THRESHOLD;
+    seg.wake_word.leave_threshold = ES7210_WAKE_LEAVE_THRESHOLD;
+    seg.wake_word.zcr_max = ES7210_WAKE_ZCR_MAX;
+    seg.wake_word.min_speech_band_ratio = ES7210_WAKE_MIN_SPEECH_BAND_RATIO;
+    seg.wake_word.min_active_ms = ES7210_WAKE_MIN_ACTIVE_MS;
+}
+
+pub(crate) fn audio_wake_word_config_for_runtime(audio: &AudioSegment) -> AudioWakeWordConfig {
+    let mut seg = audio.clone();
+    normalize_audio_segment(&mut seg);
+    seg.wake_word
 }
 
 pub(crate) fn audio_topology_is_codec(seg: &AudioSegment) -> bool {
@@ -3503,7 +3579,7 @@ mod tests {
             i2c_bus: None,
             i2s_bus: Some(I2sBusConfig {
                 mclk_pin: 2,
-                ws_pin: 47,
+                ws_pin: 45,
                 bclk_pin: 17,
                 din_pin: 16,
                 dout_pin: 16,
@@ -3530,7 +3606,7 @@ mod tests {
             }),
             i2s_bus: Some(I2sBusConfig {
                 mclk_pin: 2,
-                ws_pin: 47,
+                ws_pin: 45,
                 bclk_pin: 17,
                 din_pin: 16,
                 dout_pin: 15,
@@ -3548,7 +3624,7 @@ mod tests {
             serde_json::from_slice(&written).expect("parse saved hardware");
         let bus = saved.i2s_bus.expect("saved i2s bus");
         assert_eq!(bus.mclk_pin, 2);
-        assert_eq!(bus.ws_pin, 47);
+        assert_eq!(bus.ws_pin, 45);
         assert_eq!(bus.bclk_pin, 17);
         assert_eq!(bus.din_pin, 16);
         assert_eq!(bus.dout_pin, 15);
@@ -4078,7 +4154,7 @@ mod tests {
                 }),
                 i2s_bus: Some(I2sBusConfig {
                     mclk_pin: 2,
-                    ws_pin: 47,
+                    ws_pin: 45,
                     bclk_pin: 17,
                     din_pin: 16,
                     dout_pin: 15,
@@ -4121,6 +4197,117 @@ mod tests {
         assert_eq!(saved.codec.output_addr, Some(0x18));
         assert_eq!(saved.codec.pa_pin, Some(46));
         assert!(saved.codec.input_reference);
+    }
+
+    #[test]
+    fn es7210_codec_wake_defaults_are_normalized_for_esp_box3_levels() {
+        let store = MultiFileStore::with_file(
+            "config/hardware.json",
+            serde_json::to_vec(&HardwareSegment {
+                hardware_devices: vec![],
+                i2c_bus: Some(I2cBusConfig {
+                    sda_pin: 8,
+                    scl_pin: 18,
+                    freq_hz: crate::constants::I2C_DEFAULT_FREQ_HZ,
+                }),
+                i2s_bus: Some(I2sBusConfig {
+                    mclk_pin: 2,
+                    ws_pin: 45,
+                    bclk_pin: 17,
+                    din_pin: 16,
+                    dout_pin: 15,
+                }),
+                i2c_devices: vec![],
+                i2c_sensors: vec![],
+            })
+            .expect("serialize hardware"),
+        );
+        let mut seg = default_disabled_audio_segment();
+        seg.enabled = true;
+        seg.topology = AUDIO_TOPOLOGY_I2S_CODEC.to_string();
+        seg.microphone.enabled = true;
+        seg.speaker.enabled = true;
+        seg.microphone.sample_rate = AUDIO_REALTIME_PCM16_SAMPLE_RATE;
+        seg.speaker.sample_rate = AUDIO_REALTIME_PCM16_SAMPLE_RATE;
+        seg.codec.input_codec = Some(AUDIO_CODEC_INPUT_ES7210.to_string());
+        seg.codec.output_codec = Some(AUDIO_CODEC_OUTPUT_ES8311.to_string());
+        seg.codec.pa_pin = Some(46);
+        seg.codec.input_reference = true;
+        seg.wake_word.enabled = true;
+        seg.realtime.provider = AUDIO_REALTIME_PROVIDER_QWEN.to_string();
+        seg.realtime.ws_url =
+            audio_realtime_default_ws_url(AUDIO_REALTIME_PROVIDER_QWEN).to_string();
+        seg.realtime.api_key = "test-key".to_string();
+        seg.realtime.model = audio_realtime_default_model(AUDIO_REALTIME_PROVIDER_QWEN).to_string();
+        seg.realtime.voice = audio_realtime_default_voice(AUDIO_REALTIME_PROVIDER_QWEN).to_string();
+
+        save_audio_segment_value(&store, seg).expect("save audio");
+        let written = store
+            .read_config_file("config/audio.json")
+            .expect("read")
+            .expect("written");
+        let saved: AudioSegment = serde_json::from_slice(&written).expect("parse saved audio");
+        assert_eq!(saved.wake_word.enter_threshold, 0.01);
+        assert_eq!(saved.wake_word.leave_threshold, 0.005);
+        assert_eq!(saved.wake_word.zcr_max, 0.65);
+        assert_eq!(saved.wake_word.min_speech_band_ratio, 0.35);
+        assert_eq!(saved.wake_word.min_active_ms, 120);
+    }
+
+    #[test]
+    fn es7210_codec_wake_normalization_preserves_custom_acoustic_profile() {
+        let store = MultiFileStore::with_file(
+            "config/hardware.json",
+            serde_json::to_vec(&HardwareSegment {
+                hardware_devices: vec![],
+                i2c_bus: Some(I2cBusConfig {
+                    sda_pin: 8,
+                    scl_pin: 18,
+                    freq_hz: crate::constants::I2C_DEFAULT_FREQ_HZ,
+                }),
+                i2s_bus: Some(I2sBusConfig {
+                    mclk_pin: 2,
+                    ws_pin: 45,
+                    bclk_pin: 17,
+                    din_pin: 16,
+                    dout_pin: 15,
+                }),
+                i2c_devices: vec![],
+                i2c_sensors: vec![],
+            })
+            .expect("serialize hardware"),
+        );
+        let mut seg = default_disabled_audio_segment();
+        seg.enabled = true;
+        seg.topology = AUDIO_TOPOLOGY_I2S_CODEC.to_string();
+        seg.microphone.enabled = true;
+        seg.speaker.enabled = true;
+        seg.microphone.sample_rate = AUDIO_REALTIME_PCM16_SAMPLE_RATE;
+        seg.speaker.sample_rate = AUDIO_REALTIME_PCM16_SAMPLE_RATE;
+        seg.codec.input_codec = Some(AUDIO_CODEC_INPUT_ES7210.to_string());
+        seg.codec.output_codec = Some(AUDIO_CODEC_OUTPUT_ES8311.to_string());
+        seg.codec.pa_pin = Some(46);
+        seg.codec.input_reference = true;
+        seg.wake_word.enabled = true;
+        seg.wake_word.zcr_min = 0.09;
+        seg.realtime.provider = AUDIO_REALTIME_PROVIDER_QWEN.to_string();
+        seg.realtime.ws_url =
+            audio_realtime_default_ws_url(AUDIO_REALTIME_PROVIDER_QWEN).to_string();
+        seg.realtime.api_key = "test-key".to_string();
+        seg.realtime.model = audio_realtime_default_model(AUDIO_REALTIME_PROVIDER_QWEN).to_string();
+        seg.realtime.voice = audio_realtime_default_voice(AUDIO_REALTIME_PROVIDER_QWEN).to_string();
+
+        save_audio_segment_value(&store, seg).expect("save audio");
+        let written = store
+            .read_config_file("config/audio.json")
+            .expect("read")
+            .expect("written");
+        let saved: AudioSegment = serde_json::from_slice(&written).expect("parse saved audio");
+        assert_eq!(
+            saved.wake_word.enter_threshold,
+            default_wake_enter_threshold()
+        );
+        assert_eq!(saved.wake_word.zcr_min, 0.09);
     }
 
     #[test]
@@ -4192,7 +4379,7 @@ mod tests {
                 }),
                 i2s_bus: Some(I2sBusConfig {
                     mclk_pin: 2,
-                    ws_pin: 47,
+                    ws_pin: 45,
                     bclk_pin: 17,
                     din_pin: 16,
                     dout_pin: 15,
@@ -4229,7 +4416,7 @@ mod tests {
                 }),
                 i2s_bus: Some(I2sBusConfig {
                     mclk_pin: 2,
-                    ws_pin: 47,
+                    ws_pin: 45,
                     bclk_pin: 17,
                     din_pin: 16,
                     dout_pin: 15,

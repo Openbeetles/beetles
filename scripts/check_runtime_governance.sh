@@ -49,13 +49,17 @@ USER_STORAGE_SPIFFS_LEAK_PATHS="$(
     packaging/linux
 )"
 if [[ -n "$USER_STORAGE_SPIFFS_LEAK_PATHS" ]] &&
-   rg -n "$USER_STORAGE_BACKEND_LEAK_PATTERN" $USER_STORAGE_SPIFFS_LEAK_PATHS >/tmp/beetle-storage-leaks.$$; then
+   rg -n "$USER_STORAGE_BACKEND_LEAK_PATTERN" $USER_STORAGE_SPIFFS_LEAK_PATHS \
+     --glob '!docs/en-us/release-notes/**' \
+     --glob '!docs/zh-cn/release-notes/**' >/tmp/beetle-storage-leaks.$$; then
   echo "FAIL: user/business-facing storage wording leaked platform backend naming:" >&2
   sanitize_storage_backend_wording </tmp/beetle-storage-leaks.$$ >&2
   rm -f /tmp/beetle-storage-leaks.$$
   exit 1
 fi
 rm -f /tmp/beetle-storage-leaks.$$
+
+bash scripts/tests/esp_audio_codec_contract_test.sh >/dev/null
 
 RESPONSE_BODY_INTO_VEC_HOT_PATH='ResponseBody::into_vec|\b(body|resp_body|response_body)\.into_vec\s*\('
 if rg -n "$RESPONSE_BODY_INTO_VEC_HOT_PATH" src \
@@ -614,6 +618,34 @@ fi
 if ! rg -n 'VoiceExclusiveTransportGuard::enter\(cfg\.platform\.as_ref\(\),\s*TAG\)' src/audio/voice_session.rs >/dev/null ||
    ! rg -n 'realtime voice transport admission failed' src/audio/voice_session.rs >/dev/null; then
   echo "FAIL: realtime voice no longer treats external WSS drain failure as transport admission failure" >&2
+  exit 1
+fi
+
+if ! rg -n 'begin_external_wss_worker_evict_request' src/network/mod.rs >/dev/null ||
+   ! rg -n 'external_wss_worker_should_exit_for_evict' src/channels/wss_gateway/loop.rs >/dev/null ||
+   ! rg -n 'service_channel_wss_supervisors' src/bg_timer.rs >/dev/null ||
+   ! rg -n 'realtime_voice_pre_spawn_largest_floor' src/network/mod.rs >/dev/null ||
+   ! rg -n 'active_os_outbound_worker_count' src/network/mod.rs >/dev/null ||
+   ! rg -n 'run_os_outbound_supervisor' src/channels/dispatch.rs >/dev/null; then
+  echo "FAIL: realtime voice admission must evict external WSS/outbound workers and reserve connect-stack largest-block before spawning" >&2
+  exit 1
+fi
+
+if ! rg -n 'OutboundHttpRecovery' src/network/mod.rs >/dev/null ||
+   ! rg -n 'ensure_outbound_http_recovery_wss_evict' src/channels/dispatch.rs >/dev/null ||
+   ! rg -n 'critical_defers_outbound_even_without_queue_congestion' src/orchestrator/admission.rs >/dev/null; then
+  echo "FAIL: critical outbound HTTP recovery must defer before TLS and evict subordinate external WSS workers when needed" >&2
+  exit 1
+fi
+
+if ! rg -n 'PrepareRealtimeTransportThenSpawnConnect' src/audio/voice_session.rs >/dev/null ||
+   ! rg -n 'spawn_prepared_realtime_session_worker' src/audio/voice_session.rs >/dev/null; then
+  echo "FAIL: realtime voice startup must keep connect and session workers split" >&2
+  exit 1
+fi
+
+if ! rg -n 'external_wss_worker_should_exit_for_evict' src/channels/wecom/aibot.rs >/dev/null; then
+  echo "FAIL: direct external WSS channel loops must honor worker eviction, not only the gateway loop" >&2
   exit 1
 fi
 

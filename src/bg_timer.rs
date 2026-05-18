@@ -178,6 +178,7 @@ pub fn run_bg_timer(ctx: BgTimerContext) -> std::io::Result<crate::util::TaskHan
                 wait_until_or_notified(next_wake_at);
                 crate::platform::task_wdt::feed_current_task();
                 crate::runtime::service_delayed_tasks();
+                crate::runtime::service_channel_wss_supervisors(TAG);
 
                 let now = Instant::now();
                 let now_unix_secs = crate::util::current_unix_secs();

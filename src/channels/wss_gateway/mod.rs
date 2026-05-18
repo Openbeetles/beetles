@@ -24,7 +24,10 @@ pub use driver::{WssGatewayDriver, WssRecvAction, WssSessionState};
 pub use r#loop::run_wss_gateway_loop;
 #[cfg(any(feature = "feishu", feature = "wecom", feature = "qq_channel", test))]
 #[allow(unused_imports)]
-pub(crate) use r#loop::{external_wss_connect_gate, external_wss_session_stop_reason};
+pub(crate) use r#loop::{
+    external_wss_connect_gate, external_wss_session_stop_reason,
+    external_wss_worker_should_exit_for_evict,
+};
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 #[allow(unused_imports)]

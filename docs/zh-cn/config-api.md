@@ -384,6 +384,7 @@
 
 - `hardware_devices`
 - `i2c_bus`
+- `i2s_bus`
 - `i2c_devices`
 - `i2c_sensors`
 
@@ -393,6 +394,7 @@
 {
   "hardware_devices": [],
   "i2c_bus": null,
+  "i2s_bus": null,
   "i2c_devices": [],
   "i2c_sensors": []
 }
@@ -408,6 +410,7 @@
     "scl_pin": 22,
     "freq_hz": 100000
   },
+  "i2s_bus": null,
   "i2c_devices": [],
   "i2c_sensors": [
     {
@@ -454,9 +457,11 @@
 
 - `version`
 - `enabled`
+- `topology`
 - `service_provider`
 - `microphone`
 - `speaker`
+- `codec`
 - `vad`
 - `wake_word`（当前配置 Beetle 内建的 acoustic 唤醒后端；外部 wake backend 只是未来扩展点，本轮不开放配置）
 - `speech`
@@ -467,6 +472,12 @@
 
 `wake_word` 仍保留顶层对象名以兼容既有配置。当前字段形状为：
 `enabled`、`enter_threshold`、`leave_threshold`、`reference_suppress_ratio`、`zcr_min`、`zcr_max`、`min_speech_band_ratio`、`min_active_ms`、`hangover_ms`、`cooldown_ms`、`keyword`（仅兼容旧配置读取/回写）和 `wake_prompt`。configure-ui 只暴露 acoustic 参数和 `wake_prompt`。
+
+`topology` 当前支持 `discrete_i2s` 与 `i2s_codec`。在 `i2s_codec` 模式下，`codec` 包含 `input_codec`、`output_codec`、`input_addr`、`output_addr`、`pa_pin` 和 `input_reference`。当前 ESP-BOX-3 codec 路径支持 ES7210 输入与 ES8311 输出。
+
+当 `audio.topology = "i2s_codec"` 且启用 ES7210 input reference 时，旧 acoustic 默认值会在保存/运行时加载时规范化为 ESP-BOX-3 灵敏度 profile：`enter_threshold=0.01`、`leave_threshold=0.005`、`zcr_max=0.65`、`min_speech_band_ratio=0.35`、`min_active_ms=120`。
+
+同一模式下，设备端会读取 ES7210 的多路输入并将当前有效输入通道送入内建 acoustic 唤醒后端；用户无需手动配置 TDM 通道序号。
 
 可选查询参数：`restart=1`
 

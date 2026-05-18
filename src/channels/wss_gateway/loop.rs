@@ -133,6 +133,54 @@ fn mark_wss_lifecycle(
     );
 }
 
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+struct ExternalWssWorkerPresenceGuard;
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+impl ExternalWssWorkerPresenceGuard {
+    fn new() -> Self {
+        crate::network::set_external_wss_managed_present(true);
+        Self
+    }
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+impl Drop for ExternalWssWorkerPresenceGuard {
+    fn drop(&mut self) {
+        crate::network::mark_external_wss_worker_unloaded();
+    }
+}
+
+pub(crate) fn external_wss_worker_should_exit_for_evict(
+    tag: &str,
+    lifecycle_owner: &'static str,
+) -> bool {
+    let Some(reason) = external_wss_worker_evict_lifecycle_reason() else {
+        return false;
+    };
+    log::info!(
+        "[{}] unloading external WSS worker for resource window reason={}",
+        tag,
+        reason
+    );
+    crate::network::mark_external_wss_worker_unloaded();
+    mark_wss_lifecycle(
+        lifecycle_owner,
+        crate::runtime::PlaneLifecycleState::Unloaded,
+        reason,
+    );
+    true
+}
+
+fn external_wss_worker_evict_lifecycle_reason() -> Option<&'static str> {
+    crate::network::external_wss_worker_evict_reason()
+        .map(crate::network::ExternalWssSuspendReason::as_str)
+        .or_else(|| {
+            crate::network::external_wss_worker_evict_requested()
+                .then_some("external_wss_worker_evict")
+        })
+}
+
 fn wss_runtime_gate_suspend_reason(mode: crate::runtime::RuntimeModeSnapshot) -> &'static str {
     if mode.current_mode == crate::runtime::RuntimeMode::VoiceExclusive {
         "voice_exclusive_suspend"
@@ -272,6 +320,9 @@ pub(crate) fn external_wss_connect_gate(
         );
     }
     crate::network::wait_for_external_wss_resume(tag);
+    if crate::network::external_wss_worker_evict_requested() {
+        return false;
+    }
     if !wait_for_wifi(tag) {
         sleep_with_wdt(TLS_ADMISSION_RETRY_SLEEP_SECS);
         return false;
@@ -381,15 +432,19 @@ pub fn run_wss_gateway_loop<D, H, C, CreateHttp, Conn>(
     Conn: FnMut(&str) -> Result<C>,
 {
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-    {
-        crate::network::set_external_wss_managed_present(true);
-    }
+    let _presence_guard = ExternalWssWorkerPresenceGuard::new();
     let lifecycle_owner = wss_lifecycle_owner(tag);
     let mut backoff_secs = crate::orchestrator::current_budget().reconnect_backoff_secs;
     let mut waiting_for_wall_clock = false;
     loop {
+        if external_wss_worker_should_exit_for_evict(tag, lifecycle_owner) {
+            return;
+        }
         if !external_wss_connect_gate(tag, lifecycle_owner, &mut waiting_for_wall_clock) {
             continue;
+        }
+        if external_wss_worker_should_exit_for_evict(tag, lifecycle_owner) {
+            return;
         }
 
         mark_wss_lifecycle(
@@ -406,6 +461,9 @@ pub fn run_wss_gateway_loop<D, H, C, CreateHttp, Conn>(
                     "create_http_failed",
                 );
                 log::warn!("[{}] create_http failed: {}", tag, e);
+                if external_wss_worker_should_exit_for_evict(tag, lifecycle_owner) {
+                    return;
+                }
                 sleep_with_wdt(backoff_secs);
                 backoff_secs = (backoff_secs * 2).min(BACKOFF_MAX_SECS);
                 continue;
@@ -435,6 +493,9 @@ pub fn run_wss_gateway_loop<D, H, C, CreateHttp, Conn>(
                 );
                 crate::metrics::record_error_by_stage(e.metrics_stage());
                 log::warn!("[{}] get_url failed: {}", tag, e);
+                if external_wss_worker_should_exit_for_evict(tag, lifecycle_owner) {
+                    return;
+                }
                 if e.is_tls_admission() {
                     let sleep_secs = tls_admission_retry_sleep_secs_for_pressure(
                         crate::orchestrator::refresh_heap_if_stale(),
@@ -460,6 +521,9 @@ pub fn run_wss_gateway_loop<D, H, C, CreateHttp, Conn>(
                 );
                 crate::metrics::record_error_by_stage(e.metrics_stage());
                 log::warn!("[{}] connect failed: {}", tag, e);
+                if external_wss_worker_should_exit_for_evict(tag, lifecycle_owner) {
+                    return;
+                }
                 sleep_with_wdt(backoff_secs);
                 backoff_secs = (backoff_secs * 2).min(BACKOFF_MAX_SECS);
                 continue;
@@ -563,6 +627,11 @@ pub fn run_wss_gateway_loop<D, H, C, CreateHttp, Conn>(
 
         while !session_ended {
             crate::platform::task_wdt::feed_current_task();
+            if let Some(reason) = external_wss_worker_evict_lifecycle_reason() {
+                session_end_lifecycle = WssSessionEndLifecycle::Stopping(reason);
+                session_ended = true;
+                continue;
+            }
             if let Some(reason) = external_wss_session_stop_reason(tag, lifecycle_owner) {
                 session_end_lifecycle = WssSessionEndLifecycle::Stopping(reason);
                 session_ended = true;
@@ -829,6 +898,9 @@ pub fn run_wss_gateway_loop<D, H, C, CreateHttp, Conn>(
         );
         driver.on_session_ended();
         drop(conn);
+        if external_wss_worker_should_exit_for_evict(tag, lifecycle_owner) {
+            return;
+        }
         #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
         if crate::network::external_wss_suspend_requested() {
             crate::network::set_external_wss_suspended(true);
@@ -856,9 +928,12 @@ pub fn run_wss_gateway_loop<D, H, C, CreateHttp, Conn>(
 /// sleep 期间定期喂看门狗，避免长 sleep 触发 TWDT 复位。
 fn sleep_with_wdt(secs: u64) {
     let total = Duration::from_secs(secs);
-    let chunk = Duration::from_secs(10);
+    let chunk = Duration::from_millis(50);
     let start = Instant::now();
     while start.elapsed() < total {
+        if crate::network::external_wss_worker_evict_requested() {
+            break;
+        }
         let remaining = total.saturating_sub(start.elapsed());
         std::thread::sleep(remaining.min(chunk));
         crate::platform::task_wdt::feed_current_task();
@@ -964,5 +1039,55 @@ mod tests {
             })),
             "config_persisting_suspend"
         );
+    }
+
+    #[test]
+    fn external_wss_worker_evict_marks_unloaded_and_exits_loop() {
+        let _guard = crate::state::test_state_guard();
+        crate::network::set_external_wss_managed_present(true);
+        let evict = crate::network::begin_external_wss_worker_evict_request(
+            crate::network::ExternalWssSuspendReason::VoiceExclusive,
+        );
+
+        assert!(super::external_wss_worker_should_exit_for_evict(
+            "qq_ws", "qq_ws"
+        ));
+        assert!(!crate::network::external_wss_managed_present());
+        assert!(crate::network::external_wss_suspended());
+
+        drop(evict);
+    }
+
+    #[test]
+    fn external_wss_session_stop_reason_includes_worker_evict() {
+        let _guard = crate::state::test_state_guard();
+        let evict = crate::network::begin_external_wss_worker_evict_request(
+            crate::network::ExternalWssSuspendReason::OutboundHttpRecovery,
+        );
+
+        assert_eq!(
+            super::external_wss_worker_evict_lifecycle_reason(),
+            Some("outbound_http_recovery_suspend")
+        );
+
+        drop(evict);
+    }
+
+    #[test]
+    fn wss_backoff_sleep_returns_early_when_worker_evict_is_requested() {
+        let _guard = crate::state::test_state_guard();
+        crate::network::set_external_wss_managed_present(true);
+        let evict = crate::network::begin_external_wss_worker_evict_request(
+            crate::network::ExternalWssSuspendReason::VoiceExclusive,
+        );
+        let started = std::time::Instant::now();
+
+        super::sleep_with_wdt(1);
+
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(500),
+            "evict-aware WSS backoff sleep must not block realtime admission"
+        );
+        drop(evict);
     }
 }

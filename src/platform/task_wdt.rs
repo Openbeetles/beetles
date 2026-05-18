@@ -29,6 +29,7 @@ pub fn thread_policy_for_name(name: &str) -> TaskWdtThreadPolicy {
         | "http_diag_exec"
         | "dispatch"
         | "os_outbound"
+        | "os_outbound_supervisor"
         | "bg_timer"
         | "heartbeat"
         | "qq_ws"
@@ -298,6 +299,10 @@ mod tests {
         );
         assert_eq!(
             thread_policy_for_name("os_outbound"),
+            TaskWdtThreadPolicy::FeedOnly
+        );
+        assert_eq!(
+            thread_policy_for_name("os_outbound_supervisor"),
             TaskWdtThreadPolicy::FeedOnly
         );
         assert_eq!(
