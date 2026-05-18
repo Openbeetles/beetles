@@ -269,6 +269,11 @@ fn assemble_persona_regression_system(
     let memory = RegressionMemoryStore;
     let session = RegressionSessionStore;
     let important = RegressionImportantMessageStore::default();
+    let constitutional_stack_text = compose_regression_projection(&[
+        self_authored_core,
+        persona_priority_block,
+        disclosure_block,
+    ]);
     let (system, messages) = build_context(&ContextParams {
         msg: &msg,
         memory_system_kind: crate::memory::MemorySystemKind::LinuxFull,
@@ -283,7 +288,7 @@ fn assemble_persona_regression_system(
         group_activation: "always",
         emotion_signal_suffix: None,
         memory_health_text: None,
-        constitutional_stack_text: None,
+        constitutional_stack_text: constitutional_stack_text.as_deref(),
         subject_state_text: case.subject_state_text,
         deliberation_gate_text: None,
         soul_feedback_projection_text: None,
@@ -291,19 +296,6 @@ fn assemble_persona_regression_system(
         governed_memory_evidence_text: case.governed_memory_evidence_text,
         background_governance_text: None,
         programmable_reasoning_intent_text: None,
-        execution_state_text: None,
-        task_workspace_text: None,
-        task_recall_text: None,
-        self_authored_core_text: (!self_authored_core.trim().is_empty())
-            .then_some(self_authored_core),
-        relationship_constitution_text: None,
-        persona_priority_text: (!persona_priority_block.trim().is_empty())
-            .then_some(persona_priority_block),
-        mental_privacy_adjudication_text: (!disclosure_block.trim().is_empty())
-            .then_some(disclosure_block),
-        long_term_memory_text: None,
-        archive_evidence_text: None,
-        runtime_skill_text: None,
         capability_package_text: None,
         summary_text: None,
         recent_messages: None,
@@ -319,6 +311,21 @@ fn assemble_persona_regression_system(
             .collect::<Vec<_>>()
             .join("\n"),
     })
+}
+
+fn compose_regression_projection(parts: &[&str]) -> Option<String> {
+    let mut out = String::new();
+    for part in parts {
+        let trimmed = part.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if !out.is_empty() {
+            out.push_str("\n\n");
+        }
+        out.push_str(trimmed);
+    }
+    (!out.is_empty()).then_some(out)
 }
 
 fn expected_fragment_present(haystack: &str, expected: &str) -> bool {

@@ -3,7 +3,6 @@
 
 use crate::constants::FILE_WRITE_MAX_CONTENT_LEN;
 use crate::error::{Error, Result};
-use crate::platform::ByteBuffer;
 use crate::tools::state_file_guard::{ensure_state_path_mutable, normalize_state_tool_path};
 use crate::tools::{
     parse_tool_args, serialize_tool_output, Tool, ToolClarificationField, ToolContext,
@@ -82,7 +81,7 @@ impl Tool for FileWriteTool {
         let rel = normalize_state_tool_path(path_arg, "tool_file_write")?;
         ensure_state_path_mutable(&rel, "tool_file_write")?;
 
-        let final_bytes = if append {
+        let bytes_written = if append {
             let mut existing = self.state_fs.read_bytes(&rel)?.unwrap_or_default();
             if std::str::from_utf8(existing.as_ref()).is_err() {
                 return Err(Error::config(
@@ -103,12 +102,13 @@ impl Tool for FileWriteTool {
             existing
                 .write_all(content.as_bytes())
                 .map_err(|error| Error::io("tool_file_write", error))?;
-            existing
+            self.state_fs.write(&rel, existing.as_ref())?;
+            existing.len()
         } else {
-            ByteBuffer::from_vec(content.as_bytes().to_vec())
+            let bytes = overwrite_content_bytes(content);
+            self.state_fs.write(&rel, bytes)?;
+            bytes.len()
         };
-
-        self.state_fs.write(&rel, final_bytes.as_ref())?;
 
         Ok(ToolExecutionOutcome::text(serialize_tool_output(
             "tool_file_write",
@@ -116,7 +116,7 @@ impl Tool for FileWriteTool {
                 path: path_arg,
                 ok: true,
                 append,
-                bytes_written: final_bytes.len(),
+                bytes_written,
             },
         )?))
     }
@@ -126,6 +126,10 @@ impl Tool for FileWriteTool {
             .with_risk_level(ToolRiskLevel::High)
             .with_rollback_kind(ToolRollbackKind::CompensatingWrite)
     }
+}
+
+fn overwrite_content_bytes(content: &str) -> &[u8] {
+    content.as_bytes()
 }
 
 fn file_write_missing_field_outcome(field: &str, summary: &str) -> ToolExecutionOutcome {
@@ -155,7 +159,7 @@ fn file_write_missing_field_outcome(field: &str, summary: &str) -> ToolExecution
 
 #[cfg(test)]
 mod tests {
-    use super::FileWriteTool;
+    use super::{overwrite_content_bytes, FileWriteTool};
     use crate::error::Result;
     use crate::i18n::Locale;
     use crate::platform::{ResponseBody, StateFs};
@@ -213,6 +217,15 @@ mod tests {
         fn user_locale(&self) -> Locale {
             Locale::Zh
         }
+    }
+
+    #[test]
+    fn overwrite_content_bytes_borrows_content_without_copy() {
+        let content = "direct overwrite content";
+        let bytes = overwrite_content_bytes(content);
+
+        assert_eq!(bytes, content.as_bytes());
+        assert_eq!(bytes.as_ptr(), content.as_bytes().as_ptr());
     }
 
     #[test]

@@ -281,7 +281,6 @@ dependencies = [
  "mlua",
  "pdf-extract",
  "quick-xml",
- "regex",
  "rtnetlink",
  "rusqlite",
  "rustls",

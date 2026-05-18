@@ -2,7 +2,6 @@
 //! Lightweight helpers; secret redaction for safe logging.
 
 use std::path::Path;
-use std::sync::OnceLock;
 
 /// 按字符边界截断内容至最多 max 个字符；不截断时零分配返回借用。
 /// Truncate to at most `max` chars; returns `Cow::Borrowed` (zero alloc) when no truncation needed.
@@ -567,33 +566,69 @@ pub fn scrub_credentials(input: &str) -> String {
     out
 }
 
-/// 对配置文本中的敏感 JSON 字符串字段做正则脱敏，确保进入 LLM 前不暴露真实秘钥。
-/// Regex-based redaction for sensitive JSON string fields in config text before LLM exposure.
+/// 对配置文本中的敏感 JSON 字符串字段做脱敏，确保进入 LLM 前不暴露真实秘钥。
+/// Redact sensitive JSON string fields in config text before LLM exposure.
 pub fn redact_sensitive_config_text(input: &str) -> String {
-    sensitive_json_string_field_regex()
-        .replace_all(input, |caps: &regex::Captures<'_>| {
-            let key = caps.name("key").map(|m| m.as_str()).unwrap_or_default();
-            if !is_sensitive_config_key_regex(key) {
-                return caps
-                    .get(0)
-                    .map(|m| m.as_str().to_string())
-                    .unwrap_or_default();
-            }
-            let value = caps.name("value").map(|m| m.as_str()).unwrap_or_default();
-            if value.is_empty() {
-                return caps
-                    .get(0)
-                    .map(|m| m.as_str().to_string())
-                    .unwrap_or_default();
-            }
-            let decoded = decode_json_string_fragment(value);
-            let redacted = redact_config_secret_value(&decoded);
-            let encoded =
-                serde_json::to_string(&redacted).unwrap_or_else(|_| "\"[REDACTED]\"".into());
-            let prefix = caps.name("prefix").map(|m| m.as_str()).unwrap_or_default();
-            format!("{prefix}{encoded}")
-        })
-        .into_owned()
+    if input.is_empty() {
+        return String::new();
+    }
+    let mut out = String::with_capacity(input.len());
+    let mut index = 0usize;
+    while index < input.len() {
+        let Some(byte) = input.as_bytes().get(index).copied() else {
+            break;
+        };
+        if byte != b'"' {
+            let ch = input[index..].chars().next().unwrap_or_default();
+            out.push(ch);
+            index += ch.len_utf8();
+            continue;
+        }
+        let Some(key) = parse_json_string_token(input, index) else {
+            let ch = input[index..].chars().next().unwrap_or_default();
+            out.push(ch);
+            index += ch.len_utf8();
+            continue;
+        };
+        let after_key_ws = skip_ascii_ws(input, key.end);
+        if input.as_bytes().get(after_key_ws) != Some(&b':') {
+            out.push_str(&input[index..key.end]);
+            index = key.end;
+            continue;
+        }
+        let value_start = skip_ascii_ws(input, after_key_ws + 1);
+        if input.as_bytes().get(value_start) != Some(&b'"') {
+            out.push_str(&input[index..value_start]);
+            index = value_start;
+            continue;
+        }
+        let Some(value) = scan_json_string_span(input, value_start) else {
+            out.push_str(&input[index..value_start]);
+            index = value_start;
+            continue;
+        };
+        let raw_value = input
+            .get(value_start + 1..value.end.saturating_sub(1))
+            .unwrap_or_default();
+        let value_is_empty = value
+            .decoded
+            .as_deref()
+            .map_or_else(|| raw_value.is_empty(), str::is_empty);
+        if !is_sensitive_config_key(&key.decoded) || value_is_empty {
+            out.push_str(&input[index..value.end]);
+            index = value.end;
+            continue;
+        }
+        let redacted = value
+            .decoded
+            .as_deref()
+            .map_or_else(|| "[REDACTED]".to_string(), redact_config_secret_value);
+        let encoded = serde_json::to_string(&redacted).unwrap_or_else(|_| "\"[REDACTED]\"".into());
+        out.push_str(&input[index..value_start]);
+        out.push_str(&encoded);
+        index = value.end;
+    }
+    out
 }
 
 fn line_has_sensitive_kv(line: &str) -> bool {
@@ -663,27 +698,65 @@ fn is_sensitive_key(raw_key: &str) -> bool {
     )
 }
 
-fn sensitive_json_string_field_regex() -> &'static regex::Regex {
-    static RE: OnceLock<regex::Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        regex::Regex::new(
-            r#"(?P<prefix>"(?P<key>(?:\\.|[^"\\])*)"[[:space:]]*:[[:space:]]*)(?P<quoted>"(?P<value>(?:\\.|[^"\\])*)")"#,
-        )
-        .expect("valid sensitive json string regex")
+struct JsonStringToken {
+    end: usize,
+    decoded: String,
+}
+
+struct JsonStringSpan {
+    end: usize,
+    decoded: Option<String>,
+}
+
+fn parse_json_string_token(input: &str, start: usize) -> Option<JsonStringToken> {
+    let span = scan_json_string_span(input, start)?;
+    let decoded = span.decoded?;
+    Some(JsonStringToken {
+        end: span.end,
+        decoded,
     })
 }
 
-fn sensitive_config_key_regex() -> &'static regex::Regex {
-    static RE: OnceLock<regex::Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        regex::Regex::new(
-            r"(?:^|_)(?:token|api_key|apikey|api_secret|client_secret|app_secret|corp_secret|password|passwd|secret|secret_key|credential|authorization|cookie|access_key|access_token|refresh_token|private_key|search_key)(?:$|_)",
-        )
-        .expect("valid sensitive key regex")
-    })
+fn scan_json_string_span(input: &str, start: usize) -> Option<JsonStringSpan> {
+    if input.as_bytes().get(start) != Some(&b'"') {
+        return None;
+    }
+    let mut index = start + 1;
+    let mut escaped = false;
+    while index < input.len() {
+        let ch = input[index..].chars().next()?;
+        if escaped {
+            escaped = false;
+            index += ch.len_utf8();
+            continue;
+        }
+        if ch == '\\' {
+            escaped = true;
+            index += ch.len_utf8();
+            continue;
+        }
+        if ch == '"' {
+            let end = index + 1;
+            let decoded = serde_json::from_str::<String>(&input[start..end]).ok();
+            return Some(JsonStringSpan { end, decoded });
+        }
+        index += ch.len_utf8();
+    }
+    None
 }
 
-fn is_sensitive_config_key_regex(raw_key: &str) -> bool {
+fn skip_ascii_ws(input: &str, mut index: usize) -> usize {
+    while input
+        .as_bytes()
+        .get(index)
+        .is_some_and(u8::is_ascii_whitespace)
+    {
+        index += 1;
+    }
+    index
+}
+
+fn is_sensitive_config_key(raw_key: &str) -> bool {
     let normalized = raw_key
         .chars()
         .map(|ch| {
@@ -694,11 +767,37 @@ fn is_sensitive_config_key_regex(raw_key: &str) -> bool {
             }
         })
         .collect::<String>();
-    sensitive_config_key_regex().is_match(&normalized)
-}
-
-fn decode_json_string_fragment(value: &str) -> String {
-    serde_json::from_str::<String>(&format!("\"{value}\"")).unwrap_or_else(|_| value.to_string())
+    const NEEDLES: &[&str] = &[
+        "token",
+        "api_key",
+        "apikey",
+        "api_secret",
+        "client_secret",
+        "app_secret",
+        "corp_secret",
+        "password",
+        "passwd",
+        "secret",
+        "secret_key",
+        "credential",
+        "authorization",
+        "cookie",
+        "access_key",
+        "access_token",
+        "refresh_token",
+        "private_key",
+        "search_key",
+    ];
+    NEEDLES.iter().any(|needle| {
+        normalized == *needle
+            || normalized
+                .strip_prefix(needle)
+                .is_some_and(|rest| rest.starts_with('_'))
+            || normalized
+                .strip_suffix(needle)
+                .is_some_and(|prefix| prefix.ends_with('_'))
+            || normalized.contains(&format!("_{needle}_"))
+    })
 }
 
 fn redact_config_secret_value(value: &str) -> String {
@@ -1418,6 +1517,34 @@ mod scrub_credentials_tests {
         assert!(s.contains(r#""model":"x""#));
         assert!(!s.contains("baidu-secret"));
         assert!(!s.contains("baidu-key"));
+    }
+
+    #[test]
+    fn redact_sensitive_config_text_decodes_escaped_sensitive_keys() {
+        let input = r#"{"api\u005fkey":"escaped-key-secret","enabled":"true"}"#;
+        let s = redact_sensitive_config_text(input);
+        assert!(s.contains("[REDACTED]"));
+        assert!(s.contains(r#""enabled":"true""#));
+        assert!(!s.contains("escaped-key-secret"));
+    }
+
+    #[test]
+    fn redact_sensitive_config_text_best_effort_masks_malformed_json_fragment() {
+        let input = r#"{"outer":{"client_secret":"malformed-secret","ok":"yes","#;
+        let s = redact_sensitive_config_text(input);
+        assert!(s.contains("[REDACTED]"));
+        assert!(s.contains(r#""ok":"yes""#));
+        assert!(!s.contains("malformed-secret"));
+    }
+
+    #[test]
+    fn redact_sensitive_config_text_best_effort_masks_invalid_string_token() {
+        let input = r#"{"client_secret":"abc\qdef","ok":"yes"}"#;
+        let s = redact_sensitive_config_text(input);
+        assert!(s.contains("[REDACTED]"));
+        assert!(s.contains(r#""ok":"yes""#));
+        assert!(!s.contains("abc"));
+        assert!(!s.contains("qdef"));
     }
 
     #[test]

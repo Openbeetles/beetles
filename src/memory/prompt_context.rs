@@ -23,11 +23,6 @@ use super::{
 
 pub struct PromptMemoryContext {
     pub memory_health_issues: Vec<String>,
-    pub constitutional_stack_text: Option<String>,
-    pub active_task_context_text: Option<String>,
-    pub governed_memory_evidence_text: Option<String>,
-    pub background_governance_text: Option<String>,
-    pub inward_growth_text: Option<String>,
     pub personality_governance_gate_text: Option<String>,
     pub summary_text: Option<String>,
     pub message_summary_text: Option<String>,
@@ -82,6 +77,14 @@ pub struct PromptRuntimeCarry {
     pub task_recall_selected_ids: Vec<String>,
 }
 
+#[derive(Debug, Default)]
+pub(crate) struct PromptProjectionGroups {
+    pub constitutional_stack_text: Option<String>,
+    pub active_task_context_text: Option<String>,
+    pub governed_memory_evidence_text: Option<String>,
+    pub background_governance_text: Option<String>,
+}
+
 impl PromptMemoryContext {
     pub fn trace_summary(&self) -> (usize, bool, bool, bool) {
         (
@@ -120,8 +123,8 @@ impl PromptMemoryContext {
         }
     }
 
-    pub fn refresh_reply_projection_groups(&mut self) {
-        self.constitutional_stack_text = self.soul_kernel_projection().constitutional_stack_text();
+    fn build_reply_projection_groups(&self) -> PromptProjectionGroups {
+        let constitutional_stack_text = self.soul_kernel_projection().constitutional_stack_text();
         let continuity_capsule_in_active =
             matches!(self.recall_router.intent, PromptRecallIntent::Continuity)
                 && (self.work_continuity_text.is_some()
@@ -137,7 +140,7 @@ impl PromptMemoryContext {
                 .then_some(self.continuity_capsule_text.as_deref())
                 .flatten(),
         );
-        self.active_task_context_text = compose_prompt_projection_body(&active_task_parts);
+        let active_task_context_text = compose_prompt_projection_body(&active_task_parts);
         let governed_memory_parts = self.recall_router.governed_memory_parts(
             self.long_term_memory_text.as_deref(),
             (!continuity_capsule_in_active)
@@ -146,8 +149,8 @@ impl PromptMemoryContext {
             self.archive_evidence_text.as_deref(),
             self.runtime_skill_text.as_deref(),
         );
-        self.governed_memory_evidence_text = compose_prompt_projection_body(&governed_memory_parts);
-        self.background_governance_text = compose_prompt_projection_body(&[
+        let governed_memory_evidence_text = compose_prompt_projection_body(&governed_memory_parts);
+        let background_governance_text = compose_prompt_projection_body(&[
             self.relationship_portfolio_text.as_deref(),
             self.world_snapshot_text.as_deref(),
             self.world_sense_text.as_deref(),
@@ -156,49 +159,40 @@ impl PromptMemoryContext {
             self.outer_voice_text.as_deref(),
             self.mental_privacy_text.as_deref(),
         ]);
-        self.inward_growth_text = compose_prompt_projection_body(&[
-            self.self_model_text.as_deref(),
-            self.inner_life_text.as_deref(),
-            self.self_continuity_text.as_deref(),
-            self.private_workspace_text.as_deref(),
-            self.private_garden_text.as_deref(),
-        ]);
+        PromptProjectionGroups {
+            constitutional_stack_text,
+            active_task_context_text,
+            governed_memory_evidence_text,
+            background_governance_text,
+        }
     }
 
-    pub fn drop_projection_group_caches(&mut self) {
-        self.constitutional_stack_text = None;
-        self.active_task_context_text = None;
-        self.governed_memory_evidence_text = None;
-        self.background_governance_text = None;
-        self.inward_growth_text = None;
-    }
-
-    pub(crate) fn normalize_for_prompt(
+    pub(crate) fn normalize_projection_groups_for_prompt(
         &mut self,
         memory_system_kind: MemorySystemKind,
         system_budget: usize,
-    ) {
+    ) -> PromptProjectionGroups {
         let budget = super::prompt_context_normalization_budget(memory_system_kind, system_budget);
         cap_prompt_text(&mut self.summary_text, budget.summary_max_len);
         cap_prompt_text(&mut self.message_summary_text, budget.summary_max_len);
-        self.refresh_reply_projection_groups();
+        let mut groups = self.build_reply_projection_groups();
         cap_prompt_text(
-            &mut self.constitutional_stack_text,
+            &mut groups.constitutional_stack_text,
             budget.constitutional_stack_max_len,
         );
         cap_prompt_text(
-            &mut self.active_task_context_text,
+            &mut groups.active_task_context_text,
             budget.active_task_context_max_len,
         );
         cap_prompt_text(
-            &mut self.governed_memory_evidence_text,
+            &mut groups.governed_memory_evidence_text,
             budget.governed_memory_evidence_max_len,
         );
         cap_prompt_text(
-            &mut self.background_governance_text,
+            &mut groups.background_governance_text,
             budget.background_governance_max_len,
         );
-        cap_prompt_text(&mut self.inward_growth_text, budget.inward_growth_max_len);
+        groups
     }
 }
 
@@ -375,13 +369,8 @@ fn load_prompt_memory_context_inner(params: PromptMemoryContextParams<'_>) -> Pr
         runtime_skill_recall_report,
         task_recall_report,
     } = *scratch;
-    let mut context = PromptMemoryContext {
+    PromptMemoryContext {
         memory_health_issues: health.issues(),
-        constitutional_stack_text: None,
-        active_task_context_text: None,
-        governed_memory_evidence_text: None,
-        background_governance_text: None,
-        inward_growth_text: None,
         personality_governance_gate_text: None,
         summary_text: session.summary_text,
         message_summary_text,
@@ -425,9 +414,7 @@ fn load_prompt_memory_context_inner(params: PromptMemoryContextParams<'_>) -> Pr
         mental_privacy_text: private_projection.mental_privacy_text,
         recent_messages: session.recent_messages,
         recall_router,
-    };
-    context.refresh_reply_projection_groups();
-    context
+    }
 }
 
 #[cfg(test)]
@@ -509,11 +496,6 @@ mod tests {
     fn trace_summary_reports_current_prompt_memory_fields() {
         let context = PromptMemoryContext {
             memory_health_issues: Vec::new(),
-            constitutional_stack_text: None,
-            active_task_context_text: None,
-            governed_memory_evidence_text: None,
-            background_governance_text: None,
-            inward_growth_text: None,
             personality_governance_gate_text: None,
             summary_text: Some("summary".to_string()),
             message_summary_text: Some("message-summary".to_string()),
@@ -571,11 +553,6 @@ mod tests {
     fn soul_kernel_projection_collects_constitutional_prompt_fields() {
         let context = PromptMemoryContext {
             memory_health_issues: Vec::new(),
-            constitutional_stack_text: None,
-            active_task_context_text: None,
-            governed_memory_evidence_text: None,
-            background_governance_text: None,
-            inward_growth_text: None,
             personality_governance_gate_text: Some("gate".to_string()),
             summary_text: None,
             message_summary_text: None,
@@ -635,11 +612,6 @@ mod tests {
         let repeated = "runtime memory evidence ".repeat(256);
         let mut context = PromptMemoryContext {
             memory_health_issues: Vec::new(),
-            constitutional_stack_text: None,
-            active_task_context_text: None,
-            governed_memory_evidence_text: None,
-            background_governance_text: None,
-            inward_growth_text: None,
             personality_governance_gate_text: Some(repeated.clone()),
             summary_text: Some(repeated.clone()),
             message_summary_text: Some(repeated.clone()),
@@ -687,7 +659,8 @@ mod tests {
             },
         };
 
-        context.normalize_for_prompt(crate::memory::MemorySystemKind::EspCompact, 2048);
+        let groups =
+            context.normalize_projection_groups_for_prompt(MemorySystemKind::EspCompact, 2048);
         let budget = crate::memory::prompt_context_normalization_budget(
             crate::memory::MemorySystemKind::EspCompact,
             2048,
@@ -705,7 +678,7 @@ mod tests {
                 <= budget.summary_max_len
         );
         assert!(
-            context
+            groups
                 .constitutional_stack_text
                 .as_deref()
                 .unwrap_or_default()
@@ -713,7 +686,7 @@ mod tests {
                 <= budget.constitutional_stack_max_len
         );
         assert!(
-            context
+            groups
                 .active_task_context_text
                 .as_deref()
                 .unwrap_or_default()
@@ -721,7 +694,7 @@ mod tests {
                 <= budget.active_task_context_max_len
         );
         assert!(
-            context
+            groups
                 .governed_memory_evidence_text
                 .as_deref()
                 .unwrap_or_default()
@@ -729,21 +702,74 @@ mod tests {
                 <= budget.governed_memory_evidence_max_len
         );
         assert!(
-            context
+            groups
                 .background_governance_text
                 .as_deref()
                 .unwrap_or_default()
                 .len()
                 <= budget.background_governance_max_len
         );
-        assert!(
-            context
-                .inward_growth_text
-                .as_deref()
-                .unwrap_or_default()
-                .len()
-                <= budget.inward_growth_max_len
-        );
+    }
+
+    #[test]
+    fn normalize_projection_groups_for_prompt_returns_owned_groups_without_materializing_caches() {
+        let repeated = "runtime memory evidence ".repeat(64);
+        let mut context = PromptMemoryContext {
+            memory_health_issues: Vec::new(),
+            personality_governance_gate_text: Some(repeated.clone()),
+            summary_text: Some(repeated.clone()),
+            message_summary_text: Some(repeated.clone()),
+            long_term_memory_text: Some(repeated.clone()),
+            continuity_capsule_text: None,
+            archive_evidence_text: Some(repeated.clone()),
+            runtime_skill_text: None,
+            recent_turn_observation_text: Some(repeated.clone()),
+            work_continuity_text: None,
+            execution_state_text: None,
+            task_workspace_text: None,
+            task_recall_text: None,
+            shared_factual_recall_report: crate::memory::RecallSelectionReport::default(),
+            continuity_capsule_report: crate::memory::RecallSelectionReport::default(),
+            archive_recall_report: crate::memory::RecallSelectionReport::default(),
+            runtime_skill_recall_report: crate::memory::RecallSelectionReport::default(),
+            task_recall_report: None,
+            world_snapshot_text: Some(repeated.clone()),
+            world_sense_text: Some(repeated.clone()),
+            self_state_text: None,
+            self_authored_core: None,
+            self_authored_core_text: Some(repeated.clone()),
+            relationship_portfolio_text: None,
+            relationship_constitution: None,
+            relationship_constitution_text: None,
+            persona_priority_text: None,
+            self_continuity: None,
+            felt_significance: None,
+            temperament_continuity: None,
+            inner_conflict: None,
+            autonomy_strategy: None,
+            outer_voice: None,
+            self_model_text: Some(repeated),
+            autonomy_strategy_text: None,
+            outer_voice_text: None,
+            inner_life_text: None,
+            self_continuity_text: None,
+            private_workspace_text: None,
+            private_garden_text: None,
+            mental_privacy_adjudication_text: None,
+            mental_privacy_text: None,
+            recent_messages: Vec::new(),
+            recall_router: PromptRecallRouterDecision {
+                intent: PromptRecallIntent::Factual,
+            },
+        };
+
+        let groups =
+            context.normalize_projection_groups_for_prompt(MemorySystemKind::EspCompact, 2048);
+
+        assert!(groups.constitutional_stack_text.is_some());
+        assert!(groups.active_task_context_text.is_some());
+        assert!(groups.governed_memory_evidence_text.is_some());
+        assert!(context.self_model_text.is_some());
     }
 
     #[test]
@@ -1083,8 +1109,6 @@ mod tests {
         assert!(context.inner_life_text.is_none());
         assert!(context.private_workspace_text.is_none());
         assert!(context.private_garden_text.is_none());
-        assert!(context.background_governance_text.is_none());
-        assert!(context.inward_growth_text.is_none());
     }
 
     #[test]
@@ -3332,7 +3356,7 @@ mod tests {
             },
         )
         .unwrap();
-        let context = load_prompt_memory_context(PromptMemoryContextParams {
+        let mut context = load_prompt_memory_context(PromptMemoryContextParams {
             chat_id: "chat-1",
             current_channel: "qq_channel",
             user_query: "嗯?",
@@ -3375,6 +3399,9 @@ mod tests {
             skill_storage: &skill_storage,
             continuity_capsule_store: &continuity_capsule_store,
         });
+
+        let groups =
+            context.normalize_projection_groups_for_prompt(MemorySystemKind::LinuxFull, 8192);
 
         assert_eq!(
             context.summary_text.as_deref(),
@@ -3430,12 +3457,12 @@ mod tests {
             .as_deref()
             .unwrap_or_default()
             .contains("## Self-Authored Core"));
-        assert!(context
+        assert!(groups
             .constitutional_stack_text
             .as_deref()
             .unwrap_or_default()
             .contains("## Self-Authored Core"));
-        assert!(!context
+        assert!(!groups
             .constitutional_stack_text
             .as_deref()
             .unwrap_or_default()
@@ -3480,43 +3507,28 @@ mod tests {
             .as_deref()
             .unwrap_or_default()
             .contains("## Private Garden"));
-        assert!(context
+        assert!(groups
             .background_governance_text
             .as_deref()
             .unwrap_or_default()
             .contains("## Relationship Portfolio"));
-        assert!(!context
+        assert!(!groups
             .background_governance_text
             .as_deref()
             .unwrap_or_default()
             .contains("## Private Garden"));
-        assert!(!context
+        assert!(!groups
             .background_governance_text
             .as_deref()
             .unwrap_or_default()
             .contains("## Inner Workspace"));
-        assert!(context
-            .inward_growth_text
-            .as_deref()
-            .unwrap_or_default()
-            .contains("## Private Garden"));
-        assert!(context
-            .inward_growth_text
-            .as_deref()
-            .unwrap_or_default()
-            .contains("## Inner Workspace"));
-        assert!(context
-            .inward_growth_text
-            .as_deref()
-            .unwrap_or_default()
-            .contains("## Inner Life"));
         assert!(context.mental_privacy_adjudication_text.is_none());
         assert!(context
             .runtime_skill_text
             .as_deref()
             .unwrap_or_default()
             .contains("Runtime skills"));
-        assert!(context
+        assert!(groups
             .governed_memory_evidence_text
             .as_deref()
             .unwrap_or_default()
@@ -3581,7 +3593,7 @@ mod tests {
         let skill_storage = StubSkillStorage::default();
         let continuity_capsule_store = StubContinuityCapsuleStore::default();
 
-        let context = load_prompt_memory_context(PromptMemoryContextParams {
+        let mut context = load_prompt_memory_context(PromptMemoryContextParams {
             chat_id: "chat-1",
             current_channel: "qq_channel",
             user_query: "嗯?",
@@ -3633,8 +3645,10 @@ mod tests {
             context.message_summary_text.as_deref(),
             Some("user prefers cold brew")
         );
+        let groups =
+            context.normalize_projection_groups_for_prompt(MemorySystemKind::EspCompact, 80);
         assert!(context.long_term_memory_text.is_none());
-        assert!(context.governed_memory_evidence_text.is_none());
+        assert!(groups.governed_memory_evidence_text.is_none());
         assert!(memory_store
             .last_query
             .lock()
@@ -3776,7 +3790,7 @@ mod tests {
         let skill_storage = StubSkillStorage::default();
         let continuity_capsule_store = StubContinuityCapsuleStore::default();
 
-        let context = load_prompt_memory_context(PromptMemoryContextParams {
+        let mut context = load_prompt_memory_context(PromptMemoryContextParams {
             chat_id: "chat-1",
             current_channel: "qq_channel",
             user_query: "继续",
@@ -3842,18 +3856,10 @@ mod tests {
             .as_deref()
             .unwrap_or_default()
             .contains("## Outer Voice"));
-        assert!(context
+        let groups =
+            context.normalize_projection_groups_for_prompt(MemorySystemKind::LinuxFull, 8192);
+        assert!(!groups
             .background_governance_text
-            .as_deref()
-            .unwrap_or_default()
-            .contains("## Outer Voice"));
-        assert!(!context
-            .background_governance_text
-            .as_deref()
-            .unwrap_or_default()
-            .contains("内在工作区"));
-        assert!(context
-            .inward_growth_text
             .as_deref()
             .unwrap_or_default()
             .contains("内在工作区"));
@@ -4106,7 +4112,7 @@ mod tests {
         let skill_storage = StubSkillStorage::default();
         let continuity_capsule_store = StubContinuityCapsuleStore::default();
 
-        let context = load_prompt_memory_context(PromptMemoryContextParams {
+        let mut context = load_prompt_memory_context(PromptMemoryContextParams {
             chat_id: "chat-1",
             current_channel: "qq_channel",
             user_query: "继续",
@@ -4152,7 +4158,9 @@ mod tests {
 
         assert!(context.self_authored_core.is_none());
         assert!(context.self_authored_core_text.is_none());
-        assert!(!context
+        let groups =
+            context.normalize_projection_groups_for_prompt(MemorySystemKind::LinuxFull, 4096);
+        assert!(!groups
             .constitutional_stack_text
             .as_deref()
             .unwrap_or_default()
@@ -4238,7 +4246,7 @@ mod tests {
             )
             .unwrap();
 
-        let context = load_prompt_memory_context(PromptMemoryContextParams {
+        let mut context = load_prompt_memory_context(PromptMemoryContextParams {
             chat_id: "chat-1",
             current_channel: "qq_channel",
             user_query: "继续",
@@ -4282,14 +4290,16 @@ mod tests {
             continuity_capsule_store: &continuity_capsule_store,
         });
 
-        let active = context.active_task_context_text.unwrap_or_default();
+        let groups =
+            context.normalize_projection_groups_for_prompt(MemorySystemKind::LinuxFull, 8192);
+        let active = groups.active_task_context_text.unwrap_or_default();
         let continuity_pos = active.find("## Work Continuity").unwrap();
         let capsule_pos = active.find("## Continuity Capsules").unwrap();
         let workspace_pos = active.find("## Task Workspace").unwrap();
         assert!(continuity_pos < capsule_pos);
         assert!(capsule_pos < workspace_pos);
         assert!(!active.contains("## Execution State"));
-        assert!(!context
+        assert!(!groups
             .governed_memory_evidence_text
             .as_deref()
             .unwrap_or_default()
@@ -4395,7 +4405,7 @@ mod tests {
             )
             .unwrap();
 
-        let context = load_prompt_memory_context(PromptMemoryContextParams {
+        let mut context = load_prompt_memory_context(PromptMemoryContextParams {
             chat_id: "chat-1",
             current_channel: "qq_channel",
             user_query: "继续",
@@ -4439,7 +4449,9 @@ mod tests {
             continuity_capsule_store: &continuity_capsule_store,
         });
 
-        let active = context.active_task_context_text.unwrap_or_default();
+        let groups =
+            context.normalize_projection_groups_for_prompt(MemorySystemKind::LinuxFull, 8192);
+        let active = groups.active_task_context_text.unwrap_or_default();
         let continuity_pos = active.find("## Work Continuity").unwrap();
         let observation_pos = active.find("## Latest Turn Observation").unwrap();
         let capsule_pos = active.find("## Continuity Capsules").unwrap();
@@ -4455,7 +4467,7 @@ mod tests {
         assert!(!active.contains("Progress: turn observation 已写入 ledger"));
         assert!(active.contains("Final outcome: surface_finalization"));
         assert!(active.contains("Tool path: surface_finalization"));
-        assert!(!context
+        assert!(!groups
             .governed_memory_evidence_text
             .as_deref()
             .unwrap_or_default()
@@ -4531,7 +4543,7 @@ mod tests {
             )
             .unwrap();
 
-        let context = load_prompt_memory_context(PromptMemoryContextParams {
+        let mut context = load_prompt_memory_context(PromptMemoryContextParams {
             chat_id: "chat-1",
             current_channel: "qq_channel",
             user_query: "按之前的 release patch 流程继续",
@@ -4575,7 +4587,9 @@ mod tests {
             continuity_capsule_store: &continuity_capsule_store,
         });
 
-        let governed = context.governed_memory_evidence_text.unwrap_or_default();
+        let groups =
+            context.normalize_projection_groups_for_prompt(MemorySystemKind::LinuxFull, 8192);
+        let governed = groups.governed_memory_evidence_text.unwrap_or_default();
         let runtime_pos = governed.find("Runtime skills").unwrap();
         let capsule_pos = governed.find("## Continuity Capsules").unwrap();
         let archive_pos = governed.find("Archive evidence").unwrap();
@@ -4637,7 +4651,7 @@ mod tests {
             )
             .unwrap();
 
-        let context = load_prompt_memory_context(PromptMemoryContextParams {
+        let mut context = load_prompt_memory_context(PromptMemoryContextParams {
             chat_id: "chat-1",
             current_channel: "qq_channel",
             user_query: "把那次 network outage 的原始记录翻出来",
@@ -4681,7 +4695,9 @@ mod tests {
             continuity_capsule_store: &continuity_capsule_store,
         });
 
-        let governed = context.governed_memory_evidence_text.unwrap_or_default();
+        let groups =
+            context.normalize_projection_groups_for_prompt(MemorySystemKind::LinuxFull, 8192);
+        let governed = groups.governed_memory_evidence_text.unwrap_or_default();
         let archive_pos = governed.find("Archive evidence").unwrap();
         let capsule_pos = governed.find("## Continuity Capsules").unwrap();
         let canonical_pos = governed.find("Stable outage summary").unwrap();
@@ -4700,9 +4716,11 @@ mod tests {
 
     #[test]
     fn continuity_query_prefers_capsule_before_archive_fallback() {
-        let context = continuity_router_context_for_regression();
-        let active = context.active_task_context_text.clone().unwrap_or_default();
-        let governed = context.governed_memory_evidence_text.unwrap_or_default();
+        let mut context = continuity_router_context_for_regression();
+        let groups =
+            context.normalize_projection_groups_for_prompt(MemorySystemKind::LinuxFull, 2048);
+        let active = groups.active_task_context_text.unwrap_or_default();
+        let governed = groups.governed_memory_evidence_text.unwrap_or_default();
 
         assert_eq!(context.recall_router.intent, PromptRecallIntent::Continuity);
         let continuity_pos = active.find("## Work Continuity").unwrap();
@@ -4779,13 +4797,15 @@ mod tests {
 
     fn observe_prompt_projection_case(
         case_name: &'static str,
-        context: PromptMemoryContext,
+        mut context: PromptMemoryContext,
         expected_intent: PromptRecallIntent,
         active_order: &[&str],
         governed_order: &[&str],
     ) -> PromptProjectionRegressionObservation {
-        let active = context.active_task_context_text.unwrap_or_default();
-        let governed = context.governed_memory_evidence_text.unwrap_or_default();
+        let groups =
+            context.normalize_projection_groups_for_prompt(MemorySystemKind::LinuxFull, 2048);
+        let active = groups.active_task_context_text.unwrap_or_default();
+        let governed = groups.governed_memory_evidence_text.unwrap_or_default();
         let intent = context.recall_router.intent;
         let active_order_ok =
             active_order.is_empty() || fragments_follow_order(&active, active_order);

@@ -763,13 +763,20 @@ if ! rg -n 'prompt_context_normalization_budget' src/memory/profile.rs src/memor
   exit 1
 fi
 
-if ! rg -n 'normalize_for_prompt\(' src/memory/prompt_context.rs src/agent/loop/worker_context_stages.rs >/dev/null; then
-  echo "FAIL: worker prompt memory no longer passes through normalized projection assembly" >&2
+if ! rg -n 'normalize_projection_groups_for_prompt\(' src/memory/prompt_context.rs src/agent/loop/worker_context_stages.rs >/dev/null; then
+  echo "FAIL: worker prompt memory no longer passes through normalized projection group assembly" >&2
   exit 1
 fi
 
-if ! rg -n 'constitutional_stack_text\s*=\s*prompt_memory\.constitutional_stack_text\.take\(\)' src/agent/loop/worker_context_stages.rs >/dev/null; then
-  echo "FAIL: worker finalize no longer consumes normalized projection groups before releasing prompt memory caches" >&2
+if ! rg -n 'let projection_groups = prompt_memory\.normalize_projection_groups_for_prompt' src/agent/loop/worker_context_stages.rs >/dev/null ||
+   ! rg -n 'let constitutional_stack_text = projection_groups\.constitutional_stack_text' src/agent/loop/worker_context_stages.rs >/dev/null; then
+  echo "FAIL: worker finalize no longer consumes owned normalized projection groups from PromptMemoryContext" >&2
+  exit 1
+fi
+
+if rg -n 'prompt_memory\.(constitutional_stack_text|active_task_context_text|governed_memory_evidence_text|background_governance_text)' src/agent src/memory >/dev/null; then
+  echo "FAIL: prompt projection cache fields must not be consumed directly; use normalize_projection_groups_for_prompt" >&2
+  rg -n 'prompt_memory\.(constitutional_stack_text|active_task_context_text|governed_memory_evidence_text|background_governance_text)' src/agent src/memory >&2
   exit 1
 fi
 

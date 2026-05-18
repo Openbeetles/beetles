@@ -767,14 +767,8 @@ pub(super) fn enrich_prepare_governance(
                 .prompt_memory
                 .recent_turn_observation_text
                 .as_deref(),
-            active_task_context_text: prompt_stage
-                .prompt_memory
-                .active_task_context_text
-                .as_deref(),
-            governed_memory_evidence_text: prompt_stage
-                .prompt_memory
-                .governed_memory_evidence_text
-                .as_deref(),
+            active_task_context_text: None,
+            governed_memory_evidence_text: None,
             long_term_memory_text: prompt_stage.prompt_memory.long_term_memory_text.as_deref(),
             continuity_capsule_text: prompt_stage
                 .prompt_memory
@@ -844,8 +838,6 @@ pub(super) fn enrich_prepare_governance(
             post_reply_self_runtime_enqueued: false,
         },
     );
-    prompt_stage.prompt_memory.refresh_reply_projection_groups();
-
     session.governance = Some(PrepareGovernanceStage {
         subject_state,
         deliberation_gate,
@@ -880,14 +872,14 @@ pub(super) fn finalize_prepare_context(
         allow_tool_round_recall_refill,
         ..
     } = prompt_stage;
-    prompt_memory.normalize_for_prompt(
+    let projection_groups = prompt_memory.normalize_projection_groups_for_prompt(
         config.runtime.memory_system_kind,
         runtime_stage.prompt_memory_system_budget,
     );
-    let constitutional_stack_text = prompt_memory.constitutional_stack_text.take();
-    let active_task_context_text = prompt_memory.active_task_context_text.take();
-    let governed_memory_evidence_text = prompt_memory.governed_memory_evidence_text.take();
-    let background_governance_text = prompt_memory.background_governance_text.take();
+    let constitutional_stack_text = projection_groups.constitutional_stack_text;
+    let active_task_context_text = projection_groups.active_task_context_text;
+    let governed_memory_evidence_text = projection_groups.governed_memory_evidence_text;
+    let background_governance_text = projection_groups.background_governance_text;
     let subject_state_text = governance_stage
         .subject_state
         .as_ref()
@@ -929,16 +921,6 @@ pub(super) fn finalize_prepare_context(
         active_task_context_text: active_task_context_text.as_deref(),
         governed_memory_evidence_text: governed_memory_evidence_text.as_deref(),
         background_governance_text: background_governance_text.as_deref(),
-        execution_state_text: prompt_memory.execution_state_text.as_deref(),
-        task_workspace_text: prompt_memory.task_workspace_text.as_deref(),
-        task_recall_text: prompt_memory.task_recall_text.as_deref(),
-        self_authored_core_text: prompt_memory.self_authored_core_text.as_deref(),
-        relationship_constitution_text: prompt_memory.relationship_constitution_text.as_deref(),
-        persona_priority_text: prompt_memory.persona_priority_text.as_deref(),
-        mental_privacy_adjudication_text: prompt_memory.mental_privacy_adjudication_text.as_deref(),
-        long_term_memory_text: prompt_memory.long_term_memory_text.as_deref(),
-        archive_evidence_text: prompt_memory.archive_evidence_text.as_deref(),
-        runtime_skill_text: prompt_memory.runtime_skill_text.as_deref(),
         capability_package_text: runtime_stage.capability_package_text.as_deref(),
         summary_text: prompt_memory.message_summary_text.as_deref(),
         recent_messages: (!prompt_memory.recent_messages.is_empty())

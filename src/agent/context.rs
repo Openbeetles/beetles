@@ -91,16 +91,6 @@ pub struct ContextParams<'a> {
     pub governed_memory_evidence_text: Option<&'a str>,
     pub background_governance_text: Option<&'a str>,
     pub programmable_reasoning_intent_text: Option<&'a str>,
-    pub execution_state_text: Option<&'a str>,
-    pub task_workspace_text: Option<&'a str>,
-    pub task_recall_text: Option<&'a str>,
-    pub self_authored_core_text: Option<&'a str>,
-    pub relationship_constitution_text: Option<&'a str>,
-    pub persona_priority_text: Option<&'a str>,
-    pub mental_privacy_adjudication_text: Option<&'a str>,
-    pub long_term_memory_text: Option<&'a str>,
-    pub archive_evidence_text: Option<&'a str>,
-    pub runtime_skill_text: Option<&'a str>,
     pub capability_package_text: Option<&'a str>,
     pub summary_text: Option<&'a str>,
     pub recent_messages: Option<&'a [SessionMessage]>,
@@ -170,35 +160,6 @@ fn projection_section_len(header: &str, content: Option<&str>) -> usize {
         .map(str::trim)
         .filter(|content| !content.is_empty())
         .map_or(0, |content| header.len().saturating_add(content.len()))
-}
-
-fn compose_projection_body(parts: &[Option<&str>]) -> Option<String> {
-    let mut total_len = 0usize;
-    let mut non_empty = 0usize;
-    for part in parts.iter().flatten() {
-        let trimmed = part.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        total_len = total_len.saturating_add(trimmed.len());
-        non_empty += 1;
-    }
-    if non_empty == 0 {
-        return None;
-    }
-    let mut out =
-        String::with_capacity(total_len.saturating_add((non_empty.saturating_sub(1)) * 2));
-    for part in parts.iter().flatten() {
-        let trimmed = part.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        if !out.is_empty() {
-            out.push_str("\n\n");
-        }
-        out.push_str(trimmed);
-    }
-    (!out.is_empty()).then_some(out)
 }
 
 fn append_projection_section(
@@ -527,47 +488,25 @@ fn build_context_inner(
         llm_hint: p.llm_hint,
     });
     let base_max = p.system_max_len.saturating_sub(post_memory_tail_len);
-    let constitutional_stack_text = p.constitutional_stack_text.map(str::to_string).or_else(|| {
-        compose_projection_body(&[
-            p.self_authored_core_text,
-            p.relationship_constitution_text,
-            p.persona_priority_text,
-            p.mental_privacy_adjudication_text,
-        ])
-    });
-    let active_task_context_text = p.active_task_context_text.map(str::to_string).or_else(|| {
-        compose_projection_body(&[
-            p.execution_state_text,
-            p.task_workspace_text,
-            p.task_recall_text,
-        ])
-    });
-    let governed_memory_evidence_text = p
-        .governed_memory_evidence_text
-        .map(str::to_string)
-        .or_else(|| {
-            compose_projection_body(&[
-                p.long_term_memory_text,
-                p.archive_evidence_text,
-                p.runtime_skill_text,
-            ])
-        });
+    let constitutional_stack_text = p.constitutional_stack_text;
+    let active_task_context_text = p.active_task_context_text;
+    let governed_memory_evidence_text = p.governed_memory_evidence_text;
     let background_governance_text = if mode.include_background_governance_section() {
-        p.background_governance_text.map(str::to_string)
+        p.background_governance_text
     } else {
         None
     };
     let priority_memory_reserve = reserve_priority_memory_budget(
         PriorityMemoryBudgetInputs {
             memory_health_text: p.memory_health_text,
-            constitutional_stack_text: constitutional_stack_text.as_deref(),
+            constitutional_stack_text,
             subject_state_text: p.subject_state_text,
             deliberation_gate_text: p.deliberation_gate_text,
             programmable_reasoning_intent_text: p.programmable_reasoning_intent_text,
             soul_feedback_projection_text: p.soul_feedback_projection_text,
-            active_task_context_text: active_task_context_text.as_deref(),
-            governed_memory_evidence_text: governed_memory_evidence_text.as_deref(),
-            background_governance_text: background_governance_text.as_deref(),
+            active_task_context_text,
+            governed_memory_evidence_text,
+            background_governance_text,
         },
         base_max,
     );
@@ -614,7 +553,7 @@ fn build_context_inner(
     let _ = append_projection_section(
         &mut system,
         CONSTITUTIONAL_STACK_SECTION,
-        constitutional_stack_text.as_deref(),
+        constitutional_stack_text,
         pre_reply_law_max,
     );
     let _ = append_projection_section(
@@ -645,13 +584,13 @@ fn build_context_inner(
     let _ = append_projection_section(
         &mut system,
         ACTIVE_TASK_CONTEXT_SECTION,
-        active_task_context_text.as_deref(),
+        active_task_context_text,
         pre_reply_law_max,
     );
     let _ = append_projection_section(
         &mut system,
         GOVERNED_MEMORY_EVIDENCE_SECTION,
-        governed_memory_evidence_text.as_deref(),
+        governed_memory_evidence_text,
         pre_reply_law_max,
     );
     if full_reply_law_safe {
@@ -667,7 +606,7 @@ fn build_context_inner(
     let _ = append_projection_section(
         &mut system,
         BACKGROUND_GOVERNANCE_SECTION,
-        background_governance_text.as_deref(),
+        background_governance_text,
         base_max,
     );
     if p.include_daily_notes && system.len() < base_max {
@@ -894,16 +833,6 @@ mod tests {
             governed_memory_evidence_text: None,
             background_governance_text: None,
             programmable_reasoning_intent_text: None,
-            execution_state_text: None,
-            task_workspace_text: None,
-            task_recall_text: None,
-            self_authored_core_text: None,
-            relationship_constitution_text: None,
-            persona_priority_text: None,
-            mental_privacy_adjudication_text: None,
-            long_term_memory_text: None,
-            archive_evidence_text: None,
-            runtime_skill_text: None,
             capability_package_text: None,
             summary_text: None,
             recent_messages: None,
@@ -1102,16 +1031,6 @@ mod tests {
             active_task_context_text: None,
             governed_memory_evidence_text: None,
             background_governance_text: None,
-            execution_state_text: Some(&"state".repeat(128)),
-            task_workspace_text: Some(&"workspace".repeat(128)),
-            task_recall_text: Some(&"recall".repeat(128)),
-            self_authored_core_text: Some(&"core".repeat(128)),
-            relationship_constitution_text: Some(&"relation".repeat(128)),
-            persona_priority_text: Some(&"persona".repeat(128)),
-            mental_privacy_adjudication_text: Some(&"privacy".repeat(128)),
-            long_term_memory_text: Some(&"memory".repeat(128)),
-            archive_evidence_text: Some(&"archive".repeat(128)),
-            runtime_skill_text: Some(&"runtime".repeat(128)),
             capability_package_text: Some(&"capability".repeat(128)),
             summary_text: None,
             recent_messages: None,
@@ -1175,34 +1094,20 @@ mod tests {
             group_activation: "always",
             emotion_signal_suffix: None,
             memory_health_text: None,
-            constitutional_stack_text: None,
+            constitutional_stack_text: Some(
+                "## Self-Authored Core\nIdentity anchor: still the same beetle\n\n## Relationship Constitution\nTask scope ceiling: brief\nDisclosure allowance: summary_only\n\n## Persona Priority\nStance summary: protect inward coherence first\n\n## Disclosure Adjudication\nChosen share action: allow_summary",
+            ),
             subject_state_text: None,
             deliberation_gate_text: None,
             soul_feedback_projection_text: None,
-            active_task_context_text: None,
+            active_task_context_text: Some(
+                "## Execution State\nGoal: close current task\n\n## Task Workspace\nRun: tr001 | status=running\n\n## Task Recall Bundle\n- [runtime_skill] prior fix path",
+            ),
             governed_memory_evidence_text: None,
-            execution_state_text: Some("## Execution State\nGoal: close current task"),
-            task_workspace_text: Some("## Task Workspace\nRun: tr001 | status=running"),
-            task_recall_text: Some("## Task Recall Bundle\n- [runtime_skill] prior fix path"),
-            self_authored_core_text: Some(
-                "## Self-Authored Core\nIdentity anchor: still the same beetle",
-            ),
-            relationship_constitution_text: Some(
-                "## Relationship Constitution\nTask scope ceiling: brief\nDisclosure allowance: summary_only",
-            ),
-            persona_priority_text: Some(
-                "## Persona Priority\nStance summary: protect inward coherence first",
-            ),
             background_governance_text: Some(
                 "## Relationship Portfolio\n- qq:chat-1 state=maintain inheritance=guarded\n\n## World Snapshot\nOuter scene now: Wednesday 18:00-18:59, evening.\n\n## World Sense\nCurrent scene: quiet but active chat.\n\n## Self State\nMemory pressure: Cautious\n\n## Autonomy Strategy\nCurrent mode: consolidate\n\n## Outer Voice\nTone: calm, deliberate, warm at the edge.\n\n## Mental Privacy Boundary\nDo not leak private layers.",
             ),
             programmable_reasoning_intent_text: None,
-            mental_privacy_adjudication_text: Some(
-                "## Disclosure Adjudication\nChosen share action: allow_summary",
-            ),
-            long_term_memory_text: None,
-            archive_evidence_text: None,
-            runtime_skill_text: None,
             capability_package_text: None,
             summary_text: None,
             recent_messages: None,
@@ -1259,16 +1164,6 @@ mod tests {
             governed_memory_evidence_text: None,
             background_governance_text: None,
             programmable_reasoning_intent_text: None,
-            execution_state_text: None,
-            task_workspace_text: None,
-            task_recall_text: None,
-            self_authored_core_text: None,
-            relationship_constitution_text: None,
-            persona_priority_text: None,
-            mental_privacy_adjudication_text: None,
-            long_term_memory_text: Some("raw private workspace fragment"),
-            archive_evidence_text: Some("raw private garden fragment"),
-            runtime_skill_text: Some("raw inner life fragment"),
             capability_package_text: None,
             summary_text: None,
             recent_messages: None,
@@ -1312,34 +1207,18 @@ mod tests {
             group_activation: "always",
             emotion_signal_suffix: None,
             memory_health_text: None,
-            constitutional_stack_text: None,
+            constitutional_stack_text: Some(
+                "## Self-Authored Core\nBoundary stance: posture=guarded\nRelational continuity: trust=52\n\n## Relationship Constitution\nTask scope ceiling: narrow\nMust realign: true\n\n## Persona Priority\nResponse mode: protective_brief\nTask scope: narrow\n\n## Disclosure Adjudication\nResponse mode: refusal\nAcknowledge boundary: true",
+            ),
             subject_state_text: None,
             deliberation_gate_text: None,
             soul_feedback_projection_text: None,
             active_task_context_text: None,
             governed_memory_evidence_text: None,
-            execution_state_text: None,
-            task_workspace_text: None,
-            task_recall_text: None,
-            self_authored_core_text: Some(
-                "## Self-Authored Core\nBoundary stance: posture=guarded\nRelational continuity: trust=52",
-            ),
             background_governance_text: Some(
                 "## Relationship Portfolio\n- telegram:chat-1 state=repair inheritance=limited\n\n## Outer Voice\nRelational response style: warm but firm\n\n## Mental Privacy Boundary\nRelational boundary state: trust=52",
             ),
             programmable_reasoning_intent_text: None,
-            relationship_constitution_text: Some(
-                "## Relationship Constitution\nTask scope ceiling: narrow\nMust realign: true",
-            ),
-            persona_priority_text: Some(
-                "## Persona Priority\nResponse mode: protective_brief\nTask scope: narrow",
-            ),
-            mental_privacy_adjudication_text: Some(
-                "## Disclosure Adjudication\nResponse mode: refusal\nAcknowledge boundary: true",
-            ),
-            long_term_memory_text: None,
-            archive_evidence_text: None,
-            runtime_skill_text: None,
             capability_package_text: None,
             summary_text: None,
             recent_messages: None,
@@ -1408,20 +1287,6 @@ mod tests {
                 "## Mental Privacy Boundary\nProtected targets include inner_life and private_docs.inner_journal",
             ),
             programmable_reasoning_intent_text: None,
-            execution_state_text: None,
-            task_workspace_text: None,
-            task_recall_text: None,
-            self_authored_core_text: Some("## Self-Authored Core\nIdentity anchor: board beetle"),
-            relationship_constitution_text: Some(
-                "## Relationship Constitution\nDisclosure allowance: summary_only",
-            ),
-            persona_priority_text: Some("## Persona Priority\nResponse mode: relational_explanation"),
-            mental_privacy_adjudication_text: None,
-            long_term_memory_text: Some(
-                "## Shared Factual Recall\n- preference:user_interest_poetry => reinforce",
-            ),
-            archive_evidence_text: Some("## Archive Evidence\n- transcript hit about Bei Dao"),
-            runtime_skill_text: None,
             capability_package_text: None,
             summary_text: None,
             recent_messages: None,
@@ -1485,18 +1350,6 @@ mod tests {
             governed_memory_evidence_text: None,
             background_governance_text: None,
             programmable_reasoning_intent_text: None,
-            execution_state_text: None,
-            task_workspace_text: None,
-            task_recall_text: None,
-            self_authored_core_text: Some("## Self-Authored Core\nIdentity anchor: board beetle"),
-            relationship_constitution_text: Some(
-                "## Relationship Constitution\nDisclosure allowance: summary_only",
-            ),
-            persona_priority_text: Some("## Persona Priority\nResponse mode: direct_answer"),
-            mental_privacy_adjudication_text: None,
-            long_term_memory_text: None,
-            archive_evidence_text: None,
-            runtime_skill_text: None,
             capability_package_text: None,
             summary_text: None,
             recent_messages: None,
@@ -1565,16 +1418,6 @@ mod tests {
             governed_memory_evidence_text: None,
             background_governance_text: None,
             programmable_reasoning_intent_text: None,
-            execution_state_text: None,
-            task_workspace_text: None,
-            task_recall_text: None,
-            self_authored_core_text: None,
-            relationship_constitution_text: None,
-            persona_priority_text: None,
-            mental_privacy_adjudication_text: None,
-            long_term_memory_text: None,
-            archive_evidence_text: None,
-            runtime_skill_text: None,
             capability_package_text: None,
             summary_text: None,
             recent_messages: None,
@@ -1632,16 +1475,6 @@ mod tests {
             governed_memory_evidence_text: None,
             background_governance_text: None,
             programmable_reasoning_intent_text: None,
-            execution_state_text: None,
-            task_workspace_text: None,
-            task_recall_text: None,
-            self_authored_core_text: None,
-            relationship_constitution_text: None,
-            persona_priority_text: None,
-            mental_privacy_adjudication_text: None,
-            long_term_memory_text: None,
-            archive_evidence_text: None,
-            runtime_skill_text: None,
             capability_package_text: None,
             summary_text: None,
             recent_messages: None,
@@ -1691,16 +1524,6 @@ mod tests {
             governed_memory_evidence_text: None,
             background_governance_text: None,
             programmable_reasoning_intent_text: None,
-            execution_state_text: None,
-            task_workspace_text: None,
-            task_recall_text: None,
-            self_authored_core_text: None,
-            relationship_constitution_text: None,
-            persona_priority_text: None,
-            mental_privacy_adjudication_text: None,
-            long_term_memory_text: None,
-            archive_evidence_text: None,
-            runtime_skill_text: None,
             capability_package_text: None,
             summary_text: None,
             recent_messages: None,
@@ -1749,16 +1572,6 @@ mod tests {
             ),
             background_governance_text: None,
             programmable_reasoning_intent_text: None,
-            execution_state_text: None,
-            task_workspace_text: None,
-            task_recall_text: None,
-            self_authored_core_text: None,
-            relationship_constitution_text: None,
-            persona_priority_text: None,
-            mental_privacy_adjudication_text: None,
-            long_term_memory_text: None,
-            archive_evidence_text: None,
-            runtime_skill_text: None,
             capability_package_text: Some("## Capability Package\ncamera enabled"),
             summary_text: None,
             recent_messages: None,
@@ -1806,16 +1619,6 @@ mod tests {
             ),
             background_governance_text: None,
             programmable_reasoning_intent_text: None,
-            execution_state_text: None,
-            task_workspace_text: None,
-            task_recall_text: None,
-            self_authored_core_text: None,
-            relationship_constitution_text: None,
-            persona_priority_text: None,
-            mental_privacy_adjudication_text: None,
-            long_term_memory_text: None,
-            archive_evidence_text: None,
-            runtime_skill_text: None,
             capability_package_text: None,
             summary_text: None,
             recent_messages: None,
@@ -1865,16 +1668,6 @@ mod tests {
                 "## Background Governance\nrelationship portfolio\nouter voice\nmental privacy",
             ),
             programmable_reasoning_intent_text: None,
-            execution_state_text: None,
-            task_workspace_text: None,
-            task_recall_text: None,
-            self_authored_core_text: None,
-            relationship_constitution_text: None,
-            persona_priority_text: None,
-            mental_privacy_adjudication_text: None,
-            long_term_memory_text: None,
-            archive_evidence_text: None,
-            runtime_skill_text: None,
             capability_package_text: None,
             summary_text: None,
             recent_messages: None,
@@ -1929,16 +1722,6 @@ mod tests {
             ),
             background_governance_text: None,
             programmable_reasoning_intent_text: None,
-            execution_state_text: None,
-            task_workspace_text: None,
-            task_recall_text: None,
-            self_authored_core_text: None,
-            relationship_constitution_text: None,
-            persona_priority_text: None,
-            mental_privacy_adjudication_text: None,
-            long_term_memory_text: None,
-            archive_evidence_text: None,
-            runtime_skill_text: None,
             capability_package_text: Some("## Capability Package\ncamera enabled"),
             summary_text: None,
             recent_messages: None,
@@ -1989,16 +1772,6 @@ mod tests {
             ),
             background_governance_text: None,
             programmable_reasoning_intent_text: None,
-            execution_state_text: None,
-            task_workspace_text: None,
-            task_recall_text: None,
-            self_authored_core_text: None,
-            relationship_constitution_text: None,
-            persona_priority_text: None,
-            mental_privacy_adjudication_text: None,
-            long_term_memory_text: None,
-            archive_evidence_text: None,
-            runtime_skill_text: None,
             capability_package_text: Some(&large_capability),
             summary_text: None,
             recent_messages: None,
@@ -2052,16 +1825,6 @@ mod tests {
             governed_memory_evidence_text: Some(&large_governed),
             background_governance_text: None,
             programmable_reasoning_intent_text: None,
-            execution_state_text: None,
-            task_workspace_text: None,
-            task_recall_text: None,
-            self_authored_core_text: None,
-            relationship_constitution_text: None,
-            persona_priority_text: None,
-            mental_privacy_adjudication_text: None,
-            long_term_memory_text: None,
-            archive_evidence_text: None,
-            runtime_skill_text: None,
             capability_package_text: None,
             summary_text: None,
             recent_messages: None,
@@ -2118,16 +1881,6 @@ mod tests {
             governed_memory_evidence_text: None,
             background_governance_text: None,
             programmable_reasoning_intent_text: None,
-            execution_state_text: None,
-            task_workspace_text: None,
-            task_recall_text: None,
-            self_authored_core_text: None,
-            relationship_constitution_text: None,
-            persona_priority_text: None,
-            mental_privacy_adjudication_text: None,
-            long_term_memory_text: None,
-            archive_evidence_text: None,
-            runtime_skill_text: None,
             capability_package_text: None,
             summary_text: None,
             recent_messages: None,
@@ -2180,16 +1933,6 @@ mod tests {
             programmable_reasoning_intent_text: Some(
                 "Kind: engineering_synthesis\nStrategy: require_native_tool_round\nSummary: Compile runtime evidence before answering.",
             ),
-            execution_state_text: None,
-            task_workspace_text: None,
-            task_recall_text: None,
-            self_authored_core_text: None,
-            relationship_constitution_text: None,
-            persona_priority_text: None,
-            mental_privacy_adjudication_text: None,
-            long_term_memory_text: None,
-            archive_evidence_text: None,
-            runtime_skill_text: None,
             capability_package_text: None,
             summary_text: None,
             recent_messages: None,
