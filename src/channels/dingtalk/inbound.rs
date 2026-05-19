@@ -2,7 +2,7 @@
 
 use crate::bus::{
     AssetSourcePlatform, AudioBody, CanonicalMessageBody, CardBody, CardFormat, FileBody,
-    ImageBody, InboundTx, MediaAssetRef, MessageTransport, PcMsg, TextBody, VideoBody,
+    ImageBody, MediaAssetRef, MessageTransport, PcMsg, TextBody, UserInboundTx, VideoBody,
 };
 use crate::channels::inbound_backpressure::{self, EventIngressSource, InboundBackpressureOutcome};
 use crate::error::Result;
@@ -181,7 +181,7 @@ fn build_body(cb: &DingtalkCallbackBody) -> Result<Option<CanonicalMessageBody>>
 
 fn handle_with_transport(
     body: &str,
-    inbound_tx: &InboundTx,
+    inbound_tx: &UserInboundTx,
     session_store: &super::DingtalkSessionStore,
     source_transport: MessageTransport,
 ) -> Result<bool> {
@@ -233,7 +233,10 @@ fn handle_with_transport(
     };
     let msg = PcMsg::new_inbound_with_body("dingtalk", chat_id, body, is_group)?
         .with_inbound_provenance(source_transport, msg_id, "", inbound_dedup_key);
-    match inbound_tx.try_send(msg) {
+    match inbound_tx.try_submit_user(
+        msg,
+        crate::runtime::RuntimeForegroundSource::ExternalUserMessage,
+    ) {
         Ok(()) => {
             inbound_backpressure::record_enqueued(EventIngressSource::WssGateway);
             Ok(true)
@@ -258,7 +261,7 @@ fn handle_with_transport(
 
 pub(super) fn handle_stream_callback_body(
     body: &str,
-    inbound_tx: &InboundTx,
+    inbound_tx: &UserInboundTx,
     session_store: &super::DingtalkSessionStore,
 ) -> Result<bool> {
     handle_with_transport(body, inbound_tx, session_store, MessageTransport::Wss)
@@ -267,7 +270,7 @@ pub(super) fn handle_stream_callback_body(
 #[cfg(test)]
 mod tests {
     use super::handle_stream_callback_body;
-    use crate::bus::{new_inbound_channel, CanonicalMessageBody};
+    use crate::bus::{new_user_inbound_channel, CanonicalMessageBody};
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
 
@@ -279,7 +282,7 @@ mod tests {
             "conversationId": "conv-1"
         })
         .to_string();
-        let (inbound_tx, inbound_rx, _) = new_inbound_channel(4);
+        let (inbound_tx, inbound_rx, _) = new_user_inbound_channel(4);
         let session_store = Arc::new(Mutex::new(HashMap::new()));
 
         handle_stream_callback_body(&body, &inbound_tx, &session_store).expect("handle");
@@ -304,7 +307,7 @@ mod tests {
             "sessionWebhookExpiredTime": 1735689600000u64
         })
         .to_string();
-        let (inbound_tx, inbound_rx, _) = new_inbound_channel(4);
+        let (inbound_tx, inbound_rx, _) = new_user_inbound_channel(4);
         let session_store = Arc::new(Mutex::new(HashMap::new()));
 
         handle_stream_callback_body(&body, &inbound_tx, &session_store).expect("handle");
@@ -339,7 +342,7 @@ mod tests {
             "senderId": "user-1"
         })
         .to_string();
-        let (inbound_tx, inbound_rx, _) = new_inbound_channel(4);
+        let (inbound_tx, inbound_rx, _) = new_user_inbound_channel(4);
         let session_store = Arc::new(Mutex::new(HashMap::new()));
 
         handle_stream_callback_body(&body, &inbound_tx, &session_store).expect("handle");

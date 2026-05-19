@@ -167,7 +167,10 @@ pub fn post_stream(
             return OutgoingResponse::stream(200, "OK", CORS_AND_EVENT_STREAM, opened.receiver);
         }
     };
-    match env.inbound_tx.try_send(msg) {
+    match env
+        .user_inbound_tx
+        .try_submit_user(msg, crate::runtime::RuntimeForegroundSource::ConfigUiChat)
+    {
         Ok(()) => ctx.chat_streams.emit_queued(&stream_id, chat_id),
         Err(TrySendError::Full(_)) => {
             ctx.chat_streams
@@ -288,7 +291,7 @@ fn json_error(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bus::new_inbound_channel;
+    use crate::bus::new_user_inbound_channel;
     use crate::platform::http_server::handlers::build_default_test_handler_context;
     use crate::platform::http_server::router::{IncomingRequest, OutgoingBody, RouterEnv};
     use std::sync::Mutex;
@@ -319,13 +322,43 @@ mod tests {
     }
 
     #[test]
+    fn post_stream_enqueues_config_ui_chat_as_runtime_foreground() {
+        let _resource_guard = RESOURCE_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let _foreground_guard = crate::runtime::foreground::runtime_foreground_test_guard();
+        crate::runtime::foreground::reset_runtime_foreground_for_tests();
+        apply_resource_snapshot(128_000, 64_000);
+        let ctx = build_default_test_handler_context();
+        let (inbound_tx, inbound_rx, _) = new_user_inbound_channel(4);
+        let env = RouterEnv::new(inbound_tx);
+
+        let response = post_stream(&ctx, &env, &stream_post_request());
+
+        assert_eq!(response.status, 200);
+        assert!(matches!(response.body, OutgoingBody::Stream(_)));
+        let queued = inbound_rx.try_recv().expect("queued chat turn");
+        assert_eq!(
+            queued.channel.as_ref(),
+            crate::chat_stream::CHANNEL_CONFIGURE_UI_CHAT
+        );
+        let foreground = crate::runtime::runtime_foreground_snapshot();
+        assert!(foreground.active);
+        assert!(foreground
+            .records
+            .iter()
+            .any(|record| record.ticket.source
+                == crate::runtime::RuntimeForegroundSource::ConfigUiChat));
+    }
+
+    #[test]
     fn post_stream_rejects_pressure_before_enqueueing_turn() {
         let _guard = RESOURCE_TEST_MUTEX
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         apply_resource_snapshot(12_000, 12_000);
         let ctx = build_default_test_handler_context();
-        let (inbound_tx, inbound_rx, _) = new_inbound_channel(4);
+        let (inbound_tx, inbound_rx, _) = new_user_inbound_channel(4);
         let env = RouterEnv::new(inbound_tx);
 
         let response = post_stream(&ctx, &env, &stream_post_request());

@@ -246,6 +246,7 @@ pub fn runtime_mode_source() -> crate::runtime::mode::RuntimeModeSource {
         external_wss_suspend_requested: ext_wss.suspend_requested,
         external_wss_suspended: ext_wss.suspended,
         recovery_safe_mode_active: crate::state::recovery_safe_mode_active(),
+        runtime_foreground: crate::runtime::runtime_foreground_snapshot().overlay(),
     }
 }
 
@@ -332,7 +333,7 @@ pub fn format_stack_risk_log_line() -> String {
 pub fn format_runtime_mode_log_line() -> String {
     let mode = runtime_mode_snapshot();
     format!(
-        "runtime_mode current_mode={} wifi_sta={} booting={} pairing_known={} pairing_required={} voice_exclusive={} bg_maintenance={} recovery_safe_mode={} config_plane={} config_active={} config_phase={} channel_plane={} voice_plane={} agent_plane={} ext_wss_connecting={} timers={} periodic_maintenance={} non_voice_outbound={} realtime_voice={} ext_wss_connect={} ext_wss_suspend={}",
+        "runtime_mode current_mode={} wifi_sta={} booting={} pairing_known={} pairing_required={} voice_exclusive={} bg_maintenance={} recovery_safe_mode={} config_plane={} config_active={} config_phase={} channel_plane={} voice_plane={} agent_plane={} foreground_active={} foreground_source={} foreground_age_ms={} foreground_resume_after_ms={} ext_wss_connecting={} timers={} periodic_maintenance={} non_voice_outbound={} realtime_voice={} ext_wss_connect={} ext_wss_suspend={}",
         mode.current_mode.as_str(),
         mode.wifi_sta_connected,
         mode.boot_phase_active,
@@ -347,6 +348,19 @@ pub fn format_runtime_mode_log_line() -> String {
         mode.channel_plane_alive,
         mode.voice_plane_alive,
         mode.agent_plane_alive,
+        mode.runtime_foreground.active,
+        mode.runtime_foreground
+            .primary_source
+            .map(|source| source.as_str())
+            .unwrap_or("none"),
+        mode.runtime_foreground
+            .age_ms
+            .map(|age| age.to_string())
+            .unwrap_or_else(|| "none".to_string()),
+        mode.runtime_foreground
+            .resume_after_ms
+            .map(|resume_after| resume_after.to_string())
+            .unwrap_or_else(|| "none".to_string()),
         crate::network::external_wss_connecting_count(),
         mode.action_budget.allow_due_user_timers,
         mode.action_budget.allow_periodic_maintenance,

@@ -1,7 +1,7 @@
 //! 路由层请求/响应类型（无 esp-idf 类型）。
 //! Request/response types for the router layer (no esp-idf types).
 
-use crate::bus::InboundTx;
+use crate::bus::UserInboundTx;
 use crate::platform::ByteBuffer;
 
 pub type IncomingBody = crate::platform::ByteBuffer;
@@ -10,12 +10,12 @@ pub type IncomingBody = crate::platform::ByteBuffer;
 /// 路由层共享资源；社交通道入站不再通过 HTTP callback 注入。
 #[derive(Clone)]
 pub struct RouterEnv {
-    pub inbound_tx: InboundTx,
+    pub user_inbound_tx: UserInboundTx,
 }
 
 impl RouterEnv {
-    pub fn new(inbound_tx: InboundTx) -> Self {
-        Self { inbound_tx }
+    pub fn new(user_inbound_tx: UserInboundTx) -> Self {
+        Self { user_inbound_tx }
     }
 }
 

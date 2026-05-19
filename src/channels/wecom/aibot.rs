@@ -2,8 +2,8 @@
 //! 企业微信智能机器人长连接协议：订阅、入站 callback、同连接出站命令。
 
 use crate::bus::{
-    AssetSourcePlatform, AudioBody, CanonicalMessageBody, FileBody, ImageBody, InboundTx,
-    MediaAssetRef, MessageTransport, PcMsg, TextBody, VideoBody,
+    AssetSourcePlatform, AudioBody, CanonicalMessageBody, FileBody, ImageBody, MediaAssetRef,
+    MessageTransport, PcMsg, TextBody, UserInboundTx, VideoBody,
 };
 use crate::channels::inbound_backpressure::{self, EventIngressSource, InboundBackpressureOutcome};
 use crate::channels::send::{
@@ -66,7 +66,7 @@ pub struct WecomAibotLoopConfig {
     pub websocket_url: String,
     /// Shared inbound queue for user-visible callbacks.
     /// 用户可见回调进入的共享入站队列。
-    pub inbound_tx: InboundTx,
+    pub inbound_tx: UserInboundTx,
     /// Durable fallback used when the inbound queue is full.
     /// 入站队列满时使用的持久化降级入口。
     pub pending_retry: Arc<dyn PendingRetryStore + Send + Sync>,
@@ -326,7 +326,7 @@ fn route_for(route_store: &WecomAibotRouteStore, chat_id: &str) -> Result<Option
 
 pub fn handle_aibot_frame(
     frame: &str,
-    inbound_tx: &InboundTx,
+    inbound_tx: &UserInboundTx,
     pending_retry: &dyn PendingRetryStore,
     route_store: &WecomAibotRouteStore,
 ) -> Result<()> {
@@ -361,7 +361,10 @@ pub fn handle_aibot_frame(
                     envelope.headers.req_id.trim(),
                     inbound_dedup_key,
                 );
-            match inbound_tx.try_send(msg) {
+            match inbound_tx.try_submit_user(
+                msg,
+                crate::runtime::RuntimeForegroundSource::ExternalUserMessage,
+            ) {
                 Ok(()) => {
                     inbound_backpressure::record_enqueued(EventIngressSource::WssGateway);
                 }
@@ -649,7 +652,7 @@ fn sleep_backoff_or_worker_evict(backoff_secs: u64) -> bool {
 #[cfg(test)]
 mod tests {
     use crate::bus::{
-        new_inbound_channel, CanonicalMessageBody, MessageTransport, PcMsg, TextBody,
+        new_user_inbound_channel, CanonicalMessageBody, MessageTransport, PcMsg, TextBody,
     };
     use crate::channels::send::QueuedOutboundMessage;
     use crate::memory::PendingRetryStore;
@@ -694,7 +697,7 @@ mod tests {
             }
         })
         .to_string();
-        let (inbound_tx, inbound_rx, _) = new_inbound_channel(4);
+        let (inbound_tx, inbound_rx, _) = new_user_inbound_channel(4);
         let pending_retry = RecordingPendingRetryStore::default();
         let route_store = super::new_wecom_aibot_route_store();
 
@@ -803,9 +806,12 @@ mod tests {
             }
         })
         .to_string();
-        let (inbound_tx, _inbound_rx, _) = new_inbound_channel(1);
+        let (inbound_tx, _inbound_rx, _) = new_user_inbound_channel(1);
         inbound_tx
-            .try_send(PcMsg::new("seed", "chat", "queued").expect("seed message"))
+            .try_submit_user(
+                PcMsg::new("seed", "chat", "queued").expect("seed message"),
+                crate::runtime::RuntimeForegroundSource::ExternalUserMessage,
+            )
             .expect("fill inbound queue");
         let pending_retry = RecordingPendingRetryStore::default();
         let route_store = super::new_wecom_aibot_route_store();

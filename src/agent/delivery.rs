@@ -30,6 +30,8 @@ const APPEND_ONLY_PRIVATE_ACK_DELAY_MS: u64 = 1500;
 const APPEND_ONLY_GROUP_HEARTBEAT_DELAY_MS: u64 = 10;
 #[cfg(not(test))]
 const APPEND_ONLY_GROUP_HEARTBEAT_DELAY_MS: u64 = 8000;
+const RELIABLE_OUTBOUND_ENQUEUE_RETRY_DELAY_MS: u64 = 50;
+const RELIABLE_OUTBOUND_ENQUEUE_LOG_EVERY: u32 = 20;
 
 /// 流式编辑器：LLM 流式输出期间，发送占位消息并逐步编辑内容。
 /// 实现方内部自行创建/管理 HTTP 连接，不占用 agent 的 LLM HTTP 连接。
@@ -1228,6 +1230,91 @@ fn normalize_visible_update(content: &str, max_chars: usize) -> String {
         .to_string()
 }
 
+fn send_reliable_or_best_effort_outbound(
+    outbound_tx: &OutboundTx,
+    msg: PcMsg,
+    log_owner: &str,
+) -> std::result::Result<(), ()> {
+    let req_id = msg.req_id.clone().unwrap_or_default();
+    let channel = msg.channel.clone();
+    let chat_id = msg.chat_id.clone();
+    let outbound_kind = msg.outbound_kind;
+    let mut pending = msg;
+    let mut full_attempts = 0u32;
+    loop {
+        match outbound_tx.try_send(pending) {
+            Ok(()) => {
+                metrics::record_message_out();
+                if outbound_kind == OutboundKind::Visibility {
+                    log::info!(
+                        "[agent_delivery] foreground_ack event=visibility_enqueued before_llm=true owner={} req_id={} channel={} chat_id={}",
+                        log_owner,
+                        req_id,
+                        channel,
+                        chat_id
+                    );
+                } else if outbound_kind == OutboundKind::Primary {
+                    log::info!(
+                        "[agent_delivery] primary_delivery event=outbound_enqueued delivered=true owner={} req_id={} channel={} chat_id={}",
+                        log_owner,
+                        req_id,
+                        channel,
+                        chat_id
+                    );
+                }
+                return Ok(());
+            }
+            Err(std::sync::mpsc::TrySendError::Full(msg))
+                if !msg.outbound_kind.is_best_effort_delivery() =>
+            {
+                full_attempts = full_attempts.saturating_add(1);
+                if full_attempts == 1
+                    || full_attempts.is_multiple_of(RELIABLE_OUTBOUND_ENQUEUE_LOG_EVERY)
+                {
+                    log::warn!(
+                        "[agent_delivery] reliable outbound queue full owner={} req_id={} channel={} chat_id={} outbound_kind={}, applying backpressure",
+                        log_owner,
+                        req_id,
+                        channel,
+                        chat_id,
+                        msg.outbound_kind.as_str()
+                    );
+                }
+                crate::platform::task_wdt::feed_current_task();
+                std::thread::sleep(std::time::Duration::from_millis(
+                    RELIABLE_OUTBOUND_ENQUEUE_RETRY_DELAY_MS,
+                ));
+                crate::platform::task_wdt::feed_current_task();
+                pending = msg;
+            }
+            Err(std::sync::mpsc::TrySendError::Full(_)) => {
+                metrics::record_outbound_enqueue_fail();
+                log::warn!(
+                    "[agent_delivery] best-effort outbound dropped: outbound queue full owner={} req_id={} channel={} chat_id={} outbound_kind={}",
+                    log_owner,
+                    req_id,
+                    channel,
+                    chat_id,
+                    outbound_kind.as_str()
+                );
+                return Err(());
+            }
+            Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+                metrics::record_outbound_enqueue_fail();
+                log::error!(
+                    "[agent_delivery] outbound dropped: outbound disconnected owner={} req_id={} channel={} chat_id={} outbound_kind={}",
+                    log_owner,
+                    req_id,
+                    channel,
+                    chat_id,
+                    outbound_kind.as_str()
+                );
+                return Err(());
+            }
+        }
+    }
+}
+
 fn send_current_chat_supplemental(
     delivery: &AppendOnlyVisibilityDelivery,
     content: &str,
@@ -1260,32 +1347,7 @@ fn send_current_chat_supplemental(
         )
         .with_platform_thread_id(delivery.platform_thread_id.clone());
     msg.outbound_kind = OutboundKind::Visibility;
-    match delivery.outbound_tx.try_send(msg) {
-        Ok(()) => {
-            metrics::record_message_out();
-            Ok(())
-        }
-        Err(std::sync::mpsc::TrySendError::Full(_)) => {
-            metrics::record_outbound_enqueue_fail();
-            log::warn!(
-                "[agent_delivery] current-chat visibility dropped: outbound queue full req_id={} channel={} chat_id={} outbound_kind=visibility",
-                delivery.req_id,
-                delivery.channel,
-                delivery.chat_id
-            );
-            Err(())
-        }
-        Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
-            metrics::record_outbound_enqueue_fail();
-            log::error!(
-                "[agent_delivery] current-chat visibility dropped: outbound disconnected req_id={} channel={} chat_id={} outbound_kind=visibility",
-                delivery.req_id,
-                delivery.channel,
-                delivery.chat_id
-            );
-            Err(())
-        }
-    }
+    send_reliable_or_best_effort_outbound(&delivery.outbound_tx, msg, "current_chat_visibility")
 }
 
 fn reaction_visibility_enabled(msg: &PcMsg, entry: crate::ChannelCapabilityEntry) -> bool {
@@ -1366,32 +1428,7 @@ fn send_current_chat_reaction(
         )
         .with_platform_thread_id(delivery.platform_thread_id.clone());
     msg.outbound_kind = OutboundKind::Visibility;
-    match delivery.outbound_tx.try_send(msg) {
-        Ok(()) => {
-            metrics::record_message_out();
-            Ok(())
-        }
-        Err(std::sync::mpsc::TrySendError::Full(_)) => {
-            metrics::record_outbound_enqueue_fail();
-            log::warn!(
-                "[agent_delivery] current-chat reaction dropped: outbound queue full req_id={} channel={} chat_id={} outbound_kind=visibility",
-                delivery.req_id,
-                delivery.channel,
-                delivery.chat_id
-            );
-            Err(())
-        }
-        Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
-            metrics::record_outbound_enqueue_fail();
-            log::error!(
-                "[agent_delivery] current-chat reaction dropped: outbound disconnected req_id={} channel={} chat_id={} outbound_kind=visibility",
-                delivery.req_id,
-                delivery.channel,
-                delivery.chat_id
-            );
-            Err(())
-        }
-    }
+    send_reliable_or_best_effort_outbound(&delivery.outbound_tx, msg, "current_chat_reaction")
 }
 
 fn send_visible_update_explicit(
@@ -1426,30 +1463,7 @@ fn send_visible_update_explicit(
     };
     msg.outbound_kind = outbound_kind;
     msg.req_id = Some(req_id.to_string());
-    match outbound_tx.try_send(msg) {
-        Ok(()) => {
-            metrics::record_message_out();
-            Ok(())
-        }
-        Err(std::sync::mpsc::TrySendError::Full(_)) => {
-            metrics::record_outbound_enqueue_fail();
-            log::warn!(
-                "[agent_delivery] explicit outbound dropped: outbound queue full channel={} chat_id={}",
-                channel,
-                chat_id
-            );
-            Err(())
-        }
-        Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
-            metrics::record_outbound_enqueue_fail();
-            log::error!(
-                "[agent_delivery] explicit outbound dropped: outbound disconnected channel={} chat_id={}",
-                channel,
-                chat_id
-            );
-            Err(())
-        }
-    }
+    send_reliable_or_best_effort_outbound(outbound_tx, msg, "explicit_outbound")
 }
 
 fn map_tool_outbound_kind(delivery_kind: ToolOutboundDeliveryKind) -> OutboundKind {
@@ -1637,6 +1651,42 @@ mod tests {
         assert_eq!(delivery.report().append_only_heartbeat_sent, 0);
         assert_eq!(delivery.report().edit_phase_header_updates_sent, 0);
         assert_eq!(delivery.report().partial_updates_sent, 0);
+    }
+
+    #[test]
+    fn current_chat_visibility_waits_for_outbound_queue_space() {
+        let _guard = delayed_task_test_lock();
+        reset_delayed_tasks();
+        let (outbound_tx, outbound_rx, _) = new_inbound_channel(1);
+        outbound_tx
+            .try_send(PcMsg::new("qq_channel", "chat-1", "queued").expect("queued"))
+            .expect("fill outbound queue");
+        let tx = outbound_tx.clone();
+        let receiver = std::thread::spawn(move || {
+            let first = outbound_rx.recv().expect("first queued message");
+            let second = outbound_rx.recv().expect("visibility ack");
+            (first.content, second.content, second.outbound_kind)
+        });
+        let delivery = AppendOnlyVisibilityDelivery {
+            channel: Arc::from("qq_channel"),
+            chat_id: Arc::from("chat-1"),
+            req_id: "req-visible".to_string(),
+            is_group: false,
+            source_transport: MessageTransport::Internal,
+            platform_thread_id: String::new(),
+            platform_message_id: String::new(),
+            platform_event_id: String::new(),
+            inbound_dedup_key: String::new(),
+            outbound_tx: tx,
+            contract: AppendOnlyVisibilityContract { loc: UiLocale::Zh },
+        };
+
+        assert!(send_current_chat_supplemental(&delivery, "已收到，正在处理").is_ok());
+
+        let (first, second, kind) = receiver.join().expect("receiver joins");
+        assert_eq!(first, "queued");
+        assert_eq!(second, "已收到，正在处理");
+        assert_eq!(kind, OutboundKind::Visibility);
     }
 
     #[test]

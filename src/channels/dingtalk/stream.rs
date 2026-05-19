@@ -1,7 +1,7 @@
 //! DingTalk Stream Mode inbound loop.
 //! 钉钉 Stream Mode 入站：注册 WSS 连接、处理系统帧与机器人消息回调。
 
-use crate::bus::InboundTx;
+use crate::bus::UserInboundTx;
 use crate::channels::wss_gateway::{WssConnection, WssEvent};
 use crate::channels::ChannelHttpClient;
 use crate::error::{Error, Result};
@@ -98,7 +98,7 @@ fn esp_network_suspend_reason() -> Option<&'static str> {
 
 pub fn handle_stream_frame(
     frame: &str,
-    inbound_tx: &InboundTx,
+    inbound_tx: &UserInboundTx,
     session_store: &super::DingtalkSessionStore,
 ) -> Result<DingtalkStreamFrameOutcome> {
     let frame: DingtalkStreamFrame =
@@ -170,10 +170,38 @@ fn register_connection<H: ChannelHttpClient>(
     ))
 }
 
+fn dingtalk_stream_connect_admission() -> Option<crate::network::TransportAdmissionRejection> {
+    let resource = crate::orchestrator::resource_light_snapshot();
+    let context = crate::runtime::current_runtime_scheduler_context(
+        crate::runtime::default_runtime_scheduler_profile(),
+        resource.pressure,
+    );
+    dingtalk_stream_connect_admission_for_context(
+        crate::runtime::thread_registry::runtime_mode_snapshot(),
+        context,
+    )
+}
+
+fn dingtalk_stream_connect_admission_for_context(
+    mode: crate::runtime::RuntimeModeSnapshot,
+    mut context: crate::runtime::RuntimeSchedulerContext,
+) -> Option<crate::network::TransportAdmissionRejection> {
+    context.runtime_mode = mode;
+    crate::network::runtime_transport_admission_for_work(
+        crate::network::TransportAdmissionKind::ExternalWssConnect,
+        crate::runtime::RuntimeWorkRequest::new(
+            crate::runtime::RuntimeWorkClass::ChannelReconnect,
+            crate::runtime::RuntimeWorkSource::Background,
+        ),
+        context,
+    )
+    .rejection()
+}
+
 pub fn run_dingtalk_stream_loop<H, C, CreateHttp, Connect>(
     client_id: String,
     client_secret: String,
-    inbound_tx: InboundTx,
+    inbound_tx: UserInboundTx,
     session_store: super::DingtalkSessionStore,
     mut create_http: CreateHttp,
     mut connect: Connect,
@@ -217,6 +245,20 @@ pub fn run_dingtalk_stream_loop<H, C, CreateHttp, Connect>(
             );
         }
         crate::network::wait_for_external_wss_resume(TAG);
+        if let Some(rejection) = dingtalk_stream_connect_admission() {
+            mark_wss_lifecycle(
+                crate::runtime::PlaneLifecycleState::Suspended,
+                rejection.reason,
+            );
+            log::info!(
+                "[{}] stream connect/register deferred stage={} reason={}",
+                TAG,
+                rejection.stage,
+                rejection.reason
+            );
+            std::thread::sleep(Duration::from_secs(backoff_secs));
+            continue;
+        }
         mark_wss_lifecycle(
             crate::runtime::PlaneLifecycleState::Starting,
             "connect_attempt",
@@ -319,7 +361,7 @@ pub fn run_dingtalk_stream_loop<H, C, CreateHttp, Connect>(
 
 #[cfg(test)]
 mod tests {
-    use crate::bus::{new_inbound_channel, MessageTransport};
+    use crate::bus::{new_user_inbound_channel, MessageTransport};
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
 
@@ -346,7 +388,7 @@ mod tests {
             }).to_string()
         })
         .to_string();
-        let (inbound_tx, inbound_rx, _) = new_inbound_channel(4);
+        let (inbound_tx, inbound_rx, _) = new_user_inbound_channel(4);
         let session_store = Arc::new(Mutex::new(HashMap::new()));
 
         let outcome =
@@ -381,7 +423,7 @@ mod tests {
             "data": ""
         })
         .to_string();
-        let (inbound_tx, inbound_rx, _) = new_inbound_channel(4);
+        let (inbound_tx, inbound_rx, _) = new_user_inbound_channel(4);
         let session_store = Arc::new(Mutex::new(HashMap::new()));
 
         let outcome =
@@ -392,5 +434,33 @@ mod tests {
         assert_eq!(reply_json["code"], 200);
         assert_eq!(reply_json["headers"]["messageId"], "system-1");
         assert!(inbound_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn dingtalk_stream_connect_admission_defers_before_register_during_foreground() {
+        let mode = crate::runtime::mode::snapshot_from_source(
+            crate::runtime::mode::RuntimeModeSource::default(),
+        );
+        let rejection = super::dingtalk_stream_connect_admission_for_context(
+            mode,
+            crate::runtime::RuntimeSchedulerContext {
+                profile: crate::runtime::RuntimePlanePolicyProfile::EspCompact,
+                runtime_mode: mode,
+                foreground: crate::runtime::RuntimeForegroundOverlay {
+                    active: true,
+                    active_count: 1,
+                    primary_source: Some(
+                        crate::runtime::RuntimeForegroundSource::ExternalUserMessage,
+                    ),
+                    age_ms: Some(500),
+                    resume_after_ms: Some(29_500),
+                },
+                pressure: crate::orchestrator::PressureLevel::Normal,
+            },
+        )
+        .expect("foreground should defer dingtalk stream register/connect");
+
+        assert_eq!(rejection.stage, "transport_runtime_scheduler");
+        assert_eq!(rejection.reason, "foreground_active");
     }
 }

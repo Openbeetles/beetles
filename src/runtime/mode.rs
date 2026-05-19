@@ -60,6 +60,7 @@ pub struct RuntimeModeSource {
     pub external_wss_suspend_requested: bool,
     pub external_wss_suspended: bool,
     pub recovery_safe_mode_active: bool,
+    pub runtime_foreground: crate::runtime::RuntimeForegroundOverlay,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -81,6 +82,7 @@ pub struct RuntimeModeSnapshot {
     pub external_wss_suspend_requested: bool,
     pub external_wss_suspended: bool,
     pub recovery_safe_mode_active: bool,
+    pub runtime_foreground: crate::runtime::RuntimeForegroundOverlay,
     pub action_budget: RuntimeModeActionBudget,
 }
 
@@ -140,6 +142,7 @@ pub fn snapshot_from_source(source: RuntimeModeSource) -> RuntimeModeSnapshot {
         external_wss_suspend_requested: source.external_wss_suspend_requested,
         external_wss_suspended: source.external_wss_suspended,
         recovery_safe_mode_active: source.recovery_safe_mode_active,
+        runtime_foreground: source.runtime_foreground,
         action_budget,
     }
 }

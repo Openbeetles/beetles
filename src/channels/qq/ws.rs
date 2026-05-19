@@ -495,7 +495,7 @@ impl WssGatewayDriver for QqWssDriver {
 /// create_http 与 connect 由调用方（main）注入，本模块不依赖具体平台类型。
 pub fn run_qq_ws_loop<H, C, CreateHttp, Conn>(
     config: QqWsLoopConfig,
-    inbound_tx: crate::bus::InboundTx,
+    inbound_tx: crate::bus::UserInboundTx,
     pending_retry: &dyn PendingRetryStore,
     create_http: CreateHttp,
     connect: Conn,

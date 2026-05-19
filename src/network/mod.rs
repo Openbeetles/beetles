@@ -281,10 +281,51 @@ pub fn runtime_transport_admission(
     })
 }
 
+pub fn runtime_transport_admission_for_work(
+    kind: TransportAdmissionKind,
+    request: crate::runtime::RuntimeWorkRequest,
+    context: crate::runtime::RuntimeSchedulerContext,
+) -> TransportAdmission {
+    if let Some(rejection) = runtime_transport_admission(kind, context.runtime_mode).rejection() {
+        return TransportAdmission::Rejected(rejection);
+    }
+    match crate::runtime::admit_runtime_work(request, context) {
+        crate::runtime::RuntimeWorkDecision::Proceed => TransportAdmission::Allowed,
+        crate::runtime::RuntimeWorkDecision::Defer { reason, .. }
+        | crate::runtime::RuntimeWorkDecision::DrainAndResume { reason, .. }
+        | crate::runtime::RuntimeWorkDecision::Degrade { reason }
+        | crate::runtime::RuntimeWorkDecision::Suspend { reason }
+        | crate::runtime::RuntimeWorkDecision::RejectWithStableKey { reason, .. }
+        | crate::runtime::RuntimeWorkDecision::RejectWithUserVisibleReason { reason } => {
+            TransportAdmission::Rejected(TransportAdmissionRejection {
+                stage: "transport_runtime_scheduler",
+                reason,
+            })
+        }
+    }
+}
+
 pub fn current_runtime_transport_admission(kind: TransportAdmissionKind) -> TransportAdmission {
     runtime_transport_admission(
         kind,
         crate::runtime::thread_registry::runtime_mode_snapshot(),
+    )
+}
+
+pub fn current_runtime_transport_admission_for_work(
+    kind: TransportAdmissionKind,
+    class: crate::runtime::RuntimeWorkClass,
+    source: crate::runtime::RuntimeWorkSource,
+) -> TransportAdmission {
+    let resource = crate::orchestrator::resource_light_snapshot();
+    let context = crate::runtime::current_runtime_scheduler_context(
+        crate::runtime::default_runtime_scheduler_profile(),
+        resource.pressure,
+    );
+    runtime_transport_admission_for_work(
+        kind,
+        crate::runtime::RuntimeWorkRequest::new(class, source),
+        context,
     )
 }
 
@@ -1383,6 +1424,15 @@ where
                 "external WSS worker evicted for voice-exclusive resource window",
             ));
         }
+        if let Some(rejection) = current_runtime_transport_admission_for_work(
+            TransportAdmissionKind::ExternalWssConnect,
+            crate::runtime::RuntimeWorkClass::ChannelReconnect,
+            crate::runtime::RuntimeWorkSource::Background,
+        )
+        .rejection()
+        {
+            return Err(Error::config(rejection.stage, rejection.reason));
+        }
         let _connect_guard = begin_external_wss_connect_attempt();
         if external_wss_suspend_requested() {
             continue;
@@ -1648,6 +1698,96 @@ mod tests {
         assert_eq!(
             runtime_transport_admission(TransportAdmissionKind::NonVoiceHttp, mode),
             TransportAdmission::Allowed
+        );
+    }
+
+    fn foreground_scheduler_context() -> crate::runtime::RuntimeSchedulerContext {
+        crate::runtime::RuntimeSchedulerContext {
+            profile: crate::runtime::RuntimePlanePolicyProfile::EspCompact,
+            runtime_mode: crate::runtime::mode::snapshot_from_source(
+                crate::runtime::mode::RuntimeModeSource::default(),
+            ),
+            foreground: crate::runtime::RuntimeForegroundOverlay {
+                active: true,
+                active_count: 1,
+                primary_source: Some(crate::runtime::RuntimeForegroundSource::ExternalUserMessage),
+                age_ms: Some(500),
+                resume_after_ms: Some(29_500),
+            },
+            pressure: crate::orchestrator::PressureLevel::Normal,
+        }
+    }
+
+    #[test]
+    fn runtime_transport_admission_defers_background_http_during_esp_foreground() {
+        let admission = runtime_transport_admission_for_work(
+            TransportAdmissionKind::NonVoiceHttp,
+            crate::runtime::RuntimeWorkRequest::new(
+                crate::runtime::RuntimeWorkClass::SupplementalDelivery,
+                crate::runtime::RuntimeWorkSource::Background,
+            ),
+            foreground_scheduler_context(),
+        );
+
+        assert_eq!(
+            admission,
+            TransportAdmission::Rejected(TransportAdmissionRejection {
+                stage: "transport_runtime_scheduler",
+                reason: "foreground_active",
+            })
+        );
+    }
+
+    #[test]
+    fn runtime_transport_admission_keeps_primary_and_visibility_delivery_during_foreground() {
+        for class in [
+            crate::runtime::RuntimeWorkClass::PrimaryReplyDelivery,
+            crate::runtime::RuntimeWorkClass::VisibilityDelivery,
+        ] {
+            let admission = runtime_transport_admission_for_work(
+                TransportAdmissionKind::NonVoiceHttp,
+                crate::runtime::RuntimeWorkRequest::new(
+                    class,
+                    crate::runtime::RuntimeWorkSource::UserFacing,
+                ),
+                foreground_scheduler_context(),
+            );
+
+            assert_eq!(admission, TransportAdmission::Allowed);
+        }
+    }
+
+    #[test]
+    fn runtime_transport_admission_keeps_channel_ingress_online_during_foreground() {
+        let admission = runtime_transport_admission_for_work(
+            TransportAdmissionKind::ExternalWssConnect,
+            crate::runtime::RuntimeWorkRequest::new(
+                crate::runtime::RuntimeWorkClass::ChannelIngressWss,
+                crate::runtime::RuntimeWorkSource::System,
+            ),
+            foreground_scheduler_context(),
+        );
+
+        assert_eq!(admission, TransportAdmission::Allowed);
+    }
+
+    #[test]
+    fn runtime_transport_admission_defers_external_wss_reconnect_during_esp_foreground() {
+        let admission = runtime_transport_admission_for_work(
+            TransportAdmissionKind::ExternalWssConnect,
+            crate::runtime::RuntimeWorkRequest::new(
+                crate::runtime::RuntimeWorkClass::ChannelReconnect,
+                crate::runtime::RuntimeWorkSource::Background,
+            ),
+            foreground_scheduler_context(),
+        );
+
+        assert_eq!(
+            admission,
+            TransportAdmission::Rejected(TransportAdmissionRejection {
+                stage: "transport_runtime_scheduler",
+                reason: "foreground_active",
+            })
         );
     }
 

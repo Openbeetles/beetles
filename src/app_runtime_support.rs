@@ -82,11 +82,16 @@ pub(crate) fn bootstrap_pending_retry_into_inbound(
         );
         return;
     }
-    let inbound_tx = match msg.ingress {
-        IngressKind::User => user_inbound_tx,
-        IngressKind::System => system_inbound_tx,
+    let enqueue_result = match msg.ingress {
+        IngressKind::User => {
+            let source = msg
+                .runtime_foreground_source()
+                .unwrap_or(beetle::runtime::RuntimeForegroundSource::ExternalUserMessage);
+            user_inbound_tx.try_submit_user(msg, source)
+        }
+        IngressKind::System => system_inbound_tx.try_send(msg),
     };
-    match inbound_tx.try_send(msg) {
+    match enqueue_result {
         Ok(()) => {
             beetle::metrics::record_event_ingress_enqueued();
             if let Err(error) = pending_retry.clear_pending_retry() {

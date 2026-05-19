@@ -836,7 +836,7 @@ mod tests {
         DetachedJobKind, DetachedWorkKey, DetachedWorkRecord, DetachedWorkState, DetachedWorkStore,
         DetachedWorkUpsertOutcome,
     };
-    use crate::bus::new_inbound_channel;
+    use crate::bus::new_system_inbound_channel;
     use crate::error::Result;
     use crate::memory::{
         AutonomyStrategy, AutonomyStrategyStore, MemoryProfile, RelationshipPortfolio,
@@ -1208,7 +1208,7 @@ mod tests {
         let _delayed_task_guard = delayed_task_runtime_guard();
         let _audit_guard = crate::runtime::workflow_audit_test_guard();
         reset_workflow_audit_for_tests();
-        let (system_inbound_tx, _system_inbound_rx, _depth) = new_inbound_channel(4);
+        let (system_inbound_tx, _system_inbound_rx, _depth) = new_system_inbound_channel(4);
         let detached_work_store = MemoryDetachedWorkStore::default();
         let session_store = CountingSessionStore::default();
         let now_secs = 10_000;
@@ -1263,7 +1263,7 @@ mod tests {
         reset_workflow_audit_for_tests();
         crate::state::set_voice_exclusive_active(true);
 
-        let (system_inbound_tx, _system_inbound_rx, _depth) = new_inbound_channel(4);
+        let (system_inbound_tx, _system_inbound_rx, _depth) = new_system_inbound_channel(4);
         let detached_work_store = MemoryDetachedWorkStore::default();
         let session_store = CountingSessionStore::default();
         let now_secs = 10_000;
@@ -1318,7 +1318,7 @@ mod tests {
         let _delayed_task_guard = delayed_task_runtime_guard();
         let _audit_guard = crate::runtime::workflow_audit_test_guard();
         reset_workflow_audit_for_tests();
-        let (system_inbound_tx, _system_inbound_rx, _depth) = new_inbound_channel(4);
+        let (system_inbound_tx, _system_inbound_rx, _depth) = new_system_inbound_channel(4);
         let detached_work_store = MemoryDetachedWorkStore::default();
 
         let scheduled = enqueue_self_runtime_post_reply(
@@ -1362,7 +1362,7 @@ mod tests {
         let _delayed_task_guard = delayed_task_runtime_guard();
         let _audit_guard = crate::runtime::workflow_audit_test_guard();
         reset_workflow_audit_for_tests();
-        let (system_inbound_tx, _system_inbound_rx, _depth) = new_inbound_channel(4);
+        let (system_inbound_tx, _system_inbound_rx, _depth) = new_system_inbound_channel(4);
         let detached_work_store = MemoryDetachedWorkStore::default();
 
         let scheduled = enqueue_self_runtime_post_reply(
@@ -1405,7 +1405,7 @@ mod tests {
         let _delayed_task_guard = delayed_task_runtime_guard();
         let _audit_guard = crate::runtime::workflow_audit_test_guard();
         reset_workflow_audit_for_tests();
-        let (system_inbound_tx, _system_inbound_rx, _depth) = new_inbound_channel(4);
+        let (system_inbound_tx, _system_inbound_rx, _depth) = new_system_inbound_channel(4);
         let detached_work_store = MemoryDetachedWorkStore::default();
         let now_secs = current_unix_secs();
         let continuity = SelfContinuity {
@@ -1458,7 +1458,7 @@ mod tests {
         let _delayed_task_guard = delayed_task_runtime_guard();
         let _audit_guard = crate::runtime::workflow_audit_test_guard();
         reset_workflow_audit_for_tests();
-        let (system_inbound_tx, _system_inbound_rx, _depth) = new_inbound_channel(4);
+        let (system_inbound_tx, _system_inbound_rx, _depth) = new_system_inbound_channel(4);
         let detached_work_store = MemoryDetachedWorkStore::default();
 
         let scheduled = enqueue_self_runtime_idle_tick_for_relation(
@@ -1490,7 +1490,7 @@ mod tests {
         let _delayed_task_guard = delayed_task_runtime_guard();
         let _audit_guard = crate::runtime::workflow_audit_test_guard();
         reset_workflow_audit_for_tests();
-        let (system_inbound_tx, _system_inbound_rx, _depth) = new_inbound_channel(4);
+        let (system_inbound_tx, _system_inbound_rx, _depth) = new_system_inbound_channel(4);
         let detached_work_store = MemoryDetachedWorkStore::default();
         let active_work_store = StubActiveWorkStore::with_value(crate::agent::ActiveWorkRecord {
             kind: crate::agent::ActiveWorkKind::InteractiveAction,
@@ -1541,7 +1541,7 @@ mod tests {
         let _delayed_task_guard = delayed_task_runtime_guard();
         let _audit_guard = crate::runtime::workflow_audit_test_guard();
         reset_workflow_audit_for_tests();
-        let (system_inbound_tx, _system_inbound_rx, _depth) = new_inbound_channel(4);
+        let (system_inbound_tx, _system_inbound_rx, _depth) = new_system_inbound_channel(4);
         let detached_work_store = MemoryDetachedWorkStore::default();
 
         let scheduled = enqueue_self_runtime_post_reply(

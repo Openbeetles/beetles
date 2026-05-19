@@ -39,6 +39,8 @@ mod tests {
         assert!(parsed.get("initiative").is_some());
         assert!(parsed.get("presence").is_some());
         assert!(parsed.get("runtime_mode").is_some());
+        assert!(parsed.get("runtime_scheduler").is_some());
+        assert!(parsed["runtime_scheduler"]["recent_decisions"].is_array());
         assert!(parsed.get("soul_kernel").is_some());
         assert_eq!(
             parsed["programmable_reasoning"]["runtime_contract"]["execution_enabled"].as_bool(),

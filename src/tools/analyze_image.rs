@@ -14,6 +14,7 @@ use crate::runtime::frame_lease::{
     try_acquire_frame_capture_permit_with_admission, FrameLeaseAdmission,
 };
 use crate::runtime::lease::LeaseOwner;
+use crate::runtime::RuntimeWorkSource;
 use crate::tools::{parse_tool_args, Tool, ToolContext, ToolEffectClass, ToolMetadata};
 use base64::Engine as _;
 use std::sync::Arc;
@@ -324,10 +325,13 @@ impl AnalyzeImageTool {
             Some(admission) => {
                 try_acquire_frame_capture_permit_with_admission(owner, max_bytes, admission)
             }
-            None => try_acquire_frame_capture_permit(owner, max_bytes),
+            None => {
+                try_acquire_frame_capture_permit(owner, max_bytes, RuntimeWorkSource::UserFacing)
+            }
         }?;
         #[cfg(not(test))]
-        let _permit = try_acquire_frame_capture_permit(owner, max_bytes)?;
+        let _permit =
+            try_acquire_frame_capture_permit(owner, max_bytes, RuntimeWorkSource::UserFacing)?;
         let frame = camera.capture_frame(max_bytes)?;
         if frame.bytes.len() > max_bytes {
             return Err(Error::config(STAGE, "camera_frame_exceeds_requested_max"));
@@ -556,7 +560,10 @@ mod tests {
         ResponseBody,
     };
     use crate::runtime::mode::{snapshot_from_source, RuntimeModeSource};
-    use crate::runtime::FrameLeaseAdmission;
+    use crate::runtime::{
+        FrameLeaseAdmission, RuntimeForegroundOverlay, RuntimeForegroundSource,
+        RuntimePlanePolicyProfile, RuntimeSchedulerContext, RuntimeWorkSource,
+    };
     use crate::tools::{Tool, ToolContext, ToolEffectClass};
     use base64::Engine as _;
     use std::sync::{
@@ -673,10 +680,33 @@ mod tests {
     }
 
     fn normal_camera_admission() -> FrameLeaseAdmission {
-        FrameLeaseAdmission {
-            runtime_mode: snapshot_from_source(RuntimeModeSource::default()),
-            pressure: crate::orchestrator::PressureLevel::Normal,
-        }
+        FrameLeaseAdmission::from_scheduler_context_for_tests(
+            RuntimeWorkSource::UserFacing,
+            RuntimeSchedulerContext {
+                profile: RuntimePlanePolicyProfile::EspCompact,
+                runtime_mode: snapshot_from_source(RuntimeModeSource::default()),
+                foreground: RuntimeForegroundOverlay::default(),
+                pressure: crate::orchestrator::PressureLevel::Normal,
+            },
+        )
+    }
+
+    fn foreground_background_camera_admission() -> FrameLeaseAdmission {
+        FrameLeaseAdmission::from_scheduler_context_for_tests(
+            RuntimeWorkSource::Background,
+            RuntimeSchedulerContext {
+                profile: RuntimePlanePolicyProfile::EspCompact,
+                runtime_mode: snapshot_from_source(RuntimeModeSource::default()),
+                foreground: RuntimeForegroundOverlay {
+                    active: true,
+                    active_count: 1,
+                    primary_source: Some(RuntimeForegroundSource::ExternalUserMessage),
+                    age_ms: Some(500),
+                    resume_after_ms: Some(29_500),
+                },
+                pressure: crate::orchestrator::PressureLevel::Normal,
+            },
+        )
     }
 
     #[test]
@@ -820,6 +850,32 @@ mod tests {
             .expect_err("oversize local camera capture must be rejected before capture");
 
         assert!(err.to_string().contains("camera_frame_max_bytes_exceeded"));
+        assert_eq!(captures.load(Ordering::SeqCst), 0);
+        assert_eq!(ctx.posts, 0);
+    }
+
+    #[test]
+    fn local_camera_capture_respects_scheduler_defer_before_platform_capture() {
+        let (camera, captures) = RecordingCamera::available();
+        let tool = AnalyzeImageTool::with_camera_and_admission_for_tests(
+            &vision_config(),
+            camera,
+            foreground_background_camera_admission(),
+        );
+        let mut ctx = MockCtx {
+            posts: 0,
+            last_headers: Vec::new(),
+            last_body: Vec::new(),
+        };
+
+        let err = tool
+            .execute(
+                r#"{"source":"camera","max_bytes":1024,"question":"describe"}"#,
+                &mut ctx,
+            )
+            .expect_err("scheduler defer must reject before platform capture");
+
+        assert!(err.to_string().contains("foreground_active"));
         assert_eq!(captures.load(Ordering::SeqCst), 0);
         assert_eq!(ctx.posts, 0);
     }

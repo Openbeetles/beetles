@@ -655,6 +655,13 @@ pub(super) fn execute_turn_boxed(
         };
         let tool_choice = request_plan.tool_choice(round, any_tool_used);
         super::log_user_turn_memory_checkpoint("agent_llm_before_request", msg);
+        log::info!(
+            "[agent] llm_turn event=start req_id={} channel={} chat_id={} round={}",
+            req_id,
+            msg.channel,
+            msg.chat_id,
+            round
+        );
         let response = worker_llm.chat_with_progress(
             &mut tool_ctx,
             &system,

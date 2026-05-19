@@ -193,7 +193,9 @@ impl EspRouteExecutor {
             finish_config_activity_guard(&mut config_activity_guard, response.status);
             return api_response_to_outgoing(response);
         }
-        if let Some(reject) = route_worker_admission_reject(job_contract) {
+        if let Some(reject) =
+            route_worker_admission_reject(spec.execution_class, job_contract, memory_system_kind)
+        {
             let out = route_worker_reject_response(
                 store,
                 job_contract,
@@ -368,8 +370,34 @@ struct RouteWorkerAdmissionReject {
 }
 
 fn route_worker_admission_reject(
+    class: RouteExecutionClass,
     contract: RouteWorkerContract,
+    memory_system_kind: crate::memory::MemorySystemKind,
 ) -> Option<RouteWorkerAdmissionReject> {
+    let resource = crate::orchestrator::resource_light_snapshot();
+    let scheduler_decision = class
+        .runtime_work_class()
+        .map(|work_class| {
+            crate::runtime::admit_current_runtime_work(
+                work_class,
+                crate::runtime::RuntimeWorkSource::Operator,
+                memory_system_kind.into(),
+                resource.pressure,
+            )
+        })
+        .unwrap_or(crate::runtime::RuntimeWorkDecision::Proceed);
+    if let Some(detail) = catalog::route_worker_runtime_busy_detail(
+        contract,
+        catalog::RouteWorkerRuntimeLoad::from(&resource)
+            .with_scheduler_decision(scheduler_decision),
+    ) {
+        let stage = if scheduler_decision == crate::runtime::RuntimeWorkDecision::Proceed {
+            "http_route_worker_runtime_busy"
+        } else {
+            "runtime_scheduler_route_worker"
+        };
+        return Some(RouteWorkerAdmissionReject { stage, detail });
+    }
     if let Some(rejection) = crate::network::current_runtime_transport_admission(
         crate::network::TransportAdmissionKind::NonVoiceHttp,
     )
@@ -383,14 +411,7 @@ fn route_worker_admission_reject(
             ),
         });
     }
-    let resource = crate::orchestrator::resource_light_snapshot();
     let snap = crate::orchestrator::cached_memory_snapshot();
-    if let Some(detail) = catalog::route_worker_runtime_busy_detail(contract, (&resource).into()) {
-        return Some(RouteWorkerAdmissionReject {
-            stage: "http_route_worker_runtime_busy",
-            detail,
-        });
-    }
     let requirements = effective_route_worker_memory_requirements(contract);
     if (snap.heap_largest_block as usize) >= requirements.required_largest
         && (snap.heap_free_internal as usize) >= requirements.required_internal

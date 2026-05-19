@@ -63,6 +63,288 @@ bash scripts/tests/esp_audio_codec_contract_test.sh >/dev/null
 bash scripts/tests/beetle_wss_recv_contract_test.sh >/dev/null
 bash scripts/tests/analyze_image_body_contract_test.sh >/dev/null
 
+if [[ ! -f src/runtime/scheduler.rs ]] ||
+   [[ ! -f src/runtime/foreground.rs ]] ||
+   ! rg -n 'pub mod scheduler' src/runtime/mod.rs >/dev/null ||
+   ! rg -n 'pub mod foreground' src/runtime/mod.rs >/dev/null ||
+   ! rg -n 'pub enum RuntimeWorkClass' src/runtime/scheduler.rs >/dev/null ||
+   ! rg -n 'pub enum RuntimeWorkDecision' src/runtime/scheduler.rs >/dev/null ||
+   ! rg -n 'admit_current_runtime_work' src/runtime/scheduler.rs >/dev/null ||
+   ! rg -n 'pub enum RuntimeForegroundSource' src/runtime/foreground.rs >/dev/null ||
+   ! rg -n 'pub struct RuntimeForegroundTicket' src/runtime/foreground.rs >/dev/null ||
+   ! rg -n 'runtime_foreground_overlay' src/runtime/foreground.rs >/dev/null; then
+  echo "FAIL: GlobalRuntimeScheduler / RuntimeForegroundTicket truth sources are missing or not exported" >&2
+  exit 1
+fi
+
+if rg -n 'RuntimeForeground' src/runtime/lease.rs >/dev/null; then
+  echo "FAIL: foreground is a runtime ticket/snapshot, not a runtime::lease resource" >&2
+  rg -n 'RuntimeForeground' src/runtime/lease.rs >&2
+  exit 1
+fi
+
+if prod_source src/runtime/scheduler.rs |
+   rg -n 'orchestrator::update_heap_state|network::request_external_wss_|external_wss_.*store|AtomicBool|AtomicU32|AtomicUsize' >/dev/null; then
+  echo "FAIL: scheduler must not replace orchestrator/network truth sources or manipulate WSS atomics directly" >&2
+  prod_source src/runtime/scheduler.rs |
+    rg -n 'orchestrator::update_heap_state|network::request_external_wss_|external_wss_.*store|AtomicBool|AtomicU32|AtomicUsize' >&2
+  exit 1
+fi
+
+if ! rg -n 'pub struct RuntimeSchedulerSnapshot' src/runtime/scheduler.rs >/dev/null ||
+   ! rg -n 'pub struct RuntimeSchedulerDecisionRecord' src/runtime/scheduler.rs >/dev/null ||
+   ! rg -n 'record_runtime_scheduler_decision' src/runtime/scheduler.rs >/dev/null ||
+   ! rg -n 'pub fn runtime_scheduler_snapshot' src/runtime/scheduler.rs >/dev/null ||
+   ! rg -n 'pub fn format_baseline_log_line' src/runtime/scheduler.rs >/dev/null ||
+   ! rg -n 'pub fn format_policy_baseline_log_line' src/runtime/scheduler.rs >/dev/null ||
+   ! rg -n 'scheduler_observability_records_decision_counts_and_recent_work' src/runtime/scheduler.rs >/dev/null ||
+   ! rg -n 'scheduler_baseline_log_line_exposes_policy_and_decision_summary' src/runtime/scheduler.rs >/dev/null; then
+  echo "FAIL: scheduler observability must record decision counters, recent decisions, and baseline lines in the scheduler truth source" >&2
+  exit 1
+fi
+
+if ! rg -n 'runtime::scheduler::format_baseline_log_line' src/heartbeat/mod.rs >/dev/null ||
+   ! rg -n 'runtime::scheduler::format_policy_baseline_log_line' src/heartbeat/mod.rs >/dev/null ||
+   ! rg -n 'runtime_scheduler: runtime::RuntimeSchedulerSnapshot' src/platform/operator_status.rs >/dev/null ||
+   ! rg -n 'runtime::scheduler::runtime_scheduler_snapshot' src/platform/operator_status.rs >/dev/null ||
+   ! rg -n 'runtime_scheduler_recent_decisions' src/platform/operator_status.rs >/dev/null; then
+  echo "FAIL: heartbeat/operator observability must consume scheduler snapshot without moving it into resource or health" >&2
+  exit 1
+fi
+
+if prod_source src/platform/http_server/handlers/resource.rs |
+   rg -n 'runtime::scheduler|RuntimeScheduler|runtime_scheduler|runtime_policy|recent_decisions' >/dev/null; then
+  echo "FAIL: default /api/resource must stay cached-light and must not expose scheduler deep objects" >&2
+  prod_source src/platform/http_server/handlers/resource.rs |
+    rg -n 'runtime::scheduler|RuntimeScheduler|runtime_scheduler|runtime_policy|recent_decisions' >&2
+  exit 1
+fi
+
+if prod_source src/platform/http_server/handlers/health.rs |
+   rg -n 'runtime::scheduler|RuntimeScheduler|runtime_scheduler|runtime_policy|resource_diagnostic_snapshot|thread_registry::snapshot|lease::snapshot' >/dev/null; then
+  echo "FAIL: /api/health must stay lightweight and must not expose scheduler/resource deep diagnostics" >&2
+  prod_source src/platform/http_server/handlers/health.rs |
+    rg -n 'runtime::scheduler|RuntimeScheduler|runtime_scheduler|runtime_policy|resource_diagnostic_snapshot|thread_registry::snapshot|lease::snapshot' >&2
+  exit 1
+fi
+
+if ! rg -n 'foreground_ack_missing_before_llm' scripts/esp_soak_analyze.sh scripts/tests/esp_soak_analyze_contract_test.sh >/dev/null ||
+   ! rg -n 'primary_generated_but_not_delivered' scripts/esp_soak_analyze.sh scripts/tests/esp_soak_analyze_contract_test.sh >/dev/null ||
+   ! rg -n 'deep_worker_not_deferred_during_foreground' scripts/esp_soak_analyze.sh scripts/tests/esp_soak_analyze_contract_test.sh >/dev/null ||
+   ! rg -n 'voice_auto_connect_not_suppressed' scripts/esp_soak_analyze.sh scripts/tests/esp_soak_analyze_contract_test.sh >/dev/null ||
+   ! rg -n 'write_back_started_during_foreground' scripts/esp_soak_analyze.sh scripts/tests/esp_soak_analyze_contract_test.sh >/dev/null ||
+   ! rg -n 'display_status_missing_during_degrade' scripts/esp_soak_analyze.sh scripts/tests/esp_soak_analyze_contract_test.sh >/dev/null ||
+   ! rg -n 'scheduler_resume_missing' scripts/esp_soak_analyze.sh scripts/tests/esp_soak_analyze_contract_test.sh >/dev/null; then
+  echo "FAIL: soak analyzer must gate foreground scheduler, delivery, display, voice, write-back, and resume evidence" >&2
+  exit 1
+fi
+
+if ! rg -n 'runtime_scheduler_decision class=' src/runtime/scheduler.rs >/dev/null ||
+   ! rg -n 'foreground_ack event=visibility_enqueued' src/agent/delivery.rs src/agent/loop.rs >/dev/null ||
+   ! rg -n 'primary_delivery event=outbound_enqueued delivered=true' src/agent/delivery.rs src/agent/loop.rs >/dev/null ||
+   ! rg -n 'llm_turn event=start' src/agent/loop/turn_execution.rs >/dev/null ||
+   ! rg -n 'display_status_surface retained=true' src/main.rs >/dev/null; then
+  echo "FAIL: scheduler analyzer blockers must be backed by production log evidence, not test-only synthetic fields" >&2
+  exit 1
+fi
+
+if ! rg -n 'runtime_foreground: crate::runtime::RuntimeForegroundOverlay' src/runtime/mode.rs >/dev/null ||
+   ! rg -n 'foreground_active=' src/runtime/thread_registry.rs >/dev/null ||
+   ! rg -n 'default_runtime_work_class' src/runtime/plane.rs >/dev/null; then
+  echo "FAIL: runtime mode/thread/plane governance must expose foreground overlay and static scheduler work-class mapping" >&2
+  exit 1
+fi
+
+if ! rg -n 'scheduler_decision: crate::runtime::RuntimeWorkDecision' src/platform/http_server/router/catalog.rs >/dev/null ||
+   ! rg -n 'runtime_work_class' src/platform/http_server/router/catalog.rs >/dev/null ||
+   ! rg -n 'runtime_scheduler_route_worker' src/platform/http_server/esp_transport.rs >/dev/null; then
+  echo "FAIL: ESP route workers must consume RuntimeWorkDecision before lazy worker submission" >&2
+  exit 1
+fi
+
+if ! rg -n 'RuntimeWorkClass::DurableWriteBack' src/runtime/write_back.rs >/dev/null ||
+   ! rg -n 'RuntimeWorkClass::OptionalMaintenance' src/runtime/write_back.rs >/dev/null ||
+   ! rg -n 'scheduler_runtime_delay' src/runtime/write_back.rs >/dev/null; then
+  echo "FAIL: write-back and optional storage maintenance must consume GlobalRuntimeScheduler decisions" >&2
+  exit 1
+fi
+
+if ! rg -n 'RuntimeWorkClass::DueUserTimer' src/bg_timer.rs >/dev/null ||
+   ! rg -n 'current_due_user_timer_scheduler_delay' src/bg_timer.rs >/dev/null ||
+   ! rg -n 'RuntimeWorkClass::DueUserTimer' src/runtime/write_back.rs >/dev/null ||
+   ! rg -n 'runtime_work_class' src/runtime/write_back.rs >/dev/null ||
+   ! rg -n 'work_runtime_delay' src/runtime/write_back.rs >/dev/null ||
+   ! rg -n 'due_user_timer_scheduler_delay_keeps_foreground_due_timers_admitted' src/bg_timer.rs >/dev/null ||
+   ! rg -n 'due_user_timer_scheduler_delay_defers_critical_pressure_due_timers' src/bg_timer.rs >/dev/null; then
+  echo "FAIL: due reminder/task producers and write-back jobs must consume DueUserTimer scheduler admission" >&2
+  exit 1
+fi
+
+if ! rg -n 'RuntimeWorkClass::DisplayStatusSurface' src/main.rs >/dev/null ||
+   ! rg -n 'RuntimeWorkClass::DisplayHeavyRefresh' src/main.rs >/dev/null ||
+   ! rg -n 'display_status_surface_scheduler_allowed' src/main.rs >/dev/null ||
+   ! rg -n 'display_heavy_refresh_scheduler_degraded' src/main.rs >/dev/null ||
+   ! rg -n 'degrade_display_heavy_refresh_plan' src/main.rs >/dev/null ||
+   ! rg -n 'display_heavy_refresh_degrade_keeps_status_surface_plan' src/main.rs >/dev/null ||
+   ! rg -n 'display_status_surface_survives_foreground_and_critical_pressure' src/runtime/scheduler.rs >/dev/null; then
+  echo "FAIL: display loop must split status surface and heavy refresh scheduler consumers" >&2
+  exit 1
+fi
+
+if prod_source src/main.rs |
+   sed -n '/fn run_display_loop/,/^}/p' |
+   rg -n 'if should_suppress_display_refresh\(' >/dev/null; then
+  echo "FAIL: display pressure handling must not short-circuit the full display loop before status surface updates" >&2
+  prod_source src/main.rs |
+    sed -n '/fn run_display_loop/,/^}/p' |
+    rg -n 'if should_suppress_display_refresh\(' >&2
+  exit 1
+fi
+
+if ! rg -n 'RuntimeWorkClass::RealtimeVoiceSession' src/audio/voice_session.rs >/dev/null ||
+   ! rg -n 'RuntimeWorkClass::VoiceFallbackInteraction' src/audio/voice_session.rs >/dev/null ||
+   ! rg -n 'admit_current_runtime_work' src/audio/voice_session.rs >/dev/null ||
+   ! rg -n 'RuntimeWorkDecision' src/audio/voice_session.rs >/dev/null ||
+   ! rg -n 'voice_worker_scheduler_decision' src/audio/voice_session.rs >/dev/null ||
+   ! rg -n 'auto_voice_wake_maps_scheduler_work_class_and_source' src/audio/voice_session.rs >/dev/null ||
+   ! rg -n 'auto_voice_wake_scheduler_defer_keeps_task_pending' src/audio/voice_session.rs >/dev/null ||
+   ! rg -n 'auto_realtime_voice_wake_consumes_scheduler_decision_before_connect' src/audio/voice_session.rs >/dev/null ||
+   ! rg -n 'esp_compact_defers_auto_voice_connect_during_other_foreground' src/runtime/scheduler.rs >/dev/null ||
+   ! rg -n 'embedded_linux_keeps_linux_full_policy_until_a_separate_profile_is_proven' src/runtime/scheduler.rs >/dev/null; then
+  echo "FAIL: auto voice wake/realtime connect must consume GlobalRuntimeScheduler before transport or worker startup" >&2
+  exit 1
+fi
+
+if ! rg -n 'request\.class == RuntimeWorkClass::WakePcmFeed' src/runtime/scheduler.rs >/dev/null ||
+   ! rg -n '"audio_io_worker" => RuntimeWorkClass::WakePcmFeed' src/runtime/plane.rs >/dev/null ||
+   ! rg -n 'try_send\(VoiceEvent::WakeTriggered\)' src/wake/mod.rs >/dev/null; then
+  echo "FAIL: wake PCM feed must remain non-blocking and scheduler-safe" >&2
+  exit 1
+fi
+
+if prod_source src/wake/mod.rs |
+   rg -n 'admit_current_runtime_work|admit_runtime_work|recv(_timeout)?\s*\(|thread::sleep|open_http_client|connect_realtime|VoiceExclusiveTransportGuard|TransportAdmissionKind' >/dev/null; then
+  echo "FAIL: wake PCM feed path must not wait on scheduler, transport, HTTP, WSS, or voice-exclusive resources" >&2
+  prod_source src/wake/mod.rs |
+    rg -n 'admit_current_runtime_work|admit_runtime_work|recv(_timeout)?\s*\(|thread::sleep|open_http_client|connect_realtime|VoiceExclusiveTransportGuard|TransportAdmissionKind' >&2
+  exit 1
+fi
+
+if prod_source src/runtime/write_back.rs |
+   sed -n '/fn requires_periodic_idle_headroom/,/^    }/p' |
+   rg -n 'DueReminderSweep|DueTaskSweep' >/dev/null; then
+  echo "FAIL: due reminder/task sweeps are DueUserTimer work, not optional storage maintenance" >&2
+  prod_source src/runtime/write_back.rs |
+    sed -n '/fn requires_periodic_idle_headroom/,/^    }/p' |
+    rg -n 'DueReminderSweep|DueTaskSweep' >&2
+  exit 1
+fi
+
+if ! rg -n 'runtime_transport_admission_for_work' src/network/mod.rs >/dev/null ||
+   ! rg -n 'current_runtime_transport_admission_for_work' src/network/mod.rs >/dev/null ||
+   ! rg -n 'RuntimeWorkClass::ChannelReconnect' src/network/mod.rs >/dev/null ||
+   ! rg -n 'external_wss_connect_transport_admission' src/channels/wss_gateway/loop.rs >/dev/null ||
+   ! rg -n 'RuntimeWorkClass::ChannelReconnect' src/channels/wss_gateway/loop.rs >/dev/null ||
+   ! rg -n 'channel_wss_restart_delay_for_scheduler_context' src/runtime/channel_wss_supervision.rs >/dev/null ||
+   ! rg -n 'RuntimeWorkClass::ChannelReconnect' src/runtime/channel_wss_supervision.rs >/dev/null; then
+  echo "FAIL: external WSS connect/reconnect paths must consume ChannelReconnect scheduler admission" >&2
+  exit 1
+fi
+
+if prod_source src/network/mod.rs |
+   sed -n '/^pub fn create_http_client_with_config/,/^fn ensure_outbound_network_ready/p' |
+   rg -n 'current_runtime_transport_admission_for_work|RuntimeWorkClass::SupplementalDelivery|RuntimeWorkClass::ChannelReconnect' >/dev/null; then
+  echo "FAIL: generic HTTP client class must not be broad-mapped to scheduler work classes; classify explicit call sites instead" >&2
+  prod_source src/network/mod.rs |
+    sed -n '/^pub fn create_http_client_with_config/,/^fn ensure_outbound_network_ready/p' |
+    rg -n 'current_runtime_transport_admission_for_work|RuntimeWorkClass::SupplementalDelivery|RuntimeWorkClass::ChannelReconnect' >&2
+  exit 1
+fi
+
+if prod_source src/channels/wss_gateway/loop.rs |
+   sed -n '/fn external_wss_session_stop_reason/,/fn wss_runtime_gate_suspend_reason/p' |
+   rg -n 'runtime_transport_admission_for_work|RuntimeWorkClass::ChannelReconnect' >/dev/null; then
+  echo "FAIL: scheduler ChannelReconnect defer must not stop an already-active external WSS session" >&2
+  prod_source src/channels/wss_gateway/loop.rs |
+    sed -n '/fn external_wss_session_stop_reason/,/fn wss_runtime_gate_suspend_reason/p' |
+    rg -n 'runtime_transport_admission_for_work|RuntimeWorkClass::ChannelReconnect' >&2
+  exit 1
+fi
+
+if ! rg -n 'runtime_work_class' src/bus.rs >/dev/null ||
+   ! rg -n 'RuntimeWorkClass::PrimaryReplyDelivery' src/bus.rs >/dev/null ||
+   ! rg -n 'RuntimeWorkClass::VisibilityDelivery' src/bus.rs >/dev/null ||
+   ! rg -n 'RuntimeWorkClass::SupplementalDelivery' src/bus.rs >/dev/null ||
+   ! rg -n 'is_best_effort_delivery' src/bus.rs >/dev/null ||
+   ! rg -n 'outbound_runtime_scheduler_decision_for_context' src/channels/dispatch.rs >/dev/null ||
+   ! rg -n 'outbound_kind.runtime_work_class' src/channels/dispatch.rs >/dev/null ||
+   ! rg -n 'is_best_effort_delivery' src/channels/dispatch.rs >/dev/null ||
+   ! rg -n 'is_best_effort_delivery' src/channels/send.rs >/dev/null ||
+   ! rg -n 'visibility_sender_acquires_token_instead_of_cached_token_drop' src/channels/qq/send.rs >/dev/null; then
+  echo "FAIL: outbound primary/visibility/supplemental delivery must consume the OutboundKind runtime work-class truth source" >&2
+  exit 1
+fi
+
+if prod_source src/channels/send.rs |
+   rg -n 'outbound_kind\.is_supplemental\(\)' >/dev/null ||
+   prod_source src/channels/qq/send.rs |
+   rg -n 'outbound_kind\.is_supplemental\(\)' >/dev/null ||
+   prod_source src/channels/dispatch.rs |
+   sed '/fn drop_deferred_supplementals_for_primary/,/fn try_push_buffered_msg/d' |
+   rg -n 'outbound_kind\.is_supplemental\(\)' >/dev/null; then
+  echo "FAIL: outbound consumers must not use is_supplemental() to decide drop/defer/retry for Visibility delivery" >&2
+  prod_source src/channels/send.rs |
+    rg -n 'outbound_kind\.is_supplemental\(\)' >&2 || true
+  prod_source src/channels/qq/send.rs |
+    rg -n 'outbound_kind\.is_supplemental\(\)' >&2 || true
+  prod_source src/channels/dispatch.rs |
+    sed '/fn drop_deferred_supplementals_for_primary/,/fn try_push_buffered_msg/d' |
+    rg -n 'outbound_kind\.is_supplemental\(\)' >&2 || true
+  exit 1
+fi
+
+OUTBOUND_DUPLICATED_DELIVERY_CLASS_HITS="$(
+  for path in src/channels/dispatch.rs src/channels/send.rs src/channels/qq/send.rs; do
+    prod_source "$path" |
+      rg -n 'RuntimeWorkClass::(PrimaryReplyDelivery|VisibilityDelivery|SupplementalDelivery)' |
+      sed "s#^#$path:#" || true
+  done
+)"
+if [[ -n "$OUTBOUND_DUPLICATED_DELIVERY_CLASS_HITS" ]]; then
+  echo "FAIL: outbound consumers must use OutboundKind::runtime_work_class(), not duplicate delivery work-class matches" >&2
+  printf '%s\n' "$OUTBOUND_DUPLICATED_DELIVERY_CLASS_HITS" >&2
+  exit 1
+fi
+
+USER_INGRESS_RAW_TX_PATHS="$(
+  existing_paths \
+    src/channels \
+    src/platform/http_server/router/types.rs \
+    src/platform/http_server/handlers/webhook.rs \
+    src/platform/http_server/handlers/sessions.rs \
+    src/audio/voice_session.rs \
+    src/main.rs
+)"
+if [[ -n "$USER_INGRESS_RAW_TX_PATHS" ]] &&
+   rg -n '\bInboundTx\b|TrackedSender<PcMsg>' $USER_INGRESS_RAW_TX_PATHS >/tmp/beetle-user-ingress-raw-tx.$$; then
+  echo "FAIL: user-visible ingress must use UserInboundTx::try_submit_user, not raw InboundTx/TrackedSender<PcMsg>" >&2
+  cat /tmp/beetle-user-ingress-raw-tx.$$ >&2
+  rm -f /tmp/beetle-user-ingress-raw-tx.$$
+  exit 1
+fi
+rm -f /tmp/beetle-user-ingress-raw-tx.$$
+
+if ! rg -n 'try_submit_user' src/platform/http_server/handlers/sessions.rs >/dev/null ||
+   ! rg -n 'RuntimeForegroundSource::ConfigUiChat' src/platform/http_server/handlers/sessions.rs >/dev/null ||
+   ! rg -n 'try_submit_user' src/platform/http_server/handlers/webhook.rs >/dev/null ||
+   ! rg -n 'try_submit_user' src/channels/wss_gateway/loop.rs >/dev/null ||
+   ! rg -n 'try_submit_user' src/channels/telegram/poll.rs >/dev/null ||
+   ! rg -n 'try_submit_user' src/channels/dingtalk/inbound.rs >/dev/null ||
+   ! rg -n 'try_submit_user' src/channels/wecom/aibot.rs >/dev/null; then
+  echo "FAIL: external user ingress and config-ui chat must submit through UserInboundTx foreground API" >&2
+  exit 1
+fi
+
 RESPONSE_BODY_INTO_VEC_HOT_PATH='ResponseBody::into_vec|\b(body|resp_body|response_body)\.into_vec\s*\('
 if rg -n "$RESPONSE_BODY_INTO_VEC_HOT_PATH" src \
   --glob '!src/platform/response_body.rs' >/dev/null; then
@@ -851,9 +1133,19 @@ if ! rg -n 'pub struct FrameLeaseAdmission' src/runtime/frame_lease.rs >/dev/nul
 fi
 
 if ! rg -n 'admit_current_camera_frame_capture' src/runtime/frame_lease.rs src/runtime/mod.rs >/dev/null ||
-   ! rg -n 'FrameLeaseAdmission::current\(\)' src/runtime/frame_lease.rs >/dev/null ||
+   ! rg -n 'FrameLeaseAdmission::current\(source\)' src/runtime/frame_lease.rs >/dev/null ||
    ! rg -n 'admission\.ensure_allowed\(\)\?' src/runtime/frame_lease.rs >/dev/null; then
   echo "FAIL: camera frame borrow no longer passes through mode/pressure admission before lease acquisition" >&2
+  exit 1
+fi
+
+if ! rg -n 'RuntimeWorkClass::HardwareRealtimeCapture' src/runtime/frame_lease.rs >/dev/null ||
+   ! rg -n 'RuntimeWorkSource' src/runtime/frame_lease.rs >/dev/null ||
+   ! rg -n 'admit_runtime_work' src/runtime/frame_lease.rs >/dev/null ||
+   ! rg -n 'RuntimeWorkDecision' src/runtime/frame_lease.rs >/dev/null ||
+   ! rg -n 'hardware_realtime_capture_defers_background_but_not_user_facing_foreground_work' src/runtime/scheduler.rs >/dev/null ||
+   ! rg -n 'camera_capture_permit_consumes_scheduler_source_before_capture' src/runtime/frame_lease.rs >/dev/null; then
+  echo "FAIL: camera frame lease must consume HardwareRealtimeCapture scheduler admission before CameraFrame lease acquisition" >&2
   exit 1
 fi
 
@@ -863,9 +1155,17 @@ if ! rg -n 'frame_lease_admission_denies_critical_pressure_before_borrow|frame_l
 fi
 
 if ! rg -n 'try_acquire_frame_capture_permit' src/tools/analyze_image.rs >/dev/null ||
+   ! rg -n 'RuntimeWorkSource::UserFacing' src/tools/analyze_image.rs >/dev/null ||
    ! rg -n 'capture_frame\(max_bytes\)' src/tools/analyze_image.rs >/dev/null ||
-   ! rg -n 'vision_request_body_too_large' src/tools/analyze_image.rs >/dev/null; then
+   ! rg -n 'vision_request_body_too_large' src/tools/analyze_image.rs >/dev/null ||
+   ! rg -n 'local_camera_capture_respects_scheduler_defer_before_platform_capture' src/tools/analyze_image.rs >/dev/null; then
   echo "FAIL: analyze_image local camera path no longer proves frame admission and request-body budget checks" >&2
+  exit 1
+fi
+
+if rg -n 'LeaseKind::CameraFrame' src --glob '!src/runtime/frame_lease.rs' --glob '!src/runtime/lease.rs' >/dev/null; then
+  echo "FAIL: CameraFrame lease acquisition must stay behind runtime::frame_lease admission" >&2
+  rg -n 'LeaseKind::CameraFrame' src --glob '!src/runtime/frame_lease.rs' --glob '!src/runtime/lease.rs' >&2
   exit 1
 fi
 

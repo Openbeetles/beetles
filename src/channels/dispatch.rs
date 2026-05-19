@@ -240,6 +240,32 @@ fn outbound_reject_reason(msg: &crate::bus::PcMsg) -> Option<&'static str> {
     }
 }
 
+fn outbound_runtime_scheduler_decision_for_context(
+    outbound_kind: OutboundKind,
+    context: crate::runtime::RuntimeSchedulerContext,
+) -> crate::runtime::RuntimeWorkDecision {
+    crate::runtime::admit_runtime_work(
+        crate::runtime::RuntimeWorkRequest::new(
+            outbound_kind.runtime_work_class(),
+            outbound_kind.runtime_work_source(),
+        ),
+        context,
+    )
+}
+
+fn current_outbound_runtime_scheduler_decision(
+    outbound_kind: OutboundKind,
+) -> crate::runtime::RuntimeWorkDecision {
+    let resource = crate::orchestrator::resource_light_snapshot();
+    outbound_runtime_scheduler_decision_for_context(
+        outbound_kind,
+        crate::runtime::current_runtime_scheduler_context(
+            crate::runtime::default_runtime_scheduler_profile(),
+            resource.pressure,
+        ),
+    )
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum OutboundAdmissionAction {
     Proceed,
@@ -316,6 +342,49 @@ fn apply_supplemental_outbound_admission_decision(
             OutboundAdmissionAction::Deferred
         }
     }
+}
+
+fn apply_outbound_runtime_scheduler_decision(
+    tag: &str,
+    req_id: Option<&str>,
+    channel: &str,
+    outbound_kind: OutboundKind,
+    decision: crate::runtime::RuntimeWorkDecision,
+) -> OutboundAdmissionAction {
+    match decision {
+        crate::runtime::RuntimeWorkDecision::Proceed
+        | crate::runtime::RuntimeWorkDecision::Degrade { .. } => OutboundAdmissionAction::Proceed,
+        crate::runtime::RuntimeWorkDecision::Defer { reason, .. }
+        | crate::runtime::RuntimeWorkDecision::DrainAndResume { reason, .. }
+        | crate::runtime::RuntimeWorkDecision::Suspend { reason }
+        | crate::runtime::RuntimeWorkDecision::RejectWithStableKey { reason, .. }
+        | crate::runtime::RuntimeWorkDecision::RejectWithUserVisibleReason { reason } => {
+            log::info!(
+                "[{}] req_id={} channel={} outbound_kind={} deferred by runtime scheduler reason={}",
+                tag,
+                req_id.unwrap_or("-"),
+                channel,
+                outbound_kind.as_str(),
+                reason
+            );
+            OutboundAdmissionAction::Deferred
+        }
+    }
+}
+
+fn apply_outbound_runtime_scheduler_admission(
+    tag: &str,
+    req_id: Option<&str>,
+    channel: &str,
+    outbound_kind: OutboundKind,
+) -> OutboundAdmissionAction {
+    apply_outbound_runtime_scheduler_decision(
+        tag,
+        req_id,
+        channel,
+        outbound_kind,
+        current_outbound_runtime_scheduler_decision(outbound_kind),
+    )
 }
 
 fn supplemental_active_http_count_for_outbound() -> u32 {
@@ -431,14 +500,14 @@ fn try_push_buffered_msg(
     cooldown_buffer: &mut VecDeque<crate::bus::PcMsg>,
     msg: crate::bus::PcMsg,
 ) -> BufferPushResult {
-    if !msg.outbound_kind.is_supplemental() {
+    if !msg.outbound_kind.is_best_effort_delivery() {
         if let Some(req_id) = msg
             .req_id
             .as_deref()
             .filter(|value| !value.trim().is_empty())
         {
             if let Some(existing) = cooldown_buffer.iter_mut().find(|buffered| {
-                !buffered.outbound_kind.is_supplemental()
+                !buffered.outbound_kind.is_best_effort_delivery()
                     && buffered.req_id.as_deref() == Some(req_id)
                     && buffered.channel == msg.channel
                     && buffered.chat_id == msg.chat_id
@@ -458,7 +527,7 @@ fn try_push_buffered_msg(
         cooldown_buffer.push_back(msg);
         return BufferPushResult::Buffered;
     }
-    if msg.outbound_kind.is_supplemental() {
+    if msg.outbound_kind.is_best_effort_delivery() {
         log::warn!(
             "[{}] req_id={} channel={} supplemental deferred buffer full, dropping new message",
             tag,
@@ -469,7 +538,7 @@ fn try_push_buffered_msg(
     }
     if let Some(pos) = cooldown_buffer
         .iter()
-        .position(|buffered| buffered.outbound_kind.is_supplemental())
+        .position(|buffered| buffered.outbound_kind.is_best_effort_delivery())
     {
         cooldown_buffer.remove(pos);
         cooldown_buffer.push_back(msg);
@@ -668,7 +737,19 @@ fn dispatch_via_sink(
 
     crate::platform::task_wdt::feed_current_task();
 
-    if msg.outbound_kind.is_supplemental() {
+    if matches!(
+        apply_outbound_runtime_scheduler_admission(
+            tag,
+            msg.req_id.as_deref(),
+            &msg.channel,
+            msg.outbound_kind,
+        ),
+        OutboundAdmissionAction::Deferred
+    ) {
+        return DispatchOutcome::Deferred;
+    }
+
+    if msg.outbound_kind.is_best_effort_delivery() {
         if matches!(
             apply_supplemental_outbound_admission_decision(
                 tag,
@@ -793,7 +874,7 @@ fn dispatch_or_buffer_via_sink(
 ) {
     drop_deferred_supplementals_for_primary(tag, cooldown_buffer, &msg);
     if let Some(reason) = outbound_reject_reason(&msg) {
-        if msg.outbound_kind.is_supplemental() {
+        if msg.outbound_kind.is_best_effort_delivery() {
             log::warn!(
                 "[{}] req_id={} channel={} outbound_kind={} dropped by outbound admission reason={}",
                 tag,
@@ -820,7 +901,7 @@ fn dispatch_or_buffer_via_sink(
     }
 
     if is_channel_in_cooldown(&msg.channel) {
-        if msg.outbound_kind.is_supplemental() {
+        if msg.outbound_kind.is_best_effort_delivery() {
             log::warn!(
                 "[{}] req_id={} channel={} outbound_kind={} dropped while channel is in cooldown",
                 tag,
@@ -954,7 +1035,19 @@ fn dispatch_via_active_driver_with_admission_context(
     let queued = queued_from_prepared(prepared);
 
     crate::platform::task_wdt::feed_current_task();
-    if queued.outbound_kind.is_supplemental() {
+    if matches!(
+        apply_outbound_runtime_scheduler_admission(
+            tag,
+            queued.req_id.as_deref(),
+            &msg.channel,
+            queued.outbound_kind,
+        ),
+        OutboundAdmissionAction::Deferred
+    ) {
+        return DispatchOutcome::Deferred;
+    }
+
+    if queued.outbound_kind.is_best_effort_delivery() {
         if matches!(
             apply_supplemental_outbound_admission_decision(
                 tag,
@@ -1357,7 +1450,7 @@ fn run_os_outbound_worker_inner<F>(
 
         drop_deferred_supplementals_for_primary(TAG, &mut cooldown_buffer, &msg);
         if let Some(reason) = outbound_reject_reason(&msg) {
-            if msg.outbound_kind.is_supplemental() {
+            if msg.outbound_kind.is_best_effort_delivery() {
                 log::warn!(
                     "[{}] req_id={} channel={} outbound_kind={} dropped by outbound admission reason={}",
                     TAG,
@@ -1385,7 +1478,7 @@ fn run_os_outbound_worker_inner<F>(
         }
 
         if is_channel_in_cooldown(&msg.channel) {
-            if msg.outbound_kind.is_supplemental() {
+            if msg.outbound_kind.is_best_effort_delivery() {
                 log::warn!(
                     "[{}] req_id={} channel={} outbound_kind={} dropped while channel is in cooldown",
                     TAG,
@@ -2148,6 +2241,51 @@ mod tests {
         assert_eq!(buffer[1].content, "second-ready");
     }
 
+    fn foreground_scheduler_context() -> crate::runtime::RuntimeSchedulerContext {
+        crate::runtime::RuntimeSchedulerContext {
+            profile: crate::runtime::RuntimePlanePolicyProfile::EspCompact,
+            runtime_mode: crate::runtime::mode::snapshot_from_source(
+                crate::runtime::mode::RuntimeModeSource::default(),
+            ),
+            foreground: crate::runtime::RuntimeForegroundOverlay {
+                active: true,
+                active_count: 1,
+                primary_source: Some(crate::runtime::RuntimeForegroundSource::ExternalUserMessage),
+                age_ms: Some(500),
+                resume_after_ms: Some(29_500),
+            },
+            pressure: crate::orchestrator::PressureLevel::Normal,
+        }
+    }
+
+    #[test]
+    fn outbound_runtime_scheduler_uses_delivery_work_class_not_supplemental_flag() {
+        assert_eq!(
+            super::outbound_runtime_scheduler_decision_for_context(
+                OutboundKind::Primary,
+                foreground_scheduler_context()
+            ),
+            crate::runtime::RuntimeWorkDecision::Proceed
+        );
+        assert_eq!(
+            super::outbound_runtime_scheduler_decision_for_context(
+                OutboundKind::Visibility,
+                foreground_scheduler_context()
+            ),
+            crate::runtime::RuntimeWorkDecision::Proceed
+        );
+        assert_eq!(
+            super::outbound_runtime_scheduler_decision_for_context(
+                OutboundKind::Supplemental,
+                foreground_scheduler_context()
+            ),
+            crate::runtime::RuntimeWorkDecision::Defer {
+                reason: "foreground_active",
+                retry_after_ms: 29_500,
+            }
+        );
+    }
+
     #[test]
     fn deferred_buffer_evicts_supplemental_before_primary_reply() {
         let mut buffer = VecDeque::new();
@@ -2172,6 +2310,32 @@ mod tests {
             buffer.back().map(|msg| msg.content.as_str()),
             Some("new-primary")
         );
+    }
+
+    #[test]
+    fn deferred_buffer_preserves_visibility_before_ordinary_supplemental_when_full() {
+        let mut buffer = VecDeque::new();
+        for index in 0..super::COOLDOWN_BUFFER_MAX {
+            let mut msg = build_msg("ready", "chat-1", format!("primary-{index}").as_str());
+            if index == 0 {
+                msg.outbound_kind = OutboundKind::Supplemental;
+                msg.content = "ordinary-supplemental".to_string();
+            }
+            buffer.push_back(msg);
+        }
+        let mut visibility = build_msg("ready", "chat-1", "ack/progress");
+        visibility.outbound_kind = OutboundKind::Visibility;
+
+        assert!(matches!(
+            super::try_push_buffered_msg("test", &mut buffer, visibility),
+            super::BufferPushResult::Buffered
+        ));
+
+        assert_eq!(buffer.len(), super::COOLDOWN_BUFFER_MAX);
+        assert!(buffer.iter().any(|msg| msg.content == "ack/progress"));
+        assert!(!buffer
+            .iter()
+            .any(|msg| msg.content == "ordinary-supplemental"));
     }
 
     #[test]
@@ -2390,6 +2554,27 @@ mod tests {
     }
 
     #[test]
+    fn visibility_dispatch_uses_primary_retry_path_for_local_sinks() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let mut msg = build_msg("ready", "chat-1", "visibility");
+        msg.outbound_kind = OutboundKind::Visibility;
+        let capability_registry = crate::channel_capability::ChannelCapabilityRegistry::default();
+        let mut sinks = super::ChannelSinks::new();
+        sinks.register(
+            "ready",
+            Box::new(FailingSink {
+                attempts: Arc::clone(&attempts),
+            }),
+        );
+
+        assert_eq!(
+            super::dispatch_via_sink("channel_dispatch", &sinks, &capability_registry, &msg),
+            super::DispatchOutcome::Failed
+        );
+        assert_eq!(attempts.load(Ordering::Relaxed), super::SEND_RETRY as usize);
+    }
+
+    #[test]
     fn supplemental_active_outbound_driver_fails_fast_without_retries() {
         let attempts = Arc::new(AtomicUsize::new(0));
         let mut driver = FailingActiveDriver {
@@ -2463,6 +2648,34 @@ mod tests {
             attempts.load(Ordering::Relaxed),
             0,
             "supplemental progress must wait for the active LLM HTTP window instead of overlapping TLS"
+        );
+    }
+
+    #[test]
+    fn visibility_active_outbound_accept_ignores_supplemental_active_http_gate() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let mut driver = FailingActiveDriver {
+            attempts: Arc::clone(&attempts),
+        };
+        let mut msg = build_msg("ready", "chat-1", "visibility");
+        msg.outbound_kind = OutboundKind::Visibility;
+        let capability_registry = crate::channel_capability::ChannelCapabilityRegistry::default();
+
+        assert_eq!(
+            super::dispatch_via_active_driver_with_admission_context(
+                "os_outbound",
+                &capability_registry,
+                &mut driver,
+                &msg,
+                AdmissionDecision::Accept,
+                1,
+            ),
+            super::DispatchOutcome::Failed
+        );
+        assert_eq!(
+            attempts.load(Ordering::Relaxed),
+            1,
+            "visibility ack/progress must not wait behind the supplemental active HTTP gate"
         );
     }
 

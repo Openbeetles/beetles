@@ -41,6 +41,8 @@ type WriteBackTask = Box<dyn FnOnce() + Send + 'static>;
 struct WriteBackJob {
     label: &'static str,
     due_at: Instant,
+    work_class: crate::runtime::RuntimeWorkClass,
+    work_source: crate::runtime::RuntimeWorkSource,
     task: Option<WriteBackTask>,
 }
 
@@ -200,6 +202,28 @@ impl StorageMaintenanceTaskKind {
     fn requires_periodic_idle_headroom(self) -> bool {
         matches!(self, Self::SelfRuntimeIdleTick | Self::InitiativeTick)
     }
+
+    fn runtime_work_class(self) -> crate::runtime::RuntimeWorkClass {
+        match self {
+            Self::DueReminderSweep | Self::DueTaskSweep => {
+                crate::runtime::RuntimeWorkClass::DueUserTimer
+            }
+            Self::SelfRuntimeIdleTick | Self::InitiativeTick => {
+                crate::runtime::RuntimeWorkClass::OptionalMaintenance
+            }
+        }
+    }
+
+    fn runtime_work_source(self) -> crate::runtime::RuntimeWorkSource {
+        match self {
+            Self::DueReminderSweep | Self::DueTaskSweep => {
+                crate::runtime::RuntimeWorkSource::System
+            }
+            Self::SelfRuntimeIdleTick | Self::InitiativeTick => {
+                crate::runtime::RuntimeWorkSource::Background
+            }
+        }
+    }
 }
 
 /// Result of attempting to enqueue governed storage maintenance.
@@ -309,6 +333,22 @@ fn due_write_back_jobs_pending(now: Instant) -> bool {
         .any(|job| job.due_at <= now)
 }
 
+fn has_admitted_due_write_back_job(
+    state: &WriteBackQueueState,
+    now: Instant,
+    resource: &crate::orchestrator::ResourceSnapshot,
+    config_active: bool,
+) -> bool {
+    let evaluator = StorageAdmissionEvaluator::new(resource, config_active);
+    state.jobs.iter().any(|job| {
+        job.due_at <= now
+            && job.work_class == crate::runtime::RuntimeWorkClass::DueUserTimer
+            && evaluator
+                .work_runtime_delay(job.work_class, job.work_source)
+                .is_none()
+    })
+}
+
 fn next_pending_write_back_wait(now: Instant) -> Option<Duration> {
     let scheduler = write_back_scheduler();
     let state = scheduler.state.lock().unwrap_or_else(|e| e.into_inner());
@@ -362,6 +402,22 @@ fn mark_write_back_lifecycle(state: crate::runtime::PlaneLifecycleState, reason:
 }
 
 fn schedule_write_back_task(label: &'static str, due_at: Instant, task: WriteBackTask) -> bool {
+    schedule_write_back_task_with_work(
+        label,
+        due_at,
+        crate::runtime::RuntimeWorkClass::DurableWriteBack,
+        crate::runtime::RuntimeWorkSource::Background,
+        task,
+    )
+}
+
+fn schedule_write_back_task_with_work(
+    label: &'static str,
+    due_at: Instant,
+    work_class: crate::runtime::RuntimeWorkClass,
+    work_source: crate::runtime::RuntimeWorkSource,
+    task: WriteBackTask,
+) -> bool {
     let scheduler = write_back_scheduler();
     {
         let mut state = scheduler.state.lock().unwrap_or_else(|e| e.into_inner());
@@ -387,6 +443,8 @@ fn schedule_write_back_task(label: &'static str, due_at: Instant, task: WriteBac
         state.jobs.push(WriteBackJob {
             label,
             due_at,
+            work_class,
+            work_source,
             task: Some(task),
         });
         inbound_backpressure::record_enqueued(EventIngressSource::WriteBack);
@@ -443,7 +501,13 @@ pub(crate) fn schedule_storage_maintenance_task(
             }
         }
     }
-    if schedule_write_back_task(kind.label(), Instant::now(), Box::new(task)) {
+    if schedule_write_back_task_with_work(
+        kind.label(),
+        Instant::now(),
+        kind.runtime_work_class(),
+        kind.runtime_work_source(),
+        Box::new(task),
+    ) {
         StorageMaintenanceScheduleResult::Queued
     } else {
         StorageMaintenanceScheduleResult::QueueFull
@@ -573,8 +637,14 @@ fn ensure_write_back_worker_started_inner(require_pending_job: bool) -> bool {
 fn take_due_write_back_jobs(state: &mut WriteBackQueueState, now: Instant) -> Vec<WriteBackJob> {
     let mut due = Vec::new();
     let mut index = 0usize;
+    let take_due_user_timers_only = state.jobs.iter().any(|job| {
+        job.due_at <= now && job.work_class == crate::runtime::RuntimeWorkClass::DueUserTimer
+    });
     while index < state.jobs.len() && due.len() < WRITE_BACK_DRAIN_BATCH_MAX {
-        if state.jobs[index].due_at <= now {
+        if state.jobs[index].due_at <= now
+            && (!take_due_user_timers_only
+                || state.jobs[index].work_class == crate::runtime::RuntimeWorkClass::DueUserTimer)
+        {
             due.push(state.jobs.swap_remove(index));
         } else {
             index += 1;
@@ -639,6 +709,9 @@ fn write_back_admission_delay_for_resource_now(
     let scheduler = write_back_scheduler();
     let mut state = scheduler.state.lock().unwrap_or_else(|e| e.into_inner());
     let now = Instant::now();
+    if has_admitted_due_write_back_job(&state, now, resource, config_active) {
+        return None;
+    }
     if let Some(next_attempt_at) = state.next_attempt_at {
         if next_attempt_at > now {
             return Some(WriteBackAdmissionWait::waiting(
@@ -684,7 +757,9 @@ fn write_back_admission_delay_for_resource(
     StorageAdmissionEvaluator::new(resource, config_active).durable_write_back_delay()
 }
 
-fn running_write_back_worker_admission_delay() -> Option<WriteBackAdmissionWait> {
+fn running_write_back_worker_admission_delay(
+    jobs: &[WriteBackJob],
+) -> Option<WriteBackAdmissionWait> {
     #[cfg(test)]
     match WRITE_BACK_TEST_ADMISSION_OVERRIDE.load(Ordering::Acquire) {
         1 => {
@@ -698,24 +773,38 @@ fn running_write_back_worker_admission_delay() -> Option<WriteBackAdmissionWait>
     #[cfg(not(test))]
     crate::orchestrator::update_heap_state();
     let resource = crate::orchestrator::snapshot();
-    running_write_back_worker_admission_delay_for_resource(
+    running_write_back_worker_admission_delay_for_jobs(
+        jobs,
         &resource,
         crate::runtime::config_activity_active(),
     )
     .map(WriteBackAdmissionWait::deferred)
 }
 
-fn running_write_back_worker_admission_delay_for_resource(
+fn running_write_back_worker_admission_delay_for_jobs(
+    jobs: &[WriteBackJob],
     resource: &crate::orchestrator::ResourceSnapshot,
     config_active: bool,
 ) -> Option<Duration> {
-    StorageAdmissionEvaluator::new(resource, config_active).running_worker_delay()
+    let evaluator = StorageAdmissionEvaluator::new(resource, config_active);
+    jobs.iter()
+        .filter_map(|job| evaluator.work_runtime_delay(job.work_class, job.work_source))
+        .min()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PeriodicStorageMaintenanceAdmission {
     Admitted,
     Deferred(&'static str),
+}
+
+impl PeriodicStorageMaintenanceAdmission {
+    fn deferred_delay(self) -> Option<Duration> {
+        match self {
+            Self::Admitted => None,
+            Self::Deferred(_) => Some(Duration::from_millis(WRITE_BACK_RETRY_BACKOFF_MS)),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -743,17 +832,45 @@ impl WriteBackAdmissionWait {
 struct StorageAdmissionEvaluator<'a> {
     resource: &'a crate::orchestrator::ResourceSnapshot,
     config_active: bool,
+    scheduler_context: crate::runtime::RuntimeSchedulerContext,
 }
 
 impl<'a> StorageAdmissionEvaluator<'a> {
     fn new(resource: &'a crate::orchestrator::ResourceSnapshot, config_active: bool) -> Self {
+        let profile = crate::runtime::default_runtime_scheduler_profile();
+        let scheduler_context =
+            crate::runtime::current_runtime_scheduler_context(profile, resource.pressure);
+        Self::new_with_scheduler_context(resource, config_active, scheduler_context)
+    }
+
+    fn new_with_scheduler_context(
+        resource: &'a crate::orchestrator::ResourceSnapshot,
+        config_active: bool,
+        scheduler_context: crate::runtime::RuntimeSchedulerContext,
+    ) -> Self {
         Self {
             resource,
             config_active,
+            scheduler_context,
         }
     }
 
+    #[cfg(test)]
+    fn new_with_scheduler_context_for_tests(
+        resource: &'a crate::orchestrator::ResourceSnapshot,
+        config_active: bool,
+        scheduler_context: crate::runtime::RuntimeSchedulerContext,
+    ) -> Self {
+        Self::new_with_scheduler_context(resource, config_active, scheduler_context)
+    }
+
     fn durable_write_back_delay(&self) -> Option<Duration> {
+        if let Some(delay) = self.scheduler_runtime_delay(
+            crate::runtime::RuntimeWorkClass::DurableWriteBack,
+            crate::runtime::RuntimeWorkSource::Background,
+        ) {
+            return Some(delay.delay);
+        }
         if self.resource.pressure == crate::orchestrator::PressureLevel::Critical {
             return self.durable_delay();
         }
@@ -774,7 +891,13 @@ impl<'a> StorageAdmissionEvaluator<'a> {
         None
     }
 
-    fn running_worker_delay(&self) -> Option<Duration> {
+    fn durable_running_worker_delay(&self) -> Option<Duration> {
+        if let Some(delay) = self.scheduler_runtime_delay(
+            crate::runtime::RuntimeWorkClass::DurableWriteBack,
+            crate::runtime::RuntimeWorkSource::Background,
+        ) {
+            return Some(delay.delay);
+        }
         if self.resource.storage_contention_risk
             != crate::orchestrator::StorageContentionRisk::Healthy
         {
@@ -786,7 +909,35 @@ impl<'a> StorageAdmissionEvaluator<'a> {
         None
     }
 
+    fn work_runtime_delay(
+        &self,
+        class: crate::runtime::RuntimeWorkClass,
+        source: crate::runtime::RuntimeWorkSource,
+    ) -> Option<Duration> {
+        match class {
+            crate::runtime::RuntimeWorkClass::DueUserTimer => self
+                .scheduler_runtime_delay_preserving_pressure(class, source)
+                .map(|delay| delay.delay),
+            crate::runtime::RuntimeWorkClass::OptionalMaintenance
+            | crate::runtime::RuntimeWorkClass::SelfRuntimeLlmWork => self
+                .periodic_storage_maintenance_admission()
+                .deferred_delay(),
+            crate::runtime::RuntimeWorkClass::DurableWriteBack => {
+                self.durable_running_worker_delay()
+            }
+            _ => self
+                .scheduler_runtime_delay(class, source)
+                .map(|delay| delay.delay),
+        }
+    }
+
     fn periodic_storage_maintenance_admission(&self) -> PeriodicStorageMaintenanceAdmission {
+        if let Some(delay) = self.scheduler_runtime_delay(
+            crate::runtime::RuntimeWorkClass::OptionalMaintenance,
+            crate::runtime::RuntimeWorkSource::Background,
+        ) {
+            return PeriodicStorageMaintenanceAdmission::Deferred(delay.reason);
+        }
         if self.resource.pressure != crate::orchestrator::PressureLevel::Normal {
             return PeriodicStorageMaintenanceAdmission::Deferred("pressure");
         }
@@ -814,9 +965,66 @@ impl<'a> StorageAdmissionEvaluator<'a> {
         Some(Duration::from_millis(WRITE_BACK_RETRY_BACKOFF_MS))
     }
 
+    fn scheduler_runtime_delay(
+        &self,
+        class: crate::runtime::RuntimeWorkClass,
+        source: crate::runtime::RuntimeWorkSource,
+    ) -> Option<SchedulerRuntimeDelay> {
+        let mut context = self.scheduler_context;
+        context.pressure = crate::orchestrator::PressureLevel::Normal;
+        self.scheduler_runtime_delay_for_context(class, source, context)
+    }
+
+    fn scheduler_runtime_delay_preserving_pressure(
+        &self,
+        class: crate::runtime::RuntimeWorkClass,
+        source: crate::runtime::RuntimeWorkSource,
+    ) -> Option<SchedulerRuntimeDelay> {
+        self.scheduler_runtime_delay_for_context(class, source, self.scheduler_context)
+    }
+
+    fn scheduler_runtime_delay_for_context(
+        &self,
+        class: crate::runtime::RuntimeWorkClass,
+        source: crate::runtime::RuntimeWorkSource,
+        context: crate::runtime::RuntimeSchedulerContext,
+    ) -> Option<SchedulerRuntimeDelay> {
+        match crate::runtime::admit_runtime_work(
+            crate::runtime::RuntimeWorkRequest::new(class, source),
+            context,
+        ) {
+            crate::runtime::RuntimeWorkDecision::Proceed => None,
+            crate::runtime::RuntimeWorkDecision::Defer {
+                reason,
+                retry_after_ms,
+            }
+            | crate::runtime::RuntimeWorkDecision::DrainAndResume {
+                reason,
+                retry_after_ms,
+            } => Some(SchedulerRuntimeDelay {
+                reason,
+                delay: Duration::from_millis(retry_after_ms),
+            }),
+            crate::runtime::RuntimeWorkDecision::Degrade { reason }
+            | crate::runtime::RuntimeWorkDecision::Suspend { reason }
+            | crate::runtime::RuntimeWorkDecision::RejectWithStableKey { reason, .. }
+            | crate::runtime::RuntimeWorkDecision::RejectWithUserVisibleReason { reason } => {
+                Some(SchedulerRuntimeDelay {
+                    reason,
+                    delay: self
+                        .durable_delay()
+                        .unwrap_or_else(|| Duration::from_millis(WRITE_BACK_RETRY_BACKOFF_MS)),
+                })
+            }
+        }
+    }
+
     fn foreground_activity_active(&self) -> bool {
         // Established WSS sessions are steady-state channel capacity, not short foreground work.
         self.config_active
+            || (self.scheduler_context.profile
+                != crate::runtime::RuntimePlanePolicyProfile::LinuxFull
+                && self.scheduler_context.foreground.active)
             || self.resource.active_http_count > 0
             || self.resource.active_agent_tasks > 0
             || self.resource.inbound_depth > 0
@@ -831,6 +1039,12 @@ impl<'a> StorageAdmissionEvaluator<'a> {
         self.resource.heap_largest_block_internal > 0
             && self.resource.heap_largest_block_internal < floor as u32
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct SchedulerRuntimeDelay {
+    reason: &'static str,
+    delay: Duration,
 }
 
 fn current_periodic_storage_maintenance_admission() -> PeriodicStorageMaintenanceAdmission {
@@ -917,7 +1131,11 @@ fn write_back_worker_loop() {
             }
         };
 
-        if let Some(wait) = running_write_back_worker_admission_delay() {
+        let ran_due_user_timer = due
+            .iter()
+            .any(|job| job.work_class == crate::runtime::RuntimeWorkClass::DueUserTimer);
+
+        if let Some(wait) = running_write_back_worker_admission_delay(&due) {
             mark_write_back_lifecycle(
                 crate::runtime::PlaneLifecycleState::Draining,
                 "pressure_defer",
@@ -956,6 +1174,26 @@ fn write_back_worker_loop() {
             }
         }
         mark_write_back_lifecycle(crate::runtime::PlaneLifecycleState::Starting, "idle_poll");
+        if ran_due_user_timer {
+            mark_write_back_lifecycle(
+                crate::runtime::PlaneLifecycleState::Draining,
+                "due_user_timer_drain",
+            );
+            let scheduler = write_back_scheduler();
+            let mut state = scheduler.state.lock().unwrap_or_else(|e| e.into_inner());
+            state.worker_started = false;
+            drop(state);
+            if should_auto_service_write_back_tasks() {
+                if let Some(wait) = next_pending_write_back_wait(Instant::now()) {
+                    schedule_write_back_retry(wait);
+                }
+            }
+            mark_write_back_lifecycle(
+                crate::runtime::PlaneLifecycleState::Unloaded,
+                "due_user_timer_drain",
+            );
+            return;
+        }
     }
 }
 
@@ -3568,6 +3806,8 @@ mod tests {
             state.jobs.push(WriteBackJob {
                 label: "critical_defer_test",
                 due_at: Instant::now(),
+                work_class: crate::runtime::RuntimeWorkClass::DurableWriteBack,
+                work_source: crate::runtime::RuntimeWorkSource::Background,
                 task: Some(Box::new(move || {
                     tx.send(()).unwrap();
                 })),
@@ -3666,6 +3906,8 @@ mod tests {
                 state.jobs.push(WriteBackJob {
                     label: "drain_cap_test",
                     due_at: Instant::now(),
+                    work_class: crate::runtime::RuntimeWorkClass::DurableWriteBack,
+                    work_source: crate::runtime::RuntimeWorkSource::Background,
                     task: Some(Box::new(move || {
                         let _ = index;
                     })),
@@ -3736,6 +3978,16 @@ mod tests {
             Some(Instant::now() - Duration::from_millis(WRITE_BACK_QUIET_WINDOW_MS + 1));
     }
 
+    fn durable_write_back_job_for_tests(label: &'static str) -> WriteBackJob {
+        WriteBackJob {
+            label,
+            due_at: Instant::now(),
+            work_class: crate::runtime::RuntimeWorkClass::DurableWriteBack,
+            work_source: crate::runtime::RuntimeWorkSource::Background,
+            task: None,
+        }
+    }
+
     #[test]
     fn write_back_admission_defers_cautious_storage_even_when_idle() {
         let resource = write_back_resource_for_tests(
@@ -3801,6 +4053,40 @@ mod tests {
     }
 
     #[test]
+    fn durable_write_back_consumes_runtime_foreground_scheduler_overlay() {
+        let resource = write_back_resource_for_tests(
+            crate::orchestrator::PressureLevel::Normal,
+            crate::orchestrator::StorageContentionRisk::Healthy,
+        );
+        let evaluator = StorageAdmissionEvaluator::new_with_scheduler_context_for_tests(
+            &resource,
+            false,
+            crate::runtime::RuntimeSchedulerContext {
+                profile: crate::runtime::RuntimePlanePolicyProfile::EspCompact,
+                runtime_mode: crate::runtime::mode::snapshot_from_source(
+                    crate::runtime::mode::RuntimeModeSource::default(),
+                ),
+                foreground: crate::runtime::RuntimeForegroundOverlay {
+                    active: true,
+                    active_count: 1,
+                    primary_source: Some(
+                        crate::runtime::RuntimeForegroundSource::ExternalUserMessage,
+                    ),
+                    age_ms: Some(500),
+                    resume_after_ms: Some(29_500),
+                },
+                pressure: resource.pressure,
+            },
+        );
+
+        assert_eq!(
+            evaluator.durable_write_back_delay(),
+            Some(Duration::from_millis(29_500)),
+            "runtime foreground overlay must defer durable write-back even when resource counters are idle"
+        );
+    }
+
+    #[test]
     fn write_back_admission_allows_healthy_storage_with_established_wss_only() {
         let mut resource = write_back_resource_for_tests(
             crate::orchestrator::PressureLevel::Normal,
@@ -3813,6 +4099,178 @@ mod tests {
             None,
             "established channel WSS alone must not starve durable write-back work"
         );
+    }
+
+    #[test]
+    fn optional_storage_maintenance_consumes_runtime_foreground_scheduler_overlay() {
+        let resource = periodic_storage_resource_for_tests();
+        let evaluator = StorageAdmissionEvaluator::new_with_scheduler_context_for_tests(
+            &resource,
+            false,
+            crate::runtime::RuntimeSchedulerContext {
+                profile: crate::runtime::RuntimePlanePolicyProfile::EspCompact,
+                runtime_mode: crate::runtime::mode::snapshot_from_source(
+                    crate::runtime::mode::RuntimeModeSource::default(),
+                ),
+                foreground: crate::runtime::RuntimeForegroundOverlay {
+                    active: true,
+                    active_count: 1,
+                    primary_source: Some(crate::runtime::RuntimeForegroundSource::ConfigUiChat),
+                    age_ms: Some(250),
+                    resume_after_ms: Some(30_000),
+                },
+                pressure: resource.pressure,
+            },
+        );
+
+        assert_eq!(
+            evaluator.periodic_storage_maintenance_admission(),
+            PeriodicStorageMaintenanceAdmission::Deferred("foreground_active"),
+            "optional maintenance must consume scheduler foreground decision before local heap gates"
+        );
+    }
+
+    #[test]
+    fn due_user_timer_admission_allows_foreground_while_durable_write_back_defers() {
+        let resource = write_back_resource_for_tests(
+            crate::orchestrator::PressureLevel::Normal,
+            crate::orchestrator::StorageContentionRisk::Healthy,
+        );
+        let evaluator = StorageAdmissionEvaluator::new_with_scheduler_context_for_tests(
+            &resource,
+            false,
+            crate::runtime::RuntimeSchedulerContext {
+                profile: crate::runtime::RuntimePlanePolicyProfile::EspCompact,
+                runtime_mode: crate::runtime::mode::snapshot_from_source(
+                    crate::runtime::mode::RuntimeModeSource::default(),
+                ),
+                foreground: crate::runtime::RuntimeForegroundOverlay {
+                    active: true,
+                    active_count: 1,
+                    primary_source: Some(
+                        crate::runtime::RuntimeForegroundSource::ExternalUserMessage,
+                    ),
+                    age_ms: Some(500),
+                    resume_after_ms: Some(29_500),
+                },
+                pressure: resource.pressure,
+            },
+        );
+
+        assert_eq!(
+            evaluator.work_runtime_delay(
+                crate::runtime::RuntimeWorkClass::DueUserTimer,
+                crate::runtime::RuntimeWorkSource::System,
+            ),
+            None,
+            "due reminder/task work must not be delayed by foreground quiet-window policy"
+        );
+        assert_eq!(
+            evaluator.durable_write_back_delay(),
+            Some(Duration::from_millis(29_500)),
+            "ordinary durable write-back remains deferred under foreground"
+        );
+    }
+
+    #[test]
+    fn due_user_timer_running_admission_keeps_critical_pressure_gate() {
+        let resource = write_back_resource_for_tests(
+            crate::orchestrator::PressureLevel::Critical,
+            crate::orchestrator::StorageContentionRisk::Healthy,
+        );
+        let evaluator = StorageAdmissionEvaluator::new_with_scheduler_context_for_tests(
+            &resource,
+            false,
+            crate::runtime::RuntimeSchedulerContext {
+                profile: crate::runtime::RuntimePlanePolicyProfile::EspCompact,
+                runtime_mode: crate::runtime::mode::snapshot_from_source(
+                    crate::runtime::mode::RuntimeModeSource::default(),
+                ),
+                foreground: crate::runtime::RuntimeForegroundOverlay::default(),
+                pressure: resource.pressure,
+            },
+        );
+
+        assert_eq!(
+            evaluator.work_runtime_delay(
+                crate::runtime::RuntimeWorkClass::DueUserTimer,
+                crate::runtime::RuntimeWorkSource::System,
+            ),
+            Some(Duration::from_millis(1_500)),
+            "due user timer may bypass foreground quiet-window, but must not bypass Critical pressure after enqueue"
+        );
+    }
+
+    #[test]
+    fn storage_maintenance_task_kind_keeps_due_timer_out_of_optional_maintenance() {
+        assert_eq!(
+            StorageMaintenanceTaskKind::DueReminderSweep.runtime_work_class(),
+            crate::runtime::RuntimeWorkClass::DueUserTimer
+        );
+        assert_eq!(
+            StorageMaintenanceTaskKind::DueTaskSweep.runtime_work_class(),
+            crate::runtime::RuntimeWorkClass::DueUserTimer
+        );
+        assert_eq!(
+            StorageMaintenanceTaskKind::SelfRuntimeIdleTick.runtime_work_class(),
+            crate::runtime::RuntimeWorkClass::OptionalMaintenance
+        );
+        assert!(!StorageMaintenanceTaskKind::DueReminderSweep.requires_periodic_idle_headroom());
+        assert!(!StorageMaintenanceTaskKind::DueTaskSweep.requires_periodic_idle_headroom());
+    }
+
+    #[test]
+    fn due_user_timer_job_bypasses_durable_retry_without_draining_durable_job() {
+        let _write_back_guard = write_back_test_guard();
+        reset_write_back_queue_for_tests();
+        let resource = write_back_resource_for_tests(
+            crate::orchestrator::PressureLevel::Normal,
+            crate::orchestrator::StorageContentionRisk::Healthy,
+        );
+        {
+            let scheduler = write_back_scheduler();
+            let mut state = scheduler.state.lock().unwrap_or_else(|e| e.into_inner());
+            state.next_attempt_at = Some(Instant::now() + Duration::from_secs(30));
+            state.jobs.push(WriteBackJob {
+                label: "durable_deferred",
+                due_at: Instant::now(),
+                work_class: crate::runtime::RuntimeWorkClass::DurableWriteBack,
+                work_source: crate::runtime::RuntimeWorkSource::Background,
+                task: Some(Box::new(|| {})),
+            });
+            state.jobs.push(WriteBackJob {
+                label: "due_user_timer",
+                due_at: Instant::now(),
+                work_class: crate::runtime::RuntimeWorkClass::DueUserTimer,
+                work_source: crate::runtime::RuntimeWorkSource::System,
+                task: Some(Box::new(|| {})),
+            });
+        }
+
+        assert_eq!(
+            write_back_admission_delay_for_resource_now(&resource, false),
+            None,
+            "an admitted due user timer must not be blocked by an existing durable retry window"
+        );
+        match next_write_back_worker_step(&mut Instant::now()) {
+            WriteBackWorkerStep::Run(due) => {
+                assert_eq!(due.len(), 1);
+                assert_eq!(due[0].label, "due_user_timer");
+            }
+            WriteBackWorkerStep::Sleep(_) | WriteBackWorkerStep::Stop => {
+                panic!("admitted due user timer should be runnable immediately")
+            }
+        }
+        let state = write_back_scheduler()
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        assert!(
+            state.jobs.iter().any(|job| job.label == "durable_deferred"),
+            "due user timer admission must not drain ordinary durable work in the same batch"
+        );
+        drop(state);
+        reset_write_back_queue_for_tests();
     }
 
     #[test]
@@ -3979,15 +4437,17 @@ mod tests {
             write_back_admission_delay_for_resource(&resource, false).is_some(),
             "pre-spawn durable admission must still reject this largest-block floor"
         );
+        let running_jobs = [durable_write_back_job_for_tests("running_durable")];
         assert_eq!(
-            running_write_back_worker_admission_delay_for_resource(&resource, false),
+            running_write_back_worker_admission_delay_for_jobs(&running_jobs, &resource, false),
             None,
             "after the lazy worker has allocated its stack, it must not self-defer on the same largest-block drop"
         );
 
         resource.active_http_count = 1;
         assert!(
-            running_write_back_worker_admission_delay_for_resource(&resource, false).is_some(),
+            running_write_back_worker_admission_delay_for_jobs(&running_jobs, &resource, false)
+                .is_some(),
             "running worker must still defer if foreground HTTP becomes active"
         );
 
@@ -4019,6 +4479,8 @@ mod tests {
             vec![WriteBackJob {
                 label: "test_scheduler_quiet_window",
                 due_at: Instant::now(),
+                work_class: crate::runtime::RuntimeWorkClass::DurableWriteBack,
+                work_source: crate::runtime::RuntimeWorkSource::Background,
                 task: None,
             }],
             first_wait.delay,

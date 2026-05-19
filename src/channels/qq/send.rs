@@ -856,7 +856,7 @@ pub fn flush_qq_channel_sends<H: ChannelHttpClient>(
         let _reply_priority =
             crate::channels::send::begin_reply_http_priority_scope(message.outbound_kind);
         if token.is_none() {
-            if message.outbound_kind.is_supplemental() {
+            if message.outbound_kind.is_best_effort_delivery() {
                 log::warn!(
                     "[qq_flush] supplemental dropped without cached token req_id={} chat_id={}",
                     message.req_id.as_deref().unwrap_or("-"),
@@ -880,7 +880,7 @@ pub fn flush_qq_channel_sends<H: ChannelHttpClient>(
             reservation.msg_id.as_deref(),
             reservation.msg_seq,
         ) {
-            if !message.outbound_kind.is_supplemental() {
+            if !message.outbound_kind.is_best_effort_delivery() {
                 record_outbound_http_failure(&e);
             }
             log::warn!(
@@ -889,7 +889,7 @@ pub fn flush_qq_channel_sends<H: ChannelHttpClient>(
                 message.chat_id,
                 e
             );
-        } else if !message.outbound_kind.is_supplemental() {
+        } else if !message.outbound_kind.is_best_effort_delivery() {
             record_outbound_http_success();
         }
     }
@@ -910,7 +910,7 @@ where
     const TAG: &str = "qq_sender";
     let msg_start = std::time::Instant::now();
     let mut token_wait_ms: u128 = 0;
-    let is_supplemental = message.outbound_kind.is_supplemental();
+    let is_best_effort_delivery = message.outbound_kind.is_best_effort_delivery();
     let _reply_priority =
         crate::channels::send::begin_reply_http_priority_scope(message.outbound_kind);
 
@@ -926,7 +926,7 @@ where
     if runtime.token_cache.is_none() {
         *runtime.token_cache = load_shared_cached_qq_token(runtime.shared_token_cache);
     }
-    let token = if is_supplemental {
+    let token = if is_best_effort_delivery {
         match cached_qq_token_value(runtime.token_cache) {
             Some(token) => token.to_string(),
             None => {
@@ -995,7 +995,7 @@ where
                 runtime.active_reservation,
                 message.transport_send_id,
             );
-            if !is_supplemental {
+            if !is_best_effort_delivery {
                 if runtime.record_channel_health {
                     crate::orchestrator::record_channel_result_pub("qq_channel", true);
                 }
@@ -1014,7 +1014,7 @@ where
             Ok(())
         }
         Err(error) => {
-            if !is_supplemental {
+            if !is_best_effort_delivery {
                 if runtime.record_channel_health {
                     crate::orchestrator::record_channel_result_pub("qq_channel", false);
                 }
@@ -1562,6 +1562,50 @@ mod tests {
             serde_json::from_slice(&sent_bodies[1]).expect("second payload json");
         assert_eq!(first.get("msg_id"), second.get("msg_id"));
         assert_eq!(first.get("msg_seq"), second.get("msg_seq"));
+    }
+
+    #[test]
+    fn visibility_sender_acquires_token_instead_of_cached_token_drop() {
+        let cache: QqMsgIdCache = Arc::new(Mutex::new(HashMap::new()));
+        cache_msg_id(&cache, "c2c:chat-1", "msg-1").expect("cache msg_id");
+        let shared_token_cache = crate::channels::qq::new_shared_qq_token_cache();
+        let shared_http_state = Arc::new(Mutex::new(StubHttpState::default()));
+        let mut http = Some(StubHttp {
+            state: Arc::clone(&shared_http_state),
+        });
+        let mut token_cache = None;
+        let mut turn_tracker = QqTurnReservationTracker::default();
+        let mut active_reservation = None;
+        let create_http_state = Arc::clone(&shared_http_state);
+        let mut create_http = || -> crate::error::Result<StubHttp> {
+            Ok(StubHttp {
+                state: Arc::clone(&create_http_state),
+            })
+        };
+        let mut runtime = QqSendRuntime {
+            app_id: "app-id",
+            secret: "secret",
+            cache: &cache,
+            shared_token_cache: &shared_token_cache,
+            http: &mut http,
+            token_cache: &mut token_cache,
+            turn_tracker: &mut turn_tracker,
+            active_reservation: &mut active_reservation,
+            create_http: &mut create_http,
+            record_channel_health: true,
+        };
+        let message = queued_message(
+            100,
+            "c2c:chat-1",
+            "已收到，正在处理",
+            Some("req-visibility"),
+            OutboundKind::Visibility,
+        );
+
+        assert!(send_queued_qq_message(&message, 1, &mut runtime).is_ok());
+
+        let guard = shared_http_state.lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(guard.sent_bodies.len(), 1);
     }
 
     #[test]

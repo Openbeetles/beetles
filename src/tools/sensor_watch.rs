@@ -374,7 +374,7 @@ pub fn save_sensor_watches(store: &dyn MemoryStore, watches: &[SensorWatch]) {
 /// 由 cron 循环调用：检查到期的 sensor watch，读取传感器值，判断阈值，触发时注入消息。
 pub(crate) fn check_sensor_watches(
     store: &dyn MemoryStore,
-    inbound_tx: &crate::bus::InboundTx,
+    inbound_tx: &crate::bus::SystemInboundTx,
     platform: &dyn crate::Platform,
     devices: &[DeviceEntry],
     i2c_sensors: &[I2cSensorEntry],
@@ -448,7 +448,7 @@ pub(crate) fn check_sensor_watches(
                 },
                 loc,
             );
-            match crate::bus::PcMsg::new(&watch.channel, &watch.chat_id, content) {
+            match crate::bus::PcMsg::new_system(&watch.channel, &watch.chat_id, content) {
                 Ok(msg) => {
                     if let Err(e) = inbound_tx.send(msg) {
                         log::warn!(

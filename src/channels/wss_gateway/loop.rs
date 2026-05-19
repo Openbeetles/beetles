@@ -1,7 +1,7 @@
 //! 统一 WSS 网关循环：取 URL → 建连 → Hello/鉴权 → 心跳 + 收包入队，退避重连。
 //! WiFi 断连时先等 WiFi 恢复再尝试重连 WSS，避免无网络时反复做 TLS 握手。
 
-use crate::bus::InboundTx;
+use crate::bus::UserInboundTx;
 use crate::channels::inbound_backpressure::{self, EventIngressSource, InboundBackpressureOutcome};
 use crate::channels::wss_gateway::connection::{WssConnection, WssEvent};
 use crate::channels::wss_gateway::driver::{WssGatewayDriver, WssRecvAction, WssSessionState};
@@ -192,6 +192,32 @@ fn wss_runtime_gate_suspend_reason(mode: crate::runtime::RuntimeModeSnapshot) ->
     .unwrap_or("runtime_mode_transport_suspend")
 }
 
+fn external_wss_connect_transport_admission(
+    mode: crate::runtime::RuntimeModeSnapshot,
+) -> crate::network::TransportAdmission {
+    let resource = crate::orchestrator::resource_light_snapshot();
+    let context = crate::runtime::current_runtime_scheduler_context(
+        crate::runtime::default_runtime_scheduler_profile(),
+        resource.pressure,
+    );
+    external_wss_connect_transport_admission_for_context(mode, context)
+}
+
+fn external_wss_connect_transport_admission_for_context(
+    mode: crate::runtime::RuntimeModeSnapshot,
+    mut context: crate::runtime::RuntimeSchedulerContext,
+) -> crate::network::TransportAdmission {
+    context.runtime_mode = mode;
+    crate::network::runtime_transport_admission_for_work(
+        crate::network::TransportAdmissionKind::ExternalWssConnect,
+        crate::runtime::RuntimeWorkRequest::new(
+            crate::runtime::RuntimeWorkClass::ChannelReconnect,
+            crate::runtime::RuntimeWorkSource::Background,
+        ),
+        context,
+    )
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum WssSessionEndLifecycle {
     Stopping(&'static str),
@@ -204,12 +230,7 @@ pub(crate) fn external_wss_connect_gate(
     waiting_for_wall_clock: &mut bool,
 ) -> bool {
     let runtime_mode = crate::runtime::thread_registry::runtime_mode_snapshot();
-    if let Some(rejection) = crate::network::runtime_transport_admission(
-        crate::network::TransportAdmissionKind::ExternalWssConnect,
-        runtime_mode,
-    )
-    .rejection()
-    {
+    if let Some(rejection) = external_wss_connect_transport_admission(runtime_mode).rejection() {
         mark_wss_lifecycle(
             lifecycle_owner,
             crate::runtime::PlaneLifecycleState::Suspended,
@@ -333,12 +354,7 @@ pub(crate) fn external_wss_connect_gate(
     }
 
     let runtime_mode = crate::runtime::thread_registry::runtime_mode_snapshot();
-    if let Some(rejection) = crate::network::runtime_transport_admission(
-        crate::network::TransportAdmissionKind::ExternalWssConnect,
-        runtime_mode,
-    )
-    .rejection()
-    {
+    if let Some(rejection) = external_wss_connect_transport_admission(runtime_mode).rejection() {
         mark_wss_lifecycle(
             lifecycle_owner,
             crate::runtime::PlaneLifecycleState::Suspended,
@@ -436,7 +452,7 @@ fn wait_for_wifi(_tag: &str) -> bool {
 pub fn run_wss_gateway_loop<D, H, C, CreateHttp, Conn>(
     tag: &str,
     mut driver: D,
-    inbound_tx: InboundTx,
+    inbound_tx: UserInboundTx,
     pending_retry: &dyn PendingRetryStore,
     mut create_http: CreateHttp,
     mut connect: Conn,
@@ -486,11 +502,7 @@ pub fn run_wss_gateway_loop<D, H, C, CreateHttp, Conn>(
             }
         };
         let runtime_mode = crate::runtime::thread_registry::runtime_mode_snapshot();
-        if let Some(rejection) = crate::network::runtime_transport_admission(
-            crate::network::TransportAdmissionKind::ExternalWssConnect,
-            runtime_mode,
-        )
-        .rejection()
+        if let Some(rejection) = external_wss_connect_transport_admission(runtime_mode).rejection()
         {
             mark_wss_lifecycle(
                 lifecycle_owner,
@@ -736,7 +748,10 @@ pub fn run_wss_gateway_loop<D, H, C, CreateHttp, Conn>(
                                         log::warn!("[{}] pending msg missing before try_send", tag);
                                         break;
                                     };
-                                    match inbound_tx.try_send(try_msg) {
+                                    match inbound_tx.try_submit_user(
+                                        try_msg,
+                                        crate::runtime::RuntimeForegroundSource::ExternalUserMessage,
+                                    ) {
                                         Ok(()) => {
                                             enqueued = true;
                                             break;
@@ -819,7 +834,10 @@ pub fn run_wss_gateway_loop<D, H, C, CreateHttp, Conn>(
                                     );
                                     false
                                 } else {
-                                    match inbound_tx.try_send(msg) {
+                                    match inbound_tx.try_submit_user(
+                                        msg,
+                                        crate::runtime::RuntimeForegroundSource::ExternalUserMessage,
+                                    ) {
                                         Ok(()) => {
                                             inbound_backpressure::record_enqueued(
                                                 EventIngressSource::WssGateway,
@@ -964,6 +982,7 @@ fn sleep_with_wdt(secs: u64) {
 #[cfg(test)]
 mod tests {
     use super::{
+        external_wss_connect_transport_admission_for_context,
         should_defer_external_wss_for_wall_clock, should_pause_external_wss_connect_for_pressure,
         should_save_plain_dispatch_to_pending_retry_on_pressure,
         tls_admission_retry_sleep_secs_for_pressure, wss_lifecycle_owner,
@@ -1060,6 +1079,55 @@ mod tests {
             })),
             "config_persisting_suspend"
         );
+    }
+
+    fn foreground_scheduler_context() -> crate::runtime::RuntimeSchedulerContext {
+        crate::runtime::RuntimeSchedulerContext {
+            profile: crate::runtime::RuntimePlanePolicyProfile::EspCompact,
+            runtime_mode: snapshot_from_source(RuntimeModeSource::default()),
+            foreground: crate::runtime::RuntimeForegroundOverlay {
+                active: true,
+                active_count: 1,
+                primary_source: Some(crate::runtime::RuntimeForegroundSource::ExternalUserMessage),
+                age_ms: Some(500),
+                resume_after_ms: Some(29_500),
+            },
+            pressure: crate::orchestrator::PressureLevel::Normal,
+        }
+    }
+
+    #[test]
+    fn external_wss_connect_gate_defers_reconnect_on_scheduler_foreground() {
+        let admission = external_wss_connect_transport_admission_for_context(
+            snapshot_from_source(RuntimeModeSource::default()),
+            foreground_scheduler_context(),
+        );
+
+        assert_eq!(
+            admission,
+            crate::network::TransportAdmission::Rejected(
+                crate::network::TransportAdmissionRejection {
+                    stage: "transport_runtime_scheduler",
+                    reason: "foreground_active",
+                }
+            )
+        );
+    }
+
+    #[test]
+    fn foreground_scheduler_defer_does_not_stop_active_external_wss_session() {
+        let _foreground_guard = crate::runtime::foreground::runtime_foreground_test_guard();
+        crate::runtime::foreground::reset_runtime_foreground_for_tests();
+        crate::runtime::renew_runtime_foreground_now(
+            crate::runtime::RuntimeForegroundSource::ExternalUserMessage,
+        );
+
+        assert_eq!(
+            super::external_wss_session_stop_reason("qq_ws", "qq_ws"),
+            None
+        );
+
+        crate::runtime::foreground::reset_runtime_foreground_for_tests();
     }
 
     #[test]

@@ -1876,7 +1876,10 @@ fn schedule_user_inbound_retry(
     let due_at = Instant::now() + Duration::from_millis(delay_ms);
     let task = Box::new(move || {
         retry_msg.enqueue_ts_ms = super::now_unix_ms();
-        match user_inbound_tx.try_send(retry_msg) {
+        let source = retry_msg
+            .runtime_foreground_source()
+            .unwrap_or(crate::runtime::RuntimeForegroundSource::ExternalUserMessage);
+        match user_inbound_tx.try_submit_user(retry_msg, source) {
             Ok(()) => {}
             Err(std::sync::mpsc::TrySendError::Full(msg)) => {
                 log::warn!(
@@ -1992,9 +1995,7 @@ pub(super) fn handle_admission_defer(
     }
     let chat_id = msg.chat_id.clone();
     msg.enqueue_ts_ms = super::now_unix_ms();
-    let inbound_tx =
-        super::choose_inbound_tx(msg.ingress, ctx.user_inbound_tx, ctx.system_inbound_tx);
-    match inbound_tx.try_send(msg) {
+    match super::try_send_inbound_msg(msg, ctx.user_inbound_tx, ctx.system_inbound_tx) {
         Ok(()) => {
             let now = Instant::now();
             let should_log = ctx
@@ -2281,6 +2282,8 @@ mod tests {
 
     #[test]
     fn post_reply_maintenance_is_not_scheduled_while_foreground_work_is_active() {
+        let _audit_guard = crate::runtime::workflow_audit_test_guard();
+        crate::runtime::workflow::reset_workflow_audit_for_tests();
         let store = StubDetachedWorkStore::default();
         let active_work_store = StubActiveWorkStore {
             value: Mutex::new(Some(ActiveWorkRecord {
@@ -2297,7 +2300,8 @@ mod tests {
                 updated_at: 9,
             })),
         };
-        let (system_inbound_tx, _system_inbound_rx, _depth) = crate::bus::new_inbound_channel(4);
+        let (system_inbound_tx, _system_inbound_rx, _depth) =
+            crate::bus::new_system_inbound_channel(4);
         let msg = PcMsg::new_inbound("qq_channel", "chat-1", "继续", false).expect("message");
 
         let scheduled = enqueue_post_reply_maintenance_job(
@@ -2327,9 +2331,12 @@ mod tests {
 
     #[test]
     fn post_reply_maintenance_is_not_blocked_by_execution_state_projection_alone() {
+        let _audit_guard = crate::runtime::workflow_audit_test_guard();
+        crate::runtime::workflow::reset_workflow_audit_for_tests();
         let store = StubDetachedWorkStore::default();
         let active_work_store = StubActiveWorkStore::default();
-        let (system_inbound_tx, _system_inbound_rx, _depth) = crate::bus::new_inbound_channel(4);
+        let (system_inbound_tx, _system_inbound_rx, _depth) =
+            crate::bus::new_system_inbound_channel(4);
         let msg = PcMsg::new_inbound("qq_channel", "chat-1", "继续", false).expect("message");
 
         let scheduled = enqueue_post_reply_maintenance_job(
@@ -2359,9 +2366,10 @@ mod tests {
 
     #[test]
     fn admission_defer_sends_low_memory_notice_and_replays_primary_before_limit() {
-        let (user_inbound_tx, user_inbound_rx, _user_depth) = crate::bus::new_inbound_channel(8);
+        let (user_inbound_tx, user_inbound_rx, _user_depth) =
+            crate::bus::new_user_inbound_channel(8);
         let (system_inbound_tx, _system_inbound_rx, _system_depth) =
-            crate::bus::new_inbound_channel(8);
+            crate::bus::new_system_inbound_channel(8);
         let (outbound_tx, outbound_rx, _outbound_depth) = crate::bus::new_inbound_channel(8);
         let config = test_agent_loop_config();
         let msg =
@@ -2407,9 +2415,10 @@ mod tests {
     fn primary_user_turn_parks_after_defer_limit_without_hot_requeue() {
         let (_state_guard, _delayed_guard) =
             crate::runtime::delayed_task::delayed_task_test_scope();
-        let (user_inbound_tx, user_inbound_rx, _user_depth) = crate::bus::new_inbound_channel(8);
+        let (user_inbound_tx, user_inbound_rx, _user_depth) =
+            crate::bus::new_user_inbound_channel(8);
         let (system_inbound_tx, _system_inbound_rx, _system_depth) =
-            crate::bus::new_inbound_channel(8);
+            crate::bus::new_system_inbound_channel(8);
         let (outbound_tx, _outbound_rx, _outbound_depth) = crate::bus::new_inbound_channel(8);
         let config = test_agent_loop_config();
         let mut defer_tracker = HashMap::new();
@@ -2460,7 +2469,8 @@ mod tests {
     fn delayed_user_inbound_retry_replays_primary_turn() {
         let (_state_guard, _delayed_guard) =
             crate::runtime::delayed_task::delayed_task_test_scope();
-        let (user_inbound_tx, user_inbound_rx, _user_depth) = crate::bus::new_inbound_channel(8);
+        let (user_inbound_tx, user_inbound_rx, _user_depth) =
+            crate::bus::new_user_inbound_channel(8);
         let msg = PcMsg::new_inbound("qq_channel", "chat-1", "primary", false).expect("message");
 
         assert!(schedule_user_inbound_retry(
@@ -2479,11 +2489,14 @@ mod tests {
 
     #[test]
     fn embedded_post_reply_maintenance_uses_delayed_system_queue() {
+        let _audit_guard = crate::runtime::workflow_audit_test_guard();
+        crate::runtime::workflow::reset_workflow_audit_for_tests();
         let (_state_guard, _delayed_guard) =
             crate::runtime::delayed_task::delayed_task_test_scope();
         let store = StubDetachedWorkStore::default();
         let active_work_store = StubActiveWorkStore::default();
-        let (system_inbound_tx, _system_inbound_rx, _depth) = crate::bus::new_inbound_channel(4);
+        let (system_inbound_tx, _system_inbound_rx, _depth) =
+            crate::bus::new_system_inbound_channel(4);
         let msg = PcMsg::new_inbound("qq_channel", "chat-1", "继续", false).expect("message");
 
         let scheduled = enqueue_post_reply_maintenance_job(
@@ -2519,7 +2532,8 @@ mod tests {
         let (_state_guard, _delayed_guard) =
             crate::runtime::delayed_task::delayed_task_test_scope();
         let store = StubDetachedWorkStore::default();
-        let (system_inbound_tx, system_inbound_rx, _depth) = crate::bus::new_inbound_channel(4);
+        let (system_inbound_tx, system_inbound_rx, _depth) =
+            crate::bus::new_system_inbound_channel(4);
 
         assert!(enqueue_long_term_memory_refresh_job(
             &store,
@@ -2552,7 +2566,8 @@ mod tests {
         let (_state_guard, _delayed_guard) =
             crate::runtime::delayed_task::delayed_task_test_scope();
         let store = StubDetachedWorkStore::default();
-        let (system_inbound_tx, system_inbound_rx, _depth) = crate::bus::new_inbound_channel(4);
+        let (system_inbound_tx, system_inbound_rx, _depth) =
+            crate::bus::new_system_inbound_channel(4);
 
         assert!(enqueue_long_term_memory_refresh_job(
             &store,

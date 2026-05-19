@@ -7,9 +7,13 @@ TMP_DIR="$(mktemp -d "$ROOT/target/test-artifacts/esp-soak-analyze.XXXXXX")"
 LOG="$TMP_DIR/serial.log"
 HEALTHY_LOG="$TMP_DIR/healthy-write-back.log"
 SPACED_LOG="$TMP_DIR/spaced-write-back.log"
+SCHEDULER_HEALTHY_LOG="$TMP_DIR/healthy-scheduler.log"
+SCHEDULER_BAD_LOG="$TMP_DIR/bad-scheduler.log"
 OUT="$TMP_DIR/out"
 HEALTHY_OUT="$TMP_DIR/healthy-out"
 SPACED_OUT="$TMP_DIR/spaced-out"
+SCHEDULER_HEALTHY_OUT="$TMP_DIR/scheduler-healthy-out"
+SCHEDULER_BAD_OUT="$TMP_DIR/scheduler-bad-out"
 
 cat >"$LOG" <<'LOGEOF'
 I (900) beetle::orchestrator: [orchestrator] startup memory checkpoint stage=agent_loop_spawn internal_free=45807 internal_min=45807 largest_block=31744 pressure=Cautious tls_fragmentation=Healthy
@@ -90,3 +94,61 @@ LOGEOF
 "$ROOT/scripts/esp_soak_analyze.sh" --output-dir "$SPACED_OUT" "$SPACED_LOG" >/dev/null
 SPACED_REGRESSIONS="$(find "$SPACED_OUT" -name regressions.csv -print -quit)"
 ! grep -q 'write_back_worker_churn' "$SPACED_REGRESSIONS"
+
+cat >"$SCHEDULER_HEALTHY_LOG" <<'LOGEOF'
+I (1000) beetle::heartbeat: [heartbeat] runtime_scheduler active_foreground=true source=external_user_message age_ms=500 resume_after_ms=29500 active_work=1 profile=esp_compact permits=1 defers=0 degrades=0 suspends=0 drains=0 rejects=0 last_class=external_user_message last_source=user_facing last_decision=proceed last_reason=none last_retry_after_ms=none
+I (1001) beetle::agent_delivery: [agent_delivery] foreground_ack event=visibility_enqueued before_llm=true owner=current_chat_visibility req_id=req-1 channel=qq_channel chat_id=chat-1
+I (1002) beetle::agent: llm_turn event=start req_id=req-1
+I (1003) beetle::runtime: [runtime_scheduler] runtime_scheduler_decision class=deep_route_worker source=background decision=defer reason=foreground_active retry_after_ms=29500 foreground_active=true foreground_source=external_user_message resume_after_ms=29500 profile=esp_compact pressure=Normal
+I (1004) beetle::runtime: [runtime_scheduler] runtime_scheduler_decision class=realtime_voice_session source=background decision=defer reason=foreground_active retry_after_ms=29500 foreground_active=true foreground_source=external_user_message resume_after_ms=29500 profile=esp_compact pressure=Normal
+I (1005) beetle::runtime: [runtime_scheduler] runtime_scheduler_decision class=durable_write_back source=background decision=defer reason=foreground_active retry_after_ms=29500 foreground_active=true foreground_source=external_user_message resume_after_ms=29500 profile=esp_compact pressure=Normal
+I (1006) beetle::runtime: [runtime_scheduler] runtime_scheduler_decision class=display_heavy_refresh source=background decision=degrade reason=foreground_active retry_after_ms=none foreground_active=true foreground_source=external_user_message resume_after_ms=29500 profile=esp_compact pressure=Normal
+I (1007) beetle::main: [main] display_status_surface retained=true heavy_refresh_degraded=true header=true ip=false footer=true
+I (1010) beetle::chat_stream: [chat_stream] event=final stream_id=chat_stream_1 session_appended=true message_id_present=true
+I (1011) beetle::agent: [agent] primary_delivery event=outbound_enqueued delivered=true req_id=req-1 channel=qq_channel chat_id=chat-1
+I (31000) beetle::heartbeat: [heartbeat] runtime_scheduler active_foreground=false source=none age_ms=none resume_after_ms=none active_work=0 profile=esp_compact permits=2 defers=3 degrades=1 suspends=0 drains=0 rejects=0 last_class=display_heavy_refresh last_source=background last_decision=degrade last_reason=foreground_active last_retry_after_ms=none
+I (31001) beetle::runtime: [runtime_scheduler] runtime_scheduler_decision class=deep_route_worker source=background decision=proceed reason=none retry_after_ms=none foreground_active=false foreground_source=none resume_after_ms=none profile=esp_compact pressure=Normal
+I (31002) beetle::runtime: [runtime_scheduler] runtime_scheduler_decision class=realtime_voice_session source=background decision=proceed reason=none retry_after_ms=none foreground_active=false foreground_source=none resume_after_ms=none profile=esp_compact pressure=Normal
+I (31003) beetle::runtime: [runtime_scheduler] runtime_scheduler_decision class=durable_write_back source=background decision=proceed reason=none retry_after_ms=none foreground_active=false foreground_source=none resume_after_ms=none profile=esp_compact pressure=Normal
+I (31004) beetle::runtime: [runtime_scheduler] runtime_scheduler_decision class=display_heavy_refresh source=background decision=proceed reason=none retry_after_ms=none foreground_active=false foreground_source=none resume_after_ms=none profile=esp_compact pressure=Normal
+LOGEOF
+
+"$ROOT/scripts/esp_soak_analyze.sh" --output-dir "$SCHEDULER_HEALTHY_OUT" "$SCHEDULER_HEALTHY_LOG" >/dev/null
+SCHEDULER_HEALTHY_SUMMARY="$(find "$SCHEDULER_HEALTHY_OUT" -name summary.md -print -quit)"
+SCHEDULER_HEALTHY_REGRESSIONS="$(find "$SCHEDULER_HEALTHY_OUT" -name regressions.csv -print -quit)"
+SCHEDULER_HEALTHY_METRICS="$(find "$SCHEDULER_HEALTHY_OUT" -name metrics.csv -print -quit)"
+
+grep -q 'scheduler_active_foreground,scheduler_last_class,scheduler_last_decision,scheduler_defers,scheduler_degrades,scheduler_rejects' "$SCHEDULER_HEALTHY_METRICS"
+grep -q 'Scheduler foreground samples: 1' "$SCHEDULER_HEALTHY_SUMMARY"
+grep -q 'Scheduler defer decisions: 3' "$SCHEDULER_HEALTHY_SUMMARY"
+grep -q 'Scheduler degrade decisions: 2' "$SCHEDULER_HEALTHY_SUMMARY"
+grep -q 'Scheduler resume decisions: 4' "$SCHEDULER_HEALTHY_SUMMARY"
+! grep -q 'foreground_ack_missing_before_llm' "$SCHEDULER_HEALTHY_REGRESSIONS"
+! grep -q 'primary_generated_but_not_delivered' "$SCHEDULER_HEALTHY_REGRESSIONS"
+! grep -q 'scheduler_resume_missing' "$SCHEDULER_HEALTHY_REGRESSIONS"
+! grep -q 'deep_worker_not_deferred_during_foreground' "$SCHEDULER_HEALTHY_REGRESSIONS"
+! grep -q 'voice_auto_connect_not_suppressed' "$SCHEDULER_HEALTHY_REGRESSIONS"
+! grep -q 'write_back_started_during_foreground' "$SCHEDULER_HEALTHY_REGRESSIONS"
+! grep -q 'display_status_missing_during_degrade' "$SCHEDULER_HEALTHY_REGRESSIONS"
+
+cat >"$SCHEDULER_BAD_LOG" <<'LOGEOF'
+I (1000) beetle::heartbeat: [heartbeat] runtime_scheduler active_foreground=true source=external_user_message age_ms=500 resume_after_ms=29500 active_work=1 profile=esp_compact permits=1 defers=0 degrades=0 suspends=0 drains=0 rejects=0 last_class=external_user_message last_source=user_facing last_decision=proceed last_reason=none last_retry_after_ms=none
+I (1001) beetle::agent: llm_turn event=start req_id=req-2
+I (1002) beetle::runtime: [runtime_scheduler] runtime_scheduler_decision class=deep_route_worker source=background decision=proceed reason=none retry_after_ms=none foreground_active=true foreground_source=external_user_message resume_after_ms=29500 profile=esp_compact pressure=Normal
+I (1003) beetle::runtime: [runtime_scheduler] runtime_scheduler_decision class=realtime_voice_session source=background decision=proceed reason=none retry_after_ms=none foreground_active=true foreground_source=external_user_message resume_after_ms=29500 profile=esp_compact pressure=Normal
+I (1004) beetle::heartbeat: [heartbeat] write_back queued=1 worker_started=true deferred_total=0 dropped_total=0 coalesced_total=0 worker_starts_total=1
+I (1005) beetle::runtime: [runtime_scheduler] runtime_scheduler_decision class=display_heavy_refresh source=background decision=degrade reason=foreground_active retry_after_ms=none foreground_active=true foreground_source=external_user_message resume_after_ms=29500 profile=esp_compact pressure=Normal
+I (1010) beetle::chat_stream: [chat_stream] event=final stream_id=chat_stream_2 session_appended=false message_id_present=false
+I (1011) beetle::runtime: [runtime_scheduler] runtime_scheduler_decision class=durable_write_back source=background decision=defer reason=foreground_active retry_after_ms=29500 foreground_active=true foreground_source=external_user_message resume_after_ms=29500 profile=esp_compact pressure=Normal
+LOGEOF
+
+"$ROOT/scripts/esp_soak_analyze.sh" --output-dir "$SCHEDULER_BAD_OUT" "$SCHEDULER_BAD_LOG" >/dev/null
+SCHEDULER_BAD_REGRESSIONS="$(find "$SCHEDULER_BAD_OUT" -name regressions.csv -print -quit)"
+
+grep -q 'foreground_ack_missing_before_llm' "$SCHEDULER_BAD_REGRESSIONS"
+grep -q 'primary_generated_but_not_delivered' "$SCHEDULER_BAD_REGRESSIONS"
+grep -q 'deep_worker_not_deferred_during_foreground' "$SCHEDULER_BAD_REGRESSIONS"
+grep -q 'voice_auto_connect_not_suppressed' "$SCHEDULER_BAD_REGRESSIONS"
+grep -q 'write_back_started_during_foreground' "$SCHEDULER_BAD_REGRESSIONS"
+grep -q 'display_status_missing_during_degrade' "$SCHEDULER_BAD_REGRESSIONS"
+grep -q 'scheduler_resume_missing' "$SCHEDULER_BAD_REGRESSIONS"

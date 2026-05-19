@@ -1,6 +1,6 @@
 //! POST /api/webhook：校验 webhook token 后把 body 作为 PcMsg 入队。
 
-use crate::bus::{InboundTx, PcMsg};
+use crate::bus::{PcMsg, UserInboundTx};
 use crate::platform::http_server::api_contract;
 use crate::platform::http_server::common::{constant_time_eq, ApiResponse};
 use std::sync::mpsc::TrySendError;
@@ -10,7 +10,7 @@ use super::HandlerContext;
 /// 需配对；body 与 provided_token（来自 Header/Query）由 mod 传入。
 pub fn post(
     ctx: &HandlerContext,
-    inbound_tx: &InboundTx,
+    inbound_tx: &UserInboundTx,
     body: String,
     provided_token: &str,
 ) -> Result<ApiResponse, std::io::Error> {
@@ -33,7 +33,10 @@ pub fn post(
             ));
         }
     };
-    match inbound_tx.try_send(msg) {
+    match inbound_tx.try_submit_user(
+        msg,
+        crate::runtime::RuntimeForegroundSource::ExternalUserMessage,
+    ) {
         Ok(()) => Ok(ApiResponse::ok_200_json("{\"ok\":true}")),
         Err(TrySendError::Full(_)) | Err(TrySendError::Disconnected(_)) => {
             Ok(ApiResponse::err_503_key(api_contract::COMMON_QUEUE_FULL))
@@ -44,7 +47,7 @@ pub fn post(
 #[cfg(test)]
 mod tests {
     use super::post;
-    use crate::bus::new_inbound_channel;
+    use crate::bus::new_user_inbound_channel;
     use crate::platform::http_server::api_contract;
     use crate::platform::http_server::handlers::build_default_test_handler_context;
     use serde_json::Value;
@@ -54,7 +57,7 @@ mod tests {
     fn disabled_webhook_uses_error_key_contract() {
         let ctx = build_default_test_handler_context();
         let (inbound_tx, _inbound_rx, _depth) =
-            new_inbound_channel(crate::constants::DEFAULT_CAPACITY);
+            new_user_inbound_channel(crate::constants::DEFAULT_CAPACITY);
 
         let response = post(&ctx, &inbound_tx, "{}".to_string(), "").expect("webhook response");
 
@@ -73,7 +76,7 @@ mod tests {
             config.webhook_token = "secret".to_string();
         });
         let (inbound_tx, _inbound_rx, _depth) =
-            new_inbound_channel(crate::constants::DEFAULT_CAPACITY);
+            new_user_inbound_channel(crate::constants::DEFAULT_CAPACITY);
 
         let response =
             post(&ctx, &inbound_tx, "{}".to_string(), "wrong").expect("webhook response");
@@ -87,10 +90,7 @@ mod tests {
 
     #[test]
     fn full_inbound_queue_returns_503_without_blocking() {
-        let (inbound_tx, inbound_rx, _depth) = new_inbound_channel(1);
-        inbound_tx
-            .try_send(crate::bus::PcMsg::new("test", "chat", "queued").expect("seed message"))
-            .expect("fill inbound queue");
+        let (inbound_tx, inbound_rx, _depth) = new_user_inbound_channel(0);
 
         let (done_tx, done_rx) = std::sync::mpsc::channel();
         let thread_tx = inbound_tx.clone();

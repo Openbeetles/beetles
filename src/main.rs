@@ -52,7 +52,7 @@ use beetle::Platform;
     target_os = "linux"
 ))]
 use beetle::DISPLAY_CHANNEL_CAPACITY;
-use beetle::{run_agent_loop, run_dispatch, AppConfig, MessageBus, DEFAULT_CAPACITY};
+use beetle::{run_agent_loop, run_dispatch, AppConfig, DEFAULT_CAPACITY};
 #[cfg(any(
     test,
     target_arch = "xtensa",
@@ -126,7 +126,7 @@ struct TelegramTypingNotifier {
 }
 
 struct RuntimeBus {
-    user_inbound_tx: beetle::bus::InboundTx,
+    user_inbound_tx: beetle::bus::UserInboundTx,
     user_inbound_rx: Option<beetle::bus::InboundRx>,
     user_inbound_depth: Arc<std::sync::atomic::AtomicUsize>,
     system_inbound_tx: beetle::bus::SystemInboundTx,
@@ -139,19 +139,21 @@ struct RuntimeBus {
 
 impl RuntimeBus {
     fn new(capacity: usize) -> Self {
-        let (bus, user_inbound_rx, outbound_rx) = MessageBus::new(capacity);
+        let (user_inbound_tx, user_inbound_rx, user_inbound_depth) =
+            beetle::bus::new_user_inbound_channel(capacity);
         let (system_inbound_tx, system_inbound_rx, system_inbound_depth) =
-            beetle::bus::new_inbound_channel(capacity);
+            beetle::bus::new_system_inbound_channel(capacity);
+        let (outbound_tx, outbound_rx, outbound_depth) = beetle::bus::new_inbound_channel(capacity);
         Self {
-            user_inbound_tx: bus.inbound_tx,
+            user_inbound_tx,
             user_inbound_rx: Some(user_inbound_rx),
-            user_inbound_depth: Arc::clone(&bus.inbound_depth),
+            user_inbound_depth,
             system_inbound_tx,
             system_inbound_rx: Some(system_inbound_rx),
             system_inbound_depth,
-            outbound_tx: bus.outbound_tx,
+            outbound_tx,
             outbound_rx: Some(outbound_rx),
-            outbound_depth: Arc::clone(&bus.outbound_depth),
+            outbound_depth,
         }
     }
 }
@@ -210,7 +212,7 @@ struct HttpServerSpawnContext {
     session_store: Arc<dyn beetle::memory::SessionStore + Send + Sync>,
     system_inbound_tx: beetle::bus::SystemInboundTx,
     skill_prompt_cache: Arc<beetle::skills::SkillPromptCache>,
-    inbound_tx: beetle::bus::InboundTx,
+    inbound_tx: beetle::bus::UserInboundTx,
     chat_streams: Arc<beetle::ChatStreamBroker>,
     shared_config: Arc<RwLock<AppConfig>>,
 }
@@ -375,7 +377,7 @@ fn spawn_voice_session_if_ready(
     network: &Arc<NetworkGovernor>,
     config: &Arc<AppConfig>,
     baidu_token_cache: Option<&Arc<beetle::audio::baidu_token::BaiduTokenCache>>,
-    user_inbound_tx: &beetle::bus::InboundTx,
+    user_inbound_tx: &beetle::bus::UserInboundTx,
     voice_event_tx_rx: &mut Option<VoiceEventChannel>,
 ) -> beetle::Result<Option<StartedVoiceSession>> {
     beetle::wake::shutdown();
@@ -844,8 +846,8 @@ mod tests {
             )),
             cleared: Mutex::new(false),
         };
-        let (user_inbound_tx, user_inbound_rx, _) = beetle::bus::new_inbound_channel(2);
-        let (system_inbound_tx, system_inbound_rx, _) = beetle::bus::new_inbound_channel(2);
+        let (user_inbound_tx, user_inbound_rx, _) = beetle::bus::new_user_inbound_channel(2);
+        let (system_inbound_tx, system_inbound_rx, _) = beetle::bus::new_system_inbound_channel(2);
 
         super::app_runtime_support::bootstrap_pending_retry_into_inbound(
             &pending,
@@ -873,8 +875,8 @@ mod tests {
             loaded: Mutex::new(Some(stale)),
             cleared: Mutex::new(false),
         };
-        let (user_inbound_tx, user_inbound_rx, _) = beetle::bus::new_inbound_channel(2);
-        let (system_inbound_tx, system_inbound_rx, _) = beetle::bus::new_inbound_channel(2);
+        let (user_inbound_tx, user_inbound_rx, _) = beetle::bus::new_user_inbound_channel(2);
+        let (system_inbound_tx, system_inbound_rx, _) = beetle::bus::new_system_inbound_channel(2);
 
         super::app_runtime_support::bootstrap_pending_retry_into_inbound(
             &pending,
@@ -906,8 +908,8 @@ mod tests {
             loaded: Mutex::new(Some(recent)),
             cleared: Mutex::new(false),
         };
-        let (user_inbound_tx, user_inbound_rx, _) = beetle::bus::new_inbound_channel(2);
-        let (system_inbound_tx, system_inbound_rx, _) = beetle::bus::new_inbound_channel(2);
+        let (user_inbound_tx, user_inbound_rx, _) = beetle::bus::new_user_inbound_channel(2);
+        let (system_inbound_tx, system_inbound_rx, _) = beetle::bus::new_system_inbound_channel(2);
 
         super::app_runtime_support::bootstrap_pending_retry_into_inbound(
             &pending,
@@ -1383,6 +1385,29 @@ mod tests {
     }
 
     #[test]
+    fn display_heavy_refresh_degrade_keeps_status_surface_plan() {
+        let deltas = super::DisplayRefreshDeltas {
+            state_changed: true,
+            subtitle_changed: true,
+            ip_changed: true,
+            channels_changed: true,
+            footer_changed: true,
+        };
+        let heavy_plan = super::plan_display_refresh(None, deltas);
+
+        assert_eq!(
+            super::degrade_display_heavy_refresh_plan(heavy_plan, deltas),
+            super::DisplayRefreshPlan {
+                header: Some(super::StateChangeDisplayRefreshMode::StateHeaderOnly),
+                ip: false,
+                channels: false,
+                footer: true,
+            },
+            "heavy refresh degrade must keep status/protect updates without full dashboard or channel redraw"
+        );
+    }
+
+    #[test]
     fn display_error_flash_emits_flash_on_then_flash_off_transition() {
         let mut state = super::DisplayLoopState::default();
         let mut metrics = beetle::metrics::snapshot();
@@ -1584,6 +1609,30 @@ fn plan_display_refresh(
     target_os = "linux"
 ))]
 #[cfg_attr(test, allow(dead_code))]
+fn degrade_display_heavy_refresh_plan(
+    plan: DisplayRefreshPlan,
+    deltas: DisplayRefreshDeltas,
+) -> DisplayRefreshPlan {
+    let header = if plan.header.is_some() || deltas.state_changed || deltas.subtitle_changed {
+        Some(StateChangeDisplayRefreshMode::StateHeaderOnly)
+    } else {
+        None
+    };
+    DisplayRefreshPlan {
+        header,
+        ip: header.is_none() && plan.ip,
+        channels: false,
+        footer: plan.footer || deltas.footer_changed,
+    }
+}
+
+#[cfg(any(
+    test,
+    target_arch = "xtensa",
+    target_arch = "riscv32",
+    target_os = "linux"
+))]
+#[cfg_attr(test, allow(dead_code))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum DisplayErrorFlashUpdate {
     NoChange,
@@ -1632,6 +1681,44 @@ fn should_suppress_display_refresh(
         || (heap_largest_block_internal > 0
             && heap_largest_block_internal
                 < beetle::constants::TLS_ADMISSION_MIN_LARGEST_BLOCK_BYTES as u32)
+}
+
+#[cfg(any(
+    test,
+    target_arch = "xtensa",
+    target_arch = "riscv32",
+    target_os = "linux"
+))]
+#[cfg_attr(test, allow(dead_code))]
+fn display_heavy_refresh_scheduler_degraded(pressure: beetle::orchestrator::PressureLevel) -> bool {
+    !matches!(
+        beetle::runtime::admit_current_runtime_work(
+            beetle::runtime::RuntimeWorkClass::DisplayHeavyRefresh,
+            beetle::runtime::RuntimeWorkSource::Background,
+            beetle::runtime::default_runtime_scheduler_profile(),
+            pressure,
+        ),
+        beetle::runtime::RuntimeWorkDecision::Proceed
+    )
+}
+
+#[cfg(any(
+    test,
+    target_arch = "xtensa",
+    target_arch = "riscv32",
+    target_os = "linux"
+))]
+#[cfg_attr(test, allow(dead_code))]
+fn display_status_surface_scheduler_allowed(pressure: beetle::orchestrator::PressureLevel) -> bool {
+    matches!(
+        beetle::runtime::admit_current_runtime_work(
+            beetle::runtime::RuntimeWorkClass::DisplayStatusSurface,
+            beetle::runtime::RuntimeWorkSource::System,
+            beetle::runtime::default_runtime_scheduler_profile(),
+            pressure,
+        ),
+        beetle::runtime::RuntimeWorkDecision::Proceed
+    )
 }
 
 #[cfg(any(
@@ -2063,16 +2150,32 @@ fn run_display_loop(platform: Arc<dyn Platform>, config: Arc<AppConfig>) {
         std::thread::sleep(Duration::from_secs(loop_state.refresh_secs));
         beetle::platform::task_wdt::feed_current_task();
         let snapshot = beetle::orchestrator::snapshot();
-        if should_suppress_display_refresh(
+        if !display_status_surface_scheduler_allowed(snapshot.pressure) {
+            log::warn!(
+                "[{}] display status surface deferred by runtime scheduler: pressure={:?}",
+                TAG,
+                snapshot.pressure
+            );
+            loop_state.refresh_secs = beetle::constants::DISPLAY_REFRESH_IDLE_SECS;
+            continue;
+        }
+        let resource_degrades_heavy_refresh = should_suppress_display_refresh(
             platform.memory_system_kind(),
             snapshot.pressure,
             snapshot.tls_fragmentation_risk,
             snapshot.heap_largest_block_internal,
-        ) {
+        );
+        let scheduler_degrades_heavy_refresh =
+            display_heavy_refresh_scheduler_degraded(snapshot.pressure);
+        let heavy_refresh_degraded =
+            resource_degrades_heavy_refresh || scheduler_degrades_heavy_refresh;
+        if heavy_refresh_degraded {
             if !loop_state.display_refresh_suppressed {
                 log::warn!(
-                    "[{}] display refresh suppressed under ESP resource pressure: pressure={:?} tls_fragmentation={:?} largest_block={}",
+                    "[{}] display heavy refresh degraded: resource_degraded={} scheduler_degraded={} pressure={:?} tls_fragmentation={:?} largest_block={}",
                     TAG,
+                    resource_degrades_heavy_refresh,
+                    scheduler_degrades_heavy_refresh,
                     snapshot.pressure,
                     snapshot.tls_fragmentation_risk,
                     snapshot.heap_largest_block_internal
@@ -2080,9 +2183,8 @@ fn run_display_loop(platform: Arc<dyn Platform>, config: Arc<AppConfig>) {
             }
             loop_state.display_refresh_suppressed = true;
             loop_state.refresh_secs = beetle::constants::DISPLAY_REFRESH_IDLE_SECS;
-            continue;
         }
-        if resume_display_refresh_after_suppression(&mut loop_state) {
+        if !heavy_refresh_degraded && resume_display_refresh_after_suppression(&mut loop_state) {
             log::info!("[{}] display refresh resumed after resource pressure", TAG);
         }
         let now_secs = beetle::util::current_unix_secs();
@@ -2165,16 +2267,24 @@ fn run_display_loop(platform: Arc<dyn Platform>, config: Arc<AppConfig>) {
             continue;
         }
 
-        let refresh_plan = plan_display_refresh(
-            loop_state.last_state,
-            DisplayRefreshDeltas {
-                state_changed,
-                subtitle_changed,
-                ip_changed,
-                channels_changed,
-                footer_changed,
-            },
-        );
+        let display_deltas = DisplayRefreshDeltas {
+            state_changed,
+            subtitle_changed,
+            ip_changed,
+            channels_changed,
+            footer_changed,
+        };
+        let mut refresh_plan = plan_display_refresh(loop_state.last_state, display_deltas);
+        if heavy_refresh_degraded {
+            refresh_plan = degrade_display_heavy_refresh_plan(refresh_plan, display_deltas);
+            log::info!(
+                "[{}] display_status_surface retained=true heavy_refresh_degraded=true header={} ip={} footer={}",
+                TAG,
+                refresh_plan.header.is_some(),
+                refresh_plan.ip,
+                refresh_plan.footer
+            );
+        }
 
         if let Some(header_mode) = refresh_plan.header {
             let presence_subtitle = display_projection.subtitle_override.clone();

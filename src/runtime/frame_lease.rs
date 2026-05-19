@@ -3,7 +3,10 @@
 
 use crate::orchestrator::PressureLevel;
 use crate::runtime::lease::{LeaseDecision, LeaseKind, LeaseOwner, LeaseReplacePolicy};
-use crate::runtime::{RuntimeMode, RuntimeModeSnapshot};
+use crate::runtime::{
+    RuntimeMode, RuntimeModeSnapshot, RuntimeWorkClass, RuntimeWorkDecision, RuntimeWorkRequest,
+    RuntimeWorkSource,
+};
 use crate::{Error, Result};
 
 /// Maximum single local camera frame accepted by the runtime owner.
@@ -17,14 +20,38 @@ pub const MAX_CAMERA_CAPTURE_BYTES: usize = 512 * 1024;
 pub struct FrameLeaseAdmission {
     pub runtime_mode: RuntimeModeSnapshot,
     pub pressure: PressureLevel,
+    scheduler_decision: RuntimeWorkDecision,
 }
 
 impl FrameLeaseAdmission {
-    /// Build admission from the current runtime mode and latest resource pressure.
-    pub fn current() -> Self {
+    /// Build admission from the current runtime mode, scheduler policy and latest resource pressure.
+    pub fn current(source: RuntimeWorkSource) -> Self {
+        let pressure = crate::orchestrator::refresh_heap_if_stale();
+        let profile = crate::runtime::default_runtime_scheduler_profile();
+        let context = crate::runtime::current_runtime_scheduler_context(profile, pressure);
+        let scheduler_decision = crate::runtime::admit_runtime_work(
+            RuntimeWorkRequest::new(RuntimeWorkClass::HardwareRealtimeCapture, source),
+            context,
+        );
         Self {
-            runtime_mode: crate::runtime::thread_registry::runtime_mode_snapshot(),
-            pressure: crate::orchestrator::refresh_heap_if_stale(),
+            runtime_mode: context.runtime_mode,
+            pressure,
+            scheduler_decision,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_scheduler_context_for_tests(
+        source: RuntimeWorkSource,
+        context: crate::runtime::RuntimeSchedulerContext,
+    ) -> Self {
+        Self {
+            runtime_mode: context.runtime_mode,
+            pressure: context.pressure,
+            scheduler_decision: crate::runtime::admit_runtime_work(
+                RuntimeWorkRequest::new(RuntimeWorkClass::HardwareRealtimeCapture, source),
+                context,
+            ),
         }
     }
 
@@ -46,12 +73,27 @@ impl FrameLeaseAdmission {
         }
     }
 
+    fn scheduler_denial_reason(self) -> Option<&'static str> {
+        match self.scheduler_decision {
+            RuntimeWorkDecision::Proceed => None,
+            RuntimeWorkDecision::Defer { reason, .. }
+            | RuntimeWorkDecision::Degrade { reason }
+            | RuntimeWorkDecision::DrainAndResume { reason, .. }
+            | RuntimeWorkDecision::Suspend { reason }
+            | RuntimeWorkDecision::RejectWithUserVisibleReason { reason } => Some(reason),
+            RuntimeWorkDecision::RejectWithStableKey { key, .. } => Some(key),
+        }
+    }
+
     /// Return whether camera frame capture may start under this snapshot.
     pub fn ensure_allowed(self) -> Result<()> {
-        match self.denial_reason() {
-            Some(reason) => Err(Error::config("camera_frame_admission", reason)),
-            None => Ok(()),
+        if let Some(reason) = self.denial_reason() {
+            return Err(Error::config("camera_frame_admission", reason));
         }
+        if let Some(reason) = self.scheduler_denial_reason() {
+            return Err(Error::config("camera_frame_scheduler", reason));
+        }
+        Ok(())
     }
 }
 
@@ -91,14 +133,20 @@ impl Drop for FrameCapturePermit {
 }
 
 /// Try to borrow one camera frame under the central runtime lease registry.
-pub fn try_borrow_frame<'a>(owner: LeaseOwner, data: &'a [u8]) -> Result<FrameLease<'a>> {
-    let admission = admit_current_camera_frame_capture()?;
+pub fn try_borrow_frame<'a>(
+    owner: LeaseOwner,
+    data: &'a [u8],
+    source: RuntimeWorkSource,
+) -> Result<FrameLease<'a>> {
+    let admission = admit_current_camera_frame_capture(source)?;
     try_borrow_frame_with_admission(owner, data, admission)
 }
 
 /// Admit a camera frame capture before allocating/capturing a large frame.
-pub fn admit_current_camera_frame_capture() -> Result<FrameLeaseAdmission> {
-    let admission = FrameLeaseAdmission::current();
+pub fn admit_current_camera_frame_capture(
+    source: RuntimeWorkSource,
+) -> Result<FrameLeaseAdmission> {
+    let admission = FrameLeaseAdmission::current(source);
     admission.ensure_allowed()?;
     Ok(admission)
 }
@@ -107,8 +155,9 @@ pub fn admit_current_camera_frame_capture() -> Result<FrameLeaseAdmission> {
 pub fn try_acquire_frame_capture_permit(
     owner: LeaseOwner,
     max_bytes: usize,
+    source: RuntimeWorkSource,
 ) -> Result<FrameCapturePermit> {
-    let admission = admit_current_camera_frame_capture()?;
+    let admission = admit_current_camera_frame_capture(source)?;
     try_acquire_frame_capture_permit_with_admission(owner, max_bytes, admission)
 }
 
@@ -224,7 +273,10 @@ fn acquire_camera_frame_lease(
 mod tests {
     use crate::runtime::lease::{self, LeaseKind, LeaseOwner};
     use crate::runtime::mode::RuntimeModeSource;
-    use crate::runtime::RuntimeMode;
+    use crate::runtime::{
+        RuntimeForegroundOverlay, RuntimeForegroundSource, RuntimeMode, RuntimePlanePolicyProfile,
+        RuntimeSchedulerContext, RuntimeWorkSource,
+    };
 
     fn admission_for(mode: RuntimeMode, critical_pressure: bool) -> super::FrameLeaseAdmission {
         let mut source = RuntimeModeSource::default();
@@ -247,7 +299,35 @@ mod tests {
             } else {
                 crate::orchestrator::PressureLevel::Normal
             },
+            scheduler_decision: crate::runtime::RuntimeWorkDecision::Proceed,
         }
+    }
+
+    fn scheduler_admission_for_source(
+        source: RuntimeWorkSource,
+        foreground_active: bool,
+    ) -> super::FrameLeaseAdmission {
+        super::FrameLeaseAdmission::from_scheduler_context_for_tests(
+            source,
+            RuntimeSchedulerContext {
+                profile: RuntimePlanePolicyProfile::EspCompact,
+                runtime_mode: crate::runtime::mode::snapshot_from_source(
+                    RuntimeModeSource::default(),
+                ),
+                foreground: if foreground_active {
+                    RuntimeForegroundOverlay {
+                        active: true,
+                        active_count: 1,
+                        primary_source: Some(RuntimeForegroundSource::ExternalUserMessage),
+                        age_ms: Some(500),
+                        resume_after_ms: Some(29_500),
+                    }
+                } else {
+                    RuntimeForegroundOverlay::default()
+                },
+                pressure: crate::orchestrator::PressureLevel::Normal,
+            },
+        )
     }
 
     #[test]
@@ -420,6 +500,43 @@ mod tests {
         drop(first);
         assert_eq!(
             lease::active_count_for_kind_at(LeaseKind::CameraFrame, 409),
+            0
+        );
+    }
+
+    #[test]
+    fn camera_capture_permit_consumes_scheduler_source_before_capture() {
+        let _guard = lease::lease_test_guard();
+        let owner = LeaseOwner::new("camera", "capture");
+
+        let background = super::try_acquire_frame_capture_permit_with_admission_at(
+            owner,
+            1024,
+            scheduler_admission_for_source(RuntimeWorkSource::Background, true),
+            500,
+        )
+        .expect_err("background camera capture must defer while foreground work is active");
+        assert!(background.to_string().contains("foreground_active"));
+        assert_eq!(
+            lease::active_count_for_kind_at(LeaseKind::CameraFrame, 501),
+            0
+        );
+
+        let user_facing = super::try_acquire_frame_capture_permit_with_admission_at(
+            owner,
+            1024,
+            scheduler_admission_for_source(RuntimeWorkSource::UserFacing, true),
+            502,
+        )
+        .expect("user-facing camera capture is part of the foreground turn");
+        assert_eq!(
+            lease::active_count_for_kind_at(LeaseKind::CameraFrame, 503),
+            1
+        );
+
+        drop(user_facing);
+        assert_eq!(
+            lease::active_count_for_kind_at(LeaseKind::CameraFrame, 504),
             0
         );
     }

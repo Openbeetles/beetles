@@ -474,6 +474,7 @@ mod tests {
             external_wss_suspend_requested: mode == RuntimeMode::VoiceExclusive,
             external_wss_suspended: mode == RuntimeMode::VoiceExclusive,
             recovery_safe_mode_active: mode == RuntimeMode::RecoverySafeMode,
+            runtime_foreground: crate::runtime::RuntimeForegroundOverlay::default(),
             action_budget,
         }
     }

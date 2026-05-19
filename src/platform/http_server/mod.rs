@@ -53,7 +53,7 @@ pub fn run(
     session_store: Arc<dyn crate::memory::SessionStore + Send + Sync>,
     system_inbound_tx: crate::bus::SystemInboundTx,
     skill_prompt_cache: Arc<crate::skills::SkillPromptCache>,
-    inbound_tx: crate::bus::InboundTx,
+    inbound_tx: crate::bus::UserInboundTx,
     chat_streams: Arc<crate::chat_stream::ChatStreamBroker>,
     shared_config: Arc<std::sync::RwLock<crate::config::AppConfig>>,
 ) -> Result<()> {
@@ -132,7 +132,7 @@ pub fn run_with_bound_listener(
     session_store: Arc<dyn crate::memory::SessionStore + Send + Sync>,
     system_inbound_tx: crate::bus::SystemInboundTx,
     skill_prompt_cache: Arc<crate::skills::SkillPromptCache>,
-    inbound_tx: crate::bus::InboundTx,
+    inbound_tx: crate::bus::UserInboundTx,
     chat_streams: Arc<crate::chat_stream::ChatStreamBroker>,
     shared_config: Arc<std::sync::RwLock<crate::config::AppConfig>>,
 ) -> Result<()> {
@@ -219,7 +219,7 @@ pub fn run(
     session_store: Arc<dyn crate::memory::SessionStore + Send + Sync>,
     system_inbound_tx: crate::bus::SystemInboundTx,
     skill_prompt_cache: Arc<crate::skills::SkillPromptCache>,
-    inbound_tx: crate::bus::InboundTx,
+    inbound_tx: crate::bus::UserInboundTx,
     chat_streams: Arc<crate::chat_stream::ChatStreamBroker>,
     shared_config: Arc<std::sync::RwLock<crate::config::AppConfig>>,
 ) -> Result<()> {

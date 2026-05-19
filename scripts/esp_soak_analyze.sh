@@ -89,7 +89,7 @@ awk -v floor="$heap_largest_floor" \
     -v summary="$summary_md" \
     -v log_file="$log_file" '
 BEGIN {
-  print "line,pressure,tls_fragmentation,storage_contention,storage_ops,storage_wait_last_us,storage_wait_total_us,storage_hold_last_us,storage_hold_total_us,storage_hold_last_stage,storage_last_age_ms,heap_largest,worker_starts_total,stack_low_margin,active_wss,camera_frame_active" > metrics;
+  print "line,pressure,tls_fragmentation,storage_contention,storage_ops,storage_wait_last_us,storage_wait_total_us,storage_hold_last_us,storage_hold_total_us,storage_hold_last_stage,storage_last_age_ms,heap_largest,worker_starts_total,stack_low_margin,active_wss,camera_frame_active,scheduler_active_foreground,scheduler_last_class,scheduler_last_decision,scheduler_defers,scheduler_degrades,scheduler_rejects" > metrics;
   print "line,check,severity,detail" > regressions;
   first_largest = -1;
   min_largest = -1;
@@ -118,6 +118,25 @@ BEGIN {
   last_write_back_deferred = -1;
   chat_stream_final_count = 0;
   chat_stream_error_count = 0;
+  scheduler_contract_seen = 0;
+  scheduler_foreground_open = 0;
+  scheduler_foreground_samples = 0;
+  scheduler_defer_count = 0;
+  scheduler_degrade_count = 0;
+  scheduler_resume_count = 0;
+  scheduler_resume_missing_count = 0;
+  foreground_ack_missing_count = 0;
+  primary_delivery_missing_count = 0;
+  deep_worker_not_deferred_count = 0;
+  voice_auto_not_suppressed_count = 0;
+  write_back_started_during_foreground_count = 0;
+  display_status_missing_count = 0;
+  display_heavy_degrade_seen = 0;
+  display_status_retained_seen = 0;
+  foreground_ack_seen = 0;
+  foreground_llm_seen = 0;
+  foreground_primary_final_seen = 0;
+  foreground_primary_delivered_seen = 0;
   metric_rows = 0;
 }
 
@@ -246,6 +265,103 @@ function storage_contention_from_metrics(wait_last, hold_last, ops, hold_stage, 
     critical_open = 0;
   }
 
+  scheduler_active_foreground = value_after(line, "active_foreground");
+  scheduler_last_class = value_after(line, "last_class");
+  scheduler_last_decision = value_after(line, "last_decision");
+  scheduler_defers = numeric_after(line, "defers");
+  scheduler_degrades = numeric_after(line, "degrades");
+  scheduler_rejects = numeric_after(line, "rejects");
+  scheduler_event_class = value_after(line, "class");
+  scheduler_event_source = value_after(line, "source");
+  scheduler_event_decision = value_after(line, "decision");
+  if (scheduler_event_class == "" || scheduler_event_class == "none") {
+    scheduler_event_class = scheduler_last_class;
+  }
+  if (scheduler_event_decision == "" || scheduler_event_decision == "none") {
+    scheduler_event_decision = scheduler_last_decision;
+  }
+  scheduler_line = lower_line ~ /runtime_scheduler/ ||
+    scheduler_active_foreground != "" ||
+    scheduler_last_decision != "" ||
+    scheduler_defers != "" ||
+    lower_line ~ /runtime_policy/;
+  if (scheduler_line) {
+    scheduler_contract_seen = 1;
+  }
+  if (scheduler_active_foreground == "true") {
+    scheduler_foreground_open = 1;
+    scheduler_foreground_samples++;
+  } else if (scheduler_active_foreground == "false") {
+    scheduler_foreground_open = 0;
+    foreground_ack_seen = 0;
+    foreground_llm_seen = 0;
+  }
+  if ((lower_line ~ /foreground_ack/ && value_after(line, "before_llm") == "true") ||
+      lower_line ~ /\[chat_stream\].*event=queued/) {
+    foreground_ack_seen = 1;
+  }
+  if (lower_line ~ /llm_turn/ && value_after(line, "event") == "start") {
+    foreground_llm_seen = 1;
+    if (scheduler_contract_seen && !foreground_ack_seen) {
+      foreground_ack_missing_count++;
+      record_issue(NR, "foreground_ack_missing_before_llm", "blocker", trim(line));
+    }
+  }
+  if (scheduler_contract_seen && lower_line ~ /\[chat_stream\].*event=final/) {
+    foreground_primary_final_seen = 1;
+    if (value_after(line, "message_id_present") == "true" ||
+        value_after(line, "session_appended") == "true") {
+      foreground_primary_delivered_seen = 1;
+    }
+  }
+  if (scheduler_contract_seen && lower_line ~ /primary_delivery/ && value_after(line, "delivered") == "true") {
+    foreground_primary_delivered_seen = 1;
+  }
+  if (scheduler_event_decision == "defer") {
+    scheduler_defer_count++;
+    if (scheduler_event_class != "" && scheduler_event_class != "none") {
+      scheduler_pending_resume[scheduler_event_class] = 1;
+    }
+  } else if (scheduler_event_decision == "degrade") {
+    scheduler_degrade_count++;
+    if (scheduler_event_class != "" && scheduler_event_class != "none") {
+      scheduler_pending_resume[scheduler_event_class] = 1;
+    }
+  } else if (scheduler_event_decision == "proceed" && scheduler_event_class != "" && scheduler_event_class != "none") {
+    if (scheduler_pending_resume[scheduler_event_class]) {
+      scheduler_resume_count++;
+      scheduler_pending_resume[scheduler_event_class] = 0;
+    }
+  }
+  if (scheduler_foreground_open && scheduler_event_class != "" && scheduler_event_decision != "") {
+    if ((scheduler_event_class == "deep_route_worker" ||
+         scheduler_event_class == "config_ui_chat_history_route") &&
+        scheduler_event_decision != "defer") {
+      deep_worker_not_deferred_count++;
+      record_issue(NR, "deep_worker_not_deferred_during_foreground", "blocker", trim(line));
+    }
+    if ((scheduler_event_class == "realtime_voice_session" ||
+         scheduler_event_class == "voice_fallback_interaction") &&
+        scheduler_event_source != "user_facing" &&
+        scheduler_event_decision != "defer") {
+      voice_auto_not_suppressed_count++;
+      record_issue(NR, "voice_auto_connect_not_suppressed", "blocker", trim(line));
+    }
+    if ((scheduler_event_class == "durable_write_back" ||
+         scheduler_event_class == "optional_maintenance" ||
+         scheduler_event_class == "self_runtime_llm_work") &&
+        scheduler_event_decision != "defer") {
+      write_back_started_during_foreground_count++;
+      record_issue(NR, "write_back_started_during_foreground", "blocker", trim(line));
+    }
+  }
+  if (lower_line ~ /display_heavy_refresh/ && scheduler_event_decision == "degrade") {
+    display_heavy_degrade_seen = 1;
+  }
+  if (lower_line ~ /display_status_surface/ && value_after(line, "retained") == "true") {
+    display_status_retained_seen = 1;
+  }
+
   if (storage_contention_state == "Critical") {
     storage_contention_blocker_count++;
     storage_detail = "storage_contention=Critical storage_contention_count=" storage_contention " storage_ops=" storage_ops " storage_wait_last_us=" storage_wait_last_us " storage_hold_last_us=" storage_hold_last_us " storage_hold_last_stage=" storage_hold_last_stage " storage_last_age_ms=" storage_last_age_ms;
@@ -327,6 +443,10 @@ function storage_contention_from_metrics(wait_last, hold_last, ops, hold_stage, 
     }
     if (write_back_deferred != "") {
       last_write_back_deferred = write_back_deferred + 0;
+    }
+    if (scheduler_foreground_open && write_back_worker_started == "true") {
+      write_back_started_during_foreground_count++;
+      record_issue(NR, "write_back_started_during_foreground", "blocker", trim(line));
     }
   }
 
@@ -414,13 +534,28 @@ function storage_contention_from_metrics(wait_last, hold_last, ops, hold_stage, 
       storage_ops != "" || storage_wait_last_us != "" || storage_wait_total_us != "" ||
       storage_hold_last_us != "" || storage_hold_total_us != "" || storage_hold_last_stage != "" ||
       storage_last_age_ms != "" || heap_largest != "" || worker_starts != "" ||
-      low_margin != "" || active_wss != "" || camera_frame_active != "") {
-    print NR "," pressure "," tls_fragmentation "," storage_contention "," storage_ops "," storage_wait_last_us "," storage_wait_total_us "," storage_hold_last_us "," storage_hold_total_us "," storage_hold_last_stage "," storage_last_age_ms "," heap_largest "," worker_starts "," low_margin "," active_wss "," camera_frame_active >> metrics;
+      low_margin != "" || active_wss != "" || camera_frame_active != "" ||
+      scheduler_line) {
+    print NR "," pressure "," tls_fragmentation "," storage_contention "," storage_ops "," storage_wait_last_us "," storage_wait_total_us "," storage_hold_last_us "," storage_hold_total_us "," storage_hold_last_stage "," storage_last_age_ms "," heap_largest "," worker_starts "," low_margin "," active_wss "," camera_frame_active "," scheduler_active_foreground "," scheduler_event_class "," scheduler_event_decision "," scheduler_defers "," scheduler_degrades "," scheduler_rejects >> metrics;
     metric_rows++;
   }
 }
 
 END {
+  if (scheduler_contract_seen && foreground_primary_final_seen && !foreground_primary_delivered_seen) {
+    primary_delivery_missing_count++;
+    record_issue(NR, "primary_generated_but_not_delivered", "blocker", "scheduler foreground log has chat_stream final without primary_delivery delivered=true");
+  }
+  if (display_heavy_degrade_seen && !display_status_retained_seen) {
+    display_status_missing_count++;
+    record_issue(NR, "display_status_missing_during_degrade", "blocker", "display heavy refresh degraded without display_status_surface retained=true evidence");
+  }
+  for (scheduler_resume_class in scheduler_pending_resume) {
+    if (scheduler_pending_resume[scheduler_resume_class]) {
+      scheduler_resume_missing_count++;
+      record_issue(NR, "scheduler_resume_missing", "blocker", "class=" scheduler_resume_class " had defer/degrade without later decision=proceed");
+    }
+  }
   if (critical_open) {
     record_issue(NR, "unrecovered_critical_pressure", "blocker", "Critical pressure appeared without a later pressure=Normal line");
   }
@@ -446,6 +581,17 @@ END {
   print "- Write-back worker thread starts: " write_back_thread_start_count >> summary;
   print "- Chat stream final events: " chat_stream_final_count >> summary;
   print "- Chat stream error events: " chat_stream_error_count >> summary;
+  print "- Scheduler foreground samples: " scheduler_foreground_samples >> summary;
+  print "- Scheduler defer decisions: " scheduler_defer_count >> summary;
+  print "- Scheduler degrade decisions: " scheduler_degrade_count >> summary;
+  print "- Scheduler resume decisions: " scheduler_resume_count >> summary;
+  print "- Scheduler resume missing lines: " scheduler_resume_missing_count >> summary;
+  print "- Foreground ack-before-LLM missing lines: " foreground_ack_missing_count >> summary;
+  print "- Primary delivery missing lines: " primary_delivery_missing_count >> summary;
+  print "- Deep worker foreground violations: " deep_worker_not_deferred_count >> summary;
+  print "- Auto voice foreground violations: " voice_auto_not_suppressed_count >> summary;
+  print "- Write-back foreground violations: " write_back_started_during_foreground_count >> summary;
+  print "- Display status missing lines: " display_status_missing_count >> summary;
   if (saw_critical) {
     print "- Critical pressure observed: yes" >> summary;
   } else {

@@ -63,6 +63,7 @@ pub struct OperatorStatusSnapshot {
     pub initiative: runtime::InitiativeSnapshot,
     pub presence: runtime::PresenceSnapshot,
     pub runtime_mode: runtime::RuntimeModeSnapshot,
+    pub runtime_scheduler: runtime::RuntimeSchedulerSnapshot,
     pub soul_kernel: runtime::SoulKernelStatus,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub capability_planes: Vec<DeviceCapabilityPlaneSnapshot>,
@@ -188,6 +189,7 @@ pub fn build_operator_status(
     let voice_path_diagnosis =
         build_voice_path_diagnosis_from_runtime(input.platform, input.config);
     let runtime_mode = presence.runtime_mode;
+    let runtime_scheduler = runtime::scheduler::runtime_scheduler_snapshot();
     let soul_kernel = presence.soul_kernel.clone();
     let runtime_skill_summary =
         build_runtime_skill_operator_summary(input.platform.skill_storage().as_ref());
@@ -249,6 +251,7 @@ pub fn build_operator_status(
         os_closure,
         initiative,
         runtime_mode,
+        runtime_scheduler,
         soul_kernel,
         presence,
         capability_planes,
@@ -348,6 +351,23 @@ pub fn render_operator_status_text(snapshot: &OperatorStatusSnapshot) -> String 
         snapshot.soul_kernel.safe_mode_minimum_readable,
         snapshot.soul_kernel.degraded,
         snapshot.soul_kernel.key_memory_count,
+    ));
+    out.push_str(&format!(
+        "  runtime_scheduler_active_foreground: {}\n  runtime_scheduler_source: {}\n  runtime_scheduler_profile: {}\n  runtime_scheduler_permits: {}\n  runtime_scheduler_defers: {}\n  runtime_scheduler_degrades: {}\n  runtime_scheduler_suspends: {}\n  runtime_scheduler_drains: {}\n  runtime_scheduler_rejects: {}\n  runtime_scheduler_recent_decisions: {}\n",
+        snapshot.runtime_scheduler.active_foreground,
+        snapshot
+            .runtime_scheduler
+            .foreground_source
+            .map(|source| source.as_str())
+            .unwrap_or("none"),
+        snapshot.runtime_scheduler.profile.as_str(),
+        snapshot.runtime_scheduler.permits,
+        snapshot.runtime_scheduler.defers,
+        snapshot.runtime_scheduler.degrades,
+        snapshot.runtime_scheduler.suspends,
+        snapshot.runtime_scheduler.drains,
+        snapshot.runtime_scheduler.rejects,
+        snapshot.runtime_scheduler.recent_decisions.len(),
     ));
     out.push_str(&format!(
         "  programmable_reasoning_stage: {}\n  programmable_reasoning_execution_enabled: {}\n  programmable_reasoning_backend: {}\n  programmable_reasoning_operator_summary: {}\n  programmable_reasoning_product_headline: {}\n  programmable_reasoning_demo_scenarios: {}\n  programmable_reasoning_doctrine_headline: {}\n  programmable_reasoning_genome_headline: {}\n  programmable_reasoning_tension_headline: {}\n  programmable_reasoning_recent_events: {}\n  programmable_reasoning_governance_holds: {}\n  programmable_reasoning_digest_status: {}\n  programmable_reasoning_branch_replays: {}\n  programmable_reasoning_arena_replays: {}\n  programmable_reasoning_doctrine_replays: {}\n  programmable_reasoning_genome_replays: {}\n  programmable_reasoning_capability_atom_replays: {}\n",

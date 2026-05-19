@@ -144,6 +144,18 @@ pub(crate) struct RouteWorkerRuntimeLoad {
     pub(crate) active_agent_tasks: u32,
     pub(crate) inbound_depth: u32,
     pub(crate) outbound_depth: u32,
+    pub(crate) scheduler_decision: crate::runtime::RuntimeWorkDecision,
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
+impl RouteWorkerRuntimeLoad {
+    pub(crate) fn with_scheduler_decision(
+        mut self,
+        decision: crate::runtime::RuntimeWorkDecision,
+    ) -> Self {
+        self.scheduler_decision = decision;
+        self
+    }
 }
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
@@ -155,6 +167,7 @@ impl From<&crate::orchestrator::ResourceSnapshot> for RouteWorkerRuntimeLoad {
             active_agent_tasks: snapshot.active_agent_tasks,
             inbound_depth: snapshot.inbound_depth,
             outbound_depth: snapshot.outbound_depth,
+            scheduler_decision: crate::runtime::RuntimeWorkDecision::Proceed,
         }
     }
 }
@@ -168,6 +181,7 @@ impl From<&crate::orchestrator::ResourceLightSnapshot> for RouteWorkerRuntimeLoa
             active_agent_tasks: snapshot.active_agent_tasks,
             inbound_depth: snapshot.inbound_depth,
             outbound_depth: snapshot.outbound_depth,
+            scheduler_decision: crate::runtime::RuntimeWorkDecision::Proceed,
         }
     }
 }
@@ -177,6 +191,9 @@ pub(crate) fn route_worker_runtime_busy_detail(
     contract: RouteWorkerContract,
     load: RouteWorkerRuntimeLoad,
 ) -> Option<String> {
+    if let Some(detail) = route_worker_scheduler_busy_detail(contract, load.scheduler_decision) {
+        return Some(detail);
+    }
     let pressure_allows_worker = load.pressure
         == crate::orchestrator::pressure::PressureLevel::Normal
         || (contract.lane == RouteWorkerLane::ChatHistory
@@ -203,7 +220,64 @@ pub(crate) fn route_worker_runtime_busy_detail(
 }
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
+fn route_worker_scheduler_busy_detail(
+    contract: RouteWorkerContract,
+    decision: crate::runtime::RuntimeWorkDecision,
+) -> Option<String> {
+    match decision {
+        crate::runtime::RuntimeWorkDecision::Proceed => None,
+        crate::runtime::RuntimeWorkDecision::Defer {
+            reason,
+            retry_after_ms,
+        } => Some(format!(
+            "route worker start deferred for {:?}: runtime_scheduler=defer reason={} retry_after_ms={}",
+            contract.lane, reason, retry_after_ms
+        )),
+        crate::runtime::RuntimeWorkDecision::DrainAndResume {
+            reason,
+            retry_after_ms,
+        } => Some(format!(
+            "route worker start deferred for {:?}: runtime_scheduler=drain_and_resume reason={} retry_after_ms={}",
+            contract.lane, reason, retry_after_ms
+        )),
+        crate::runtime::RuntimeWorkDecision::Degrade { reason } => Some(format!(
+            "route worker start deferred for {:?}: runtime_scheduler=degrade reason={}",
+            contract.lane, reason
+        )),
+        crate::runtime::RuntimeWorkDecision::Suspend { reason } => Some(format!(
+            "route worker start deferred for {:?}: runtime_scheduler=suspend reason={}",
+            contract.lane, reason
+        )),
+        crate::runtime::RuntimeWorkDecision::RejectWithStableKey { key, reason } => {
+            Some(format!(
+                "route worker start deferred for {:?}: runtime_scheduler=reject key={} reason={}",
+                contract.lane, key, reason
+            ))
+        }
+        crate::runtime::RuntimeWorkDecision::RejectWithUserVisibleReason { reason } => {
+            Some(format!(
+                "route worker start deferred for {:?}: runtime_scheduler=reject reason={}",
+                contract.lane, reason
+            ))
+        }
+    }
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
 impl RouteExecutionClass {
+    pub(crate) const fn runtime_work_class(self) -> Option<crate::runtime::RuntimeWorkClass> {
+        match self {
+            Self::ImmediateRoute | Self::StreamingRoute | Self::RejectedRoute => None,
+            Self::ChatHistoryRoute => {
+                Some(crate::runtime::RuntimeWorkClass::ConfigUiChatHistoryRoute)
+            }
+            Self::SnapshotRoute
+            | Self::AsyncConfigRoute
+            | Self::LocalDiagnosticRoute
+            | Self::SlowDiagnosticRoute => Some(crate::runtime::RuntimeWorkClass::DeepRouteWorker),
+        }
+    }
+
     pub(crate) const fn worker_contract(self) -> Option<RouteWorkerContract> {
         match self {
             Self::ImmediateRoute | Self::StreamingRoute | Self::RejectedRoute => None,
@@ -1827,6 +1901,7 @@ mod tests {
             active_agent_tasks: 0,
             inbound_depth: 0,
             outbound_depth: 0,
+            scheduler_decision: crate::runtime::RuntimeWorkDecision::Proceed,
         };
 
         assert!(route_worker_runtime_busy_detail(contract, idle).is_none());
@@ -1855,6 +1930,73 @@ mod tests {
         assert!(
             route_worker_runtime_busy_detail(chat_history, pressure_busy).is_none(),
             "chat history must remain available in Cautious when concrete worker memory admission still passes"
+        );
+    }
+
+    #[test]
+    fn route_execution_classes_map_only_worker_routes_to_scheduler_work() {
+        assert_eq!(
+            RouteExecutionClass::ImmediateRoute.runtime_work_class(),
+            None
+        );
+        assert_eq!(
+            RouteExecutionClass::StreamingRoute.runtime_work_class(),
+            None
+        );
+        assert_eq!(
+            RouteExecutionClass::RejectedRoute.runtime_work_class(),
+            None
+        );
+        assert_eq!(
+            RouteExecutionClass::SnapshotRoute.runtime_work_class(),
+            Some(crate::runtime::RuntimeWorkClass::DeepRouteWorker)
+        );
+        assert_eq!(
+            RouteExecutionClass::ChatHistoryRoute.runtime_work_class(),
+            Some(crate::runtime::RuntimeWorkClass::ConfigUiChatHistoryRoute)
+        );
+        assert_eq!(
+            RouteExecutionClass::AsyncConfigRoute.runtime_work_class(),
+            Some(crate::runtime::RuntimeWorkClass::DeepRouteWorker)
+        );
+        assert_eq!(
+            RouteExecutionClass::LocalDiagnosticRoute.runtime_work_class(),
+            Some(crate::runtime::RuntimeWorkClass::DeepRouteWorker)
+        );
+        assert_eq!(
+            RouteExecutionClass::SlowDiagnosticRoute.runtime_work_class(),
+            Some(crate::runtime::RuntimeWorkClass::DeepRouteWorker)
+        );
+    }
+
+    #[test]
+    fn route_worker_runtime_admission_consumes_scheduler_decision_first() {
+        let contract = RouteExecutionClass::SnapshotRoute
+            .worker_contract()
+            .expect("snapshot contract");
+        let mut load = RouteWorkerRuntimeLoad {
+            pressure: crate::orchestrator::pressure::PressureLevel::Normal,
+            storage_contention: crate::orchestrator::StorageContentionRisk::Healthy,
+            active_agent_tasks: 0,
+            inbound_depth: 0,
+            outbound_depth: 0,
+            scheduler_decision: crate::runtime::RuntimeWorkDecision::Proceed,
+        }
+        .with_scheduler_decision(crate::runtime::RuntimeWorkDecision::Defer {
+            reason: "foreground_active",
+            retry_after_ms: 29_500,
+        });
+
+        let detail = route_worker_runtime_busy_detail(contract, load)
+            .expect("scheduler defer should block deep route worker");
+        assert!(detail.contains("runtime_scheduler=defer"));
+        assert!(detail.contains("reason=foreground_active"));
+        assert!(detail.contains("retry_after_ms=29500"));
+
+        load.scheduler_decision = crate::runtime::RuntimeWorkDecision::Proceed;
+        assert!(
+            route_worker_runtime_busy_detail(contract, load).is_none(),
+            "resource-idle route worker must proceed once scheduler admits it"
         );
     }
 

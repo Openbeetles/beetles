@@ -80,6 +80,10 @@ mod tests {
             "plane_lifecycle",
             "threads",
             "write_back",
+            "scheduler",
+            "runtime_scheduler",
+            "runtime_policy",
+            "recent_decisions",
             "crash",
         ] {
             assert!(

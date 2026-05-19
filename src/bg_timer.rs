@@ -85,6 +85,40 @@ fn unix_deadline_to_instant(
     })
 }
 
+fn due_user_timer_scheduler_delay_for_context(
+    context: crate::runtime::RuntimeSchedulerContext,
+) -> Option<Duration> {
+    match crate::runtime::admit_runtime_work(
+        crate::runtime::RuntimeWorkRequest::new(
+            crate::runtime::RuntimeWorkClass::DueUserTimer,
+            crate::runtime::RuntimeWorkSource::System,
+        ),
+        context,
+    ) {
+        crate::runtime::RuntimeWorkDecision::Proceed => None,
+        crate::runtime::RuntimeWorkDecision::Defer { retry_after_ms, .. }
+        | crate::runtime::RuntimeWorkDecision::DrainAndResume { retry_after_ms, .. } => {
+            Some(Duration::from_millis(retry_after_ms.max(1)))
+        }
+        crate::runtime::RuntimeWorkDecision::Degrade { .. }
+        | crate::runtime::RuntimeWorkDecision::Suspend { .. }
+        | crate::runtime::RuntimeWorkDecision::RejectWithStableKey { .. }
+        | crate::runtime::RuntimeWorkDecision::RejectWithUserVisibleReason { .. } => {
+            Some(Duration::from_millis(DUE_STORAGE_SWEEP_RETRY_MS))
+        }
+    }
+}
+
+fn current_due_user_timer_scheduler_delay() -> Option<Duration> {
+    #[cfg(not(test))]
+    crate::orchestrator::update_heap_state();
+    let resource = crate::orchestrator::snapshot();
+    due_user_timer_scheduler_delay_for_context(crate::runtime::current_runtime_scheduler_context(
+        crate::runtime::default_runtime_scheduler_profile(),
+        resource.pressure,
+    ))
+}
+
 /// 聚合 bg_timer 线程所需的全部依赖。
 pub struct BgTimerContext {
     // shared
@@ -271,28 +305,37 @@ pub fn run_bg_timer(ctx: BgTimerContext) -> std::io::Result<crate::util::TaskHan
                         .is_some_and(|due_at| due_at <= now_unix_secs)
                 {
                     if next_reminder_sweep_retry_at.is_none_or(|retry_at| retry_at <= now) {
-                        let platform = Arc::clone(&ctx.platform);
-                        let config = Arc::clone(&ctx.config);
-                        let scheduled = crate::runtime::write_back::schedule_due_reminder_sweep(
-                            Arc::clone(&ctx.remind_store),
-                            move |reminder| {
-                                clear_due_reminder_calendar_link(
-                                    reminder,
-                                    Arc::clone(&platform),
-                                    config.as_ref(),
-                                )
-                            },
-                            ctx.system_inbound_tx.clone(),
-                            Arc::clone(&ctx.resolve_locale),
-                        );
-                        if !scheduled {
-                            log::warn!(
-                                "[{}] due reminder sweep deferred because write-back queue is full",
-                                TAG
+                        if let Some(delay) = current_due_user_timer_scheduler_delay() {
+                            log::debug!(
+                                "[{}] due reminder sweep deferred by runtime scheduler for {:?}",
+                                TAG,
+                                delay
                             );
+                            next_reminder_sweep_retry_at = Some(now + delay);
+                        } else {
+                            let platform = Arc::clone(&ctx.platform);
+                            let config = Arc::clone(&ctx.config);
+                            let scheduled = crate::runtime::write_back::schedule_due_reminder_sweep(
+                                Arc::clone(&ctx.remind_store),
+                                move |reminder| {
+                                    clear_due_reminder_calendar_link(
+                                        reminder,
+                                        Arc::clone(&platform),
+                                        config.as_ref(),
+                                    )
+                                },
+                                ctx.system_inbound_tx.clone(),
+                                Arc::clone(&ctx.resolve_locale),
+                            );
+                            if !scheduled {
+                                log::warn!(
+                                    "[{}] due reminder sweep deferred because write-back queue is full",
+                                    TAG
+                                );
+                            }
+                            next_reminder_sweep_retry_at =
+                                Some(now + Duration::from_millis(DUE_STORAGE_SWEEP_RETRY_MS));
                         }
-                        next_reminder_sweep_retry_at =
-                            Some(now + Duration::from_millis(DUE_STORAGE_SWEEP_RETRY_MS));
                     }
                 } else {
                     next_reminder_sweep_retry_at = None;
@@ -307,19 +350,28 @@ pub fn run_bg_timer(ctx: BgTimerContext) -> std::io::Result<crate::util::TaskHan
                         .is_some_and(|due_at| due_at <= now_unix_secs)
                 {
                     if next_task_sweep_retry_at.is_none_or(|retry_at| retry_at <= now) {
-                        let scheduled = crate::runtime::write_back::schedule_due_task_sweep(
-                            Arc::clone(&ctx.task_store),
-                            ctx.system_inbound_tx.clone(),
-                            Arc::clone(&ctx.resolve_locale),
-                        );
-                        if !scheduled {
-                            log::warn!(
-                                "[{}] due task sweep deferred because write-back queue is full",
-                                TAG
+                        if let Some(delay) = current_due_user_timer_scheduler_delay() {
+                            log::debug!(
+                                "[{}] due task sweep deferred by runtime scheduler for {:?}",
+                                TAG,
+                                delay
                             );
+                            next_task_sweep_retry_at = Some(now + delay);
+                        } else {
+                            let scheduled = crate::runtime::write_back::schedule_due_task_sweep(
+                                Arc::clone(&ctx.task_store),
+                                ctx.system_inbound_tx.clone(),
+                                Arc::clone(&ctx.resolve_locale),
+                            );
+                            if !scheduled {
+                                log::warn!(
+                                    "[{}] due task sweep deferred because write-back queue is full",
+                                    TAG
+                                );
+                            }
+                            next_task_sweep_retry_at =
+                                Some(now + Duration::from_millis(DUE_STORAGE_SWEEP_RETRY_MS));
                         }
-                        next_task_sweep_retry_at =
-                            Some(now + Duration::from_millis(DUE_STORAGE_SWEEP_RETRY_MS));
                     }
                 } else {
                     next_task_sweep_retry_at = None;
@@ -461,6 +513,12 @@ fn clear_due_reminder_remote_calendar_link(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::orchestrator::PressureLevel;
+    use crate::runtime::mode::{snapshot_from_source, RuntimeModeSource};
+    use crate::runtime::{
+        RuntimeForegroundOverlay, RuntimeForegroundSource, RuntimePlanePolicyProfile,
+        RuntimeSchedulerContext,
+    };
 
     #[test]
     fn wait_until_or_notified_returns_early_after_notify() {
@@ -475,5 +533,60 @@ mod tests {
             started.elapsed() < Duration::from_millis(150),
             "wait should wake on notify instead of waiting for the original deadline"
         );
+    }
+
+    fn scheduler_context(
+        source: RuntimeModeSource,
+        foreground: RuntimeForegroundOverlay,
+        pressure: PressureLevel,
+    ) -> RuntimeSchedulerContext {
+        RuntimeSchedulerContext {
+            profile: RuntimePlanePolicyProfile::EspCompact,
+            runtime_mode: snapshot_from_source(source),
+            foreground,
+            pressure,
+        }
+    }
+
+    #[test]
+    fn due_user_timer_scheduler_delay_keeps_foreground_due_timers_admitted() {
+        let delay = due_user_timer_scheduler_delay_for_context(scheduler_context(
+            RuntimeModeSource::default(),
+            RuntimeForegroundOverlay {
+                active: true,
+                active_count: 1,
+                primary_source: Some(RuntimeForegroundSource::ExternalUserMessage),
+                age_ms: Some(500),
+                resume_after_ms: Some(29_500),
+            },
+            PressureLevel::Normal,
+        ));
+
+        assert_eq!(delay, None);
+    }
+
+    #[test]
+    fn due_user_timer_scheduler_delay_defers_voice_exclusive_due_timers() {
+        let delay = due_user_timer_scheduler_delay_for_context(scheduler_context(
+            RuntimeModeSource {
+                voice_exclusive_active: true,
+                ..RuntimeModeSource::default()
+            },
+            RuntimeForegroundOverlay::default(),
+            PressureLevel::Normal,
+        ));
+
+        assert_eq!(delay, Some(Duration::from_millis(1_000)));
+    }
+
+    #[test]
+    fn due_user_timer_scheduler_delay_defers_critical_pressure_due_timers() {
+        let delay = due_user_timer_scheduler_delay_for_context(scheduler_context(
+            RuntimeModeSource::default(),
+            RuntimeForegroundOverlay::default(),
+            PressureLevel::Critical,
+        ));
+
+        assert_eq!(delay, Some(Duration::from_millis(1_500)));
     }
 }

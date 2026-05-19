@@ -170,6 +170,16 @@ pub(crate) fn heartbeat_tick(
         TAG,
         crate::runtime::thread_registry::format_runtime_mode_log_line()
     );
+    log::info!(
+        "[{}] {}",
+        TAG,
+        crate::runtime::scheduler::format_baseline_log_line()
+    );
+    log::info!(
+        "[{}] {}",
+        TAG,
+        crate::runtime::scheduler::format_policy_baseline_log_line()
+    );
 
     if !runtime_mode.action_budget.allow_heartbeat_injection {
         return;

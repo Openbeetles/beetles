@@ -36,8 +36,8 @@ use crate::agent::context::{
     build_context, estimate_post_memory_system_tail_len, PostMemoryTailParams, RuntimeContext,
 };
 use crate::bus::{
-    InboundRx, IngressKind, OutboundTx, PcMsg, SystemInboundTx, UserInboundRx, UserInboundTx,
-    MAX_CONTENT_LEN,
+    InboundRx, IngressKind, OutboundKind, OutboundTx, PcMsg, SystemInboundTx, UserInboundRx,
+    UserInboundTx, MAX_CONTENT_LEN,
 };
 use crate::constants::{
     AGENT_MARKER_MARK_IMPORTANT, AGENT_MARKER_SIGNAL_COMFORT, AGENT_RETRY_BASE_MS,
@@ -182,14 +182,20 @@ fn now_unix_ms() -> u64 {
         .unwrap_or(0)
 }
 
-fn choose_inbound_tx<'a>(
-    ingress: IngressKind,
-    user_inbound_tx: &'a UserInboundTx,
-    system_inbound_tx: &'a SystemInboundTx,
-) -> &'a crate::bus::InboundTx {
-    match ingress {
-        IngressKind::User => user_inbound_tx,
-        IngressKind::System => system_inbound_tx,
+#[allow(clippy::result_large_err)]
+pub(super) fn try_send_inbound_msg(
+    msg: PcMsg,
+    user_inbound_tx: &UserInboundTx,
+    system_inbound_tx: &SystemInboundTx,
+) -> std::result::Result<(), std::sync::mpsc::TrySendError<PcMsg>> {
+    match msg.ingress {
+        IngressKind::User => {
+            let source = msg
+                .runtime_foreground_source()
+                .unwrap_or(crate::runtime::RuntimeForegroundSource::ExternalUserMessage);
+            user_inbound_tx.try_submit_user(msg, source)
+        }
+        IngressKind::System => system_inbound_tx.try_send(msg),
     }
 }
 
@@ -1470,12 +1476,28 @@ fn try_send_outbound(outbound_tx: &OutboundTx, msg: PcMsg, log_prefix: &str) -> 
     let platform_message_id = msg.platform_message_id.clone();
     let platform_event_id = msg.platform_event_id.clone();
     let inbound_dedup_key = msg.inbound_dedup_key.clone();
+    let outbound_kind = msg.outbound_kind;
     let mut pending = msg;
     let mut full_attempts = 0u32;
     loop {
         match outbound_tx.try_send(pending) {
             Ok(()) => {
                 metrics::record_message_out();
+                if outbound_kind == OutboundKind::Primary {
+                    log::info!(
+                        "[agent] primary_delivery event=outbound_enqueued delivered=true req_id={} channel={} chat_id={}",
+                        req_id,
+                        channel,
+                        chat_id
+                    );
+                } else if outbound_kind == OutboundKind::Visibility {
+                    log::info!(
+                        "[agent] foreground_ack event=visibility_enqueued before_llm=true req_id={} channel={} chat_id={}",
+                        req_id,
+                        channel,
+                        chat_id
+                    );
+                }
                 log::info!(
                     "[agent] {} outbound enqueued req_id={} channel={} chat_id={} transport={} platform_message_id={} platform_event_id={} dedup_key={}",
                     log_prefix,
@@ -1490,18 +1512,19 @@ fn try_send_outbound(outbound_tx: &OutboundTx, msg: PcMsg, log_prefix: &str) -> 
                 return true;
             }
             Err(std::sync::mpsc::TrySendError::Full(msg))
-                if !msg.outbound_kind.is_supplemental() =>
+                if !msg.outbound_kind.is_best_effort_delivery() =>
             {
                 full_attempts = full_attempts.saturating_add(1);
                 if full_attempts == 1
                     || full_attempts.is_multiple_of(PRIMARY_OUTBOUND_ENQUEUE_LOG_EVERY)
                 {
                     log::warn!(
-                        "[agent] {} outbound queue full for primary reply req_id={} channel={} chat_id={}, applying backpressure",
+                        "[agent] {} outbound queue full for reliable delivery req_id={} channel={} chat_id={} outbound_kind={}, applying backpressure",
                         log_prefix,
                         req_id,
                         channel,
-                        chat_id
+                        chat_id,
+                        msg.outbound_kind.as_str()
                     );
                 }
                 crate::platform::task_wdt::feed_current_task();
@@ -1620,8 +1643,9 @@ fn handle_llm_gate(
             if msg.ingress == IngressKind::System {
                 log::info!("[agent] system task degraded, retry later: {}", reason);
                 msg.enqueue_ts_ms = now_unix_ms();
-                let inbound_tx = choose_inbound_tx(msg.ingress, user_inbound_tx, system_inbound_tx);
-                if let Err(std::sync::mpsc::TrySendError::Full(m)) = inbound_tx.try_send(msg) {
+                if let Err(std::sync::mpsc::TrySendError::Full(m)) =
+                    try_send_inbound_msg(msg, user_inbound_tx, system_inbound_tx)
+                {
                     if let Err(error) = config.runtime.pending_retry_store.save_pending_retry(&m) {
                         metrics::record_error_by_stage(error.metrics_stage());
                         log::error!(
@@ -2206,6 +2230,29 @@ mod tests {
     }
 
     #[test]
+    fn try_send_outbound_waits_for_visibility_queue_space() {
+        let (bus, _inbound_rx, outbound_rx) = crate::bus::MessageBus::new(1);
+        bus.outbound_tx
+            .try_send(PcMsg::new("qq_channel", "chat-1", "queued").expect("queued"))
+            .expect("fill outbound queue");
+        let tx = bus.outbound_tx.clone();
+        let receiver = std::thread::spawn(move || {
+            let first = outbound_rx.recv().expect("first queued message");
+            let second = outbound_rx.recv().expect("visibility ack");
+            (first.content, second.content, second.outbound_kind)
+        });
+        let mut visibility = PcMsg::new("qq_channel", "chat-1", "ack").expect("visibility");
+        visibility.outbound_kind = OutboundKind::Visibility;
+
+        assert!(try_send_outbound(&tx, visibility, "visibility"));
+
+        let (first, second, kind) = receiver.join().expect("receiver joins");
+        assert_eq!(first, "queued");
+        assert_eq!(second, "ack");
+        assert_eq!(kind, OutboundKind::Visibility);
+    }
+
+    #[test]
     fn post_reply_payload_defaults_external_content_flag_for_older_jobs() {
         let raw = serde_json::json!({
             "ingress": IngressKind::User,
@@ -2254,7 +2301,7 @@ mod tests {
             .expect("stored record");
         assert_eq!(stored.state, crate::agent::DetachedWorkState::Pending);
 
-        let (system_inbound_tx, system_inbound_rx, _) = crate::bus::new_inbound_channel(4);
+        let (system_inbound_tx, system_inbound_rx, _) = crate::bus::new_system_inbound_channel(4);
         wake_due_detached_background_work(&store, &system_inbound_tx, 1);
 
         let wake_msg = system_inbound_rx.try_recv().expect("wake enqueued");
@@ -4939,6 +4986,7 @@ mod tests {
                 external_wss_suspend_requested: false,
                 external_wss_suspended: false,
                 recovery_safe_mode_active: false,
+                runtime_foreground: crate::runtime::RuntimeForegroundOverlay::default(),
                 action_budget: crate::runtime::RuntimeModeActionBudget {
                     allow_periodic_maintenance: true,
                     allow_due_user_timers: true,
@@ -5038,6 +5086,7 @@ mod tests {
                 external_wss_suspend_requested: false,
                 external_wss_suspended: false,
                 recovery_safe_mode_active: false,
+                runtime_foreground: crate::runtime::RuntimeForegroundOverlay::default(),
                 action_budget: crate::runtime::RuntimeModeActionBudget {
                     allow_periodic_maintenance: true,
                     allow_due_user_timers: true,
@@ -5260,6 +5309,7 @@ mod tests {
                 external_wss_suspend_requested: false,
                 external_wss_suspended: false,
                 recovery_safe_mode_active: false,
+                runtime_foreground: crate::runtime::RuntimeForegroundOverlay::default(),
                 action_budget: crate::runtime::RuntimeModeActionBudget {
                     allow_periodic_maintenance: true,
                     allow_due_user_timers: true,
@@ -5691,7 +5741,7 @@ mod tests {
         let config = test_agent_loop_config();
         let opened = config.chat_streams.try_open().expect("open stream");
         let stream_id = opened.stream_id.clone();
-        let (system_inbound_tx, _system_inbound_rx, _) = crate::bus::new_inbound_channel(8);
+        let (system_inbound_tx, _system_inbound_rx, _) = crate::bus::new_system_inbound_channel(8);
         let mut msg = PcMsg::new_inbound(
             crate::chat_stream::CHANNEL_CONFIGURE_UI_CHAT,
             "configure-ui:default",
@@ -5804,8 +5854,8 @@ mod tests {
         let config = test_agent_loop_config();
         let mut msg =
             PcMsg::new_inbound("qq_channel", "chat-empty-final", "继续", false).expect("message");
-        let (user_inbound_tx, _user_inbound_rx, _) = crate::bus::new_inbound_channel(8);
-        let (system_inbound_tx, _system_inbound_rx, _) = crate::bus::new_inbound_channel(8);
+        let (user_inbound_tx, _user_inbound_rx, _) = crate::bus::new_user_inbound_channel(8);
+        let (system_inbound_tx, _system_inbound_rx, _) = crate::bus::new_system_inbound_channel(8);
         let (outbound_tx, outbound_rx, _) = crate::bus::new_inbound_channel(8);
         let mut llm_failure_count = HashMap::new();
         let mut turn_ledger = build_turn_ledger_start(&msg, now_unix_ms());
@@ -5864,8 +5914,8 @@ mod tests {
                 "telegram_message:9",
             );
         msg.req_id = Some("req-worker-failure".to_string());
-        let (user_inbound_tx, _user_inbound_rx, _) = crate::bus::new_inbound_channel(8);
-        let (system_inbound_tx, _system_inbound_rx, _) = crate::bus::new_inbound_channel(8);
+        let (user_inbound_tx, _user_inbound_rx, _) = crate::bus::new_user_inbound_channel(8);
+        let (system_inbound_tx, _system_inbound_rx, _) = crate::bus::new_system_inbound_channel(8);
         let (outbound_tx, outbound_rx, _) = crate::bus::new_inbound_channel(8);
         let mut llm_failure_count = HashMap::new();
         let mut turn_ledger = build_turn_ledger_start(&msg, now_unix_ms());
@@ -5918,7 +5968,7 @@ mod tests {
             Arc::clone(&turn_ledger_store) as Arc<dyn TurnLedgerStore + Send + Sync>;
         config.runtime.turn_continuity_evidence_store = Arc::clone(&turn_continuity_evidence_store)
             as Arc<dyn TurnContinuityEvidenceStore + Send + Sync>;
-        let (system_inbound_tx, _system_inbound_rx, _) = crate::bus::new_inbound_channel(8);
+        let (system_inbound_tx, _system_inbound_rx, _) = crate::bus::new_system_inbound_channel(8);
         let (_outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
         let mut msg =
             PcMsg::new_inbound("qq_channel", "chat-ledger", "继续", false).expect("message");
@@ -6035,7 +6085,7 @@ mod tests {
         let mut config = test_agent_loop_config();
         config.runtime.turn_ledger_store =
             Arc::clone(&turn_ledger_store) as Arc<dyn TurnLedgerStore + Send + Sync>;
-        let (system_inbound_tx, _system_inbound_rx, _) = crate::bus::new_inbound_channel(8);
+        let (system_inbound_tx, _system_inbound_rx, _) = crate::bus::new_system_inbound_channel(8);
         let (_outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
         let msg =
             PcMsg::new_inbound("qq_channel", "chat-governance", "继续", false).expect("message");
@@ -6279,6 +6329,7 @@ mod tests {
             external_wss_suspend_requested: false,
             external_wss_suspended: false,
             recovery_safe_mode_active: false,
+            runtime_foreground: crate::runtime::RuntimeForegroundOverlay::default(),
             action_budget: crate::runtime::RuntimeModeActionBudget {
                 allow_periodic_maintenance: true,
                 allow_due_user_timers: true,
@@ -7494,7 +7545,7 @@ mod tests {
         let mut config = test_agent_loop_config();
         config.runtime.execution_state_store =
             Arc::clone(&execution_state_store) as Arc<dyn ExecutionStateStore + Send + Sync>;
-        let (system_inbound_tx, _system_inbound_rx, _) = crate::bus::new_inbound_channel(8);
+        let (system_inbound_tx, _system_inbound_rx, _) = crate::bus::new_system_inbound_channel(8);
         let (_outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
         let mut msg = PcMsg::new_inbound(
             "qq_channel",
@@ -7608,7 +7659,7 @@ mod tests {
         let mut config = test_agent_loop_config();
         config.runtime.execution_state_store =
             Arc::clone(&execution_state_store) as Arc<dyn ExecutionStateStore + Send + Sync>;
-        let (system_inbound_tx, _system_inbound_rx, _) = crate::bus::new_inbound_channel(8);
+        let (system_inbound_tx, _system_inbound_rx, _) = crate::bus::new_system_inbound_channel(8);
         let (_outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
         let mut msg = PcMsg::new_inbound(
             "qq_channel",
@@ -7717,7 +7768,7 @@ mod tests {
         let mut config = test_agent_loop_config();
         config.runtime.execution_state_store =
             Arc::clone(&execution_state_store) as Arc<dyn ExecutionStateStore + Send + Sync>;
-        let (system_inbound_tx, _system_inbound_rx, _) = crate::bus::new_inbound_channel(8);
+        let (system_inbound_tx, _system_inbound_rx, _) = crate::bus::new_system_inbound_channel(8);
         let (_outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
         let mut msg = PcMsg::new_inbound(
             "qq_channel",
@@ -7838,7 +7889,7 @@ mod tests {
         let mut config = test_agent_loop_config();
         config.runtime.execution_state_store =
             Arc::clone(&execution_state_store) as Arc<dyn ExecutionStateStore + Send + Sync>;
-        let (system_inbound_tx, _system_inbound_rx, _) = crate::bus::new_inbound_channel(8);
+        let (system_inbound_tx, _system_inbound_rx, _) = crate::bus::new_system_inbound_channel(8);
         let (_outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
         let mut msg = PcMsg::new_inbound(
             "qq_channel",
@@ -7930,7 +7981,7 @@ mod tests {
             Arc::clone(&execution_state_store) as Arc<dyn ExecutionStateStore + Send + Sync>;
         config.runtime.task_run_store = Arc::clone(&task_run_store)
             as Arc<dyn crate::task_execution::TaskRunStore + Send + Sync>;
-        let (system_inbound_tx, _system_inbound_rx, _) = crate::bus::new_inbound_channel(8);
+        let (system_inbound_tx, _system_inbound_rx, _) = crate::bus::new_system_inbound_channel(8);
         let (outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
         let mut registry = test_registry_with_protocols(
             &[("mail", ToolLlmVisibility::user_only())],
@@ -8149,7 +8200,7 @@ mod tests {
                 },
             )
             .expect("seed active work");
-        let (system_inbound_tx, _system_inbound_rx, _) = crate::bus::new_inbound_channel(8);
+        let (system_inbound_tx, _system_inbound_rx, _) = crate::bus::new_system_inbound_channel(8);
         let (_outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
         let mut msg = PcMsg::new_inbound(
             "qq_channel",
@@ -8286,7 +8337,7 @@ mod tests {
                 },
             )
             .expect("seed active work");
-        let (system_inbound_tx, _system_inbound_rx, _) = crate::bus::new_inbound_channel(8);
+        let (system_inbound_tx, _system_inbound_rx, _) = crate::bus::new_system_inbound_channel(8);
         let (_outbound_tx, _outbound_rx, _) = crate::bus::new_inbound_channel(8);
         let mut msg =
             PcMsg::new_inbound("qq_channel", "chat-cancel-task-run", "算了，先停下", false)
@@ -8545,6 +8596,7 @@ mod tests {
                 external_wss_suspend_requested: false,
                 external_wss_suspended: false,
                 recovery_safe_mode_active: false,
+                runtime_foreground: crate::runtime::RuntimeForegroundOverlay::default(),
                 action_budget: crate::runtime::RuntimeModeActionBudget {
                     allow_periodic_maintenance: true,
                     allow_due_user_timers: true,

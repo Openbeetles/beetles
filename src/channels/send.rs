@@ -350,7 +350,7 @@ pub(crate) fn run_buffered_sender_loop<SendOne>(
             }
         }
         if !sent {
-            if message.outbound_kind.is_supplemental() {
+            if message.outbound_kind.is_best_effort_delivery() {
                 log::warn!(
                     "[{}] supplemental dropped after send failure req_id={} chat_id={}",
                     tag,
@@ -659,6 +659,41 @@ mod tests {
 
         let seen = seen.lock().unwrap_or_else(|e| e.into_inner());
         assert_eq!(seen.as_slice(), ["reply:1", "reply:1"]);
+    }
+
+    #[test]
+    fn buffered_sender_loop_defers_visibility_tls_admission_like_primary() {
+        let _guard = crate::orchestrator::runtime_capability::RUNTIME_CAPABILITY_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let (tx, rx) = std::sync::mpsc::sync_channel(4);
+        tx.send(QueuedOutboundMessage {
+            transport_send_id: next_queued_outbound_id(),
+            chat_id: "chat-a".to_string(),
+            content: "ack/progress".to_string(),
+            body: CanonicalMessageBody::text("ack/progress"),
+            platform_thread_id: String::new(),
+            platform_message_id: String::new(),
+            req_id: Some("req-visibility".to_string()),
+            outbound_kind: OutboundKind::Visibility,
+        })
+        .expect("send visibility");
+        drop(tx);
+
+        let seen = std::sync::Arc::new(Mutex::new(Vec::<String>::new()));
+        let seen_clone = std::sync::Arc::clone(&seen);
+
+        run_buffered_sender_loop(rx, "test_sender", move |message, attempt| {
+            let mut guard = seen_clone.lock().unwrap_or_else(|e| e.into_inner());
+            guard.push(format!("{}:{attempt}", message.content));
+            if guard.len() == 1 {
+                return Err(Error::config("tls_admission", "largest block too small"));
+            }
+            Ok(())
+        });
+
+        let seen = seen.lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(seen.as_slice(), ["ack/progress:1", "ack/progress:1"]);
     }
 
     #[test]

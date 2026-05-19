@@ -557,7 +557,7 @@ mod tests {
     #[test]
     fn keyed_system_inbound_message_keeps_single_latest_job() {
         let (_state_guard, _delayed_guard) = delayed_task_test_scope();
-        let (tx, rx, _depth) = crate::bus::new_inbound_channel(4);
+        let (tx, rx, _depth) = crate::bus::new_system_inbound_channel(4);
         let first = crate::bus::PcMsg::new_system("_post_reply_maintenance", "chat-1", "old")
             .expect("first");
         let second = crate::bus::PcMsg::new_system("_post_reply_maintenance", "chat-1", "new")

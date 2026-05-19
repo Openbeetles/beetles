@@ -5,8 +5,8 @@ use std::sync::Arc;
 use std::sync::RwLock;
 
 use crate::bus::{
-    AssetSourcePlatform, AudioBody, CanonicalMessageBody, FileBody, ImageBody, InboundTx,
-    MediaAssetRef, MessageTransport, OutboundTx, PcMsg, TextBody, VideoBody, MAX_CONTENT_LEN,
+    AssetSourcePlatform, AudioBody, CanonicalMessageBody, FileBody, ImageBody, MediaAssetRef,
+    MessageTransport, OutboundTx, PcMsg, TextBody, UserInboundTx, VideoBody, MAX_CONTENT_LEN,
 };
 use crate::channels::inbound_backpressure::{self, EventIngressSource, InboundBackpressureOutcome};
 use crate::channels::ChannelHttpClient;
@@ -339,7 +339,7 @@ pub fn poll_telegram_once<H: ChannelHttpClient>(
     http: &mut H,
     token: &str,
     offset: Option<i64>,
-    inbound_tx: &InboundTx,
+    inbound_tx: &UserInboundTx,
     pending_retry: &dyn PendingRetryStore,
     allowed_chat_ids: &[String],
     group_activation: &str,
@@ -511,7 +511,10 @@ pub fn poll_telegram_once<H: ChannelHttpClient>(
             let mut enqueued = false;
             let mut disconnected = false;
             for _ in 0..3 {
-                match inbound_tx.try_send(pc.clone()) {
+                match inbound_tx.try_submit_user(
+                    pc.clone(),
+                    crate::runtime::RuntimeForegroundSource::ExternalUserMessage,
+                ) {
                     Ok(()) => {
                         inbound_backpressure::record_enqueued(EventIngressSource::TelegramPoll);
                         enqueued = true;
@@ -571,9 +574,26 @@ pub fn poll_telegram_once<H: ChannelHttpClient>(
 fn telegram_poll_transport_admission(
     mode: crate::runtime::RuntimeModeSnapshot,
 ) -> Option<crate::network::TransportAdmissionRejection> {
-    crate::network::runtime_transport_admission(
+    let resource = crate::orchestrator::resource_light_snapshot();
+    let context = crate::runtime::current_runtime_scheduler_context(
+        crate::runtime::default_runtime_scheduler_profile(),
+        resource.pressure,
+    );
+    telegram_poll_transport_admission_for_context(mode, context)
+}
+
+fn telegram_poll_transport_admission_for_context(
+    mode: crate::runtime::RuntimeModeSnapshot,
+    mut context: crate::runtime::RuntimeSchedulerContext,
+) -> Option<crate::network::TransportAdmissionRejection> {
+    context.runtime_mode = mode;
+    crate::network::runtime_transport_admission_for_work(
         crate::network::TransportAdmissionKind::NonVoiceHttp,
-        mode,
+        crate::runtime::RuntimeWorkRequest::new(
+            crate::runtime::RuntimeWorkClass::ChannelReconnect,
+            crate::runtime::RuntimeWorkSource::Background,
+        ),
+        context,
     )
     .rejection()
 }
@@ -582,7 +602,7 @@ fn telegram_poll_transport_admission(
 #[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
-    use crate::bus::{new_inbound_channel, MessageBodyKind, MessageBus};
+    use crate::bus::{new_user_inbound_channel, MessageBodyKind, MessageBus};
     use crate::memory::SessionMessage;
     use crate::platform::ResponseBody;
     use std::collections::VecDeque;
@@ -661,6 +681,34 @@ mod tests {
         assert_eq!(rejection.reason, "voice_exclusive_suspend");
     }
 
+    #[test]
+    fn telegram_poll_transport_admission_defers_background_poll_during_foreground() {
+        let mode = crate::runtime::mode::snapshot_from_source(
+            crate::runtime::mode::RuntimeModeSource::default(),
+        );
+        let rejection = telegram_poll_transport_admission_for_context(
+            mode,
+            crate::runtime::RuntimeSchedulerContext {
+                profile: crate::runtime::RuntimePlanePolicyProfile::EspCompact,
+                runtime_mode: mode,
+                foreground: crate::runtime::RuntimeForegroundOverlay {
+                    active: true,
+                    active_count: 1,
+                    primary_source: Some(
+                        crate::runtime::RuntimeForegroundSource::ExternalUserMessage,
+                    ),
+                    age_ms: Some(500),
+                    resume_after_ms: Some(29_500),
+                },
+                pressure: crate::orchestrator::PressureLevel::Normal,
+            },
+        )
+        .expect("foreground should defer background telegram poll");
+
+        assert_eq!(rejection.stage, "transport_runtime_scheduler");
+        assert_eq!(rejection.reason, "foreground_active");
+    }
+
     #[derive(Default)]
     struct StubPendingRetryStore;
 
@@ -700,7 +748,7 @@ mod tests {
     }
 
     fn poll_single_update(body: serde_json::Value) -> PcMsg {
-        let (inbound_tx, inbound_rx, _) = new_inbound_channel(4);
+        let (inbound_tx, inbound_rx, _) = new_user_inbound_channel(4);
         let mut http = StubHttp {
             get_results: VecDeque::from([Ok((
                 200,
@@ -732,7 +780,7 @@ mod tests {
 
     #[test]
     fn poll_telegram_once_activation_command_uses_injected_setter() {
-        let (inbound_tx, _inbound_rx, inbound_depth) = new_inbound_channel(4);
+        let (inbound_tx, _inbound_rx, inbound_depth) = new_user_inbound_channel(4);
         let (bus, _bus_inbound_rx, outbound_rx) = MessageBus::new(4);
         let mut http = StubHttp {
             get_results: VecDeque::from([Ok((
@@ -802,7 +850,7 @@ mod tests {
 
     #[test]
     fn poll_telegram_once_enqueues_inbound_without_immediate_reaction() {
-        let (inbound_tx, inbound_rx, _) = new_inbound_channel(4);
+        let (inbound_tx, inbound_rx, _) = new_user_inbound_channel(4);
         let mut http = StubHttp {
             get_results: VecDeque::from([Ok((
                 200,
@@ -953,7 +1001,7 @@ pub fn run_telegram_poll_loop<H, F>(
     token: String,
     allowed_chat_ids: Vec<String>,
     group_activation: Arc<RwLock<String>>,
-    inbound_tx: InboundTx,
+    inbound_tx: UserInboundTx,
     pending_retry: Arc<dyn PendingRetryStore + Send + Sync>,
     outbound_tx: OutboundTx,
     session_store: Arc<dyn SessionStore + Send + Sync>,

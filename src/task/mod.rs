@@ -305,7 +305,7 @@ pub(crate) fn task_due_tick(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bus::new_inbound_channel;
+    use crate::bus::new_system_inbound_channel;
     use std::sync::Mutex;
 
     #[test]
@@ -483,7 +483,7 @@ mod tests {
     fn task_due_tick_processes_at_most_four_due_items_per_tick() {
         let store =
             StubDueTaskStore::new((0..5).map(|idx| due_task(&format!("task-{idx}"))).collect());
-        let (tx, rx, _) = new_inbound_channel(16);
+        let (tx, rx, _) = new_system_inbound_channel(16);
         let resolve_locale: std::sync::Arc<dyn Fn() -> crate::i18n::Locale + Send + Sync> =
             std::sync::Arc::new(|| crate::i18n::Locale::Zh);
 
@@ -506,7 +506,7 @@ mod tests {
     #[test]
     fn task_due_tick_does_not_mark_notified_when_system_inbound_is_disconnected() {
         let store = StubDueTaskStore::new(vec![due_task("task-1")]);
-        let (tx, rx, _) = new_inbound_channel(1);
+        let (tx, rx, _) = new_system_inbound_channel(1);
         drop(rx);
         let resolve_locale: std::sync::Arc<dyn Fn() -> crate::i18n::Locale + Send + Sync> =
             std::sync::Arc::new(|| crate::i18n::Locale::Zh);

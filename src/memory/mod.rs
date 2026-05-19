@@ -976,7 +976,7 @@ pub(crate) fn remind_tick(
 #[cfg(test)]
 mod tests {
     use super::build_system_prompt;
-    use crate::bus::new_inbound_channel;
+    use crate::bus::new_system_inbound_channel;
     use crate::error::Result;
     use crate::memory::RemindAtStore;
     use crate::reminder::ReminderItem;
@@ -1100,7 +1100,7 @@ mod tests {
             ..ReminderItem::default()
         }]);
         let cleaned = Mutex::new(Vec::new());
-        let (tx, rx, _) = new_inbound_channel(4);
+        let (tx, rx, _) = new_system_inbound_channel(4);
         let resolve_locale: std::sync::Arc<dyn Fn() -> crate::i18n::Locale + Send + Sync> =
             std::sync::Arc::new(|| crate::i18n::Locale::Zh);
 
@@ -1131,7 +1131,7 @@ mod tests {
         let store =
             StubRemindAtStore::new((0..5).map(|idx| reminder(&format!("rem-{idx}"))).collect());
         let cleaned = Mutex::new(Vec::new());
-        let (tx, rx, _) = new_inbound_channel(16);
+        let (tx, rx, _) = new_system_inbound_channel(16);
         let resolve_locale: std::sync::Arc<dyn Fn() -> crate::i18n::Locale + Send + Sync> =
             std::sync::Arc::new(|| crate::i18n::Locale::Zh);
 
@@ -1166,7 +1166,7 @@ mod tests {
     fn remind_tick_requeues_when_system_inbound_is_disconnected() {
         let store = StubRemindAtStore::new(vec![reminder("rem-1")]);
         let cleaned = Mutex::new(Vec::new());
-        let (tx, rx, _) = new_inbound_channel(1);
+        let (tx, rx, _) = new_system_inbound_channel(1);
         drop(rx);
         let resolve_locale: std::sync::Arc<dyn Fn() -> crate::i18n::Locale + Send + Sync> =
             std::sync::Arc::new(|| crate::i18n::Locale::Zh);

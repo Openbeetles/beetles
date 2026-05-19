@@ -341,6 +341,7 @@ mod tests {
             external_wss_suspend_requested: false,
             external_wss_suspended: false,
             recovery_safe_mode_active: mode == RuntimeMode::RecoverySafeMode,
+            runtime_foreground: crate::runtime::RuntimeForegroundOverlay::default(),
             action_budget: crate::runtime::mode::snapshot_from_source(
                 crate::runtime::mode::RuntimeModeSource {
                     boot_phase_active: mode == RuntimeMode::Booting,

@@ -1,7 +1,7 @@
 //! 飞书长连接入站：HTTP 取 wss URL，建 WSS，收 protobuf 帧，解析 EVENT 入队。
 //! 委托 wss_gateway 统一循环，本模块实现 FeishuWssDriver。
 
-use crate::bus::InboundTx;
+use crate::bus::UserInboundTx;
 use crate::channels::wss_gateway::{
     run_wss_gateway_loop, WssConnection, WssGatewayDriver, WssRecvAction, WssSessionState,
 };
@@ -235,7 +235,7 @@ pub fn run_feishu_ws_loop<H, C, CreateHttp, Conn>(
     app_id: String,
     app_secret: String,
     allowed_chat_ids: Vec<String>,
-    inbound_tx: InboundTx,
+    inbound_tx: UserInboundTx,
     pending_retry: &dyn PendingRetryStore,
     create_http: CreateHttp,
     connect: Conn,

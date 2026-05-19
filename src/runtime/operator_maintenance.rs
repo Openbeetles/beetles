@@ -290,12 +290,12 @@ pub fn operator_maintenance_test_guard() -> std::sync::MutexGuard<'static, ()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bus::new_inbound_channel;
+    use crate::bus::new_system_inbound_channel;
 
     #[test]
     fn direct_submission_enqueues_operator_maintenance_message() {
         let _guard = operator_maintenance_test_guard();
-        let (tx, rx, _depth) = new_inbound_channel(crate::constants::DEFAULT_CAPACITY);
+        let (tx, rx, _depth) = new_system_inbound_channel(crate::constants::DEFAULT_CAPACITY);
         let request = OperatorMaintenanceRequest::new(
             OperatorMaintenanceAction::RunRepairPlan,
             Some("chat-1".to_string()),
@@ -329,7 +329,7 @@ mod tests {
             "test",
         );
         persist_operator_maintenance_request(&request).expect("persist request");
-        let (tx, rx, _depth) = new_inbound_channel(crate::constants::DEFAULT_CAPACITY);
+        let (tx, rx, _depth) = new_system_inbound_channel(crate::constants::DEFAULT_CAPACITY);
 
         let drained =
             drain_persisted_operator_maintenance_requests(&tx, 4).expect("drain persisted");

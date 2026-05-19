@@ -56,7 +56,7 @@ pub fn post(ctx: &HandlerContext, body: &str) -> ApiResponse {
 #[cfg(test)]
 mod tests {
     use super::post;
-    use crate::bus::new_inbound_channel;
+    use crate::bus::new_system_inbound_channel;
     use crate::platform::http_server::api_contract;
     use crate::platform::http_server::handlers::build_default_test_handler_context;
     use serde_json::Value;
@@ -64,7 +64,7 @@ mod tests {
     #[test]
     fn post_enqueues_structured_operator_maintenance_request() {
         let (system_inbound_tx, system_inbound_rx, _depth) =
-            new_inbound_channel(crate::constants::DEFAULT_CAPACITY);
+            new_system_inbound_channel(crate::constants::DEFAULT_CAPACITY);
         let mut ctx = build_default_test_handler_context();
         ctx.system_inbound_tx = Some(system_inbound_tx);
 

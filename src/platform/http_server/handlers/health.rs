@@ -116,6 +116,14 @@ mod tests {
             parsed.get("workflow").is_none(),
             "health must not expose workflow diagnostics"
         );
+        assert!(
+            parsed.get("runtime_scheduler").is_none(),
+            "health must not expose scheduler deep diagnostics"
+        );
+        assert!(
+            parsed.get("runtime_policy").is_none(),
+            "health must not expose scheduler policy diagnostics"
+        );
         assert!(parsed.get("display").is_some());
         assert!(parsed.get("audio").is_some());
         assert!(parsed.get("network_status").is_some());

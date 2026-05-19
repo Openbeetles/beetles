@@ -1224,8 +1224,9 @@ fn dispatch_impl(
                 .header_ci("X-Webhook-Token")
                 .or_else(|| common::token_from_uri(uri));
             let provided = token.unwrap_or("");
-            let r = handlers::webhook::post(ctx, &env.inbound_tx, body_str.to_string(), provided)
-                .map_err(|e| err_other("http_router_dispatch", e))?;
+            let r =
+                handlers::webhook::post(ctx, &env.user_inbound_tx, body_str.to_string(), provided)
+                    .map_err(|e| err_other("http_router_dispatch", e))?;
             Ok(api_to_out(r))
         }
         None => Ok(OutgoingResponse::json(
@@ -1240,7 +1241,7 @@ fn dispatch_impl(
 #[cfg(test)]
 mod tests {
     use super::dispatch;
-    use crate::bus::new_inbound_channel;
+    use crate::bus::{new_system_inbound_channel, new_user_inbound_channel};
     use crate::config;
     #[cfg(all(
         feature = "capability_office",
@@ -1274,7 +1275,7 @@ mod tests {
 
     fn build_router_env() -> RouterEnv {
         let (inbound_tx, _inbound_rx, _inbound_depth) =
-            new_inbound_channel(crate::constants::DEFAULT_CAPACITY);
+            new_user_inbound_channel(crate::constants::DEFAULT_CAPACITY);
         RouterEnv::new(inbound_tx)
     }
 
@@ -1542,7 +1543,7 @@ mod tests {
         let _guard = default_test_handler_context_guard();
         let ctx = build_authed_ctx();
         let (inbound_tx, inbound_rx, _inbound_depth) =
-            new_inbound_channel(crate::constants::DEFAULT_CAPACITY);
+            new_user_inbound_channel(crate::constants::DEFAULT_CAPACITY);
         let env = RouterEnv::new(inbound_tx);
         let csrf = crate::platform::csrf::get_token().expect("csrf token");
         let request = IncomingRequest {
@@ -1595,7 +1596,7 @@ mod tests {
             Arc::new(crate::chat_stream::ChatStreamBroker::new_with_max_active_for_test(1));
         let _opened = ctx.chat_streams.try_open().expect("existing stream");
         let (inbound_tx, inbound_rx, _inbound_depth) =
-            new_inbound_channel(crate::constants::DEFAULT_CAPACITY);
+            new_user_inbound_channel(crate::constants::DEFAULT_CAPACITY);
         let env = RouterEnv::new(inbound_tx);
         let csrf = crate::platform::csrf::get_token().expect("csrf token");
         let request = IncomingRequest {
@@ -1917,7 +1918,7 @@ mod tests {
     fn operator_maintenance_route_accepts_structured_runtime_request() {
         let _guard = default_test_handler_context_guard();
         let (system_inbound_tx, system_inbound_rx, _system_inbound_depth) =
-            new_inbound_channel(crate::constants::DEFAULT_CAPACITY);
+            new_system_inbound_channel(crate::constants::DEFAULT_CAPACITY);
         let mut ctx = build_authed_ctx();
         ctx.system_inbound_tx = Some(system_inbound_tx);
         let env = build_router_env();

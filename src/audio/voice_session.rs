@@ -16,7 +16,7 @@ use crate::audio::pipeline::{
 use crate::audio::realtime::{
     connect_realtime_session, run_connected_realtime_session, ConnectedRealtimeSession,
 };
-use crate::bus::{PcMsg, TrackedSender};
+use crate::bus::{PcMsg, UserInboundTx};
 use crate::config::{audio_realtime_enabled, AudioSegment};
 use crate::constants::{AUDIO_CAPTURE_MAX_MS, VOICE_CHANNEL_NAME, VOICE_DEVICE_CHAT_ID};
 use crate::network::{HttpClientClass, NetworkGovernor, VoiceExclusiveTransportGuard};
@@ -56,7 +56,20 @@ enum VoiceWorkerStartKind {
     PrepareRealtimeTransportThenSpawnConnect,
 }
 
+enum VoiceWorkerStartResult {
+    Started(TaskHandle),
+    Deferred { retry_after_ms: u64 },
+    Dropped,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum VoiceWorkerStartDisposition {
+    RetryLater,
+}
+
 struct RealtimeSessionOwnership {
+    _foreground_ticket: crate::runtime::RuntimeForegroundTicket,
     _audio_input_call: crate::orchestrator::RuntimeCapabilityCallGuard,
     _audio_output_call: crate::orchestrator::RuntimeCapabilityCallGuard,
     _audio_input_lease: AudioLeaseGuard,
@@ -96,6 +109,10 @@ impl VoiceWorkerRetryGate {
         self.retry_after = Some(now + Duration::from_millis(WORKER_SPAWN_FAILURE_COOLDOWN_MS));
     }
 
+    fn record_scheduler_defer(&mut self, now: Instant, retry_after_ms: u64) {
+        self.retry_after = Some(now + Duration::from_millis(retry_after_ms.max(1)));
+    }
+
     fn clear(&mut self) {
         self.retry_after = None;
     }
@@ -108,7 +125,7 @@ pub struct VoiceSessionConfig {
     pub network: Arc<NetworkGovernor>,
     pub audio_cfg: AudioSegment,
     pub baidu_token: Option<Arc<BaiduTokenCache>>,
-    pub inbound_tx: TrackedSender<PcMsg>,
+    pub inbound_tx: UserInboundTx,
     pub wake_prompt: String,
 }
 
@@ -139,13 +156,18 @@ pub fn run_voice_session(cfg: VoiceSessionConfig, rx: Receiver<VoiceEvent>) {
         if !worker_busy && retry_gate.can_retry(now) {
             if let Some(task) = take_pending_voice_task(&mut pending) {
                 match spawn_voice_session_worker(cfg.clone(), task.clone(), worker_tx.clone()) {
-                    Ok(Some(handle)) => {
+                    Ok(VoiceWorkerStartResult::Started(handle)) => {
                         retry_gate.clear();
                         worker_handle = Some(handle);
                         worker_busy = true;
                         continue;
                     }
-                    Ok(None) => {
+                    Ok(VoiceWorkerStartResult::Deferred { retry_after_ms }) => {
+                        retry_gate.record_scheduler_defer(now, retry_after_ms);
+                        restore_pending_voice_task(&mut pending, task);
+                        continue;
+                    }
+                    Ok(VoiceWorkerStartResult::Dropped) => {
                         retry_gate.clear();
                         continue;
                     }
@@ -188,8 +210,29 @@ fn spawn_voice_session_worker(
     cfg: VoiceSessionConfig,
     task: VoiceWorkerTask,
     worker_tx: mpsc::Sender<VoiceWorkerMessage>,
-) -> crate::Result<Option<TaskHandle>> {
-    match voice_worker_start_kind(audio_realtime_enabled(&cfg.audio_cfg), &task) {
+) -> crate::Result<VoiceWorkerStartResult> {
+    let realtime_enabled = audio_realtime_enabled(&cfg.audio_cfg);
+    match voice_worker_scheduler_decision(realtime_enabled, &task) {
+        crate::runtime::RuntimeWorkDecision::Proceed
+        | crate::runtime::RuntimeWorkDecision::Degrade { .. } => {}
+        crate::runtime::RuntimeWorkDecision::Defer { retry_after_ms, .. }
+        | crate::runtime::RuntimeWorkDecision::DrainAndResume { retry_after_ms, .. } => {
+            return Ok(VoiceWorkerStartResult::Deferred { retry_after_ms });
+        }
+        crate::runtime::RuntimeWorkDecision::Suspend { .. } => {
+            return Ok(VoiceWorkerStartResult::Deferred {
+                retry_after_ms: 1_000,
+            });
+        }
+        crate::runtime::RuntimeWorkDecision::RejectWithStableKey { reason, .. }
+        | crate::runtime::RuntimeWorkDecision::RejectWithUserVisibleReason { reason } => {
+            log::warn!("[{}] voice worker rejected by scheduler: {}", TAG, reason);
+            crate::metrics::record_voice_tool_failure("voice_session_scheduler");
+            return Ok(VoiceWorkerStartResult::Dropped);
+        }
+    }
+
+    match voice_worker_start_kind(realtime_enabled, &task) {
         VoiceWorkerStartKind::SpawnWorker => {
             let (name, stack_size) = voice_worker_spawn_profile(&task);
             spawn_guarded_with_profile_handle(
@@ -199,7 +242,7 @@ fn spawn_voice_session_worker(
                 HttpThreadRole::Background,
                 move || run_voice_session_worker(cfg, task, worker_tx),
             )
-            .map(Some)
+            .map(VoiceWorkerStartResult::Started)
             .map_err(|error| crate::Error::io("voice_session_worker_spawn", error))
         }
         VoiceWorkerStartKind::PrepareRealtimeTransportThenSpawnConnect => {
@@ -212,7 +255,7 @@ fn spawn_voice_session_worker(
                         error
                     );
                     crate::metrics::record_voice_tool_failure("voice_session_realtime");
-                    return Ok(None);
+                    return Ok(VoiceWorkerStartResult::Dropped);
                 }
             };
             spawn_guarded_with_profile_handle(
@@ -222,8 +265,83 @@ fn spawn_voice_session_worker(
                 HttpThreadRole::Background,
                 move || run_realtime_connect_worker(cfg, ownership, worker_tx),
             )
-            .map(Some)
+            .map(VoiceWorkerStartResult::Started)
             .map_err(|error| crate::Error::io("voice_realtime_connect_spawn", error))
+        }
+    }
+}
+
+fn voice_worker_scheduler_decision(
+    realtime_enabled: bool,
+    task: &VoiceWorkerTask,
+) -> crate::runtime::RuntimeWorkDecision {
+    let Some((class, source)) = voice_worker_runtime_work(realtime_enabled, task) else {
+        return crate::runtime::RuntimeWorkDecision::Proceed;
+    };
+    let pressure = crate::orchestrator::snapshot().pressure;
+    crate::runtime::admit_current_runtime_work(
+        class,
+        source,
+        crate::runtime::default_runtime_scheduler_profile(),
+        pressure,
+    )
+}
+
+#[cfg(test)]
+fn voice_worker_scheduler_decision_for_context(
+    realtime_enabled: bool,
+    task: &VoiceWorkerTask,
+    context: crate::runtime::RuntimeSchedulerContext,
+) -> crate::runtime::RuntimeWorkDecision {
+    let Some((class, source)) = voice_worker_runtime_work(realtime_enabled, task) else {
+        return crate::runtime::RuntimeWorkDecision::Proceed;
+    };
+    crate::runtime::admit_runtime_work(
+        crate::runtime::RuntimeWorkRequest::new(class, source),
+        context,
+    )
+}
+
+fn voice_worker_runtime_work(
+    realtime_enabled: bool,
+    task: &VoiceWorkerTask,
+) -> Option<(
+    crate::runtime::RuntimeWorkClass,
+    crate::runtime::RuntimeWorkSource,
+)> {
+    match task {
+        VoiceWorkerTask::WakeInteraction if realtime_enabled => Some((
+            crate::runtime::RuntimeWorkClass::RealtimeVoiceSession,
+            crate::runtime::RuntimeWorkSource::Background,
+        )),
+        VoiceWorkerTask::WakeInteraction => Some((
+            crate::runtime::RuntimeWorkClass::VoiceFallbackInteraction,
+            crate::runtime::RuntimeWorkSource::Background,
+        )),
+        VoiceWorkerTask::Speak(_) => None,
+    }
+}
+
+#[cfg(test)]
+fn apply_voice_worker_start_result_for_test(
+    result: VoiceWorkerStartResult,
+    task: VoiceWorkerTask,
+    now: Instant,
+) -> (
+    VoiceWorkerStartDisposition,
+    VoiceWorkerRetryGate,
+    PendingVoiceEvents,
+) {
+    let mut retry_gate = VoiceWorkerRetryGate::default();
+    let mut pending = PendingVoiceEvents::default();
+    match result {
+        VoiceWorkerStartResult::Deferred { retry_after_ms } => {
+            retry_gate.record_scheduler_defer(now, retry_after_ms);
+            restore_pending_voice_task(&mut pending, task);
+            (VoiceWorkerStartDisposition::RetryLater, retry_gate, pending)
+        }
+        VoiceWorkerStartResult::Started(_) | VoiceWorkerStartResult::Dropped => {
+            unreachable!("test helper only models scheduler defer")
         }
     }
 }
@@ -350,6 +468,9 @@ fn prepare_realtime_session_ownership(
             ),
         ));
     }
+    let foreground_ticket = crate::runtime::renew_runtime_foreground_now(
+        crate::runtime::RuntimeForegroundSource::RealtimeVoiceSession,
+    );
     let audio_input_call = crate::orchestrator::try_begin_runtime_capability_call(
         crate::orchestrator::RUNTIME_CAPABILITY_AUDIO_INPUT,
     )?;
@@ -367,6 +488,7 @@ fn prepare_realtime_session_ownership(
     let voice_transport = VoiceExclusiveTransportGuard::enter(cfg.platform.as_ref(), TAG)?;
 
     Ok(RealtimeSessionOwnership {
+        _foreground_ticket: foreground_ticket,
         _audio_input_call: audio_input_call,
         _audio_output_call: audio_output_call,
         _audio_input_lease: audio_input_lease,
@@ -442,6 +564,9 @@ fn handle_wake_interaction<F>(
     }
 
     let _wake_reset = WakeSessionResetGuard;
+    let _foreground_ticket = crate::runtime::renew_runtime_foreground_now(
+        crate::runtime::RuntimeForegroundSource::VoiceFallbackInteraction,
+    );
     log::info!("[{}] wake triggered, starting voice interaction", TAG);
     let duplex_caps = cfg.platform.audio_duplex_capabilities();
 
@@ -524,7 +649,10 @@ fn handle_wake_interaction<F>(
 
     match PcMsg::new_inbound(VOICE_CHANNEL_NAME, VOICE_DEVICE_CHAT_ID, &text, false) {
         Ok(msg) => {
-            if let Err(error) = cfg.inbound_tx.try_send(msg) {
+            if let Err(error) = cfg.inbound_tx.try_submit_user(
+                msg,
+                crate::runtime::RuntimeForegroundSource::VoiceFallbackInteraction,
+            ) {
                 log::warn!("[{}] inbound queue full, voice msg dropped: {}", TAG, error);
             }
         }
@@ -755,5 +883,108 @@ mod tests {
             voice_worker_start_kind(true, &VoiceWorkerTask::Speak("reply".to_string())),
             VoiceWorkerStartKind::SpawnWorker
         );
+    }
+
+    #[test]
+    fn auto_voice_wake_maps_scheduler_work_class_and_source() {
+        assert_eq!(
+            voice_worker_runtime_work(true, &VoiceWorkerTask::WakeInteraction),
+            Some((
+                crate::runtime::RuntimeWorkClass::RealtimeVoiceSession,
+                crate::runtime::RuntimeWorkSource::Background
+            ))
+        );
+        assert_eq!(
+            voice_worker_runtime_work(false, &VoiceWorkerTask::WakeInteraction),
+            Some((
+                crate::runtime::RuntimeWorkClass::VoiceFallbackInteraction,
+                crate::runtime::RuntimeWorkSource::Background
+            ))
+        );
+        assert_eq!(
+            voice_worker_runtime_work(true, &VoiceWorkerTask::Speak("reply".to_string())),
+            None
+        );
+    }
+
+    #[test]
+    fn auto_voice_wake_scheduler_defer_keeps_task_pending() {
+        let now = Instant::now();
+        let (outcome, retry_gate, pending) = apply_voice_worker_start_result_for_test(
+            VoiceWorkerStartResult::Deferred {
+                retry_after_ms: 1_500,
+            },
+            VoiceWorkerTask::WakeInteraction,
+            now,
+        );
+
+        assert_eq!(outcome, VoiceWorkerStartDisposition::RetryLater);
+        assert!(!retry_gate.can_retry(now + Duration::from_millis(100)));
+        assert!(
+            pending.wake_requested,
+            "scheduler defer must retain auto wake instead of dropping the voice interaction"
+        );
+    }
+
+    #[test]
+    fn auto_realtime_voice_wake_consumes_scheduler_decision_before_connect() {
+        let decision = voice_worker_scheduler_decision_for_context(
+            true,
+            &VoiceWorkerTask::WakeInteraction,
+            crate::runtime::RuntimeSchedulerContext {
+                profile: crate::runtime::RuntimePlanePolicyProfile::EspCompact,
+                runtime_mode: crate::runtime::mode::snapshot_from_source(
+                    crate::runtime::mode::RuntimeModeSource::default(),
+                ),
+                foreground: crate::runtime::RuntimeForegroundOverlay {
+                    active: true,
+                    active_count: 1,
+                    primary_source: Some(crate::runtime::RuntimeForegroundSource::ConfigUiChat),
+                    age_ms: Some(500),
+                    resume_after_ms: Some(29_500),
+                },
+                pressure: crate::orchestrator::PressureLevel::Normal,
+            },
+        );
+
+        assert!(matches!(
+            decision,
+            crate::runtime::RuntimeWorkDecision::Defer {
+                reason: "foreground_active",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn auto_fallback_voice_wake_consumes_scheduler_decision_before_worker() {
+        let decision = voice_worker_scheduler_decision_for_context(
+            false,
+            &VoiceWorkerTask::WakeInteraction,
+            crate::runtime::RuntimeSchedulerContext {
+                profile: crate::runtime::RuntimePlanePolicyProfile::EspCompact,
+                runtime_mode: crate::runtime::mode::snapshot_from_source(
+                    crate::runtime::mode::RuntimeModeSource::default(),
+                ),
+                foreground: crate::runtime::RuntimeForegroundOverlay {
+                    active: true,
+                    active_count: 1,
+                    primary_source: Some(
+                        crate::runtime::RuntimeForegroundSource::ExternalUserMessage,
+                    ),
+                    age_ms: Some(500),
+                    resume_after_ms: Some(29_500),
+                },
+                pressure: crate::orchestrator::PressureLevel::Normal,
+            },
+        );
+
+        assert!(matches!(
+            decision,
+            crate::runtime::RuntimeWorkDecision::Defer {
+                reason: "foreground_active",
+                ..
+            }
+        ));
     }
 }

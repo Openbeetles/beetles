@@ -7,6 +7,7 @@ pub mod channel_wss_supervision;
 pub mod continuity_flush;
 pub mod delayed_task;
 pub mod execution_budget;
+pub mod foreground;
 pub mod frame_lease;
 pub mod governance;
 pub mod initiative;
@@ -26,6 +27,7 @@ pub mod operator_maintenance;
 pub mod plane;
 pub mod plane_lifecycle;
 pub mod presence;
+pub mod scheduler;
 pub mod soul_kernel;
 pub mod system_work;
 pub mod thread_registry;
@@ -51,6 +53,12 @@ pub use delayed_task::{
     schedule_system_inbound_msg, service_delayed_tasks,
 };
 pub use execution_budget::ExecutionBudgetSnapshot;
+pub use foreground::{
+    finish_runtime_foreground, renew_runtime_foreground, renew_runtime_foreground_now,
+    runtime_foreground_active, runtime_foreground_overlay, runtime_foreground_snapshot,
+    RuntimeForegroundOverlay, RuntimeForegroundSnapshot, RuntimeForegroundSource,
+    RuntimeForegroundTicket, RuntimeForegroundTicketState, RUNTIME_FOREGROUND_IDLE_SECS,
+};
 pub use frame_lease::{
     admit_current_camera_frame_capture, try_borrow_frame, try_borrow_frame_with_admission,
     FrameLease, FrameLeaseAdmission,
@@ -87,6 +95,12 @@ pub use plane_lifecycle::{PlaneLifecycleSnapshot, PlaneLifecycleState};
 pub use presence::{
     inspect_platform_display_projection, inspect_platform_display_projection_with_resource,
     inspect_platform_presence, PresenceDisplayProjection, PresenceSnapshot, PresenceState,
+};
+pub use scheduler::{
+    admit_current_runtime_work, admit_runtime_work, current_runtime_scheduler_context,
+    default_runtime_scheduler_profile, RuntimePlanePolicyProfile, RuntimeSchedulerContext,
+    RuntimeSchedulerSnapshot, RuntimeWorkClass, RuntimeWorkDecision, RuntimeWorkPriority,
+    RuntimeWorkRequest, RuntimeWorkSource,
 };
 pub use soul_kernel::{
     ensure_platform_soul_kernel_recovery, inspect_platform_soul_kernel, SoulKernelPromptProjection,

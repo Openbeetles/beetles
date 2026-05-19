@@ -159,7 +159,7 @@ fn cron_matches(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bus::new_inbound_channel;
+    use crate::bus::new_system_inbound_channel;
     use crate::memory::MemoryStore;
     use std::collections::HashMap;
     use std::sync::{Mutex, OnceLock};
@@ -226,7 +226,7 @@ mod tests {
     #[test]
     fn cron_tick_without_tasks_does_not_enqueue_synthetic_tick() {
         let _guard = cron_test_guard();
-        let (tx, rx, _depth) = new_inbound_channel(4);
+        let (tx, rx, _depth) = new_system_inbound_channel(4);
         let resolve_locale: Arc<dyn Fn() -> crate::i18n::Locale + Send + Sync> =
             Arc::new(|| crate::i18n::Locale::Zh);
         let mut state = CronTickState::new();
@@ -240,7 +240,7 @@ mod tests {
     #[test]
     fn cron_tick_enqueues_due_persisted_task() {
         let _guard = cron_test_guard();
-        let (tx, rx, _depth) = new_inbound_channel(4);
+        let (tx, rx, _depth) = new_system_inbound_channel(4);
         let resolve_locale: Arc<dyn Fn() -> crate::i18n::Locale + Send + Sync> =
             Arc::new(|| crate::i18n::Locale::Zh);
         let mut state = CronTickState::new();

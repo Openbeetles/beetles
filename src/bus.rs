@@ -378,8 +378,31 @@ impl OutboundKind {
         matches!(self, Self::Supplemental | Self::Visibility)
     }
 
+    pub fn is_ordinary_supplemental(self) -> bool {
+        matches!(self, Self::Supplemental)
+    }
+
     pub fn is_visibility(self) -> bool {
         matches!(self, Self::Visibility)
+    }
+
+    pub fn runtime_work_class(self) -> crate::runtime::RuntimeWorkClass {
+        match self {
+            Self::Primary => crate::runtime::RuntimeWorkClass::PrimaryReplyDelivery,
+            Self::Visibility => crate::runtime::RuntimeWorkClass::VisibilityDelivery,
+            Self::Supplemental => crate::runtime::RuntimeWorkClass::SupplementalDelivery,
+        }
+    }
+
+    pub fn runtime_work_source(self) -> crate::runtime::RuntimeWorkSource {
+        match self {
+            Self::Primary | Self::Visibility => crate::runtime::RuntimeWorkSource::UserFacing,
+            Self::Supplemental => crate::runtime::RuntimeWorkSource::Background,
+        }
+    }
+
+    pub fn is_best_effort_delivery(self) -> bool {
+        self.runtime_work_class() == crate::runtime::RuntimeWorkClass::SupplementalDelivery
     }
 
     pub fn as_str(self) -> &'static str {
@@ -785,6 +808,26 @@ impl PcMsg {
         self.inbound_dedup_key = source.inbound_dedup_key.clone();
         self.platform_thread_id = source.platform_thread_id.clone();
     }
+
+    /// Whether this message represents a user-originated inbound event from an external surface.
+    pub fn is_external_user_ingress(&self) -> bool {
+        self.ingress == IngressKind::User && self.source_transport != MessageTransport::Internal
+    }
+
+    pub fn runtime_foreground_source(&self) -> Option<crate::runtime::RuntimeForegroundSource> {
+        if self.ingress != IngressKind::User {
+            return None;
+        }
+        match self.channel.as_ref() {
+            crate::chat_stream::CHANNEL_CONFIGURE_UI_CHAT => {
+                Some(crate::runtime::RuntimeForegroundSource::ConfigUiChat)
+            }
+            crate::channel_capability::CHANNEL_VOICE => {
+                Some(crate::runtime::RuntimeForegroundSource::VoiceFallbackInteraction)
+            }
+            _ => Some(crate::runtime::RuntimeForegroundSource::ExternalUserMessage),
+        }
+    }
 }
 
 /// 带深度计数的发送端，send/try_send 成功时递增，供 health 查询。
@@ -877,10 +920,110 @@ pub type InboundTx = TrackedSender<PcMsg>;
 pub type OutboundTx = TrackedSender<PcMsg>;
 pub type InboundRx = TrackedReceiver<PcMsg>;
 pub type OutboundRx = TrackedReceiver<PcMsg>;
-pub type UserInboundTx = InboundTx;
 pub type UserInboundRx = InboundRx;
-pub type SystemInboundTx = InboundTx;
 pub type SystemInboundRx = InboundRx;
+
+/// User inbound queue sender. Successful user submissions renew runtime foreground.
+#[derive(Clone)]
+pub struct UserInboundTx {
+    inner: InboundTx,
+}
+
+impl UserInboundTx {
+    pub fn new(inner: InboundTx) -> Self {
+        Self { inner }
+    }
+
+    #[allow(clippy::result_large_err)]
+    pub fn send_user(
+        &self,
+        msg: PcMsg,
+        source: crate::runtime::RuntimeForegroundSource,
+    ) -> std::result::Result<(), mpsc::SendError<PcMsg>> {
+        let should_renew = msg.ingress == IngressKind::User;
+        let result = self.inner.send(msg);
+        if result.is_ok() && should_renew {
+            crate::runtime::renew_runtime_foreground_now(source);
+        }
+        result
+    }
+
+    #[allow(clippy::result_large_err)]
+    pub fn try_submit_user(
+        &self,
+        msg: PcMsg,
+        source: crate::runtime::RuntimeForegroundSource,
+    ) -> std::result::Result<(), mpsc::TrySendError<PcMsg>> {
+        let should_renew = msg.ingress == IngressKind::User;
+        let result = self.inner.try_send(msg);
+        if should_renew && !matches!(result, Err(mpsc::TrySendError::Disconnected(_))) {
+            crate::runtime::renew_runtime_foreground_now(source);
+        }
+        result
+    }
+
+    #[cfg(test)]
+    #[allow(clippy::result_large_err)]
+    pub fn try_submit_user_at(
+        &self,
+        msg: PcMsg,
+        source: crate::runtime::RuntimeForegroundSource,
+        now_ms: u64,
+    ) -> std::result::Result<(), mpsc::TrySendError<PcMsg>> {
+        let should_renew = msg.ingress == IngressKind::User;
+        let result = self.inner.try_send(msg);
+        if should_renew && !matches!(result, Err(mpsc::TrySendError::Disconnected(_))) {
+            crate::runtime::renew_runtime_foreground(source, now_ms);
+        }
+        result
+    }
+
+    pub fn queued_len(&self) -> usize {
+        self.inner.queued_len()
+    }
+
+    pub fn capacity(&self) -> usize {
+        self.inner.capacity()
+    }
+
+    pub fn remaining_capacity(&self) -> usize {
+        self.inner.remaining_capacity()
+    }
+}
+
+/// System inbound queue sender. It never renews runtime foreground.
+#[derive(Clone)]
+pub struct SystemInboundTx {
+    inner: InboundTx,
+}
+
+impl SystemInboundTx {
+    pub fn new(inner: InboundTx) -> Self {
+        Self { inner }
+    }
+
+    #[allow(clippy::result_large_err)]
+    pub fn send(&self, msg: PcMsg) -> std::result::Result<(), mpsc::SendError<PcMsg>> {
+        self.inner.send(msg)
+    }
+
+    #[allow(clippy::result_large_err)]
+    pub fn try_send(&self, msg: PcMsg) -> std::result::Result<(), mpsc::TrySendError<PcMsg>> {
+        self.inner.try_send(msg)
+    }
+
+    pub fn queued_len(&self) -> usize {
+        self.inner.queued_len()
+    }
+
+    pub fn capacity(&self) -> usize {
+        self.inner.capacity()
+    }
+
+    pub fn remaining_capacity(&self) -> usize {
+        self.inner.remaining_capacity()
+    }
+}
 
 /// 独立创建一个 PcMsg 入站队列（用于 user/system 双队列拆分）。
 pub fn new_inbound_channel(capacity: usize) -> (InboundTx, InboundRx, Arc<AtomicUsize>) {
@@ -899,6 +1042,20 @@ pub fn new_inbound_channel(capacity: usize) -> (InboundTx, InboundRx, Arc<Atomic
         },
         depth,
     )
+}
+
+pub fn new_user_inbound_channel(
+    capacity: usize,
+) -> (UserInboundTx, UserInboundRx, Arc<AtomicUsize>) {
+    let (tx, rx, depth) = new_inbound_channel(capacity);
+    (UserInboundTx::new(tx), rx, depth)
+}
+
+pub fn new_system_inbound_channel(
+    capacity: usize,
+) -> (SystemInboundTx, SystemInboundRx, Arc<AtomicUsize>) {
+    let (tx, rx, depth) = new_inbound_channel(capacity);
+    (SystemInboundTx::new(tx), rx, depth)
 }
 
 /// 消息总线：main 唯一创建；通道侧持 `inbound_tx` 推入站，dispatch 持 `outbound_rx` 取出站。
@@ -1009,5 +1166,99 @@ mod tests {
         .expect_err("should reject oversized outbound content");
 
         assert_eq!(err.stage(), "PcMsg::new_outbound_for_chat");
+    }
+
+    #[test]
+    fn outbound_kind_maps_to_runtime_delivery_work_class() {
+        assert_eq!(
+            OutboundKind::Primary.runtime_work_class(),
+            crate::runtime::RuntimeWorkClass::PrimaryReplyDelivery
+        );
+        assert_eq!(
+            OutboundKind::Visibility.runtime_work_class(),
+            crate::runtime::RuntimeWorkClass::VisibilityDelivery
+        );
+        assert_eq!(
+            OutboundKind::Supplemental.runtime_work_class(),
+            crate::runtime::RuntimeWorkClass::SupplementalDelivery
+        );
+        assert_eq!(
+            OutboundKind::Visibility.runtime_work_source(),
+            crate::runtime::RuntimeWorkSource::UserFacing
+        );
+        assert_eq!(
+            OutboundKind::Supplemental.runtime_work_source(),
+            crate::runtime::RuntimeWorkSource::Background
+        );
+        assert!(OutboundKind::Visibility.is_supplemental());
+        assert!(!OutboundKind::Visibility.is_ordinary_supplemental());
+        assert!(!OutboundKind::Visibility.is_best_effort_delivery());
+        assert!(OutboundKind::Supplemental.is_best_effort_delivery());
+    }
+
+    #[test]
+    fn successful_user_submission_renews_runtime_foreground() {
+        let _guard = crate::runtime::foreground::runtime_foreground_test_guard();
+        crate::runtime::foreground::reset_runtime_foreground_for_tests();
+        let (tx, _rx, _) = new_user_inbound_channel(2);
+        let msg = PcMsg::new_inbound("qq_channel", "chat-1", "hello", false)
+            .expect("user message")
+            .with_inbound_provenance(MessageTransport::Wss, "m1", "e1", "k1");
+        let now_ms = 1_000_000_000_000;
+
+        tx.try_submit_user_at(
+            msg,
+            crate::runtime::RuntimeForegroundSource::ExternalUserMessage,
+            now_ms,
+        )
+        .expect("enqueue user message");
+
+        let snapshot = crate::runtime::foreground::runtime_foreground_snapshot_at(now_ms + 1);
+        assert!(snapshot.active);
+        assert_eq!(
+            snapshot.primary_source,
+            Some(crate::runtime::RuntimeForegroundSource::ExternalUserMessage)
+        );
+    }
+
+    #[test]
+    fn full_user_queue_renews_runtime_foreground_without_record_growth() {
+        let _guard = crate::runtime::foreground::runtime_foreground_test_guard();
+        crate::runtime::foreground::reset_runtime_foreground_for_tests();
+        let (tx, _rx, _) = new_user_inbound_channel(1);
+        let now_ms = 1_000_000_000_000;
+        tx.try_submit_user_at(
+            PcMsg::new_inbound("qq_channel", "chat-1", "first", false).expect("first"),
+            crate::runtime::RuntimeForegroundSource::ExternalUserMessage,
+            now_ms,
+        )
+        .expect("fill user queue");
+
+        let rejected = tx.try_submit_user_at(
+            PcMsg::new_inbound("qq_channel", "chat-1", "second", false).expect("second"),
+            crate::runtime::RuntimeForegroundSource::ExternalUserMessage,
+            now_ms + 1_000,
+        );
+
+        assert!(matches!(
+            rejected,
+            Err(std::sync::mpsc::TrySendError::Full(_))
+        ));
+        let snapshot = crate::runtime::foreground::runtime_foreground_snapshot_at(now_ms + 1_001);
+        assert_eq!(snapshot.active_count, 1);
+        assert_eq!(snapshot.records.len(), 1);
+        assert_eq!(snapshot.age_ms, Some(1));
+    }
+
+    #[test]
+    fn system_sender_never_renews_runtime_foreground() {
+        let _guard = crate::runtime::foreground::runtime_foreground_test_guard();
+        crate::runtime::foreground::reset_runtime_foreground_for_tests();
+        let (tx, _rx, _) = new_system_inbound_channel(2);
+        let msg = PcMsg::new_system("heartbeat", "system", "tick").expect("system message");
+
+        tx.try_send(msg).expect("enqueue system message");
+
+        assert!(!crate::runtime::runtime_foreground_active(1_000));
     }
 }

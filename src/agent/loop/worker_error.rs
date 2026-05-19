@@ -73,8 +73,7 @@ pub(super) fn handle_worker_path_error(
 
         if *counter < 3 && error.is_retryable_upstream() {
             msg.enqueue_ts_ms = now_unix_ms();
-            let inbound_tx = choose_inbound_tx(msg.ingress, user_inbound_tx, system_inbound_tx);
-            match inbound_tx.try_send(msg.clone()) {
+            match super::try_send_inbound_msg(msg.clone(), user_inbound_tx, system_inbound_tx) {
                 Ok(()) => {}
                 Err(std::sync::mpsc::TrySendError::Full(m)) => {
                     match config.runtime.pending_retry_store.save_pending_retry(&m) {

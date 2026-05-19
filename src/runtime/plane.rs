@@ -3,6 +3,7 @@
 
 use crate::runtime::lease::LeaseKind;
 use crate::runtime::mode::RuntimeMode;
+use crate::runtime::scheduler::RuntimeWorkClass;
 use crate::runtime::thread_registry::{ThreadExecutionClass, ThreadRiskClass};
 
 /// Stable identifier for a Beetle runtime execution plane.
@@ -71,6 +72,40 @@ pub struct PlaneProfile {
     pub http_capable: bool,
     pub wss_capable: bool,
     pub mode_sensitive: bool,
+}
+
+impl PlaneProfile {
+    /// Static default runtime work class for this plane.
+    ///
+    /// Dynamic work such as outbound primary vs visibility is still classified
+    /// by the call site; this mapping is only the plane-level default used for
+    /// observability and governance checks.
+    pub fn default_runtime_work_class(self) -> RuntimeWorkClass {
+        match self.owner {
+            "config_plane" => RuntimeWorkClass::ImmediateStatusRoute,
+            "http_snapshot" | "http_config" | "http_diagnostic" => {
+                RuntimeWorkClass::DeepRouteWorker
+            }
+            "http_chat_history" => RuntimeWorkClass::ConfigUiChatHistoryRoute,
+            "external_wss" => RuntimeWorkClass::ChannelIngressWss,
+            "channel_outbound_supervisor" => RuntimeWorkClass::ChannelReconnect,
+            "channel_outbound" | "os_outbound" | "dispatch" => {
+                RuntimeWorkClass::SupplementalDelivery
+            }
+            "agent_loop" => RuntimeWorkClass::ExternalUserMessage,
+            "display" => RuntimeWorkClass::DisplayStatusSurface,
+            "voice_session_control" | "voice_session_worker" | "voice_realtime" => {
+                RuntimeWorkClass::RealtimeVoiceSession
+            }
+            "write_back" => RuntimeWorkClass::DurableWriteBack,
+            "audio_io_worker" => RuntimeWorkClass::WakePcmFeed,
+            "runtime_timers" => RuntimeWorkClass::DueUserTimer,
+            "runtime_bootstrap" | "wifi_worker" | "runtime_aux" => {
+                RuntimeWorkClass::OptionalMaintenance
+            }
+            _ => RuntimeWorkClass::OptionalMaintenance,
+        }
+    }
 }
 
 /// Compact snapshot of the static plane registry.
@@ -634,6 +669,25 @@ mod tests {
         assert_eq!(profile.residency, PlaneResidency::Steady);
         assert!(profile.mode_sensitive);
         assert_eq!(profile.required_leases, &[LeaseKind::Display]);
+        assert_eq!(
+            profile.default_runtime_work_class(),
+            RuntimeWorkClass::DisplayStatusSurface
+        );
+    }
+
+    #[test]
+    fn every_static_plane_has_a_default_runtime_work_class() {
+        for profile in profiles() {
+            let class = profile.default_runtime_work_class();
+            if profile.owner == "audio_io_worker" {
+                assert_eq!(class, RuntimeWorkClass::WakePcmFeed);
+            }
+        }
+        assert_eq!(
+            profile_for_thread("audio_io_worker")
+                .map(|profile| profile.default_runtime_work_class()),
+            Some(RuntimeWorkClass::WakePcmFeed)
+        );
     }
 
     #[test]

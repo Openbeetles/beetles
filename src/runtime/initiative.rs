@@ -799,6 +799,7 @@ mod tests {
             external_wss_suspend_requested: false,
             external_wss_suspended: false,
             recovery_safe_mode_active: false,
+            runtime_foreground: crate::runtime::RuntimeForegroundOverlay::default(),
             action_budget: RuntimeModeActionBudget {
                 allow_periodic_maintenance: true,
                 allow_due_user_timers: true,
