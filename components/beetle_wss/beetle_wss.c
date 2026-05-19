@@ -24,6 +24,7 @@
 #define BEETLE_WSS_DEFAULT_MAX_MESSAGE_BYTES (256U * 1024U)
 #define BEETLE_WSS_HANDSHAKE_MAX_HEADER_BYTES 8192U
 #define BEETLE_WSS_READ_CHUNK_BYTES 1024U
+#define BEETLE_WSS_FRAME_HEADER_BUFFER_LIMIT (BEETLE_WSS_READ_CHUNK_BYTES + 14U)
 
 typedef struct {
     uint32_t state[5];
@@ -31,6 +32,13 @@ typedef struct {
     uint8_t block[64];
     size_t block_len;
 } beetle_wss_sha1_t;
+
+typedef enum {
+    BEETLE_WSS_PENDING_NONE = 0,
+    BEETLE_WSS_PENDING_EVENT,
+    BEETLE_WSS_PENDING_FRAGMENT,
+    BEETLE_WSS_PENDING_CONTROL,
+} beetle_wss_pending_target_t;
 
 struct beetle_wss_client {
     esp_tls_t *tls;
@@ -46,6 +54,14 @@ struct beetle_wss_client {
     size_t fragment_len;
     size_t fragment_cap;
     uint8_t fragment_opcode;
+    bool pending_frame_active;
+    uint8_t pending_opcode;
+    bool pending_fin;
+    beetle_wss_pending_target_t pending_target;
+    size_t pending_payload_len;
+    size_t pending_payload_read;
+    uint8_t *pending_event_buf;
+    uint8_t pending_control_payload[125];
     bool has_last_close_code;
     uint16_t last_close_code;
     uint8_t *last_close_reason;
@@ -513,6 +529,9 @@ static beetle_wss_status_t beetle_wss_fill_rx(
     if (status != BEETLE_WSS_OK) {
         return status;
     }
+    if (client->rx_len > SIZE_MAX - BEETLE_WSS_READ_CHUNK_BYTES) {
+        return BEETLE_WSS_ERR_NOMEM;
+    }
     status = beetle_wss_ensure_rx_capacity(client, client->rx_len + BEETLE_WSS_READ_CHUNK_BYTES);
     if (status != BEETLE_WSS_OK) {
         return status;
@@ -538,6 +557,52 @@ static beetle_wss_status_t beetle_wss_fill_rx(
     return BEETLE_WSS_DISCONNECTED;
 }
 
+static beetle_wss_status_t beetle_wss_read_into(
+    beetle_wss_client_t *client,
+    uint8_t *target,
+    size_t target_len,
+    int64_t deadline_ms,
+    size_t *out_read
+) {
+    beetle_wss_status_t status;
+    uint32_t timeout_ms;
+    size_t read_len;
+    int ret;
+
+    if (client == NULL || client->tls == NULL || target == NULL || out_read == NULL) {
+        return BEETLE_WSS_ERR_INVALID_ARG;
+    }
+    *out_read = 0U;
+    if (target_len == 0U) {
+        return BEETLE_WSS_OK;
+    }
+
+    timeout_ms = beetle_wss_deadline_remaining_ms(deadline_ms);
+    if (timeout_ms == 0U) {
+        return BEETLE_WSS_TIMEOUT;
+    }
+    status = beetle_wss_set_socket_timeout(client->sockfd, SO_RCVTIMEO, timeout_ms);
+    if (status != BEETLE_WSS_OK) {
+        return status;
+    }
+
+    read_len = target_len > BEETLE_WSS_READ_CHUNK_BYTES
+        ? BEETLE_WSS_READ_CHUNK_BYTES
+        : target_len;
+    ret = (int) esp_tls_conn_read(client->tls, target, read_len);
+    if (ret > 0) {
+        *out_read = (size_t) ret;
+        return BEETLE_WSS_OK;
+    }
+    if (ret == 0) {
+        return client->close_received ? BEETLE_WSS_CLOSED : BEETLE_WSS_DISCONNECTED;
+    }
+    if (beetle_wss_is_retryable_tls_read(ret)) {
+        return BEETLE_WSS_TIMEOUT;
+    }
+    return BEETLE_WSS_DISCONNECTED;
+}
+
 static beetle_wss_status_t beetle_wss_ensure_rx_bytes(
     beetle_wss_client_t *client,
     size_t needed,
@@ -546,6 +611,28 @@ static beetle_wss_status_t beetle_wss_ensure_rx_bytes(
     beetle_wss_status_t status;
 
     while (client->rx_len < needed) {
+        status = beetle_wss_fill_rx(client, deadline_ms);
+        if (status != BEETLE_WSS_OK) {
+            return status;
+        }
+    }
+    return BEETLE_WSS_OK;
+}
+
+static beetle_wss_status_t beetle_wss_ensure_rx_bytes_limited(
+    beetle_wss_client_t *client,
+    size_t needed,
+    size_t limit,
+    int64_t deadline_ms
+) {
+    if (needed > limit) {
+        return BEETLE_WSS_ERR_PROTOCOL;
+    }
+    while (client->rx_len < needed) {
+        beetle_wss_status_t status;
+        if (client->rx_len >= limit) {
+            return BEETLE_WSS_ERR_PROTOCOL;
+        }
         status = beetle_wss_fill_rx(client, deadline_ms);
         if (status != BEETLE_WSS_OK) {
             return status;
@@ -821,19 +908,21 @@ static beetle_wss_status_t beetle_wss_send_http_upgrade(
     return beetle_wss_verify_handshake_response(client, expected_accept, deadline_ms);
 }
 
-static beetle_wss_status_t beetle_wss_append_fragment(
+static beetle_wss_status_t beetle_wss_reserve_fragment_append(
     beetle_wss_client_t *client,
-    const uint8_t *payload,
     size_t payload_len
 ) {
     uint8_t *new_buf;
     size_t needed;
 
-    if (client == NULL || (payload_len > 0U && payload == NULL)) {
+    if (client == NULL) {
         return BEETLE_WSS_ERR_INVALID_ARG;
     }
     if (payload_len == 0U) {
         return BEETLE_WSS_OK;
+    }
+    if (client->fragment_len > SIZE_MAX - payload_len) {
+        return BEETLE_WSS_ERR_NOMEM;
     }
 
     needed = client->fragment_len + payload_len;
@@ -856,9 +945,17 @@ static beetle_wss_status_t beetle_wss_append_fragment(
         client->fragment_cap = new_cap;
     }
 
-    memcpy(client->fragment_buf + client->fragment_len, payload, payload_len);
-    client->fragment_len += payload_len;
     return BEETLE_WSS_OK;
+}
+
+static void beetle_wss_note_fragment_bytes_read(
+    beetle_wss_client_t *client,
+    size_t bytes_read
+) {
+    if (client == NULL || bytes_read == 0U) {
+        return;
+    }
+    client->fragment_len += bytes_read;
 }
 
 static void beetle_wss_reset_fragment(beetle_wss_client_t *client) {
@@ -870,6 +967,146 @@ static void beetle_wss_reset_fragment(beetle_wss_client_t *client) {
     client->fragment_len = 0U;
     client->fragment_cap = 0U;
     client->fragment_opcode = 0U;
+}
+
+static void beetle_wss_clear_pending_frame(beetle_wss_client_t *client) {
+    if (client == NULL) {
+        return;
+    }
+    free(client->pending_event_buf);
+    client->pending_event_buf = NULL;
+    client->pending_frame_active = false;
+    client->pending_opcode = 0U;
+    client->pending_fin = false;
+    client->pending_target = BEETLE_WSS_PENDING_NONE;
+    client->pending_payload_len = 0U;
+    client->pending_payload_read = 0U;
+}
+
+static void beetle_wss_abort_pending_frame(beetle_wss_client_t *client) {
+    if (client == NULL) {
+        return;
+    }
+    if (client->pending_target == BEETLE_WSS_PENDING_FRAGMENT) {
+        beetle_wss_reset_fragment(client);
+    }
+    beetle_wss_clear_pending_frame(client);
+}
+
+static uint8_t *beetle_wss_pending_write_ptr(beetle_wss_client_t *client) {
+    if (client == NULL || !client->pending_frame_active) {
+        return NULL;
+    }
+    switch (client->pending_target) {
+        case BEETLE_WSS_PENDING_EVENT:
+            return client->pending_event_buf + client->pending_payload_read;
+        case BEETLE_WSS_PENDING_FRAGMENT:
+            return client->fragment_buf + client->fragment_len;
+        case BEETLE_WSS_PENDING_CONTROL:
+            return client->pending_control_payload + client->pending_payload_read;
+        case BEETLE_WSS_PENDING_NONE:
+        default:
+            return NULL;
+    }
+}
+
+static void beetle_wss_note_pending_bytes_read(
+    beetle_wss_client_t *client,
+    size_t bytes_read
+) {
+    if (client == NULL || bytes_read == 0U) {
+        return;
+    }
+    if (client->pending_target == BEETLE_WSS_PENDING_FRAGMENT) {
+        beetle_wss_note_fragment_bytes_read(client, bytes_read);
+    }
+    client->pending_payload_read += bytes_read;
+}
+
+static beetle_wss_status_t beetle_wss_read_pending_payload(
+    beetle_wss_client_t *client,
+    int64_t deadline_ms
+) {
+    if (client == NULL || !client->pending_frame_active) {
+        return BEETLE_WSS_ERR_INVALID_ARG;
+    }
+    while (client->pending_payload_read < client->pending_payload_len) {
+        size_t remaining = client->pending_payload_len - client->pending_payload_read;
+        uint8_t *target = beetle_wss_pending_write_ptr(client);
+        if (target == NULL) {
+            return BEETLE_WSS_ERR_STATE;
+        }
+        if (client->rx_len > 0U) {
+            size_t from_rx = client->rx_len < remaining ? client->rx_len : remaining;
+            memcpy(target, client->rx_buf, from_rx);
+            beetle_wss_consume_rx(client, from_rx);
+            beetle_wss_note_pending_bytes_read(client, from_rx);
+            continue;
+        }
+
+        size_t bytes_read = 0U;
+        beetle_wss_status_t status =
+            beetle_wss_read_into(client, target, remaining, deadline_ms, &bytes_read);
+        if (status != BEETLE_WSS_OK) {
+            return status;
+        }
+        beetle_wss_note_pending_bytes_read(client, bytes_read);
+    }
+    return BEETLE_WSS_OK;
+}
+
+static beetle_wss_status_t beetle_wss_begin_pending_frame(
+    beetle_wss_client_t *client,
+    uint8_t opcode,
+    bool fin,
+    size_t payload_len
+) {
+    if (client == NULL) {
+        return BEETLE_WSS_ERR_INVALID_ARG;
+    }
+    client->pending_opcode = opcode;
+    client->pending_fin = fin;
+    client->pending_payload_len = payload_len;
+    client->pending_payload_read = 0U;
+    client->pending_event_buf = NULL;
+
+    if (opcode == 0x00U) {
+        if (client->fragment_opcode == 0U) {
+            return BEETLE_WSS_ERR_PROTOCOL;
+        }
+        beetle_wss_status_t status = beetle_wss_reserve_fragment_append(client, payload_len);
+        if (status != BEETLE_WSS_OK) {
+            return status;
+        }
+        client->pending_target = BEETLE_WSS_PENDING_FRAGMENT;
+    } else if (opcode == 0x01U || opcode == 0x02U) {
+        if (client->fragment_opcode != 0U) {
+            return BEETLE_WSS_ERR_PROTOCOL;
+        }
+        if (fin) {
+            if (payload_len > 0U) {
+                client->pending_event_buf = (uint8_t *) malloc(payload_len);
+                if (client->pending_event_buf == NULL) {
+                    return BEETLE_WSS_ERR_NOMEM;
+                }
+            }
+            client->pending_target = BEETLE_WSS_PENDING_EVENT;
+        } else {
+            beetle_wss_status_t status = beetle_wss_reserve_fragment_append(client, payload_len);
+            if (status != BEETLE_WSS_OK) {
+                return status;
+            }
+            client->fragment_opcode = opcode;
+            client->pending_target = BEETLE_WSS_PENDING_FRAGMENT;
+        }
+    } else if ((opcode & 0x08U) != 0U) {
+        client->pending_target = BEETLE_WSS_PENDING_CONTROL;
+    } else {
+        return BEETLE_WSS_ERR_PROTOCOL;
+    }
+
+    client->pending_frame_active = true;
+    return BEETLE_WSS_OK;
 }
 
 static beetle_wss_status_t beetle_wss_send_frame(
@@ -1104,9 +1341,98 @@ beetle_wss_status_t beetle_wss_recv(
         bool masked;
         size_t header_len = 2U;
         uint64_t payload_len = 0U;
-        const uint8_t *payload = NULL;
+        size_t payload_size;
 
-        status = beetle_wss_ensure_rx_bytes(client, 2U, deadline_ms);
+        if (client->pending_frame_active) {
+            status = beetle_wss_read_pending_payload(client, deadline_ms);
+            if (status != BEETLE_WSS_OK) {
+                if (status != BEETLE_WSS_TIMEOUT) {
+                    beetle_wss_abort_pending_frame(client);
+                }
+                return status;
+            }
+
+            opcode = client->pending_opcode;
+            payload_size = client->pending_payload_len;
+            if (client->pending_target == BEETLE_WSS_PENDING_EVENT) {
+                out_event->data = client->pending_event_buf;
+                out_event->len = payload_size;
+                client->pending_event_buf = NULL;
+                beetle_wss_clear_pending_frame(client);
+                return BEETLE_WSS_OK;
+            }
+            if (client->pending_target == BEETLE_WSS_PENDING_FRAGMENT) {
+                if (client->pending_fin) {
+                    out_event->data = client->fragment_buf;
+                    out_event->len = client->fragment_len;
+                    client->fragment_buf = NULL;
+                    client->fragment_len = 0U;
+                    client->fragment_cap = 0U;
+                    client->fragment_opcode = 0U;
+                    beetle_wss_clear_pending_frame(client);
+                    return BEETLE_WSS_OK;
+                }
+                beetle_wss_clear_pending_frame(client);
+                continue;
+            }
+            if (client->pending_target != BEETLE_WSS_PENDING_CONTROL) {
+                beetle_wss_clear_pending_frame(client);
+                return BEETLE_WSS_ERR_STATE;
+            }
+
+            if (opcode == 0x08U) {
+                status = beetle_wss_store_close_payload(
+                    client,
+                    client->pending_control_payload,
+                    payload_size
+                );
+                if (status != BEETLE_WSS_OK) {
+                    beetle_wss_clear_pending_frame(client);
+                    return status;
+                }
+                if (!client->close_sent) {
+                    (void) beetle_wss_send_frame(
+                        client,
+                        0x08U,
+                        client->pending_control_payload,
+                        payload_size,
+                        timeout_ms
+                    );
+                }
+                client->close_received = true;
+                beetle_wss_reset_fragment(client);
+                beetle_wss_clear_pending_frame(client);
+                return BEETLE_WSS_CLOSED;
+            }
+            if (opcode == 0x09U) {
+                status = beetle_wss_send_frame(
+                    client,
+                    0x0AU,
+                    client->pending_control_payload,
+                    payload_size,
+                    timeout_ms
+                );
+                beetle_wss_clear_pending_frame(client);
+                if (status != BEETLE_WSS_OK) {
+                    return status;
+                }
+                continue;
+            }
+            if (opcode == 0x0AU) {
+                beetle_wss_clear_pending_frame(client);
+                continue;
+            }
+            beetle_wss_clear_pending_frame(client);
+            (void) beetle_wss_send_close_code(client, 1002U, timeout_ms);
+            return BEETLE_WSS_ERR_PROTOCOL;
+        }
+
+        status = beetle_wss_ensure_rx_bytes_limited(
+            client,
+            2U,
+            BEETLE_WSS_FRAME_HEADER_BUFFER_LIMIT,
+            deadline_ms
+        );
         if (status != BEETLE_WSS_OK) {
             return status;
         }
@@ -1124,7 +1450,12 @@ beetle_wss_status_t beetle_wss_recv(
         }
 
         if (payload_len == 126U) {
-            status = beetle_wss_ensure_rx_bytes(client, header_len + 2U, deadline_ms);
+            status = beetle_wss_ensure_rx_bytes_limited(
+                client,
+                header_len + 2U,
+                BEETLE_WSS_FRAME_HEADER_BUFFER_LIMIT,
+                deadline_ms
+            );
             if (status != BEETLE_WSS_OK) {
                 return status;
             }
@@ -1132,7 +1463,12 @@ beetle_wss_status_t beetle_wss_recv(
                           (uint64_t) client->rx_buf[3];
             header_len += 2U;
         } else if (payload_len == 127U) {
-            status = beetle_wss_ensure_rx_bytes(client, header_len + 8U, deadline_ms);
+            status = beetle_wss_ensure_rx_bytes_limited(
+                client,
+                header_len + 8U,
+                BEETLE_WSS_FRAME_HEADER_BUFFER_LIMIT,
+                deadline_ms
+            );
             if (status != BEETLE_WSS_OK) {
                 return status;
             }
@@ -1143,6 +1479,10 @@ beetle_wss_status_t beetle_wss_recv(
             header_len += 8U;
         }
 
+        if (payload_len > (uint64_t) SIZE_MAX) {
+            return BEETLE_WSS_ERR_PROTOCOL;
+        }
+        payload_size = (size_t) payload_len;
         if (payload_len > client->max_message_bytes) {
             (void) beetle_wss_send_close_code(client, 1009U, timeout_ms);
             return BEETLE_WSS_ERR_PROTOCOL;
@@ -1153,100 +1493,24 @@ beetle_wss_status_t beetle_wss_recv(
                 return BEETLE_WSS_ERR_PROTOCOL;
             }
         }
-        if (payload_len > SIZE_MAX - header_len) {
+
+        if ((opcode == 0x00U || ((opcode == 0x01U || opcode == 0x02U) && !fin)) &&
+            client->fragment_len > (size_t) client->max_message_bytes - payload_size) {
+            (void) beetle_wss_send_close_code(client, 1009U, timeout_ms);
             return BEETLE_WSS_ERR_PROTOCOL;
         }
 
-        status = beetle_wss_ensure_rx_bytes(client, header_len + (size_t) payload_len, deadline_ms);
+        status = beetle_wss_begin_pending_frame(client, opcode, fin, payload_size);
         if (status != BEETLE_WSS_OK) {
+            (void) beetle_wss_send_close_code(
+                client,
+                status == BEETLE_WSS_ERR_PROTOCOL ? 1002U : 1011U,
+                timeout_ms
+            );
+            beetle_wss_abort_pending_frame(client);
             return status;
         }
-        payload = client->rx_buf + header_len;
-
-        switch (opcode) {
-            case 0x00U:
-                if (client->fragment_opcode == 0U) {
-                    (void) beetle_wss_send_close_code(client, 1002U, timeout_ms);
-                    return BEETLE_WSS_ERR_PROTOCOL;
-                }
-                status = beetle_wss_append_fragment(client, payload, (size_t) payload_len);
-                if (status != BEETLE_WSS_OK) {
-                    if (status == BEETLE_WSS_ERR_PROTOCOL) {
-                        (void) beetle_wss_send_close_code(client, 1009U, timeout_ms);
-                    }
-                    return status;
-                }
-                beetle_wss_consume_rx(client, header_len + (size_t) payload_len);
-                if (fin) {
-                    out_event->data = client->fragment_buf;
-                    out_event->len = client->fragment_len;
-                    client->fragment_buf = NULL;
-                    client->fragment_len = 0U;
-                    client->fragment_cap = 0U;
-                    client->fragment_opcode = 0U;
-                    return BEETLE_WSS_OK;
-                }
-                break;
-
-            case 0x01U:
-            case 0x02U:
-                if (client->fragment_opcode != 0U) {
-                    (void) beetle_wss_send_close_code(client, 1002U, timeout_ms);
-                    return BEETLE_WSS_ERR_PROTOCOL;
-                }
-                if (fin) {
-                    if (payload_len > 0U) {
-                        out_event->data = (uint8_t *) malloc((size_t) payload_len);
-                        if (out_event->data == NULL) {
-                            return BEETLE_WSS_ERR_NOMEM;
-                        }
-                        memcpy(out_event->data, payload, (size_t) payload_len);
-                    }
-                    out_event->len = (size_t) payload_len;
-                    beetle_wss_consume_rx(client, header_len + (size_t) payload_len);
-                    return BEETLE_WSS_OK;
-                }
-                client->fragment_opcode = opcode;
-                status = beetle_wss_append_fragment(client, payload, (size_t) payload_len);
-                beetle_wss_consume_rx(client, header_len + (size_t) payload_len);
-                if (status != BEETLE_WSS_OK) {
-                    if (status == BEETLE_WSS_ERR_PROTOCOL) {
-                        (void) beetle_wss_send_close_code(client, 1009U, timeout_ms);
-                    }
-                    return status;
-                }
-                break;
-
-            case 0x08U:
-                status = beetle_wss_store_close_payload(client, payload, (size_t) payload_len);
-                if (status != BEETLE_WSS_OK) {
-                    beetle_wss_consume_rx(client, header_len + (size_t) payload_len);
-                    return status;
-                }
-                if (!client->close_sent) {
-                    (void) beetle_wss_send_frame(client, 0x08U, payload, (size_t) payload_len, timeout_ms);
-                }
-                client->close_received = true;
-                beetle_wss_consume_rx(client, header_len + (size_t) payload_len);
-                beetle_wss_reset_fragment(client);
-                return BEETLE_WSS_CLOSED;
-
-            case 0x09U:
-                status = beetle_wss_send_frame(client, 0x0AU, payload, (size_t) payload_len, timeout_ms);
-                beetle_wss_consume_rx(client, header_len + (size_t) payload_len);
-                if (status != BEETLE_WSS_OK) {
-                    return status;
-                }
-                break;
-
-            case 0x0AU:
-                beetle_wss_consume_rx(client, header_len + (size_t) payload_len);
-                break;
-
-            default:
-                (void) beetle_wss_send_close_code(client, 1002U, timeout_ms);
-                return BEETLE_WSS_ERR_PROTOCOL;
-        }
+        beetle_wss_consume_rx(client, header_len);
     }
 }
 
@@ -1304,6 +1568,7 @@ void beetle_wss_destroy(beetle_wss_client_t *client) {
         esp_tls_conn_destroy(client->tls);
         client->tls = NULL;
     }
+    beetle_wss_clear_pending_frame(client);
     free(client->rx_buf);
     beetle_wss_reset_last_close(client);
     beetle_wss_reset_fragment(client);

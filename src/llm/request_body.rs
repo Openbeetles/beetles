@@ -36,6 +36,17 @@ impl LlmRequestBody {
         self.write_all(value.as_bytes())
     }
 
+    #[cfg(any(
+        test,
+        all(
+            feature = "tools_network_extra",
+            not(any(target_arch = "xtensa", target_arch = "riscv32"))
+        )
+    ))]
+    pub(crate) fn push_bytes(&mut self, value: &[u8]) -> Result<()> {
+        self.write_all(value)
+    }
+
     pub(crate) fn push_byte(&mut self, value: u8) -> Result<()> {
         self.write_all(&[value])
     }

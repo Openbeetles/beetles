@@ -369,12 +369,25 @@ impl MessageTransport {
 pub enum OutboundKind {
     #[default]
     Primary,
+    Visibility,
     Supplemental,
 }
 
 impl OutboundKind {
     pub fn is_supplemental(self) -> bool {
-        matches!(self, Self::Supplemental)
+        matches!(self, Self::Supplemental | Self::Visibility)
+    }
+
+    pub fn is_visibility(self) -> bool {
+        matches!(self, Self::Visibility)
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Primary => "primary",
+            Self::Visibility => "visibility",
+            Self::Supplemental => "supplemental",
+        }
     }
 }
 
@@ -396,7 +409,8 @@ pub struct PcMsg {
     /// 请求关联 ID：用于贯通 agent -> dispatch -> sender 的端到端时延日志。
     #[serde(default)]
     pub req_id: Option<String>,
-    /// 出站消息类别：primary 保留 canonical reply 语义，supplemental 为 best-effort 附加可见性。
+    /// 出站消息类别：primary 为 canonical reply，visibility 为当前 turn 活性证明，
+    /// supplemental 为 best-effort 附加可见性。
     #[serde(default)]
     pub outbound_kind: OutboundKind,
     /// 入站来源：用于调度与指标分流；默认 user（兼容历史持久化消息）。

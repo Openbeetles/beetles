@@ -6,6 +6,7 @@
 use crate::config::{LlmModelKind, LlmSource};
 use crate::constants::MAX_REQUEST_BODY_LEN;
 use crate::error::{Error, Result};
+use crate::llm::LlmRequestBody;
 use crate::platform::{CameraFrameBuffer, CameraFrameFormat, PlatformCamera};
 use crate::runtime::frame_lease::{try_acquire_frame_capture_permit, MAX_CAMERA_CAPTURE_BYTES};
 #[cfg(test)]
@@ -15,7 +16,6 @@ use crate::runtime::frame_lease::{
 use crate::runtime::lease::LeaseOwner;
 use crate::tools::{parse_tool_args, Tool, ToolContext, ToolEffectClass, ToolMetadata};
 use base64::Engine as _;
-use serde_json::json;
 use std::sync::Arc;
 
 const TAG: &str = "tools::analyze_image";
@@ -91,18 +91,11 @@ impl AnalyzeImageTool {
         let is_anthropic = source.provider == "anthropic";
 
         let body = if is_anthropic {
-            Self::build_anthropic_request(&source.model, image, question)
+            Self::build_anthropic_request_body(&source.model, image, question)
         } else {
-            Self::build_openai_request(&source.model, image, question)
-        };
-
-        let body_bytes = serde_json::to_vec(&body).map_err(|e| Error::Other {
-            source: Box::new(e),
-            stage: STAGE,
-        })?;
-        if body_bytes.len() > MAX_REQUEST_BODY_LEN {
-            return Err(Error::config(STAGE, "vision_request_body_too_large"));
+            Self::build_openai_request_body(&source.model, image, question)
         }
+        .map_err(map_vision_body_error)?;
 
         let url = if is_anthropic {
             if source.api_url.trim().is_empty() {
@@ -144,7 +137,7 @@ impl AnalyzeImageTool {
             image.log_len()
         );
 
-        let (status, resp_body) = ctx.post_with_headers(&url, &headers, &body_bytes)?;
+        let (status, resp_body) = ctx.post_with_headers(&url, &headers, body.as_ref())?;
 
         if status >= 400 {
             let err_bytes = resp_body.as_ref();
@@ -181,73 +174,76 @@ impl AnalyzeImageTool {
         }
     }
 
-    fn build_anthropic_request(
+    fn build_anthropic_request_body(
         model: &str,
         image: VisionImageInput<'_>,
         question: &str,
-    ) -> serde_json::Value {
-        let source = match image {
-            VisionImageInput::Url(image_url) => json!({
-                "type": "url",
-                "url": image_url
-            }),
-            VisionImageInput::LocalFrame {
-                media_type,
-                data_base64,
-            } => json!({
-                "type": "base64",
-                "media_type": media_type,
-                "data": data_base64
-            }),
-        };
-        json!({
-            "model": model,
-            "max_tokens": VISION_MAX_TOKENS,
-            "messages": [{
-                "role": "user",
-                "content": [
-                    {
-                        "type": "image",
-                        "source": source
-                    },
-                    {
-                        "type": "text",
-                        "text": question
-                    }
-                ]
-            }]
-        })
+    ) -> Result<LlmRequestBody> {
+        let mut body = LlmRequestBody::with_estimated_capacity(
+            vision_request_estimated_capacity(model, image, question, true),
+            MAX_REQUEST_BODY_LEN,
+        );
+        body.push_byte(b'{')?;
+        body.push_json_string_field("model", model)?;
+        body.push_str(",\"max_tokens\":")?;
+        push_u32_decimal(&mut body, VISION_MAX_TOKENS)?;
+        body.push_str(",\"messages\":[{\"role\":\"user\",\"content\":[")?;
+        body.push_str("{\"type\":\"image\",\"source\":")?;
+        match image {
+            VisionImageInput::Url(image_url) => {
+                body.push_byte(b'{')?;
+                body.push_json_string_field("type", "url")?;
+                body.push_byte(b',')?;
+                body.push_json_string_field("url", image_url)?;
+                body.push_byte(b'}')?;
+            }
+            VisionImageInput::LocalFrame { media_type, bytes } => {
+                body.push_byte(b'{')?;
+                body.push_json_string_field("type", "base64")?;
+                body.push_byte(b',')?;
+                body.push_json_string_field("media_type", media_type)?;
+                body.push_str(",\"data\":\"")?;
+                push_base64_standard(&mut body, bytes)?;
+                body.push_str("\"}")?;
+            }
+        }
+        body.push_str("},{\"type\":\"text\",\"text\":")?;
+        body.push_json_string(question)?;
+        body.push_str("}]}]}")?;
+        body.finish(MAX_REQUEST_BODY_LEN)
     }
 
-    fn build_openai_request(
+    fn build_openai_request_body(
         model: &str,
         image: VisionImageInput<'_>,
         question: &str,
-    ) -> serde_json::Value {
-        let image_url = match image {
-            VisionImageInput::Url(image_url) => image_url.to_string(),
-            VisionImageInput::LocalFrame {
-                media_type,
-                data_base64,
-            } => format!("data:{media_type};base64,{data_base64}"),
-        };
-        json!({
-            "model": model,
-            "max_tokens": VISION_MAX_TOKENS,
-            "messages": [{
-                "role": "user",
-                "content": [
-                    {
-                        "type": "image_url",
-                        "image_url": { "url": image_url }
-                    },
-                    {
-                        "type": "text",
-                        "text": question
-                    }
-                ]
-            }]
-        })
+    ) -> Result<LlmRequestBody> {
+        let mut body = LlmRequestBody::with_estimated_capacity(
+            vision_request_estimated_capacity(model, image, question, false),
+            MAX_REQUEST_BODY_LEN,
+        );
+        body.push_byte(b'{')?;
+        body.push_json_string_field("model", model)?;
+        body.push_str(",\"max_tokens\":")?;
+        push_u32_decimal(&mut body, VISION_MAX_TOKENS)?;
+        body.push_str(",\"messages\":[{\"role\":\"user\",\"content\":[")?;
+        body.push_str("{\"type\":\"image_url\",\"image_url\":{\"url\":")?;
+        match image {
+            VisionImageInput::Url(image_url) => {
+                body.push_json_string(image_url)?;
+            }
+            VisionImageInput::LocalFrame { media_type, bytes } => {
+                body.push_str("\"data:")?;
+                body.push_str(media_type)?;
+                body.push_str(";base64,")?;
+                push_base64_standard(&mut body, bytes)?;
+                body.push_byte(b'"')?;
+            }
+        }
+        body.push_str("}},{\"type\":\"text\",\"text\":")?;
+        body.push_json_string(question)?;
+        body.push_str("}]}]}")?;
+        body.finish(MAX_REQUEST_BODY_LEN)
     }
 
     fn extract_anthropic_text(resp: &serde_json::Value) -> Option<String> {
@@ -346,11 +342,10 @@ impl AnalyzeImageTool {
         {
             return Err(Error::config(STAGE, "vision_request_body_too_large"));
         }
-        let encoded = base64::engine::general_purpose::STANDARD.encode(frame.bytes.as_ref());
         self.execute_vision_input(
             VisionImageInput::LocalFrame {
                 media_type: frame.format.media_type(),
-                data_base64: &encoded,
+                bytes: frame.bytes.as_ref(),
             },
             question,
             ctx,
@@ -396,6 +391,31 @@ fn base64_encoded_len(bytes: usize) -> Option<usize> {
     bytes.checked_add(2)?.checked_div(3)?.checked_mul(4)
 }
 
+fn vision_request_estimated_capacity(
+    model: &str,
+    image: VisionImageInput<'_>,
+    question: &str,
+    is_anthropic: bool,
+) -> usize {
+    const VISION_JSON_OVERHEAD_BYTES: usize = 1024;
+    let image_bytes = match image {
+        VisionImageInput::Url(image_url) => image_url.len(),
+        VisionImageInput::LocalFrame { media_type, bytes } => base64_encoded_len(bytes.len())
+            .unwrap_or(MAX_REQUEST_BODY_LEN)
+            .saturating_add(media_type.len())
+            .saturating_add(if is_anthropic {
+                0
+            } else {
+                "data:;base64,".len()
+            }),
+    };
+    model
+        .len()
+        .saturating_add(question.len())
+        .saturating_add(image_bytes)
+        .saturating_add(VISION_JSON_OVERHEAD_BYTES)
+}
+
 fn local_frame_fits_request_budget(
     frame_bytes: usize,
     question_bytes: usize,
@@ -406,6 +426,38 @@ fn local_frame_fits_request_budget(
         .and_then(|encoded| encoded.checked_add(question_bytes))
         .and_then(|with_question| with_question.checked_add(LOCAL_FRAME_JSON_OVERHEAD_BYTES))
         .is_some_and(|estimate| estimate <= budget)
+}
+
+fn push_u32_decimal(out: &mut LlmRequestBody, value: u32) -> Result<()> {
+    let mut num_buf = [0u8; 20];
+    out.push_str(crate::util::usize_to_decimal_buf(
+        &mut num_buf,
+        value as usize,
+    ))
+}
+
+fn push_base64_standard(out: &mut LlmRequestBody, bytes: &[u8]) -> Result<()> {
+    const RAW_CHUNK: usize = 3 * 256;
+    const ENCODED_CHUNK: usize = RAW_CHUNK / 3 * 4;
+    let mut encoded = [0u8; ENCODED_CHUNK];
+    for chunk in bytes.chunks(RAW_CHUNK) {
+        let len = base64::engine::general_purpose::STANDARD
+            .encode_slice(chunk, &mut encoded)
+            .map_err(|_| Error::config(STAGE, "base64_encode_failed"))?;
+        out.push_bytes(&encoded[..len])?;
+    }
+    Ok(())
+}
+
+fn map_vision_body_error(err: Error) -> Error {
+    match err {
+        Error::Config { stage, message }
+            if stage == "llm_request" && message.contains("request body exceeds") =>
+        {
+            Error::config(STAGE, "vision_request_body_too_large")
+        }
+        other => other,
+    }
 }
 
 struct PlatformCameraAdapter {
@@ -427,7 +479,7 @@ enum VisionImageInput<'a> {
     Url(&'a str),
     LocalFrame {
         media_type: &'static str,
-        data_base64: &'a str,
+        bytes: &'a [u8],
     },
 }
 
@@ -435,7 +487,9 @@ impl VisionImageInput<'_> {
     fn log_len(self) -> usize {
         match self {
             Self::Url(image_url) => image_url.len(),
-            Self::LocalFrame { data_base64, .. } => data_base64.len(),
+            Self::LocalFrame { bytes, .. } => {
+                base64_encoded_len(bytes.len()).unwrap_or(bytes.len())
+            }
         }
     }
 }
@@ -495,7 +549,7 @@ impl Tool for AnalyzeImageTool {
 
 #[cfg(test)]
 mod tests {
-    use super::{local_frame_fits_request_budget, AnalyzeImageTool};
+    use super::{local_frame_fits_request_budget, AnalyzeImageTool, VisionImageInput};
     use crate::config::{AppConfig, LlmHeaderEntry, LlmModelKind, LlmSource};
     use crate::platform::{
         CameraFrameBuffer, CameraFrameFormat, CameraState, CameraStatus, PlatformCamera,
@@ -504,6 +558,7 @@ mod tests {
     use crate::runtime::mode::{snapshot_from_source, RuntimeModeSource};
     use crate::runtime::FrameLeaseAdmission;
     use crate::tools::{Tool, ToolContext, ToolEffectClass};
+    use base64::Engine as _;
     use std::sync::{
         atomic::{AtomicUsize, Ordering},
         Arc,
@@ -795,6 +850,60 @@ mod tests {
         assert_eq!(ctx.posts, 1);
         let body = String::from_utf8(ctx.last_body).expect("json body utf8");
         assert!(body.contains("data:image/jpeg;base64,/9j/2Q=="));
+    }
+
+    #[test]
+    fn local_camera_openai_request_body_uses_external_preferred_buffer() {
+        let frame = vec![0xa5; crate::platform::ByteBuffer::EXTERNAL_PREFERRED_THRESHOLD];
+
+        let body = AnalyzeImageTool::build_openai_request_body(
+            "gpt-vision-test",
+            VisionImageInput::LocalFrame {
+                media_type: "image/jpeg",
+                bytes: &frame,
+            },
+            "describe",
+        )
+        .expect("openai vision request body");
+
+        assert!(body.is_external_preferred());
+        let parsed: serde_json::Value = serde_json::from_slice(body.as_ref()).expect("json body");
+        let url = parsed["messages"][0]["content"][0]["image_url"]["url"]
+            .as_str()
+            .expect("image url");
+        let payload = url
+            .strip_prefix("data:image/jpeg;base64,")
+            .expect("data url prefix");
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(payload)
+            .expect("base64 payload");
+        assert_eq!(decoded, frame);
+    }
+
+    #[test]
+    fn local_camera_anthropic_request_body_uses_external_preferred_buffer() {
+        let frame = vec![0x5a; crate::platform::ByteBuffer::EXTERNAL_PREFERRED_THRESHOLD];
+
+        let body = AnalyzeImageTool::build_anthropic_request_body(
+            "claude-vision-test",
+            VisionImageInput::LocalFrame {
+                media_type: "image/png",
+                bytes: &frame,
+            },
+            "describe",
+        )
+        .expect("anthropic vision request body");
+
+        assert!(body.is_external_preferred());
+        let parsed: serde_json::Value = serde_json::from_slice(body.as_ref()).expect("json body");
+        let source = &parsed["messages"][0]["content"][0]["source"];
+        assert_eq!(source["type"], "base64");
+        assert_eq!(source["media_type"], "image/png");
+        let payload = source["data"].as_str().expect("base64 payload");
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(payload)
+            .expect("base64 payload");
+        assert_eq!(decoded, frame);
     }
 
     #[test]

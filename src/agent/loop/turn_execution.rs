@@ -41,6 +41,60 @@ fn maybe_emit_regular_foreground_action_progress(
     }
 }
 
+fn append_only_ack_enqueued(before: DeliveryReport, after: DeliveryReport) -> bool {
+    after.append_only_ack_sent > before.append_only_ack_sent
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+fn yield_pre_llm_visibility_window_if_needed(
+    before: DeliveryReport,
+    after: DeliveryReport,
+    outbound_tx: &OutboundTx,
+) {
+    if !append_only_ack_enqueued(before, after) {
+        return;
+    }
+
+    let deadline = std::time::Instant::now()
+        + std::time::Duration::from_millis(crate::constants::PRE_LLM_VISIBILITY_FLUSH_WINDOW_MS);
+    let min_grace_until = std::time::Instant::now()
+        + std::time::Duration::from_millis(
+            crate::constants::PRE_LLM_VISIBILITY_FLUSH_POLL_MS.saturating_mul(3),
+        );
+    let mut observed_outbound_http = false;
+    while std::time::Instant::now() < deadline {
+        crate::platform::task_wdt::feed_current_task();
+        let active_http = crate::orchestrator::resource_light_snapshot().active_http_count;
+        if active_http > 0 {
+            observed_outbound_http = true;
+        }
+        if observed_outbound_http && active_http == 0 {
+            return;
+        }
+        if !observed_outbound_http
+            && outbound_tx.queued_len() == 0
+            && std::time::Instant::now() >= min_grace_until
+        {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(
+            crate::constants::PRE_LLM_VISIBILITY_FLUSH_POLL_MS,
+        ));
+    }
+    log::warn!(
+        "[agent_delivery] pre-LLM visibility window elapsed before outbound HTTP completion"
+    );
+}
+
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+fn yield_pre_llm_visibility_window_if_needed(
+    before: DeliveryReport,
+    after: DeliveryReport,
+    _outbound_tx: &OutboundTx,
+) {
+    let _ = append_only_ack_enqueued(before, after);
+}
+
 fn should_emit_regular_foreground_blocked_progress(
     request_semantics: crate::agent::request_semantics::RequestSemantics,
     any_tool_used: bool,
@@ -396,7 +450,9 @@ pub(super) fn execute_turn_boxed(
         config.runtime.memory_system_kind,
         loc,
     );
+    let pre_ack_report = delivery.report();
     delivery.emit_fact(crate::agent::TurnVisibilityFact::Acknowledged);
+    yield_pre_llm_visibility_window_if_needed(pre_ack_report, delivery.report(), outbound_tx);
     let PreparedWorkerConversation {
         mut runtime_carry,
         subject_state,
@@ -547,6 +603,9 @@ pub(super) fn execute_turn_boxed(
     let mut artifact_bundle = None;
     let mut external_content_used = false;
     let mut effective_reply_surface = reply_surface;
+    let mut last_llm_stop_reason = StopReason::Other;
+    let mut last_llm_tool_call_count = 0usize;
+    let mut last_llm_content_len = 0usize;
     for round in 0..MAX_REACT_ROUNDS {
         latency.react_rounds = round as u32 + 1;
         if round > 0 {
@@ -624,6 +683,9 @@ pub(super) fn execute_turn_boxed(
         crate::platform::task_wdt::feed_current_task();
 
         let tc_count = response.tool_calls.as_ref().map_or(0, |v| v.len());
+        last_llm_stop_reason = response.stop_reason.clone();
+        last_llm_tool_call_count = tc_count;
+        last_llm_content_len = response.content.len();
         if log::log_enabled!(log::Level::Debug) {
             log::debug!(
                 "[agent] llm round={} stop_reason={:?} tool_calls={} content_len={}",
@@ -800,6 +862,16 @@ pub(super) fn execute_turn_boxed(
         && msg.channel.as_ref() != CHANNEL_CRON
         && !any_tool_round_executed
     {
+        log::warn!(
+            "[agent] empty final blocked req_id={} channel={} chat_id={} stop_reason={:?} content_len={} tool_calls={} reply_surface={}",
+            msg.req_id.as_deref().unwrap_or("-"),
+            msg.channel,
+            msg.chat_id,
+            last_llm_stop_reason,
+            last_llm_content_len,
+            last_llm_tool_call_count,
+            effective_reply_surface.as_str()
+        );
         metrics::record_empty_final_blocked();
         return Err(crate::error::Error::config(
             crate::agent::final_reply::ReplyContractBreachKind::ProducerEmpty.stage(),

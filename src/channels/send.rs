@@ -85,7 +85,7 @@ pub(crate) trait ActiveChannelSender {
     test
 ))]
 pub(crate) fn max_retries_for_message(message: &QueuedOutboundMessage) -> u8 {
-    if message.outbound_kind.is_supplemental() {
+    if message.outbound_kind == OutboundKind::Supplemental {
         1
     } else {
         CHANNEL_SENDER_MAX_RETRIES
@@ -102,7 +102,7 @@ pub(crate) fn max_retries_for_message(message: &QueuedOutboundMessage) -> u8 {
 pub(crate) fn reply_http_priority_for_message_kind(
     kind: OutboundKind,
 ) -> crate::orchestrator::Priority {
-    if kind == OutboundKind::Primary {
+    if kind == OutboundKind::Primary || kind == OutboundKind::Visibility {
         crate::orchestrator::Priority::Critical
     } else {
         crate::orchestrator::Priority::Normal
@@ -773,5 +773,28 @@ mod tests {
 
         let attempts = attempts.lock().unwrap_or_else(|e| e.into_inner());
         assert_eq!(attempts.as_slice(), [1]);
+    }
+
+    #[test]
+    fn visibility_message_uses_primary_retry_budget_and_critical_priority() {
+        let message = QueuedOutboundMessage {
+            transport_send_id: next_queued_outbound_id(),
+            chat_id: "chat-a".to_string(),
+            content: "已收到，正在处理".to_string(),
+            body: CanonicalMessageBody::text("已收到，正在处理"),
+            platform_thread_id: String::new(),
+            platform_message_id: String::new(),
+            req_id: Some("req-visibility".to_string()),
+            outbound_kind: OutboundKind::Visibility,
+        };
+
+        assert_eq!(
+            max_retries_for_message(&message),
+            CHANNEL_SENDER_MAX_RETRIES
+        );
+        assert_eq!(
+            reply_http_priority_for_message_kind(message.outbound_kind),
+            crate::orchestrator::Priority::Critical
+        );
     }
 }

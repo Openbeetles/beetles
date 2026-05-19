@@ -241,7 +241,7 @@ fn outbound_reject_reason(msg: &crate::bus::PcMsg) -> Option<&'static str> {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum PrimaryOutboundAdmission {
+enum OutboundAdmissionAction {
     Proceed,
     Deferred,
 }
@@ -250,12 +250,26 @@ fn apply_primary_outbound_admission(
     tag: &str,
     req_id: Option<&str>,
     channel: &str,
-) -> PrimaryOutboundAdmission {
-    match outbound_admission_decision(channel) {
-        AdmissionDecision::Accept => PrimaryOutboundAdmission::Proceed,
+) -> OutboundAdmissionAction {
+    apply_primary_outbound_admission_decision(
+        tag,
+        req_id,
+        channel,
+        outbound_admission_decision(channel),
+    )
+}
+
+fn apply_primary_outbound_admission_decision(
+    tag: &str,
+    req_id: Option<&str>,
+    channel: &str,
+    decision: AdmissionDecision,
+) -> OutboundAdmissionAction {
+    match decision {
+        AdmissionDecision::Accept => OutboundAdmissionAction::Proceed,
         AdmissionDecision::Defer { delay_ms } => {
             log::info!("[{}] outbound deferred {}ms (pressure)", tag, delay_ms);
-            PrimaryOutboundAdmission::Deferred
+            OutboundAdmissionAction::Deferred
         }
         AdmissionDecision::Reject { reason } => {
             log::info!(
@@ -265,9 +279,75 @@ fn apply_primary_outbound_admission(
                 channel,
                 reason
             );
-            PrimaryOutboundAdmission::Deferred
+            OutboundAdmissionAction::Deferred
         }
     }
+}
+
+fn apply_supplemental_outbound_admission_decision(
+    tag: &str,
+    req_id: Option<&str>,
+    channel: &str,
+    outbound_kind: OutboundKind,
+    decision: AdmissionDecision,
+) -> OutboundAdmissionAction {
+    match decision {
+        AdmissionDecision::Accept => OutboundAdmissionAction::Proceed,
+        AdmissionDecision::Defer { delay_ms } => {
+            log::warn!(
+                "[{}] req_id={} channel={} outbound_kind={} deferred by outbound admission decision=defer delay_ms={}",
+                tag,
+                req_id.unwrap_or("-"),
+                channel,
+                outbound_kind.as_str(),
+                delay_ms
+            );
+            OutboundAdmissionAction::Deferred
+        }
+        AdmissionDecision::Reject { reason } => {
+            log::warn!(
+                "[{}] req_id={} channel={} outbound_kind={} deferred by outbound admission reason={}",
+                tag,
+                req_id.unwrap_or("-"),
+                channel,
+                outbound_kind.as_str(),
+                reason
+            );
+            OutboundAdmissionAction::Deferred
+        }
+    }
+}
+
+fn supplemental_active_http_count_for_outbound() -> u32 {
+    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+    {
+        crate::orchestrator::resource_light_snapshot().active_http_count
+    }
+    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    {
+        0
+    }
+}
+
+fn apply_supplemental_active_http_gate(
+    tag: &str,
+    req_id: Option<&str>,
+    channel: &str,
+    outbound_kind: OutboundKind,
+    active_http_count: u32,
+) -> OutboundAdmissionAction {
+    if active_http_count == 0 {
+        return OutboundAdmissionAction::Proceed;
+    }
+    log::info!(
+        "[{}] req_id={} channel={} outbound_kind={} deferred while active_http_count={}",
+        tag,
+        req_id.unwrap_or("-"),
+        channel,
+        outbound_kind.as_str(),
+        active_http_count
+    );
+    OutboundAdmissionAction::Deferred
 }
 
 #[cfg(any(feature = "telegram", feature = "feishu", feature = "qq_channel", test))]
@@ -310,6 +390,40 @@ enum BufferPushResult {
     Buffered,
     Dropped,
     Full(Box<crate::bus::PcMsg>),
+}
+
+fn drop_deferred_supplementals_for_primary(
+    tag: &str,
+    cooldown_buffer: &mut VecDeque<crate::bus::PcMsg>,
+    primary: &crate::bus::PcMsg,
+) {
+    if primary.outbound_kind.is_supplemental() {
+        return;
+    }
+    let Some(req_id) = primary
+        .req_id
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    else {
+        return;
+    };
+    let before = cooldown_buffer.len();
+    cooldown_buffer.retain(|buffered| {
+        !(buffered.outbound_kind.is_supplemental()
+            && buffered.req_id.as_deref() == Some(req_id)
+            && buffered.channel == primary.channel
+            && buffered.chat_id == primary.chat_id)
+    });
+    let removed = before.saturating_sub(cooldown_buffer.len());
+    if removed > 0 {
+        log::debug!(
+            "[{}] req_id={} channel={} removed {} deferred supplemental message(s) superseded by primary",
+            tag,
+            req_id,
+            primary.channel,
+            removed
+        );
+    }
 }
 
 fn try_push_buffered_msg(
@@ -382,6 +496,7 @@ fn buffer_deferred_msg_with_replay<F>(
 ) where
     F: FnMut(&mut VecDeque<crate::bus::PcMsg>),
 {
+    drop_deferred_supplementals_for_primary(tag, cooldown_buffer, &msg);
     let pending = match try_push_buffered_msg(tag, cooldown_buffer, msg) {
         BufferPushResult::Buffered | BufferPushResult::Dropped => return,
         BufferPushResult::Full(msg) => msg,
@@ -407,6 +522,7 @@ fn buffer_deferred_msg_without_replay(
     cooldown_buffer: &mut VecDeque<crate::bus::PcMsg>,
     msg: crate::bus::PcMsg,
 ) {
+    drop_deferred_supplementals_for_primary(tag, cooldown_buffer, &msg);
     match try_push_buffered_msg(tag, cooldown_buffer, msg) {
         BufferPushResult::Buffered | BufferPushResult::Dropped => {}
         BufferPushResult::Full(msg) => {
@@ -553,23 +669,49 @@ fn dispatch_via_sink(
     crate::platform::task_wdt::feed_current_task();
 
     if msg.outbound_kind.is_supplemental() {
+        if matches!(
+            apply_supplemental_outbound_admission_decision(
+                tag,
+                msg.req_id.as_deref(),
+                &msg.channel,
+                msg.outbound_kind,
+                outbound_admission_decision(&msg.channel),
+            ),
+            OutboundAdmissionAction::Deferred
+        ) {
+            return DispatchOutcome::Deferred;
+        }
+        if matches!(
+            apply_supplemental_active_http_gate(
+                tag,
+                msg.req_id.as_deref(),
+                &msg.channel,
+                msg.outbound_kind,
+                supplemental_active_http_count_for_outbound(),
+            ),
+            OutboundAdmissionAction::Deferred
+        ) {
+            return DispatchOutcome::Deferred;
+        }
         match sink.send_message(&prepared.msg, &prepared.content) {
             Ok(()) => {
                 metrics::record_dispatch_send(true);
                 log::debug!(
-                    "[latency][dispatch] req_id={} channel={} outbound_kind=supplemental attempt=1 status=ok",
+                    "[latency][dispatch] req_id={} channel={} outbound_kind={} attempt=1 status=ok",
                     msg.req_id.as_deref().unwrap_or("-"),
-                    msg.channel
+                    msg.channel,
+                    msg.outbound_kind.as_str()
                 );
                 return DispatchOutcome::Sent;
             }
             Err(error) => {
                 metrics::record_dispatch_send(false);
                 log::warn!(
-                    "[{}] req_id={} channel={} outbound_kind=supplemental send failed: {}",
+                    "[{}] req_id={} channel={} outbound_kind={} send failed: {}",
                     tag,
                     msg.req_id.as_deref().unwrap_or("-"),
                     msg.channel,
+                    msg.outbound_kind.as_str(),
                     error
                 );
                 return DispatchOutcome::Failed;
@@ -579,7 +721,7 @@ fn dispatch_via_sink(
 
     if matches!(
         apply_primary_outbound_admission(tag, msg.req_id.as_deref(), &msg.channel),
-        PrimaryOutboundAdmission::Deferred
+        OutboundAdmissionAction::Deferred
     ) {
         return DispatchOutcome::Deferred;
     }
@@ -649,13 +791,15 @@ fn dispatch_or_buffer_via_sink(
     capability_registry: &ChannelCapabilityRegistry,
     msg: crate::bus::PcMsg,
 ) {
+    drop_deferred_supplementals_for_primary(tag, cooldown_buffer, &msg);
     if let Some(reason) = outbound_reject_reason(&msg) {
         if msg.outbound_kind.is_supplemental() {
             log::warn!(
-                "[{}] req_id={} channel={} outbound_kind=supplemental dropped by outbound admission reason={}",
+                "[{}] req_id={} channel={} outbound_kind={} dropped by outbound admission reason={}",
                 tag,
                 msg.req_id.as_deref().unwrap_or("-"),
                 msg.channel,
+                msg.outbound_kind.as_str(),
                 reason
             );
         } else {
@@ -678,10 +822,11 @@ fn dispatch_or_buffer_via_sink(
     if is_channel_in_cooldown(&msg.channel) {
         if msg.outbound_kind.is_supplemental() {
             log::warn!(
-                "[{}] req_id={} channel={} outbound_kind=supplemental dropped while channel is in cooldown",
+                "[{}] req_id={} channel={} outbound_kind={} dropped while channel is in cooldown",
                 tag,
                 msg.req_id.as_deref().unwrap_or("-"),
-                msg.channel
+                msg.channel,
+                msg.outbound_kind.as_str()
             );
         } else {
             buffer_deferred_msg_with_replay(tag, cooldown_buffer, msg, |buffer| {
@@ -766,6 +911,42 @@ fn dispatch_via_active_driver(
     driver: &mut dyn super::send::ActiveChannelSender,
     msg: &crate::bus::PcMsg,
 ) -> DispatchOutcome {
+    dispatch_via_active_driver_with_admission_decision(
+        tag,
+        capability_registry,
+        driver,
+        msg,
+        outbound_admission_decision(&msg.channel),
+    )
+}
+
+#[cfg(any(feature = "telegram", feature = "feishu", feature = "qq_channel", test))]
+fn dispatch_via_active_driver_with_admission_decision(
+    tag: &str,
+    capability_registry: &ChannelCapabilityRegistry,
+    driver: &mut dyn super::send::ActiveChannelSender,
+    msg: &crate::bus::PcMsg,
+    admission_decision: AdmissionDecision,
+) -> DispatchOutcome {
+    dispatch_via_active_driver_with_admission_context(
+        tag,
+        capability_registry,
+        driver,
+        msg,
+        admission_decision,
+        supplemental_active_http_count_for_outbound(),
+    )
+}
+
+#[cfg(any(feature = "telegram", feature = "feishu", feature = "qq_channel", test))]
+fn dispatch_via_active_driver_with_admission_context(
+    tag: &str,
+    capability_registry: &ChannelCapabilityRegistry,
+    driver: &mut dyn super::send::ActiveChannelSender,
+    msg: &crate::bus::PcMsg,
+    admission_decision: AdmissionDecision,
+    active_http_count: u32,
+) -> DispatchOutcome {
     let prepared = super::outbound_text::prepare_outbound_message_for_channel(
         msg,
         capability_registry.get(msg.channel.as_ref()),
@@ -774,24 +955,50 @@ fn dispatch_via_active_driver(
 
     crate::platform::task_wdt::feed_current_task();
     if queued.outbound_kind.is_supplemental() {
+        if matches!(
+            apply_supplemental_outbound_admission_decision(
+                tag,
+                queued.req_id.as_deref(),
+                &msg.channel,
+                queued.outbound_kind,
+                admission_decision,
+            ),
+            OutboundAdmissionAction::Deferred
+        ) {
+            return DispatchOutcome::Deferred;
+        }
+        if matches!(
+            apply_supplemental_active_http_gate(
+                tag,
+                queued.req_id.as_deref(),
+                &msg.channel,
+                queued.outbound_kind,
+                active_http_count,
+            ),
+            OutboundAdmissionAction::Deferred
+        ) {
+            return DispatchOutcome::Deferred;
+        }
         match driver.send_attempt(&queued, 1) {
             Ok(()) => {
                 metrics::record_dispatch_send(true);
                 log::debug!(
-                    "[latency][{}] req_id={} channel={} outbound_kind=supplemental attempt=1 status=ok",
+                    "[latency][{}] req_id={} channel={} outbound_kind={} attempt=1 status=ok",
                     tag,
                     queued.req_id.as_deref().unwrap_or("-"),
-                    msg.channel
+                    msg.channel,
+                    queued.outbound_kind.as_str()
                 );
                 return DispatchOutcome::Sent;
             }
             Err(error) => {
                 metrics::record_dispatch_send(false);
                 log::warn!(
-                    "[{}] req_id={} channel={} outbound_kind=supplemental send failed: {}",
+                    "[{}] req_id={} channel={} outbound_kind={} send failed: {}",
                     tag,
                     queued.req_id.as_deref().unwrap_or("-"),
                     msg.channel,
+                    queued.outbound_kind.as_str(),
                     error
                 );
                 return DispatchOutcome::Failed;
@@ -800,8 +1007,13 @@ fn dispatch_via_active_driver(
     }
 
     if matches!(
-        apply_primary_outbound_admission(tag, queued.req_id.as_deref(), &msg.channel),
-        PrimaryOutboundAdmission::Deferred
+        apply_primary_outbound_admission_decision(
+            tag,
+            queued.req_id.as_deref(),
+            &msg.channel,
+            admission_decision
+        ),
+        OutboundAdmissionAction::Deferred
     ) {
         return DispatchOutcome::Deferred;
     }
@@ -1143,13 +1355,15 @@ fn run_os_outbound_worker_inner<F>(
             continue;
         }
 
+        drop_deferred_supplementals_for_primary(TAG, &mut cooldown_buffer, &msg);
         if let Some(reason) = outbound_reject_reason(&msg) {
             if msg.outbound_kind.is_supplemental() {
                 log::warn!(
-                    "[{}] req_id={} channel={} outbound_kind=supplemental dropped by outbound admission reason={}",
+                    "[{}] req_id={} channel={} outbound_kind={} dropped by outbound admission reason={}",
                     TAG,
                     msg.req_id.as_deref().unwrap_or("-"),
                     msg.channel,
+                    msg.outbound_kind.as_str(),
                     reason
                 );
             } else {
@@ -1173,10 +1387,11 @@ fn run_os_outbound_worker_inner<F>(
         if is_channel_in_cooldown(&msg.channel) {
             if msg.outbound_kind.is_supplemental() {
                 log::warn!(
-                    "[{}] req_id={} channel={} outbound_kind=supplemental dropped while channel is in cooldown",
+                    "[{}] req_id={} channel={} outbound_kind={} dropped while channel is in cooldown",
                     TAG,
                     msg.req_id.as_deref().unwrap_or("-"),
-                    msg.channel
+                    msg.channel,
+                    msg.outbound_kind.as_str()
                 );
             } else {
                 ensure_outbound_http_recovery_wss_evict(
@@ -1758,6 +1973,7 @@ mod tests {
     use super::spawn_sender_thread;
     use crate::bus::{OutboundKind, PcMsg};
     use crate::error::{Error, Result};
+    use crate::orchestrator::AdmissionDecision;
     use std::collections::VecDeque;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
@@ -2051,6 +2267,28 @@ mod tests {
     }
 
     #[test]
+    fn primary_reply_removes_same_req_deferred_supplemental_before_replay() {
+        let mut buffer = VecDeque::new();
+        let mut supplemental = build_msg("qq_channel", "chat-1", "已收到，正在处理");
+        supplemental.req_id = Some("req-1".to_string());
+        supplemental.outbound_kind = OutboundKind::Visibility;
+        buffer.push_back(supplemental);
+        let mut other = build_msg("qq_channel", "chat-1", "other");
+        other.req_id = Some("req-2".to_string());
+        other.outbound_kind = OutboundKind::Supplemental;
+        buffer.push_back(other);
+        let mut primary = build_msg("qq_channel", "chat-1", "final answer");
+        primary.req_id = Some("req-1".to_string());
+        primary.outbound_kind = OutboundKind::Primary;
+
+        super::drop_deferred_supplementals_for_primary("test", &mut buffer, &primary);
+
+        assert_eq!(buffer.len(), 1);
+        assert_eq!(buffer[0].req_id.as_deref(), Some("req-2"));
+        assert_eq!(buffer[0].content, "other");
+    }
+
+    #[test]
     fn deferred_buffer_full_primary_uses_replay_before_recording_backpressure() {
         let mut buffer = VecDeque::new();
         for index in 0..super::COOLDOWN_BUFFER_MAX {
@@ -2171,6 +2409,61 @@ mod tests {
             super::DispatchOutcome::Failed
         );
         assert_eq!(attempts.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn supplemental_active_outbound_defer_buffers_without_http_attempt() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let mut driver = FailingActiveDriver {
+            attempts: Arc::clone(&attempts),
+        };
+        let mut msg = build_msg("ready", "chat-1", "supplemental");
+        msg.outbound_kind = OutboundKind::Supplemental;
+        let capability_registry = crate::channel_capability::ChannelCapabilityRegistry::default();
+
+        assert_eq!(
+            super::dispatch_via_active_driver_with_admission_decision(
+                "os_outbound",
+                &capability_registry,
+                &mut driver,
+                &msg,
+                AdmissionDecision::Defer { delay_ms: 1400 },
+            ),
+            super::DispatchOutcome::Deferred
+        );
+        assert_eq!(
+            attempts.load(Ordering::Relaxed),
+            0,
+            "supplemental progress must be buffered without entering HTTP/TLS under outbound Defer"
+        );
+    }
+
+    #[test]
+    fn supplemental_active_outbound_accept_waits_for_active_http_without_http_attempt() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let mut driver = FailingActiveDriver {
+            attempts: Arc::clone(&attempts),
+        };
+        let mut msg = build_msg("ready", "chat-1", "supplemental");
+        msg.outbound_kind = OutboundKind::Supplemental;
+        let capability_registry = crate::channel_capability::ChannelCapabilityRegistry::default();
+
+        assert_eq!(
+            super::dispatch_via_active_driver_with_admission_context(
+                "os_outbound",
+                &capability_registry,
+                &mut driver,
+                &msg,
+                AdmissionDecision::Accept,
+                1,
+            ),
+            super::DispatchOutcome::Deferred
+        );
+        assert_eq!(
+            attempts.load(Ordering::Relaxed),
+            0,
+            "supplemental progress must wait for the active LLM HTTP window instead of overlapping TLS"
+        );
     }
 
     #[test]

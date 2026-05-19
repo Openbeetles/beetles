@@ -4492,6 +4492,17 @@ mod tests {
         assert!(!telemetry.streamed);
         assert!(!telemetry.delivery.current_primary_delivered);
         assert_eq!(telemetry.delivery.tool_outbound_suppressed, 0);
+        let ack = outbound_rx.try_recv().expect("pre-LLM visibility ack");
+        assert_eq!(ack.content, "已收到，正在处理");
+        assert_eq!(ack.outbound_kind, crate::bus::OutboundKind::Visibility);
+        let milestone = outbound_rx
+            .try_recv()
+            .expect("first tool visibility milestone");
+        assert_eq!(milestone.content, "已进入首个工具执行");
+        assert_eq!(
+            milestone.outbound_kind,
+            crate::bus::OutboundKind::Visibility
+        );
         assert!(outbound_rx.try_recv().is_err());
     }
 
@@ -5664,10 +5675,7 @@ mod tests {
         assert_eq!(reply.content, "构建已通过");
         assert_eq!(reply.outbound_kind, crate::bus::OutboundKind::Primary);
         let reaction = outbound_rx.try_recv().expect("terminal reaction");
-        assert_eq!(
-            reaction.outbound_kind,
-            crate::bus::OutboundKind::Supplemental
-        );
+        assert_eq!(reaction.outbound_kind, crate::bus::OutboundKind::Visibility);
         assert_eq!(reaction.platform_message_id, "9");
         match reaction.body {
             crate::bus::CanonicalMessageBody::PlatformNative(native) => {
@@ -5888,10 +5896,7 @@ mod tests {
         assert_eq!(reply.outbound_kind, crate::bus::OutboundKind::Primary);
 
         let reaction = outbound_rx.try_recv().expect("failure reaction");
-        assert_eq!(
-            reaction.outbound_kind,
-            crate::bus::OutboundKind::Supplemental
-        );
+        assert_eq!(reaction.outbound_kind, crate::bus::OutboundKind::Visibility);
         assert_eq!(reaction.req_id.as_deref(), Some("req-worker-failure"));
         assert_eq!(reaction.platform_message_id, "9");
         match reaction.body {

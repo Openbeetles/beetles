@@ -60,6 +60,8 @@ fi
 rm -f /tmp/beetle-storage-leaks.$$
 
 bash scripts/tests/esp_audio_codec_contract_test.sh >/dev/null
+bash scripts/tests/beetle_wss_recv_contract_test.sh >/dev/null
+bash scripts/tests/analyze_image_body_contract_test.sh >/dev/null
 
 RESPONSE_BODY_INTO_VEC_HOT_PATH='ResponseBody::into_vec|\b(body|resp_body|response_body)\.into_vec\s*\('
 if rg -n "$RESPONSE_BODY_INTO_VEC_HOT_PATH" src \

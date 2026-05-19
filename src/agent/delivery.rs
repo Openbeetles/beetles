@@ -817,12 +817,45 @@ impl AppendOnlyVisibilityShared {
             self.observe_reaction_fact(fact);
             return;
         }
-        if !matches!(fact, TurnVisibilityFact::RunningTool { .. }) {
+        match fact {
+            TurnVisibilityFact::Acknowledged
+                if matches!(self.mode, AppendOnlyVisibilityMode::PrivateAck) =>
+            {
+                self.emit_private_ack_now();
+            }
+            TurnVisibilityFact::RunningTool { .. }
+                if matches!(self.mode, AppendOnlyVisibilityMode::PrivateAck) =>
+            {
+                self.observe_private_tool_fact(fact);
+            }
+            TurnVisibilityFact::Acknowledged
+            | TurnVisibilityFact::Reasoning { .. }
+            | TurnVisibilityFact::RunningTool { .. }
+            | TurnVisibilityFact::TaskPlanner
+            | TurnVisibilityFact::TaskStarted { .. }
+            | TurnVisibilityFact::TaskTerminal { .. }
+            | TurnVisibilityFact::Finalizing => {}
+        }
+    }
+
+    fn emit_private_ack_now(&self) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if state.finalized
+            || state.ack_sent
+            || state.supplemental_emitted >= self.mode.max_supplemental_messages()
+        {
             return;
         }
-        if !matches!(self.mode, AppendOnlyVisibilityMode::PrivateAck) {
+        let Some(projection) = self.delivery.contract.private_ack() else {
             return;
+        };
+        if send_current_chat_supplemental(&self.delivery, &projection.text).is_ok() {
+            state.ack_sent = projection.marks_ack_sent;
+            state.supplemental_emitted = state.supplemental_emitted.saturating_add(1);
         }
+    }
+
+    fn observe_private_tool_fact(&self, fact: TurnVisibilityFact<'_>) {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if state.finalized || state.first_tool_milestone_sent {
             return;
@@ -1226,7 +1259,7 @@ fn send_current_chat_supplemental(
             delivery.inbound_dedup_key.clone(),
         )
         .with_platform_thread_id(delivery.platform_thread_id.clone());
-    msg.outbound_kind = OutboundKind::Supplemental;
+    msg.outbound_kind = OutboundKind::Visibility;
     match delivery.outbound_tx.try_send(msg) {
         Ok(()) => {
             metrics::record_message_out();
@@ -1235,7 +1268,7 @@ fn send_current_chat_supplemental(
         Err(std::sync::mpsc::TrySendError::Full(_)) => {
             metrics::record_outbound_enqueue_fail();
             log::warn!(
-                "[agent_delivery] current-chat supplemental dropped: outbound queue full req_id={} channel={} chat_id={} outbound_kind=supplemental",
+                "[agent_delivery] current-chat visibility dropped: outbound queue full req_id={} channel={} chat_id={} outbound_kind=visibility",
                 delivery.req_id,
                 delivery.channel,
                 delivery.chat_id
@@ -1245,7 +1278,7 @@ fn send_current_chat_supplemental(
         Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
             metrics::record_outbound_enqueue_fail();
             log::error!(
-                "[agent_delivery] current-chat supplemental dropped: outbound disconnected req_id={} channel={} chat_id={} outbound_kind=supplemental",
+                "[agent_delivery] current-chat visibility dropped: outbound disconnected req_id={} channel={} chat_id={} outbound_kind=visibility",
                 delivery.req_id,
                 delivery.channel,
                 delivery.chat_id
@@ -1332,7 +1365,7 @@ fn send_current_chat_reaction(
             delivery.inbound_dedup_key.clone(),
         )
         .with_platform_thread_id(delivery.platform_thread_id.clone());
-    msg.outbound_kind = OutboundKind::Supplemental;
+    msg.outbound_kind = OutboundKind::Visibility;
     match delivery.outbound_tx.try_send(msg) {
         Ok(()) => {
             metrics::record_message_out();
@@ -1341,7 +1374,7 @@ fn send_current_chat_reaction(
         Err(std::sync::mpsc::TrySendError::Full(_)) => {
             metrics::record_outbound_enqueue_fail();
             log::warn!(
-                "[agent_delivery] current-chat reaction dropped: outbound queue full req_id={} channel={} chat_id={} outbound_kind=supplemental",
+                "[agent_delivery] current-chat reaction dropped: outbound queue full req_id={} channel={} chat_id={} outbound_kind=visibility",
                 delivery.req_id,
                 delivery.channel,
                 delivery.chat_id
@@ -1351,7 +1384,7 @@ fn send_current_chat_reaction(
         Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
             metrics::record_outbound_enqueue_fail();
             log::error!(
-                "[agent_delivery] current-chat reaction dropped: outbound disconnected req_id={} channel={} chat_id={} outbound_kind=supplemental",
+                "[agent_delivery] current-chat reaction dropped: outbound disconnected req_id={} channel={} chat_id={} outbound_kind=visibility",
                 delivery.req_id,
                 delivery.channel,
                 delivery.chat_id
@@ -1538,7 +1571,7 @@ mod tests {
     }
 
     fn assert_reaction_message(outbound: &PcMsg, expected_emoji: &str) {
-        assert_eq!(outbound.outbound_kind, OutboundKind::Supplemental);
+        assert_eq!(outbound.outbound_kind, OutboundKind::Visibility);
         assert_eq!(outbound.platform_message_id, "9");
         match &outbound.body {
             crate::bus::CanonicalMessageBody::PlatformNative(native) => {
@@ -1566,7 +1599,7 @@ mod tests {
     }
 
     #[test]
-    fn queued_delivery_suppresses_facts_for_current_chat() {
+    fn queued_delivery_emits_ack_and_first_tool_only_for_current_chat() {
         let _guard = delayed_task_test_lock();
         reset_delayed_tasks();
         let (outbound_tx, outbound_rx, _) = new_inbound_channel(8);
@@ -1592,8 +1625,18 @@ mod tests {
         });
         delivery.emit_fact(TurnVisibilityFact::Finalizing);
 
+        let ack = outbound_rx.try_recv().expect("current-chat ack");
+        assert_eq!(ack.content, "已收到，正在处理");
+        assert_eq!(ack.outbound_kind, OutboundKind::Visibility);
+        let first_tool = outbound_rx.try_recv().expect("first tool milestone");
+        assert_eq!(first_tool.content, "已进入首个工具执行");
+        assert_eq!(first_tool.outbound_kind, OutboundKind::Visibility);
         assert!(outbound_rx.try_recv().is_err());
-        assert_eq!(delivery.report(), DeliveryReport::default());
+        assert_eq!(delivery.report().append_only_ack_sent, 1);
+        assert_eq!(delivery.report().append_only_first_tool_milestone_sent, 1);
+        assert_eq!(delivery.report().append_only_heartbeat_sent, 0);
+        assert_eq!(delivery.report().edit_phase_header_updates_sent, 0);
+        assert_eq!(delivery.report().partial_updates_sent, 0);
     }
 
     #[test]
@@ -1664,13 +1707,52 @@ mod tests {
 
         let outbound = outbound_rx.try_recv().expect("append-only ack");
         assert_eq!(outbound.content, "已收到，正在处理");
-        assert_eq!(outbound.outbound_kind, OutboundKind::Supplemental);
+        assert_eq!(outbound.outbound_kind, OutboundKind::Visibility);
         assert_eq!(outbound.source_transport, crate::bus::MessageTransport::Wss);
         assert_eq!(outbound.platform_message_id, "msg-1");
         assert_eq!(outbound.platform_event_id, "event-1");
         assert_eq!(outbound.inbound_dedup_key, "qq_message:msg-1");
         assert_eq!(delivery.report().append_only_ack_sent, 1);
         assert_eq!(delivery.report().append_only_first_tool_milestone_sent, 0);
+    }
+
+    #[test]
+    fn queued_private_ack_fact_is_visible_immediately_before_llm() {
+        let _guard = delayed_task_test_lock();
+        reset_delayed_tasks();
+        let (outbound_tx, outbound_rx, _) = new_inbound_channel(8);
+        let msg = build_msg("qq_channel").with_inbound_provenance(
+            crate::bus::MessageTransport::Wss,
+            "msg-1",
+            "event-1",
+            "qq_message:msg-1",
+        );
+        let mut delivery = DeliverySession::new(
+            &msg,
+            "req-pre-llm-ack",
+            &outbound_tx,
+            None,
+            Some(capability_entry("qq_channel", true, true, false)),
+            MemorySystemKind::LinuxFull,
+            UiLocale::Zh,
+        );
+
+        delivery.emit_fact(TurnVisibilityFact::Acknowledged);
+
+        let outbound = outbound_rx.try_recv().expect("immediate pre-LLM ack");
+        assert_eq!(outbound.content, "已收到，正在处理");
+        assert_eq!(outbound.outbound_kind, OutboundKind::Visibility);
+        assert_eq!(outbound.source_transport, crate::bus::MessageTransport::Wss);
+        assert_eq!(outbound.platform_message_id, "msg-1");
+        assert_eq!(outbound.platform_event_id, "event-1");
+        assert_eq!(outbound.inbound_dedup_key, "qq_message:msg-1");
+        assert_eq!(delivery.report().append_only_ack_sent, 1);
+
+        service_due_delayed_tasks_after(APPEND_ONLY_PRIVATE_ACK_DELAY_MS + 5);
+        assert!(
+            outbound_rx.try_recv().is_err(),
+            "deadline must not duplicate pre-LLM ack"
+        );
     }
 
     #[test]
@@ -1698,7 +1780,7 @@ mod tests {
 
         let outbound = outbound_rx.try_recv().expect("combined visibility");
         assert_eq!(outbound.content, "已收到，正在处理\n已进入首个工具执行");
-        assert_eq!(outbound.outbound_kind, OutboundKind::Supplemental);
+        assert_eq!(outbound.outbound_kind, OutboundKind::Visibility);
         assert_eq!(delivery.report().append_only_ack_sent, 1);
         assert_eq!(delivery.report().append_only_first_tool_milestone_sent, 1);
         assert!(outbound_rx.try_recv().is_err());
@@ -1732,7 +1814,7 @@ mod tests {
 
         let milestone = outbound_rx.try_recv().expect("first-tool milestone");
         assert_eq!(milestone.content, "已进入首个工具执行");
-        assert_eq!(milestone.outbound_kind, OutboundKind::Supplemental);
+        assert_eq!(milestone.outbound_kind, OutboundKind::Visibility);
         assert_eq!(delivery.report().append_only_ack_sent, 1);
         assert_eq!(delivery.report().append_only_first_tool_milestone_sent, 1);
     }
@@ -1757,7 +1839,7 @@ mod tests {
 
         let outbound = outbound_rx.try_recv().expect("group heartbeat");
         assert_eq!(outbound.content, "仍在处理");
-        assert_eq!(outbound.outbound_kind, OutboundKind::Supplemental);
+        assert_eq!(outbound.outbound_kind, OutboundKind::Visibility);
         assert_eq!(delivery.report().append_only_heartbeat_sent, 1);
         assert_eq!(delivery.report().append_only_ack_sent, 0);
     }

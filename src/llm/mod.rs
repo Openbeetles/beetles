@@ -20,6 +20,14 @@ pub use noop::NoopLlmClient;
 pub use openai_compatible::OpenAiCompatibleClient;
 
 pub use compat::{LlmModelCompat, ToolCallSupport};
+#[cfg(any(
+    test,
+    all(
+        feature = "tools_network_extra",
+        not(any(target_arch = "xtensa", target_arch = "riscv32"))
+    )
+))]
+pub(crate) use request_body::LlmRequestBody;
 pub(crate) use topology::{
     ensure_legacy_llm_sources, llm_fallback_source_indices, llm_sources_or_legacy,
     provider_uses_openai_compatible_client,

@@ -55,7 +55,12 @@ pub const TLS_ADMISSION_MIN_INTERNAL_BYTES: usize = 38 * 1024;
 /// TLS 准入：要求 internal 最大连续块不低于此值，避免碎片化导致 mbedTLS 分配失败。
 pub const TLS_ADMISSION_MIN_LARGEST_BLOCK_BYTES: usize = 24 * 1024;
 /// 在 TLS 最大连续块硬门槛之上保留一小段 headroom，便于 operator/config 面在碎片化前主动退让。
-pub const TLS_FRAGMENTATION_CAUTION_HEADROOM_BYTES: usize = 4 * 1024;
+///
+/// S3 2026-05-18 QQ 文本实机显示，经过当日 SRAM 收口后 steady largest-block
+/// 卡在 27KB：仍高于 24KB TLS 硬门槛，但低于旧 28KB headroom 放行线，导致
+/// LLM 长期 RetryLater。这里只收窄观察 headroom，不降低 TLS 硬门槛和 analyzer
+/// 32KB 稳态验收 floor。
+pub const TLS_FRAGMENTATION_CAUTION_HEADROOM_BYTES: usize = 3 * 1024;
 /// TLS 准入：无 PSRAM 时 internal 堆空闲下限（字节），mbedTLS 全部走 internal 需更多空间。
 pub const TLS_ADMISSION_NO_PSRAM_MIN_BYTES: usize = 72 * 1024;
 /// ESP 稳态传输余量：低于该 internal 空闲值时不再视作 Normal，即便 TLS 硬门槛尚未触发。
@@ -96,6 +101,13 @@ pub const AGENT_RETRY_BASE_MS: u64 = 100;
 pub const AGENT_RETRY_MAX_MS: u64 = 500;
 /// Cautious 压力下 LLM RetryLater 的等待毫秒数，避免固定 3s 造成体感卡顿。
 pub const LLM_RETRY_LATER_DELAY_MS: u64 = 700;
+/// ESP 当前用户 turn 进入 LLM 前，为 append-only 可见 ack 预留的出站窗口。
+///
+/// 该窗口只在 ack 已经入队时生效，用于让 outbound worker 先完成或至少启动
+/// 用户可见反馈，避免 LLM TLS 先抢占导致“收到消息后无任何响应”。
+pub const PRE_LLM_VISIBILITY_FLUSH_WINDOW_MS: u64 = 700;
+/// LLM 前可见 ack flush 轮询间隔。
+pub const PRE_LLM_VISIBILITY_FLUSH_POLL_MS: u64 = 25;
 /// pending_retry 重放次数上限；超过则清除不再注入，避免重复饥饿。
 pub const PENDING_RETRY_MAX_REPLAY: u32 = 3;
 /// Dispatch 单通道连续失败后熔断冷却时间（秒）；冷却期内不再向该通道发送。

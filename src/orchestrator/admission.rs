@@ -511,6 +511,16 @@ mod tests {
 
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
     #[test]
+    fn esp_cautious_llm_proceeds_at_observed_s3_post_shrink_floor() {
+        let s = state_with_heap(75_000, 27 * 1024, PressureLevel::Cautious);
+        assert!(matches!(
+            can_call_llm_for_channel_with_mode(&s, "qq_channel", normal_mode()),
+            LlmDecision::Proceed
+        ));
+    }
+
+    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+    #[test]
     fn esp_cautious_llm_retries_post_reply_fragmentation_window() {
         let s = state_with_heap(61_535, 26_112, PressureLevel::Cautious);
         assert!(matches!(
