@@ -16,6 +16,15 @@ struct ChannelWssRestartDelay {
     delay: Duration,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ChannelWssRestartAction {
+    Allowed,
+    Deferred {
+        reason: &'static str,
+        delay: Duration,
+    },
+}
+
 struct ChannelWssSupervisor {
     owner: &'static str,
     handle: Option<TaskHandle>,
@@ -124,6 +133,17 @@ fn current_channel_wss_restart_delay() -> Option<ChannelWssRestartDelay> {
 fn channel_wss_restart_delay_for_scheduler_context(
     context: crate::runtime::RuntimeSchedulerContext,
 ) -> Option<ChannelWssRestartDelay> {
+    match channel_wss_restart_action_for_scheduler_context(context) {
+        ChannelWssRestartAction::Allowed => None,
+        ChannelWssRestartAction::Deferred { reason, delay } => {
+            Some(ChannelWssRestartDelay { reason, delay })
+        }
+    }
+}
+
+fn channel_wss_restart_action_for_scheduler_context(
+    context: crate::runtime::RuntimeSchedulerContext,
+) -> ChannelWssRestartAction {
     match crate::runtime::admit_runtime_work(
         crate::runtime::RuntimeWorkRequest::new(
             crate::runtime::RuntimeWorkClass::ChannelReconnect,
@@ -131,7 +151,7 @@ fn channel_wss_restart_delay_for_scheduler_context(
         ),
         context,
     ) {
-        crate::runtime::RuntimeWorkDecision::Proceed => None,
+        crate::runtime::RuntimeWorkDecision::Proceed => ChannelWssRestartAction::Allowed,
         crate::runtime::RuntimeWorkDecision::Defer {
             reason,
             retry_after_ms,
@@ -139,18 +159,18 @@ fn channel_wss_restart_delay_for_scheduler_context(
         | crate::runtime::RuntimeWorkDecision::DrainAndResume {
             reason,
             retry_after_ms,
-        } => Some(ChannelWssRestartDelay {
+        } => ChannelWssRestartAction::Deferred {
             reason,
             delay: Duration::from_millis(retry_after_ms),
-        }),
+        },
         crate::runtime::RuntimeWorkDecision::Degrade { reason }
         | crate::runtime::RuntimeWorkDecision::Suspend { reason }
         | crate::runtime::RuntimeWorkDecision::RejectWithStableKey { reason, .. }
         | crate::runtime::RuntimeWorkDecision::RejectWithUserVisibleReason { reason } => {
-            Some(ChannelWssRestartDelay {
+            ChannelWssRestartAction::Deferred {
                 reason,
                 delay: CHANNEL_WSS_SUPERVISOR_RETRY_DELAY,
-            })
+            }
         }
     }
 }
@@ -183,5 +203,22 @@ mod tests {
 
         assert_eq!(delay.reason, "foreground_active");
         assert_eq!(delay.delay, Duration::from_millis(29_500));
+    }
+
+    #[test]
+    fn channel_wss_restart_admission_defers_under_critical_pressure() {
+        let mut context = foreground_scheduler_context();
+        context.foreground = crate::runtime::RuntimeForegroundOverlay::default();
+        context.pressure = crate::orchestrator::PressureLevel::Critical;
+
+        let action = channel_wss_restart_action_for_scheduler_context(context);
+
+        assert_eq!(
+            action,
+            ChannelWssRestartAction::Deferred {
+                reason: "critical_pressure",
+                delay: Duration::from_millis(1_500),
+            }
+        );
     }
 }

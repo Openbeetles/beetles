@@ -277,6 +277,8 @@ mod sdcard {
                 set_input_delay: None,
                 #[cfg(esp_idf_version_at_least_6_0_0)]
                 set_input_delayline: None,
+                #[cfg(esp_idf_version_at_least_6_0_1)]
+                unaligned_multi_block_rw_max_chunk_size: 16,
                 command_timeout_ms: configuration.command_timeout_ms as _,
                 #[cfg(not(any(
                     esp_idf_version_major = "4",
@@ -381,6 +383,8 @@ mod sdcard {
                 set_input_delay: Some(sdmmc_host_set_input_delay),
                 #[cfg(esp_idf_version_at_least_6_0_0)]
                 set_input_delayline: None,
+                #[cfg(esp_idf_version_at_least_6_0_1)]
+                unaligned_multi_block_rw_max_chunk_size: 16,
                 command_timeout_ms: configuration.command_timeout_ms as _,
                 #[cfg(not(any(
                     esp_idf_version_major = "4",

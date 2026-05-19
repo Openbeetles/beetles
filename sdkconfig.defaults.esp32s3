@@ -96,7 +96,6 @@ CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=4096
 # 任务看门狗超时：单次 LLM 请求+网络延迟可能较长，避免误复位
 CONFIG_ESP_TASK_WDT_TIMEOUT_S=60
 
-# ESP-IDF v6.0 内存优化：将 FreeRTOS 函数放到 Flash，节省 10-20KB 内部 RAM
-# 禁用：该配置导致 WiFi 重连时栈溢出（v6.0 的 WiFi/TLS 驱动在 Flash 执行时栈使用增加）
-# CONFIG_FREERTOS_PLACE_FUNCTIONS_INTO_FLASH is not set
-# CONFIG_FREERTOS_PLACE_SNAPSHOT_FUNS_INTO_FLASH is not set
+# ESP-IDF v6.0.1 不再暴露旧 FreeRTOS flash-placement Kconfig 符号；
+# 继续写 "# CONFIG_... is not set" 会变成 unknown-symbol warning。
+# Beetle 保持默认禁用口径，若后续 IDF 恢复等价选项，再用实机栈证据单独评审。

@@ -4,6 +4,7 @@
 mod acoustic;
 mod backend;
 
+pub use crate::audio::wake_handoff::WakeAcousticSnapshot;
 pub use acoustic::{AcousticWakeBackend, AcousticWakeConfig};
 pub use backend::{WakeBackend, WakeEvent};
 
@@ -40,22 +41,30 @@ pub fn requires_pcm_feed() -> bool {
 
 /// Feed one PCM frame plus optional playback reference into the active wake backend.
 pub fn feed_pcm_i16(mic: &[i16], reference: &[i16], audio_playing: bool) {
-    let (event, voice_tx) = {
+    let (event, voice_tx, handoff) = {
         let mut guard = state().lock().unwrap_or_else(|e| e.into_inner());
         let event = guard.backend.feed_pcm_i16(mic, reference, audio_playing);
-        let voice_tx = if matches!(event, Some(WakeEvent::TriggerStart)) {
-            guard.voice_tx.clone()
+        let (voice_tx, handoff) = if matches!(event, Some(WakeEvent::TriggerStart)) {
+            (
+                guard.voice_tx.clone(),
+                crate::audio::wake_handoff::freeze_current_handoff(
+                    guard.backend.acoustic_snapshot(),
+                ),
+            )
         } else {
-            None
+            (None, None)
         };
-        (event, voice_tx)
+        (event, voice_tx, handoff)
     };
 
     match event {
         Some(WakeEvent::TriggerStart) => {
             crate::metrics::record_wake_word_trigger();
-            if let Some(tx) = voice_tx {
-                match tx.try_send(VoiceEvent::WakeTriggered) {
+            if handoff.is_none() {
+                log::debug!("[wake] wake trigger has no pre-roll handoff");
+            }
+            if let (Some(tx), Some(handoff)) = (voice_tx, handoff) {
+                match tx.try_send(VoiceEvent::WakeTriggered(handoff)) {
                     Ok(()) => {}
                     Err(TrySendError::Full(_)) => {
                         log::debug!("[wake] dropping wake trigger because voice queue is full");
@@ -78,6 +87,8 @@ pub fn feed_pcm_i16(mic: &[i16], reference: &[i16], audio_playing: bool) {
 pub fn reset_after_session() {
     let mut guard = state().lock().unwrap_or_else(|e| e.into_inner());
     guard.backend.reset_after_session();
+    drop(guard);
+    crate::audio::wake_handoff::reset_current_handoff();
 }
 
 /// Disable wake processing and drop the voice-session event sink.
@@ -85,4 +96,6 @@ pub fn shutdown() {
     let mut guard = state().lock().unwrap_or_else(|e| e.into_inner());
     guard.backend = WakeBackend::Disabled;
     guard.voice_tx = None;
+    drop(guard);
+    crate::audio::wake_handoff::shutdown_handoff();
 }

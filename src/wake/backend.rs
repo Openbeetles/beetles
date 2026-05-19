@@ -1,4 +1,5 @@
 use super::acoustic::AcousticWakeBackend;
+use crate::audio::wake_handoff::WakeAcousticSnapshot;
 
 /// Wake backend output consumed by the runtime glue.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -38,6 +39,13 @@ impl WakeBackend {
     pub fn reset_after_session(&mut self) {
         if let Self::Acoustic(backend) = self {
             backend.reset_after_session();
+        }
+    }
+
+    pub fn acoustic_snapshot(&self) -> WakeAcousticSnapshot {
+        match self {
+            Self::Disabled => WakeAcousticSnapshot::default(),
+            Self::Acoustic(backend) => backend.snapshot(),
         }
     }
 }

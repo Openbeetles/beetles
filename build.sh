@@ -3672,6 +3672,9 @@ else
   # --- ESP toolchain PATH (platform-specific, same role as build.ps1 Set-EspPath) ---
   ensure_local_stable_toolchain
   set_esp_path() {
+    if [[ "${ESP_IDF_TOOLS_INSTALL_DIR:-}" == "fromenv" && -n "${IDF_PATH:-}" ]]; then
+      return
+    fi
     for f in "$HOME/export-esp.sh" "$HOME/.espup/export-esp.sh" "$HOME/.local/share/esp-rs/export-esp.sh"; do
       [[ -f "$f" ]] && { source "$f"; return; }
     done
@@ -3686,6 +3689,11 @@ else
 
   # --- Install ESP toolchain if missing (same as build.ps1) ---
   if ! command -v xtensa-esp32s3-elf-gcc &>/dev/null && ! command -v riscv32-esp-elf-gcc &>/dev/null; then
+    if [[ "${ESP_IDF_TOOLS_INSTALL_DIR:-}" == "fromenv" && -n "${IDF_PATH:-}" ]]; then
+      echo "Error: ESP_IDF_TOOLS_INSTALL_DIR=fromenv requires the activated ESP-IDF toolchain in PATH." >&2
+      echo "  IDF_PATH: $IDF_PATH" >&2
+      exit 1
+    fi
     echo ""
     echo "========== Step: Installing ESP Rust toolchain (espup) =========="
     echo "  ESP GCC toolchains not found. Running espup install."

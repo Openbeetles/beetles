@@ -1,5 +1,6 @@
 use super::backend::WakeEvent;
 use crate::audio::energy::normalized_rms;
+use crate::audio::wake_handoff::WakeAcousticSnapshot;
 use crate::config::AudioSegment;
 use std::f32::consts::PI;
 use std::time::Instant;
@@ -90,6 +91,7 @@ pub struct AcousticWakeBackend {
     noise_bootstrap_frames: u32,
     smoothed_mic_rms: f32,
     smoothed_ref_rms: f32,
+    last_snapshot: WakeAcousticSnapshot,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -111,6 +113,7 @@ impl AcousticWakeBackend {
             noise_bootstrap_frames: 0,
             smoothed_mic_rms: 0.0,
             smoothed_ref_rms: 0.0,
+            last_snapshot: WakeAcousticSnapshot::default(),
         }
     }
 
@@ -124,6 +127,11 @@ impl AcousticWakeBackend {
         self.activation_score = 0.0;
         self.hangover_left_ms = 0;
         self.cooldown_left_ms = self.config.cooldown_ms;
+        self.last_snapshot = WakeAcousticSnapshot::default();
+    }
+
+    pub fn snapshot(&self) -> WakeAcousticSnapshot {
+        self.last_snapshot
     }
 
     /// Feed one mic frame and optional playback reference frame into the detector.
@@ -236,6 +244,16 @@ impl AcousticWakeBackend {
                 reference_ok,
             },
         );
+        self.last_snapshot = WakeAcousticSnapshot {
+            mic_level_pm: unit_per_mille(mic_level),
+            zcr_pm: unit_per_mille(zcr),
+            speech_ratio_pm: unit_per_mille(speech_summary.speech_ratio),
+            speech_coverage_pm: unit_per_mille(speech_summary.speech_bin_coverage),
+            speech_dominance_pm: unit_per_mille(speech_summary.dominant_speech_share),
+            activation_pm: unit_per_mille(self.activation_score),
+            speech_like,
+            reference_ok,
+        };
 
         if self.activation_score < 1.0 {
             crate::metrics::record_wake_word_feed_us(feed_start.elapsed().as_micros());
@@ -260,6 +278,10 @@ fn frame_duration_ms(sample_count: usize, sample_rate_hz: u32) -> u32 {
         return 0;
     }
     ((sample_count as u64) * 1000 / (sample_rate_hz as u64)).max(1) as u32
+}
+
+fn unit_per_mille(value: f32) -> u32 {
+    (value.clamp(0.0, 1.0) * 1000.0).round() as u32
 }
 
 fn smooth_level(state: &mut f32, sample: f32) -> f32 {

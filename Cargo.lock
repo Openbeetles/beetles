@@ -975,8 +975,7 @@ dependencies = [
 [[package]]
 name = "embuild"
 version = "0.33.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e188ad2bbe82afa841ea4a29880651e53ab86815db036b2cb9f8de3ac32dad75"
+source = "git+https://github.com/ivmarkov/embuild?rev=d5f79aefa6913cb6ec9f9d4add24e946ad0bb4db#d5f79aefa6913cb6ec9f9d4add24e946ad0bb4db"
 dependencies = [
  "anyhow",
  "bindgen",
@@ -3573,7 +3572,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]

@@ -114,6 +114,11 @@ pub(crate) fn heartbeat_tick(
     log::info!(
         "[{}] {}",
         TAG,
+        crate::metrics::format_voice_realtime_baseline_line()
+    );
+    log::info!(
+        "[{}] {}",
+        TAG,
         crate::orchestrator::format_runtime_capability_baseline_line()
     );
     let network_snapshot = crate::state::network_runtime_snapshot(

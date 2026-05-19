@@ -565,6 +565,10 @@ fn buffer_deferred_msg_with_replay<F>(
 ) where
     F: FnMut(&mut VecDeque<crate::bus::PcMsg>),
 {
+    if should_freeze_deferred_replay_now() {
+        buffer_deferred_msg_without_replay(tag, cooldown_buffer, msg);
+        return;
+    }
     drop_deferred_supplementals_for_primary(tag, cooldown_buffer, &msg);
     let pending = match try_push_buffered_msg(tag, cooldown_buffer, msg) {
         BufferPushResult::Buffered | BufferPushResult::Dropped => return,
@@ -642,7 +646,24 @@ fn replay_ready_messages_for_tick<FH, FS>(
     FH: FnMut(&str) -> bool,
     FS: FnMut(&crate::bus::PcMsg) -> bool,
 {
+    if should_freeze_deferred_replay_now() {
+        return;
+    }
     replay_cooldown_buffer_with(cooldown_buffer, is_in_cooldown, send);
+}
+
+fn should_freeze_deferred_replay_now() -> bool {
+    should_freeze_deferred_replay_for_runtime_mode(
+        crate::runtime::thread_registry::runtime_mode_snapshot(),
+    )
+}
+
+fn should_freeze_deferred_replay_for_runtime_mode(
+    mode: crate::runtime::RuntimeModeSnapshot,
+) -> bool {
+    mode.voice_exclusive_active
+        || mode.current_mode == crate::runtime::RuntimeMode::VoiceExclusive
+        || !mode.action_budget.allow_non_voice_outbound
 }
 
 #[derive(Default)]
@@ -2702,5 +2723,16 @@ mod tests {
             1,
             "resource-pressure TLS failures should defer immediately instead of hammering retries"
         );
+    }
+
+    #[test]
+    fn deferred_replay_freezes_during_voice_exclusive_window() {
+        let mode =
+            crate::runtime::mode::snapshot_from_source(crate::runtime::mode::RuntimeModeSource {
+                voice_exclusive_active: true,
+                ..crate::runtime::mode::RuntimeModeSource::default()
+            });
+
+        assert!(super::should_freeze_deferred_replay_for_runtime_mode(mode));
     }
 }

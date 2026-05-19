@@ -1670,6 +1670,26 @@ mod tests {
     }
 
     #[test]
+    fn runtime_transport_admission_blocks_external_wss_connect_during_voice_exclusive() {
+        let mode =
+            crate::runtime::mode::snapshot_from_source(crate::runtime::mode::RuntimeModeSource {
+                voice_exclusive_active: true,
+                ..crate::runtime::mode::RuntimeModeSource::default()
+            });
+
+        let admission =
+            runtime_transport_admission(TransportAdmissionKind::ExternalWssConnect, mode);
+
+        assert_eq!(
+            admission,
+            TransportAdmission::Rejected(TransportAdmissionRejection {
+                stage: "transport_runtime_admission",
+                reason: "voice_exclusive_suspend",
+            })
+        );
+    }
+
+    #[test]
     fn runtime_transport_admission_blocks_non_voice_http_during_config_persisting() {
         let mode =
             crate::runtime::mode::snapshot_from_source(crate::runtime::mode::RuntimeModeSource {

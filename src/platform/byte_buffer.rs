@@ -18,6 +18,17 @@ pub struct ByteBuffer {
     inner: ByteBufferInner,
 }
 
+impl Clone for ByteBuffer {
+    fn clone(&self) -> Self {
+        let mut cloned = Self::with_capacity(self.len());
+        if cloned.write_all(self.as_slice()).is_ok() {
+            cloned
+        } else {
+            Self::from_vec(self.as_slice().to_vec())
+        }
+    }
+}
+
 impl std::fmt::Debug for ByteBuffer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ByteBuffer")
@@ -76,6 +87,13 @@ impl ByteBuffer {
         match &self.inner {
             ByteBufferInner::Heap(bytes) => bytes.as_slice(),
             ByteBufferInner::ExternalPreferred(bytes) => bytes.as_ref(),
+        }
+    }
+
+    pub fn as_mut_slice(&mut self) -> &mut [u8] {
+        match &mut self.inner {
+            ByteBufferInner::Heap(bytes) => bytes.as_mut_slice(),
+            ByteBufferInner::ExternalPreferred(bytes) => bytes.as_mut_slice(),
         }
     }
 

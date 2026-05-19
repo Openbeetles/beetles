@@ -75,6 +75,11 @@ static VOICE_CANCEL_SENT_TOTAL: AtomicU32 = AtomicU32::new(0);
 static VOICE_NO_SPEECH_TIMEOUT_TOTAL: AtomicU32 = AtomicU32::new(0);
 static VOICE_RESPONSE_WAIT_TIMEOUT_TOTAL: AtomicU32 = AtomicU32::new(0);
 static VOICE_POST_PLAYBACK_TIMEOUT_TOTAL: AtomicU32 = AtomicU32::new(0);
+static VOICE_REALTIME_HANDOFF_MS_LAST: AtomicU32 = AtomicU32::new(0);
+static VOICE_REALTIME_LOCAL_COMMIT_TOTAL: AtomicU32 = AtomicU32::new(0);
+static VOICE_REALTIME_SERVER_SPEECH_TOTAL: AtomicU32 = AtomicU32::new(0);
+static VOICE_REALTIME_TURN_COMPLETED_TOTAL: AtomicU32 = AtomicU32::new(0);
+static VOICE_REALTIME_NO_SPEECH_REASON_LAST: OnceLock<Mutex<String>> = OnceLock::new();
 static WAKE_WORD_TRIGGER_TOTAL: AtomicU32 = AtomicU32::new(0);
 static AUDIO_WORKER_TURNS_TOTAL: AtomicU32 = AtomicU32::new(0);
 static AUDIO_WORKER_IDLE_TURNS_TOTAL: AtomicU32 = AtomicU32::new(0);
@@ -446,6 +451,39 @@ pub fn record_voice_post_playback_timeout() {
 }
 
 #[inline]
+pub fn record_voice_realtime_handoff_ms(ms: u128) {
+    VOICE_REALTIME_HANDOFF_MS_LAST.store(ms.min(u32::MAX as u128) as u32, Ordering::Relaxed);
+}
+
+#[inline]
+pub fn record_voice_realtime_local_commit() {
+    VOICE_REALTIME_LOCAL_COMMIT_TOTAL.fetch_add(1, Ordering::Relaxed);
+}
+
+#[inline]
+pub fn record_voice_realtime_server_speech() {
+    VOICE_REALTIME_SERVER_SPEECH_TOTAL.fetch_add(1, Ordering::Relaxed);
+}
+
+#[inline]
+pub fn record_voice_realtime_turn_completed() {
+    VOICE_REALTIME_TURN_COMPLETED_TOTAL.fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn record_voice_realtime_no_speech_reason(reason: &str) {
+    let reason = reason.trim();
+    if reason.is_empty() {
+        return;
+    }
+    let mut guard = VOICE_REALTIME_NO_SPEECH_REASON_LAST
+        .get_or_init(|| Mutex::new(String::new()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    guard.clear();
+    guard.push_str(reason);
+}
+
+#[inline]
 pub fn record_wake_word_trigger() {
     WAKE_WORD_TRIGGER_TOTAL.fetch_add(1, Ordering::Relaxed);
 }
@@ -772,6 +810,19 @@ pub fn snapshot() -> MetricsSnapshot {
             as u64,
         voice_playback_timeout_total: VOICE_POST_PLAYBACK_TIMEOUT_TOTAL.load(Ordering::Relaxed)
             as u64,
+        voice_realtime_handoff_ms_last: VOICE_REALTIME_HANDOFF_MS_LAST.load(Ordering::Relaxed)
+            as u64,
+        voice_realtime_local_commit_total: VOICE_REALTIME_LOCAL_COMMIT_TOTAL.load(Ordering::Relaxed)
+            as u64,
+        voice_realtime_server_speech_total: VOICE_REALTIME_SERVER_SPEECH_TOTAL
+            .load(Ordering::Relaxed) as u64,
+        voice_realtime_turn_completed_total: VOICE_REALTIME_TURN_COMPLETED_TOTAL
+            .load(Ordering::Relaxed) as u64,
+        voice_realtime_no_speech_reason_last: VOICE_REALTIME_NO_SPEECH_REASON_LAST
+            .get()
+            .and_then(|m| m.lock().ok())
+            .map(|g| g.clone())
+            .unwrap_or_default(),
         wake_trigger_total: WAKE_WORD_TRIGGER_TOTAL.load(Ordering::Relaxed) as u64,
         storage_lock_ops_total: STORAGE_LOCK_OPS_TOTAL.load(Ordering::Relaxed) as u64,
         storage_lock_contention_total: STORAGE_LOCK_CONTENTION_TOTAL.load(Ordering::Relaxed) as u64,
@@ -889,6 +940,22 @@ pub fn format_audio_wake_baseline_line() -> String {
     )
 }
 
+pub fn format_voice_realtime_baseline_line() -> String {
+    let snap = snapshot();
+    format!(
+        "voice_realtime handoff_ms={} local_commit_total={} server_speech_total={} turn_completed_total={} no_speech_reason={}",
+        snap.voice_realtime_handoff_ms_last,
+        snap.voice_realtime_local_commit_total,
+        snap.voice_realtime_server_speech_total,
+        snap.voice_realtime_turn_completed_total,
+        if snap.voice_realtime_no_speech_reason_last.is_empty() {
+            "none"
+        } else {
+            snap.voice_realtime_no_speech_reason_last.as_str()
+        }
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -992,6 +1059,39 @@ mod tests {
         assert!(line.contains("speech_like=true"));
         assert!(line.contains("ref_ok=false"));
     }
+
+    #[test]
+    fn realtime_voice_metrics_record_turn_summary() {
+        let before = snapshot();
+        record_voice_realtime_handoff_ms(1_200);
+        record_voice_realtime_local_commit();
+        record_voice_realtime_server_speech();
+        record_voice_realtime_turn_completed();
+        record_voice_realtime_no_speech_reason("local_speech_below_profile");
+
+        let snap = snapshot();
+
+        assert_eq!(snap.voice_realtime_handoff_ms_last, 1_200);
+        assert_eq!(
+            snap.voice_realtime_local_commit_total,
+            before.voice_realtime_local_commit_total + 1
+        );
+        assert_eq!(
+            snap.voice_realtime_server_speech_total,
+            before.voice_realtime_server_speech_total + 1
+        );
+        assert_eq!(
+            snap.voice_realtime_turn_completed_total,
+            before.voice_realtime_turn_completed_total + 1
+        );
+        assert_eq!(
+            snap.voice_realtime_no_speech_reason_last,
+            "local_speech_below_profile"
+        );
+        let line = snap.to_baseline_log_line();
+        assert!(line.contains("voice_rt_handoff_ms=1200"));
+        assert!(line.contains("voice_rt_no_speech_reason=local_speech_below_profile"));
+    }
 }
 
 #[derive(Clone, Debug, serde::Serialize)]
@@ -1057,6 +1157,11 @@ pub struct MetricsSnapshot {
     pub voice_no_speech_timeout_total: u64,
     pub voice_response_wait_timeout_total: u64,
     pub voice_playback_timeout_total: u64,
+    pub voice_realtime_handoff_ms_last: u64,
+    pub voice_realtime_local_commit_total: u64,
+    pub voice_realtime_server_speech_total: u64,
+    pub voice_realtime_turn_completed_total: u64,
+    pub voice_realtime_no_speech_reason_last: String,
     pub wake_trigger_total: u64,
     pub storage_lock_ops_total: u64,
     pub storage_lock_contention_total: u64,
@@ -1091,7 +1196,7 @@ impl MetricsSnapshot {
         let mut buf = String::with_capacity(384);
         let _ = write!(
             buf,
-            "metrics msg_in={} user_msg_in={} msg_out={} agent_msg_in={} sys_msg_in={} llm_calls={} llm_err={} llm_last_ms={} llm_req_body_last_b={} llm_req_body_max_b={} request_semantics_ms={} tool_exec_ms={} mental_privacy_review_ms={} ttft_last_ms={} e2e_last_ms={} post_reply_last_ms={} user_q_wait_ms={} sys_q_wait_ms={} cron_e2e_ms={} react_rounds_last={} tool_calls_last={} tool_calls={} tool_err={} tool_protocol_forced={} tool_protocol_violation={} final_answer_calls={} dispatch_ok={} dispatch_fail={} outbound_enq_fail={} inbound_q_full={} inbound_defer={} inbound_drop={} event_ingress_enqueued_total={} event_ingress_rejected_total={} event_ingress_purged_total={} event_ingress_cancelled_total={} event_ingress_stale_drop_total={} spawn_fail={} http_route_reject={} final_drift_total={} empty_final_blocked_total={} internal_error_copy_suppressed_total={} channel_http_ok={} channel_http_fail={} http_permit_wait_ms={} http_route_queue_wait_ms={} http_route_handler_ms={} http_route_timeout_total={} voice_in_last_ms={} voice_out_last_ms={} voice_in_fail={} voice_out_fail={} voice_interrupt={} voice_interrupt_missed={} voice_no_speech_to={} voice_resp_wait_to={} voice_playback_to={} wake_trigger={} storage_ops={} storage_contention={} storage_wait_last_us={} storage_hold_last_us={} storage_hold_last_stage={} err_chat={} err_ctx={} err_tool={} err_llm_req={} err_llm_parse={} err_dispatch={} err_session={} err_tls_admission={} err_other={} last_active_epoch={} wifi_reconn={} wifi_ap_restart={} wifi_last_fail_stage={} shttp_reuse={} shttp_create={} shttp_reset={} shttp_invalidate={}",
+            "metrics msg_in={} user_msg_in={} msg_out={} agent_msg_in={} sys_msg_in={} llm_calls={} llm_err={} llm_last_ms={} llm_req_body_last_b={} llm_req_body_max_b={} request_semantics_ms={} tool_exec_ms={} mental_privacy_review_ms={} ttft_last_ms={} e2e_last_ms={} post_reply_last_ms={} user_q_wait_ms={} sys_q_wait_ms={} cron_e2e_ms={} react_rounds_last={} tool_calls_last={} tool_calls={} tool_err={} tool_protocol_forced={} tool_protocol_violation={} final_answer_calls={} dispatch_ok={} dispatch_fail={} outbound_enq_fail={} inbound_q_full={} inbound_defer={} inbound_drop={} event_ingress_enqueued_total={} event_ingress_rejected_total={} event_ingress_purged_total={} event_ingress_cancelled_total={} event_ingress_stale_drop_total={} spawn_fail={} http_route_reject={} final_drift_total={} empty_final_blocked_total={} internal_error_copy_suppressed_total={} channel_http_ok={} channel_http_fail={} http_permit_wait_ms={} http_route_queue_wait_ms={} http_route_handler_ms={} http_route_timeout_total={} voice_in_last_ms={} voice_out_last_ms={} voice_in_fail={} voice_out_fail={} voice_interrupt={} voice_interrupt_missed={} voice_no_speech_to={} voice_resp_wait_to={} voice_playback_to={} voice_rt_handoff_ms={} voice_rt_local_commit={} voice_rt_server_speech={} voice_rt_turn_completed={} voice_rt_no_speech_reason={} wake_trigger={} storage_ops={} storage_contention={} storage_wait_last_us={} storage_hold_last_us={} storage_hold_last_stage={} err_chat={} err_ctx={} err_tool={} err_llm_req={} err_llm_parse={} err_dispatch={} err_session={} err_tls_admission={} err_other={} last_active_epoch={} wifi_reconn={} wifi_ap_restart={} wifi_last_fail_stage={} shttp_reuse={} shttp_create={} shttp_reset={} shttp_invalidate={}",
             self.messages_in,
             self.user_messages_in,
             self.messages_out,
@@ -1149,6 +1254,11 @@ impl MetricsSnapshot {
             self.voice_no_speech_timeout_total,
             self.voice_response_wait_timeout_total,
             self.voice_playback_timeout_total,
+            self.voice_realtime_handoff_ms_last,
+            self.voice_realtime_local_commit_total,
+            self.voice_realtime_server_speech_total,
+            self.voice_realtime_turn_completed_total,
+            self.voice_realtime_no_speech_reason_last,
             self.wake_trigger_total,
             self.storage_lock_ops_total,
             self.storage_lock_contention_total,

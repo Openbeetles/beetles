@@ -1082,6 +1082,7 @@ impl AudioPipelineState {
 
         let mic_enabled = backend.mic_ready();
         let speaker_enabled = backend.speaker_ready();
+        let wake_handoff_sample_rate_hz = seg.microphone.sample_rate.max(8_000);
         let duplex_capabilities = duplex_capabilities_for_runtime(
             mic_enabled,
             speaker_enabled,
@@ -1225,6 +1226,10 @@ impl AudioPipelineState {
                                     mic_read_start.elapsed().as_micros(),
                                 );
                                 crate::metrics::record_audio_mic_frame_read();
+                                crate::audio::wake_handoff::record_mic_frame(
+                                    &mic_frame[..n],
+                                    wake_handoff_sample_rate_hz,
+                                );
                                 if should_feed_wake_backend(
                                     audio_recording,
                                     interrupt_listening,

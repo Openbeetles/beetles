@@ -186,7 +186,11 @@ impl<T> Drop for PsramVec<T> {
     }
 }
 
+// The wrapper owns the backing allocation and only exposes mutable access
+// through `&mut self`; sharing immutable slices across threads is safe when T
+// is Sync, and moving ownership is safe when T is Send.
 unsafe impl<T: Send> Send for PsramVec<T> {}
+unsafe impl<T: Sync> Sync for PsramVec<T> {}
 
 impl<T> std::ops::Deref for PsramVec<T> {
     type Target = [T];

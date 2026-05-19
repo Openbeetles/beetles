@@ -1220,6 +1220,10 @@ fn default_wake_enter_threshold() -> f32 {
     0.18
 }
 
+pub(crate) fn default_wake_enter_threshold_for_profile() -> f32 {
+    default_wake_enter_threshold()
+}
+
 fn default_wake_leave_threshold() -> f32 {
     0.10
 }
@@ -1911,7 +1915,7 @@ fn audio_can_use_baidu_speech_fallback(seg: &AudioSegment) -> bool {
         && !seg.speech.api_secret.trim().is_empty()
 }
 
-fn normalize_audio_segment(seg: &mut AudioSegment) {
+pub(crate) fn normalize_audio_segment(seg: &mut AudioSegment) {
     if seg
         .speaker
         .device_ref
@@ -1944,14 +1948,22 @@ fn float_nearly_eq(left: f32, right: f32) -> bool {
     (left - right).abs() <= WAKE_FLOAT_EQ_EPSILON
 }
 
-fn audio_uses_es7210_codec_input(seg: &AudioSegment) -> bool {
+pub(crate) fn audio_input_codec_is_es7210(seg: &AudioSegment) -> bool {
     seg.topology == AUDIO_TOPOLOGY_I2S_CODEC
-        && seg.codec.input_reference
         && seg
             .codec
             .input_codec
             .as_deref()
             .is_some_and(|value| value == AUDIO_CODEC_INPUT_ES7210)
+}
+
+pub(crate) fn audio_uses_es7210_codec_input(seg: &AudioSegment) -> bool {
+    audio_input_codec_is_es7210(seg) && seg.codec.input_reference
+}
+
+pub(crate) fn audio_microphone_uses_pdm(seg: &AudioSegment) -> bool {
+    seg.topology == AUDIO_TOPOLOGY_DISCRETE_I2S
+        && seg.microphone.device_type == AUDIO_MIC_DEVICE_PDM
 }
 
 pub(crate) fn audio_uses_es7210_codec_wake_profile(seg: &AudioSegment) -> bool {

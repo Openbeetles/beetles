@@ -3,14 +3,19 @@
 
 pub mod baidu_token;
 pub mod capture;
+pub mod endpoint_profile;
 pub mod energy;
+pub mod input_profile;
 pub mod pipeline;
 pub mod realtime;
+pub mod realtime_provider;
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
 pub(crate) mod runtime_policy;
 pub mod stt_baidu;
 pub mod tts_baidu;
+pub mod voice_conversation;
 pub mod voice_session;
+pub mod wake_handoff;
 
 #[cfg(test)]
 mod tests {

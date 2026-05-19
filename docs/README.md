@@ -2,10 +2,6 @@
 
 **中文** | [English below](#english)
 
-公开文档按 `Start`、`Capabilities`、`Configure`、`Operate`、`Reference`、`Develop` 六层组织。
-建议按任务选择入口；只有在需要字段、接口或行为细节时再进入参考页。
-命令、服务名和文件路径仍使用 `beetle`。
-
 ## Start
 
 | 任务 | 中文 | English |
@@ -54,10 +50,6 @@
 ---
 
 ## English
-
-The docs are organized into six layers: `Start`, `Capabilities`, `Configure`, `Operate`, `Reference`, and `Develop`.
-Choose by task first. Do not begin with the reference section unless you already know you need it.
-Commands, service names, and filesystem paths still use `beetle`.
 
 ### Start
 

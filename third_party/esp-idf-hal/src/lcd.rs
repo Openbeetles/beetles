@@ -140,6 +140,8 @@ pub mod config {
                 num_data_lanes,
                 phy_clk_src: soc_module_clk_t_SOC_MOD_CLK_PLL_F160M as u32,
                 lane_bit_rate_mbps: lane_bit_rate_mbps as _,
+                #[cfg(esp_idf_version_at_least_6_0_1)]
+                flags: Default::default(),
             };
 
             let dbi_config = esp_lcd_dbi_io_config_t {

@@ -62,6 +62,7 @@ rm -f /tmp/beetle-storage-leaks.$$
 bash scripts/tests/esp_audio_codec_contract_test.sh >/dev/null
 bash scripts/tests/beetle_wss_recv_contract_test.sh >/dev/null
 bash scripts/tests/analyze_image_body_contract_test.sh >/dev/null
+bash scripts/tests/esp_realtime_voice_contract_test.sh >/dev/null
 
 if [[ ! -f src/runtime/scheduler.rs ]] ||
    [[ ! -f src/runtime/foreground.rs ]] ||
@@ -217,7 +218,7 @@ fi
 
 if ! rg -n 'request\.class == RuntimeWorkClass::WakePcmFeed' src/runtime/scheduler.rs >/dev/null ||
    ! rg -n '"audio_io_worker" => RuntimeWorkClass::WakePcmFeed' src/runtime/plane.rs >/dev/null ||
-   ! rg -n 'try_send\(VoiceEvent::WakeTriggered\)' src/wake/mod.rs >/dev/null; then
+   ! rg -n 'try_send\(VoiceEvent::WakeTriggered\(' src/wake/mod.rs >/dev/null; then
   echo "FAIL: wake PCM feed must remain non-blocking and scheduler-safe" >&2
   exit 1
 fi

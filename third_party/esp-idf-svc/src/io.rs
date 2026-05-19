@@ -130,6 +130,18 @@ pub mod vfs {
 
             let mut handle = core::ptr::null_mut();
 
+            #[cfg(esp_idf_version_at_least_6_0_0)]
+            sys::esp!(unsafe {
+                let conf = sys::esp_vfs_fat_conf_t {
+                    base_path: path.as_ptr(),
+                    fat_drive: drive_path.as_ptr(),
+                    max_files: max_fds as _,
+                };
+
+                sys::esp_vfs_fat_register_cfg(&conf, &mut handle)
+            })?;
+
+            #[cfg(not(esp_idf_version_at_least_6_0_0))]
             sys::esp!(unsafe {
                 sys::esp_vfs_fat_register(
                     path.as_ptr(),

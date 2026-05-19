@@ -23,6 +23,26 @@ dependencies:
       registry_url: https://components.espressif.com
       type: service
     version: 1.1.5
+  espressif/esp_audio_codec:
+    component_hash: af4663830bc73eca58febcc34a976d003465e78ed57458aa00a14b231e392ca1
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=4.4'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 2.4.1
+  espressif/esp_codec_dev:
+    component_hash: 896c67360ae1f8dedaf8a53dfe48c015317fa455f061a5165307892296990028
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=4.0'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 1.5.10
   espressif/esp_hosted:
     component_hash: e23eb702781c804a62909e5394da0641a2bff9adccec6673a7bff60ce8c8b756
     dependencies:
@@ -94,7 +114,7 @@ dependencies:
   idf:
     source:
       type: idf
-    version: 6.0.0
+    version: 6.0.1
   joltwallet/littlefs:
     component_hash: 29eff7921c4e8bce021aeb7fff2723bfcafed661756de700646ea0f6223c2a32
     dependencies:
@@ -106,10 +126,12 @@ dependencies:
       type: service
     version: 1.21.1
 direct_dependencies:
+- espressif/esp_audio_codec
+- espressif/esp_codec_dev
 - espressif/esp_hosted
 - espressif/esp_lcd_ili9341
 - espressif/esp_wifi_remote
 - joltwallet/littlefs
-manifest_hash: ff90fce3f282f82bb6581dbd9eba62b330083019446150f8e9b867c5aa4c3f5e
+manifest_hash: eca8517225927bfc593e8948e7ec1573f61caf49afccb43fc141aa192da38046
 target: esp32p4
 version: 3.0.0

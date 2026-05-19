@@ -16,6 +16,8 @@ use crate::audio::pipeline::{
 use crate::audio::realtime::{
     connect_realtime_session, run_connected_realtime_session, ConnectedRealtimeSession,
 };
+use crate::audio::voice_conversation::{NoSpeechExitReason, VoiceConversationController};
+use crate::audio::wake_handoff::WakeAudioHandoff;
 use crate::bus::{PcMsg, UserInboundTx};
 use crate::config::{audio_realtime_enabled, AudioSegment};
 use crate::constants::{AUDIO_CAPTURE_MAX_MS, VOICE_CHANNEL_NAME, VOICE_DEVICE_CHAT_ID};
@@ -39,14 +41,14 @@ const MAX_PENDING_SPEAK_CHARS: usize = 512;
 #[derive(Debug)]
 pub enum VoiceEvent {
     /// Wake backend triggered — start capture + STT + inject to agent.
-    WakeTriggered,
+    WakeTriggered(WakeAudioHandoff),
     /// Agent reply to speak aloud via TTS.
     Speak(String),
 }
 
 #[derive(Clone)]
 enum VoiceWorkerTask {
-    WakeInteraction,
+    WakeInteraction(WakeAudioHandoff),
     Speak(String),
 }
 
@@ -69,6 +71,7 @@ enum VoiceWorkerStartDisposition {
 }
 
 struct RealtimeSessionOwnership {
+    conversation: VoiceConversationController,
     _foreground_ticket: crate::runtime::RuntimeForegroundTicket,
     _audio_input_call: crate::orchestrator::RuntimeCapabilityCallGuard,
     _audio_output_call: crate::orchestrator::RuntimeCapabilityCallGuard,
@@ -80,6 +83,7 @@ struct RealtimeSessionOwnership {
 
 struct PreparedRealtimeSession {
     connected: ConnectedRealtimeSession,
+    handoff: WakeAudioHandoff,
     _ownership: RealtimeSessionOwnership,
 }
 
@@ -90,7 +94,7 @@ enum VoiceWorkerMessage {
 
 #[derive(Default)]
 struct PendingVoiceEvents {
-    wake_requested: bool,
+    wake_handoff: Option<WakeAudioHandoff>,
     pending_speak: Option<String>,
 }
 
@@ -246,7 +250,10 @@ fn spawn_voice_session_worker(
             .map_err(|error| crate::Error::io("voice_session_worker_spawn", error))
         }
         VoiceWorkerStartKind::PrepareRealtimeTransportThenSpawnConnect => {
-            let ownership = match prepare_realtime_session_ownership(&cfg) {
+            let VoiceWorkerTask::WakeInteraction(handoff) = task else {
+                return Ok(VoiceWorkerStartResult::Dropped);
+            };
+            let ownership = match prepare_realtime_session_ownership(&cfg, &handoff) {
                 Ok(ownership) => ownership,
                 Err(error) => {
                     log::warn!(
@@ -263,7 +270,7 @@ fn spawn_voice_session_worker(
                 STACK_VOICE_REALTIME_CONNECT,
                 Some(SpawnCore::Core1),
                 HttpThreadRole::Background,
-                move || run_realtime_connect_worker(cfg, ownership, worker_tx),
+                move || run_realtime_connect_worker(cfg, ownership, handoff, worker_tx),
             )
             .map(VoiceWorkerStartResult::Started)
             .map_err(|error| crate::Error::io("voice_realtime_connect_spawn", error))
@@ -310,11 +317,11 @@ fn voice_worker_runtime_work(
     crate::runtime::RuntimeWorkSource,
 )> {
     match task {
-        VoiceWorkerTask::WakeInteraction if realtime_enabled => Some((
+        VoiceWorkerTask::WakeInteraction(_) if realtime_enabled => Some((
             crate::runtime::RuntimeWorkClass::RealtimeVoiceSession,
             crate::runtime::RuntimeWorkSource::Background,
         )),
-        VoiceWorkerTask::WakeInteraction => Some((
+        VoiceWorkerTask::WakeInteraction(_) => Some((
             crate::runtime::RuntimeWorkClass::VoiceFallbackInteraction,
             crate::runtime::RuntimeWorkSource::Background,
         )),
@@ -347,7 +354,7 @@ fn apply_voice_worker_start_result_for_test(
 }
 
 fn voice_worker_start_kind(realtime_enabled: bool, task: &VoiceWorkerTask) -> VoiceWorkerStartKind {
-    if realtime_enabled && matches!(task, VoiceWorkerTask::WakeInteraction) {
+    if realtime_enabled && matches!(task, VoiceWorkerTask::WakeInteraction(_)) {
         VoiceWorkerStartKind::PrepareRealtimeTransportThenSpawnConnect
     } else {
         VoiceWorkerStartKind::SpawnWorker
@@ -356,7 +363,7 @@ fn voice_worker_start_kind(realtime_enabled: bool, task: &VoiceWorkerTask) -> Vo
 
 fn voice_worker_spawn_profile(task: &VoiceWorkerTask) -> (&'static str, usize) {
     match task {
-        VoiceWorkerTask::WakeInteraction | VoiceWorkerTask::Speak(_) => {
+        VoiceWorkerTask::WakeInteraction(_) | VoiceWorkerTask::Speak(_) => {
             ("voice_session_worker", STACK_VOICE_SESSION)
         }
     }
@@ -375,9 +382,10 @@ fn run_voice_session_worker(
 fn run_realtime_connect_worker(
     cfg: VoiceSessionConfig,
     ownership: RealtimeSessionOwnership,
+    handoff: WakeAudioHandoff,
     worker_tx: mpsc::Sender<VoiceWorkerMessage>,
 ) {
-    let result = connect_prepared_realtime_session(&cfg, ownership);
+    let result = connect_prepared_realtime_session(&cfg, ownership, handoff);
     if let Err(error) = &result {
         log::warn!("[{}] realtime voice connect failed: {}", TAG, error);
         crate::metrics::record_voice_tool_failure("voice_session_realtime");
@@ -425,8 +433,8 @@ fn run_voice_task(cfg: &VoiceSessionConfig, task: VoiceWorkerTask) {
         };
 
     match task {
-        VoiceWorkerTask::WakeInteraction => {
-            handle_wake_interaction(cfg, &mut http, &ensure_http);
+        VoiceWorkerTask::WakeInteraction(handoff) => {
+            handle_wake_interaction(cfg, &mut http, &ensure_http, handoff);
         }
         VoiceWorkerTask::Speak(text) => {
             handle_speak(cfg, &mut http, &ensure_http, &text);
@@ -444,8 +452,10 @@ impl Drop for WakeSessionResetGuard {
 
 fn prepare_realtime_session_ownership(
     cfg: &VoiceSessionConfig,
+    handoff: &WakeAudioHandoff,
 ) -> crate::Result<RealtimeSessionOwnership> {
     let wake_reset = WakeSessionResetGuard;
+    let mut conversation = VoiceConversationController::wake_primed(handoff);
     log::info!("[{}] wake triggered, starting voice interaction", TAG);
     let duplex_caps = cfg.platform.audio_duplex_capabilities();
 
@@ -486,8 +496,10 @@ fn prepare_realtime_session_ownership(
         AudioLeaseOwner::VoiceRealtime,
     )?;
     let voice_transport = VoiceExclusiveTransportGuard::enter(cfg.platform.as_ref(), TAG)?;
+    conversation.mark_connecting();
 
     Ok(RealtimeSessionOwnership {
+        conversation,
         _foreground_ticket: foreground_ticket,
         _audio_input_call: audio_input_call,
         _audio_output_call: audio_output_call,
@@ -500,12 +512,15 @@ fn prepare_realtime_session_ownership(
 
 fn connect_prepared_realtime_session(
     cfg: &VoiceSessionConfig,
-    ownership: RealtimeSessionOwnership,
+    mut ownership: RealtimeSessionOwnership,
+    handoff: WakeAudioHandoff,
 ) -> crate::Result<PreparedRealtimeSession> {
     let connected = connect_realtime_session(cfg.platform.as_ref(), &cfg.audio_cfg, TAG)?;
+    ownership.conversation.mark_handoff_uploaded(&handoff);
 
     Ok(PreparedRealtimeSession {
         connected,
+        handoff,
         _ownership: ownership,
     })
 }
@@ -513,10 +528,13 @@ fn connect_prepared_realtime_session(
 fn run_prepared_realtime_session(cfg: &VoiceSessionConfig, prepared: PreparedRealtimeSession) {
     let PreparedRealtimeSession {
         connected,
-        _ownership,
+        handoff,
+        mut _ownership,
     } = prepared;
-    match run_connected_realtime_session(cfg.platform.as_ref(), &cfg.audio_cfg, connected) {
+    match run_connected_realtime_session(cfg.platform.as_ref(), &cfg.audio_cfg, connected, handoff)
+    {
         Ok(session) => {
+            record_realtime_conversation_success(&mut _ownership.conversation, &session);
             log::info!(
                 "[{}] realtime session finished turns={} input_ms={} output_ms={} duration_ms={}",
                 TAG,
@@ -525,21 +543,84 @@ fn run_prepared_realtime_session(cfg: &VoiceSessionConfig, prepared: PreparedRea
                 session.output_audio_ms,
                 session.session_ms
             );
+            log_realtime_turn_summary(&_ownership.conversation);
             if session.output_audio_ms > 0 {
                 crate::metrics::record_voice_output_play_ms(session.output_audio_ms);
             }
         }
         Err(error) => {
+            _ownership
+                .conversation
+                .finish_no_speech(NoSpeechExitReason::ProviderNoTurnEvents);
+            record_realtime_conversation_summary(&_ownership.conversation);
+            log_realtime_turn_summary(&_ownership.conversation);
             log::warn!("[{}] realtime voice session failed: {}", TAG, error);
             crate::metrics::record_voice_tool_failure("voice_session_realtime");
         }
     }
 }
 
+fn record_realtime_conversation_success(
+    conversation: &mut VoiceConversationController,
+    session: &crate::audio::realtime::RealtimeSessionResult,
+) {
+    conversation.record_input_audio_ms(session.input_audio_ms);
+    if session.input_audio_ms > 0 {
+        crate::metrics::record_voice_realtime_local_commit();
+    }
+    if session.server_speech_started {
+        conversation.mark_server_speech_started();
+        crate::metrics::record_voice_realtime_server_speech();
+    }
+    if session.server_speech_stopped {
+        conversation.mark_server_speech_stopped();
+    }
+    if session.response_created {
+        conversation.mark_response_created();
+    }
+    if session.output_audio_ms > 0 {
+        conversation.record_output_audio_ms(session.output_audio_ms);
+    }
+    if session.turns_completed > 0 {
+        for _ in 0..session.turns_completed {
+            conversation.mark_turn_completed();
+            crate::metrics::record_voice_realtime_turn_completed();
+        }
+        conversation.finish_completed();
+    } else {
+        conversation.classify_no_speech(session.turns_completed);
+        if conversation.no_speech_reason().is_none() {
+            conversation.finish_no_speech(if session.input_audio_ms == 0 {
+                NoSpeechExitReason::NoHandoffAudio
+            } else {
+                NoSpeechExitReason::ProviderNoTurnEvents
+            });
+        }
+    }
+    record_realtime_conversation_summary(conversation);
+}
+
+fn record_realtime_conversation_summary(conversation: &VoiceConversationController) {
+    let summary = conversation.summary();
+    crate::metrics::record_voice_realtime_handoff_ms(summary.wake_pre_roll_ms as u128);
+    if let Some(reason) = summary.no_speech_reason {
+        crate::metrics::record_voice_realtime_no_speech_reason(reason.as_str());
+    }
+}
+
+fn log_realtime_turn_summary(conversation: &VoiceConversationController) {
+    log::info!(
+        "[{}] realtime turn summary {}",
+        TAG,
+        conversation.summary().to_log_fields()
+    );
+}
+
 fn handle_wake_interaction<F>(
     cfg: &VoiceSessionConfig,
     http: &mut Option<Box<dyn PlatformHttpClient>>,
     ensure_http: &F,
+    handoff: WakeAudioHandoff,
 ) where
     F: Fn(
         &mut Option<Box<dyn PlatformHttpClient>>,
@@ -547,8 +628,8 @@ fn handle_wake_interaction<F>(
     ) -> bool,
 {
     if audio_realtime_enabled(&cfg.audio_cfg) {
-        match prepare_realtime_session_ownership(cfg)
-            .and_then(|ownership| connect_prepared_realtime_session(cfg, ownership))
+        match prepare_realtime_session_ownership(cfg, &handoff)
+            .and_then(|ownership| connect_prepared_realtime_session(cfg, ownership, handoff))
         {
             Ok(prepared) => run_prepared_realtime_session(cfg, prepared),
             Err(error) => {
@@ -770,17 +851,16 @@ fn drain_worker_messages(
 }
 
 fn take_pending_voice_task(pending: &mut PendingVoiceEvents) -> Option<VoiceWorkerTask> {
-    if pending.wake_requested {
-        pending.wake_requested = false;
-        return Some(VoiceWorkerTask::WakeInteraction);
+    if let Some(handoff) = pending.wake_handoff.take() {
+        return Some(VoiceWorkerTask::WakeInteraction(handoff));
     }
     pending.pending_speak.take().map(VoiceWorkerTask::Speak)
 }
 
 fn restore_pending_voice_task(pending: &mut PendingVoiceEvents, task: VoiceWorkerTask) {
     match task {
-        VoiceWorkerTask::WakeInteraction => {
-            pending.wake_requested = true;
+        VoiceWorkerTask::WakeInteraction(handoff) => {
+            pending.wake_handoff = Some(handoff);
             pending.pending_speak = None;
         }
         VoiceWorkerTask::Speak(text) => {
@@ -793,8 +873,8 @@ fn restore_pending_voice_task(pending: &mut PendingVoiceEvents, task: VoiceWorke
 
 fn handle_voice_event(event: VoiceEvent, pending: &mut PendingVoiceEvents) {
     match event {
-        VoiceEvent::WakeTriggered => {
-            pending.wake_requested = true;
+        VoiceEvent::WakeTriggered(handoff) => {
+            pending.wake_handoff = Some(handoff);
             pending.pending_speak = None;
         }
         VoiceEvent::Speak(text) => {
@@ -823,15 +903,30 @@ fn should_play_wake_prompt(audio_cfg: &AudioSegment) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::audio::wake_handoff::{WakeAcousticSnapshot, WakeAudioHandoff};
+    use crate::platform::byte_buffer::ByteBuffer;
+    use std::sync::Arc;
+
+    fn test_handoff() -> WakeAudioHandoff {
+        WakeAudioHandoff {
+            id: 1,
+            sample_rate_hz: 16_000,
+            channels: 1,
+            pre_roll_ms: 20,
+            post_wake_ms: 0,
+            pcm_le_bytes: Arc::new(ByteBuffer::zeroed(64)),
+            acoustic: WakeAcousticSnapshot::default(),
+        }
+    }
 
     #[test]
     fn wake_clears_pending_speak() {
         let mut pending = PendingVoiceEvents {
-            wake_requested: false,
+            wake_handoff: None,
             pending_speak: Some("old reply".to_string()),
         };
-        handle_voice_event(VoiceEvent::WakeTriggered, &mut pending);
-        assert!(pending.wake_requested);
+        handle_voice_event(VoiceEvent::WakeTriggered(test_handoff()), &mut pending);
+        assert!(pending.wake_handoff.is_some());
         assert!(pending.pending_speak.is_none());
     }
 
@@ -872,11 +967,11 @@ mod tests {
     #[test]
     fn realtime_wake_prepares_transport_before_session_worker() {
         assert_eq!(
-            voice_worker_start_kind(true, &VoiceWorkerTask::WakeInteraction),
+            voice_worker_start_kind(true, &VoiceWorkerTask::WakeInteraction(test_handoff())),
             VoiceWorkerStartKind::PrepareRealtimeTransportThenSpawnConnect
         );
         assert_eq!(
-            voice_worker_start_kind(false, &VoiceWorkerTask::WakeInteraction),
+            voice_worker_start_kind(false, &VoiceWorkerTask::WakeInteraction(test_handoff())),
             VoiceWorkerStartKind::SpawnWorker
         );
         assert_eq!(
@@ -888,14 +983,14 @@ mod tests {
     #[test]
     fn auto_voice_wake_maps_scheduler_work_class_and_source() {
         assert_eq!(
-            voice_worker_runtime_work(true, &VoiceWorkerTask::WakeInteraction),
+            voice_worker_runtime_work(true, &VoiceWorkerTask::WakeInteraction(test_handoff())),
             Some((
                 crate::runtime::RuntimeWorkClass::RealtimeVoiceSession,
                 crate::runtime::RuntimeWorkSource::Background
             ))
         );
         assert_eq!(
-            voice_worker_runtime_work(false, &VoiceWorkerTask::WakeInteraction),
+            voice_worker_runtime_work(false, &VoiceWorkerTask::WakeInteraction(test_handoff())),
             Some((
                 crate::runtime::RuntimeWorkClass::VoiceFallbackInteraction,
                 crate::runtime::RuntimeWorkSource::Background
@@ -914,14 +1009,14 @@ mod tests {
             VoiceWorkerStartResult::Deferred {
                 retry_after_ms: 1_500,
             },
-            VoiceWorkerTask::WakeInteraction,
+            VoiceWorkerTask::WakeInteraction(test_handoff()),
             now,
         );
 
         assert_eq!(outcome, VoiceWorkerStartDisposition::RetryLater);
         assert!(!retry_gate.can_retry(now + Duration::from_millis(100)));
         assert!(
-            pending.wake_requested,
+            pending.wake_handoff.is_some(),
             "scheduler defer must retain auto wake instead of dropping the voice interaction"
         );
     }
@@ -930,7 +1025,7 @@ mod tests {
     fn auto_realtime_voice_wake_consumes_scheduler_decision_before_connect() {
         let decision = voice_worker_scheduler_decision_for_context(
             true,
-            &VoiceWorkerTask::WakeInteraction,
+            &VoiceWorkerTask::WakeInteraction(test_handoff()),
             crate::runtime::RuntimeSchedulerContext {
                 profile: crate::runtime::RuntimePlanePolicyProfile::EspCompact,
                 runtime_mode: crate::runtime::mode::snapshot_from_source(
@@ -960,7 +1055,7 @@ mod tests {
     fn auto_fallback_voice_wake_consumes_scheduler_decision_before_worker() {
         let decision = voice_worker_scheduler_decision_for_context(
             false,
-            &VoiceWorkerTask::WakeInteraction,
+            &VoiceWorkerTask::WakeInteraction(test_handoff()),
             crate::runtime::RuntimeSchedulerContext {
                 profile: crate::runtime::RuntimePlanePolicyProfile::EspCompact,
                 runtime_mode: crate::runtime::mode::snapshot_from_source(
