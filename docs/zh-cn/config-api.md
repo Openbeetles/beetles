@@ -463,16 +463,16 @@
 - `speaker`
 - `codec`
 - `vad`
-- `wake_word`（ESP32-S3 语音唤醒开关与唤醒后提示语；S3 唤醒词固定为 `Hi,ESP`，不可配置）
+- `wake_word`（语音唤醒开关与唤醒后提示语；ESP32-S3 / ESP32-P4 的唤醒短语固定为 `Hi,ESP`）
 - `speech`
 - `tts`
 - `realtime`
 - `ambient_listening`
 - `led_indicator`
 
-`wake_word` 保持现有配置面不扩展。ESP32-S3 产品态继续使用现有 `enabled` 和 `wake_prompt`；不新增 `backend` 字段，不新增模型选择器。
+`wake_word` 保持现有配置面不扩展。`enabled` 控制是否启用本地语音唤醒；`wake_prompt` 是唤醒后播报的提示语，不会改变唤醒短语。
 
-ESP32-S3 固定唤醒词 / 唤醒短语为 `Hi,ESP`。它不同于唤醒后播报的 `wake_prompt`，且本身不是配置项：configure-ui 不展示唤醒词输入框或模型选择器，API 保存路径也不生成可写 `keyword` 字段。acoustic threshold 字段不参与 S3 产品态唤醒词选择。
+ESP32-S3 / ESP32-P4 的固定唤醒短语为 `Hi,ESP`。该短语不可自定义，configure-ui 与 API 均不提供唤醒词配置字段。
 
 `topology` 当前支持 `discrete_i2s` 与 `i2s_codec`。在 `i2s_codec` 模式下，`codec` 包含 `input_codec`、`output_codec`、`input_addr`、`output_addr`、`pa_pin` 和 `input_reference`。当前 ESP-BOX-3 codec 路径支持 ES7210 输入与 ES8311 输出。
 

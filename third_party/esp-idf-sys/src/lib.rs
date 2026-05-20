@@ -18,7 +18,10 @@ pub use bindings::*;
 pub use error::*;
 
 // Don't use esp_idf_soc_pcnt_supported; that's only on ESP-IDF v5.x+.
-#[cfg(any(esp32, esp32s2, esp32s3, esp32c5, esp32c6, esp32h2, esp32p4))]
+#[cfg(all(
+    any(esp_idf_version_major = "4", esp_idf_version_major = "5"),
+    any(esp32, esp32s2, esp32s3, esp32c5, esp32c6, esp32h2, esp32p4)
+))]
 pub use pcnt::*;
 
 #[doc(hidden)]
@@ -44,7 +47,10 @@ mod app_desc;
 mod error;
 mod panic;
 mod patches;
-#[cfg(any(esp32, esp32s2, esp32s3, esp32c5, esp32c6, esp32h2, esp32p4))]
+#[cfg(all(
+    any(esp_idf_version_major = "4", esp_idf_version_major = "5"),
+    any(esp32, esp32s2, esp32s3, esp32c5, esp32c6, esp32h2, esp32p4)
+))]
 mod pcnt;
 
 mod start;
@@ -82,7 +88,10 @@ pub fn link_patches() -> PatchesRef {
 #[allow(improper_ctypes)] // TODO: For now, as 5.0 spits out tons of these
 #[allow(dead_code)]
 mod bindings {
-    #[cfg(any(esp32, esp32s2, esp32s3, esp32c5, esp32c6, esp32h2, esp32p4))]
+    #[cfg(all(
+        any(esp_idf_version_major = "4", esp_idf_version_major = "5"),
+        any(esp32, esp32s2, esp32s3, esp32c5, esp32c6, esp32h2, esp32p4)
+    ))]
     use crate::pcnt::*;
 
     include!(env!("EMBUILD_GENERATED_BINDINGS_FILE"));

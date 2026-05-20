@@ -204,7 +204,7 @@ strip = false
 
 [patch.crates-io]
 esp-idf-svc = { path = "third_party/esp-idf-svc" }
-esp-idf-sys = { git = "https://github.com/mh0pe/esp-idf-sys", branch = "esp-idf-v6-support" }
+esp-idf-sys = { path = "third_party/esp-idf-sys" }
 esp-idf-hal = { path = "third_party/esp-idf-hal" }
 # crates.io embuild 0.33.1 cannot parse ESP-IDF v6.0.1 tools.json entries containing `win-arm64`.
 # Patch the whole build graph to the upstream schema fix until the next embuild crate release includes it.

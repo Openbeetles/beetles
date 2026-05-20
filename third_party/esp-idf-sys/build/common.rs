@@ -22,6 +22,8 @@ pub struct EspIdfBuildOutput {
     pub bindgen: bindgen::Factory,
     pub env_path: Option<String>,
     pub esp_idf: PathBuf,
+    /// Target GCC sysroot used by bindgen when the IDF CMake build itself uses clang.
+    pub gcc_sysroot: Option<PathBuf>,
     #[allow(dead_code)]
     pub config: BuildConfig,
 }

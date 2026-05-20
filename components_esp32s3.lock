@@ -40,7 +40,7 @@ dependencies:
       type: service
     version: 1.7.0
   espressif/esp-sr:
-    component_hash: c518b25995cf03021a09442feedb7e40acba9f15d6aa903ebdfe0f657b08197b
+    component_hash: 1158509d88b59134ca880ecf87388b0eacceff6fe6b6b27fd5f1a563d6cfc50b
     dependencies:
     - name: espressif/dl_fft
       registry_url: https://components.espressif.com
@@ -56,7 +56,7 @@ dependencies:
     source:
       registry_url: https://components.espressif.com/
       type: service
-    version: 2.4.0
+    version: 2.3.0
   espressif/esp_audio_codec:
     component_hash: af4663830bc73eca58febcc34a976d003465e78ed57458aa00a14b231e392ca1
     dependencies:
@@ -113,6 +113,6 @@ direct_dependencies:
 - espressif/esp_codec_dev
 - espressif/esp_lcd_ili9341
 - joltwallet/littlefs
-manifest_hash: f230f1f3d9d8eb474c93ad270eb0d9e7f78bf3e0168bcecbd2706575f4ba6333
+manifest_hash: 0f684e8df380a47fa9ba77d58a0ecc42582934baf88afd438f136e1b651d0e58
 target: esp32s3
 version: 3.0.0

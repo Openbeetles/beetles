@@ -192,7 +192,7 @@ record commands with `--profile alwaysinternal_1024`.
 
 ## alwaysinternal_2048
 
-Apply Candidate D (xiaozhi style small-object threshold, keeping Beetle reserve):
+Apply Candidate D (smaller internal-allocation threshold, keeping Beetle reserve):
 
 ```ini
 CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=2048

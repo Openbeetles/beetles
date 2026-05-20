@@ -3,8 +3,8 @@ use std::fmt::Write;
 use std::path::PathBuf;
 
 use anyhow::{anyhow, bail, Context, Result};
-use embuild::cargo;
 use cargo_metadata::{Metadata, Package};
+use embuild::cargo;
 use embuild::cargo::IntoWarning;
 use embuild::espidf::parse_esp_idf_git_ref;
 use embuild::utils::PathExt;

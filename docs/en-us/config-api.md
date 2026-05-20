@@ -463,16 +463,16 @@ Top-level fields:
 - `speaker`
 - `codec`
 - `vad`
-- `wake_word` (ESP32-S3 voice wake enablement and post-wake prompt; the S3 wake phrase is fixed to `Hi,ESP` and is not configurable)
+- `wake_word` (voice wake enablement and post-wake prompt; ESP32-S3 / ESP32-P4 use the fixed wake phrase `Hi,ESP`)
 - `speech`
 - `tts`
 - `realtime`
 - `ambient_listening`
 - `led_indicator`
 
-`wake_word` keeps the existing configuration surface unchanged. In the ESP32-S3 product path, the firmware continues to use the existing `enabled` and `wake_prompt` fields; no `backend` field or model selector is added.
+`wake_word` keeps the existing configuration surface unchanged. `enabled` controls whether local voice wake is enabled; `wake_prompt` is the prompt played after wake and does not change the wake phrase.
 
-The ESP32-S3 wake phrase is fixed to `Hi,ESP`. It is separate from the post-wake `wake_prompt`, and it is not a configuration item: configure-ui does not show a wake-word text field or model selector, and the API save path does not generate a writable `keyword` field. Acoustic-threshold fields do not participate in S3 product wake-phrase selection.
+ESP32-S3 / ESP32-P4 use the fixed wake phrase `Hi,ESP`. This phrase is not customizable, and neither configure-ui nor the API exposes a wake-phrase configuration field.
 
 `topology` currently supports `discrete_i2s` and `i2s_codec`. In `i2s_codec` mode, `codec` contains `input_codec`, `output_codec`, `input_addr`, `output_addr`, `pa_pin`, and `input_reference`. The current ESP-BOX-3 codec path supports ES7210 input and ES8311 output.
 

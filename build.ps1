@@ -87,6 +87,14 @@ function Get-DefaultSdkconfigOverlayForTarget {
   }
 }
 
+function Get-DefaultIdfToolchainForTarget {
+  param([string]$TargetTriple)
+  switch ($TargetTriple) {
+    "riscv32imafc-esp-espidf" { return "clang" }
+    default { return $null }
+  }
+}
+
 function Get-PackageProfileTargetKind {
   param([string]$TargetTriple)
   if ($TargetTriple -like "*-unknown-linux*") {
@@ -213,6 +221,7 @@ $buildTarget = "xtensa-esp32s3-espidf"
 $buildProfile = "release-size"
 $buildFeatures = @()
 $boardSdkconfigOverlay = $null
+$boardIdfToolchain = $null
 $autoDetectedBoard = $null
 $cliBuildTarget = $null
 for ($i = 0; $i -lt $buildArgs.Count; $i++) {
@@ -250,6 +259,7 @@ if ($env:BOARD) {
       if ($line -match 'target\s*=\s*"([^"]+)"') { $buildTarget = $matches[1] }
       if ($line -match 'partition_table\s*=\s*"([^"]+)"') { $partitionTable = $matches[1] }
       if ($line -match 'sdkconfig_overlay\s*=\s*"([^"]+)"') { $boardSdkconfigOverlay = $matches[1] }
+      if ($line -match 'idf_toolchain\s*=\s*"([^"]+)"') { $boardIdfToolchain = $matches[1] }
     }
   }
   if (-not $partitionTable) {
@@ -265,6 +275,7 @@ if ($env:BOARD) {
 # 若命令行已传 --target，以命令行为准
 if ($cliBuildTarget) {
   $buildTarget = $cliBuildTarget
+  $boardIdfToolchain = $null
 }
 # 防止路径穿越：target 仅允许字母数字、连字符、下划线
 if ($buildTarget -notmatch '^[a-zA-Z0-9_-]+$') {
@@ -275,6 +286,15 @@ $targetMcu = Get-TargetMcuFromTriple -TargetTriple $buildTarget
 if (-not $targetMcu) {
   Write-Error "Unsupported ESP target triple: $buildTarget"
   exit 1
+}
+$defaultIdfToolchain = Get-DefaultIdfToolchainForTarget -TargetTriple $buildTarget
+$buildIdfToolchain = if ($boardIdfToolchain) { $boardIdfToolchain } else { $defaultIdfToolchain }
+if ($buildIdfToolchain) {
+  if ($env:IDF_TOOLCHAIN -and $env:IDF_TOOLCHAIN -ne $buildIdfToolchain) {
+    Write-Error "$buildTarget requires IDF_TOOLCHAIN=$buildIdfToolchain; got IDF_TOOLCHAIN=$env:IDF_TOOLCHAIN"
+    exit 1
+  }
+  $env:IDF_TOOLCHAIN = $buildIdfToolchain
 }
 if (-not $boardSdkconfigOverlay) {
   $boardSdkconfigOverlay = Get-DefaultSdkconfigOverlayForTarget -TargetTriple $buildTarget

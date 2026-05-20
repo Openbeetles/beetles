@@ -1,6 +1,6 @@
 /**
  * @file beetle_wakenet.h
- * @brief Stable C ABI for Beetle WakeNet wake-word detection.
+ * @brief Stable C ABI for Beetle ESP-SR AFE WakeNet wake-word detection.
  *
  * This wrapper keeps ESP-SR headers inside the C component. Rust callers only
  * bind this small ABI and must serialize access externally.
@@ -26,17 +26,17 @@ typedef enum {
 } beetle_wn_result_t;
 
 /**
- * Initialize WakeNet with a model from the "model" partition.
+ * Initialize AFE WakeNet with a model from the "model" partition.
  *
  * Supported input sample rates are 16000 and 24000 Hz. The 24000 Hz path is
- * normalized to WakeNet's 16000 Hz detector input inside this component.
+ * normalized to AFE's 16000 Hz detector input inside this component.
  */
-beetle_wn_err_t beetle_wakenet_init(const char *model_name, int input_sample_rate_hz);
+beetle_wn_err_t beetle_wakenet_init(const char *model_name, int input_sample_rate_hz, int use_reference);
 
 /**
- * Feed mono signed 16-bit PCM samples at the sample rate passed to init().
+ * Feed mono signed 16-bit PCM samples and optional playback-reference samples at the sample rate passed to init().
  */
-beetle_wn_result_t beetle_wakenet_feed(const int16_t *pcm, int samples);
+beetle_wn_result_t beetle_wakenet_feed(const int16_t *mic, const int16_t *reference, int samples);
 
 /**
  * Reset the internal chunk and resampling accumulators without destroying the model.

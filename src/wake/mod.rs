@@ -3,13 +3,13 @@
 
 mod acoustic;
 mod backend;
-#[cfg(beetle_esp32s3)]
+#[cfg(beetle_esp_sr_wakenet)]
 mod esp_sr;
 
 pub use crate::audio::wake_handoff::WakeAcousticSnapshot;
 pub use acoustic::{AcousticWakeBackend, AcousticWakeConfig};
 pub use backend::{WakeBackend, WakeEvent};
-#[cfg(beetle_esp32s3)]
+#[cfg(beetle_esp_sr_wakenet)]
 pub use esp_sr::{EspSrWakeBackend, ESP_SR_WAKENET_MODEL_HIESP, ESP_SR_WAKE_PHRASE};
 
 use crate::audio::voice_session::VoiceEvent;

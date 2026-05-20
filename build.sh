@@ -205,6 +205,14 @@ default_sdkconfig_overlay_for_target() {
   esac
 }
 
+default_idf_toolchain_for_target() {
+  local target="$1"
+  case "$target" in
+    riscv32imafc-esp-espidf) printf '%s\n' 'clang' ;;
+    *) return 1 ;;
+  esac
+}
+
 list_flash_ports() {
   local ports=()
   local f
@@ -2691,6 +2699,7 @@ if [[ -n "${BOARD:-}" ]]; then
   [[ -z "$BUILD_TARGET" ]] && { echo "Error: board $BOARD has no 'target' in board_presets.toml" >&2; exit 1; }
   PARTITION_TABLE=$(echo "$block" | grep -E '^partition_table\s*=' | head -1 | sed 's/.*"\([^"]*\)".*/\1/')
   BOARD_SDKCONFIG_OVERLAY=$(echo "$block" | grep -E '^sdkconfig_overlay\s*=' | head -1 | sed 's/.*"\([^"]*\)".*/\1/')
+  BOARD_IDF_TOOLCHAIN=$(echo "$block" | grep -E '^idf_toolchain\s*=' | head -1 | sed 's/.*"\([^"]*\)".*/\1/')
   if [[ -z "$PARTITION_TABLE" ]]; then
     case "$BOARD" in
       esp32-s3-8mb)  PARTITION_TABLE=partitions_8mb.csv ;;
@@ -2705,6 +2714,7 @@ fi
 # Command-line --target overrides BOARD (same as build.ps1)
 if [[ -n "$CLI_BUILD_TARGET" ]]; then
   BUILD_TARGET="$CLI_BUILD_TARGET"
+  BOARD_IDF_TOOLCHAIN=""
 fi
 # Sanitize target (no path chars)
 if [[ ! "$BUILD_TARGET" =~ ^[a-zA-Z0-9_-]+$ ]]; then
@@ -2716,6 +2726,15 @@ TARGET_MCU="$(target_mcu_from_triple "$BUILD_TARGET" || true)"
 if [[ -z "$TARGET_MCU" && ! "$BUILD_TARGET" =~ -unknown-linux ]]; then
   echo "Error: unsupported ESP target triple: $BUILD_TARGET" >&2
   exit 1
+fi
+DEFAULT_IDF_TOOLCHAIN="$(default_idf_toolchain_for_target "$BUILD_TARGET" || true)"
+BUILD_IDF_TOOLCHAIN="${BOARD_IDF_TOOLCHAIN:-$DEFAULT_IDF_TOOLCHAIN}"
+if [[ -n "$BUILD_IDF_TOOLCHAIN" ]]; then
+  if [[ -n "${IDF_TOOLCHAIN:-}" && "$IDF_TOOLCHAIN" != "$BUILD_IDF_TOOLCHAIN" ]]; then
+    echo "Error: $BUILD_TARGET requires IDF_TOOLCHAIN=$BUILD_IDF_TOOLCHAIN; got IDF_TOOLCHAIN=$IDF_TOOLCHAIN" >&2
+    exit 1
+  fi
+  export IDF_TOOLCHAIN="$BUILD_IDF_TOOLCHAIN"
 fi
 if [[ -z "${BOARD_SDKCONFIG_OVERLAY:-}" && ! "$BUILD_TARGET" =~ -unknown-linux ]]; then
   BOARD_SDKCONFIG_OVERLAY="$(default_sdkconfig_overlay_for_target "$BUILD_TARGET" || true)"
@@ -3172,6 +3191,10 @@ collect_esp_component_graph_inputs() {
     sdkconfig.defaults.esp32s3.32mb.board \
     sdkconfig.defaults.esp32p4 \
     sdkconfig.defaults.esp32p4.board \
+    third_party/esp-idf-sys/build/build.rs \
+    third_party/esp-idf-sys/build/common.rs \
+    third_party/esp-idf-sys/build/native/cargo_driver.rs \
+    third_party/esp-idf-sys/build/native/cargo_driver/chip.rs \
     third_party/esp-idf-sys/build/native/cargo_driver/config.rs
   do
     [[ -f "$SCRIPT_ROOT/$path" ]] && printf '%s\n' "$SCRIPT_ROOT/$path"

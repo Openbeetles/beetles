@@ -86,7 +86,7 @@ CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG=y
 
 # main 任务栈：P2 后主任务只保留启动装配 + 监管，不再给宽运行态兜底。
 # 仍需覆盖 NVS/SPIFFS/WiFi/registry/build_default_registry 等启动链深度，
-# 因此从 20000 保守下调到 12288，而不是直接砍到 xiaozhi 的 8192。
+# 因此从 20000 保守下调到 12288，不按外部样例继续压低到 8192。
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=12288
 
 # 系统事件任务：显式固定为 4096，避免继续依赖 IDF 默认 2304 的隐式口径。

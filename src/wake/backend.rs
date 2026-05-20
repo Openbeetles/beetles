@@ -1,6 +1,6 @@
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 use super::acoustic::AcousticWakeBackend;
-#[cfg(beetle_esp32s3)]
+#[cfg(beetle_esp_sr_wakenet)]
 use super::esp_sr::EspSrWakeBackend;
 use crate::audio::wake_handoff::WakeAcousticSnapshot;
 use crate::config::AudioSegment;
@@ -17,7 +17,7 @@ pub enum WakeEvent {
 pub enum WakeBackend {
     #[default]
     Disabled,
-    #[cfg(beetle_esp32s3)]
+    #[cfg(beetle_esp_sr_wakenet)]
     EspSrWakeNet(EspSrWakeBackend),
     #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
     LinuxAcoustic(AcousticWakeBackend),
@@ -30,7 +30,7 @@ impl WakeBackend {
             return Self::Disabled;
         }
 
-        #[cfg(beetle_esp32s3)]
+        #[cfg(beetle_esp_sr_wakenet)]
         {
             return match EspSrWakeBackend::from_audio_config(audio) {
                 Ok(backend) => Self::EspSrWakeNet(backend),
@@ -46,11 +46,11 @@ impl WakeBackend {
 
         #[cfg(all(
             any(target_arch = "xtensa", target_arch = "riscv32"),
-            not(beetle_esp32s3)
+            not(beetle_esp_sr_wakenet)
         ))]
         {
             log::warn!(
-                "[wake] ESP-SR WakeNet is enabled only on the ESP32-S3 build target; wake disabled on this ESP target"
+                "[wake] ESP-SR WakeNet is enabled only on the ESP32-S3/P4 build targets; wake disabled on this ESP target"
             );
             return Self::Disabled;
         }
@@ -65,7 +65,7 @@ impl WakeBackend {
     pub fn requires_pcm_feed(&self) -> bool {
         match self {
             Self::Disabled => false,
-            #[cfg(beetle_esp32s3)]
+            #[cfg(beetle_esp_sr_wakenet)]
             Self::EspSrWakeNet(_) => true,
             #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
             Self::LinuxAcoustic(_) => true,
@@ -79,14 +79,12 @@ impl WakeBackend {
         reference: &[i16],
         audio_playing: bool,
     ) -> Option<WakeEvent> {
-        #[cfg(beetle_esp32s3)]
-        let _ = reference;
-        #[cfg(target_arch = "riscv32")]
+        #[cfg(all(target_arch = "riscv32", not(beetle_esp_sr_wakenet)))]
         let _ = (mic, reference, audio_playing);
         match self {
             Self::Disabled => None,
-            #[cfg(beetle_esp32s3)]
-            Self::EspSrWakeNet(backend) => backend.feed_pcm_i16(mic, audio_playing),
+            #[cfg(beetle_esp_sr_wakenet)]
+            Self::EspSrWakeNet(backend) => backend.feed_pcm_i16(mic, reference, audio_playing),
             #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
             Self::LinuxAcoustic(backend) => backend.feed_pcm_i16(mic, reference, audio_playing),
         }
@@ -96,7 +94,7 @@ impl WakeBackend {
     pub fn reset_after_session(&mut self) {
         match self {
             Self::Disabled => {}
-            #[cfg(beetle_esp32s3)]
+            #[cfg(beetle_esp_sr_wakenet)]
             Self::EspSrWakeNet(backend) => backend.reset_after_session(),
             #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
             Self::LinuxAcoustic(backend) => backend.reset_after_session(),
@@ -106,7 +104,7 @@ impl WakeBackend {
     pub fn acoustic_snapshot(&self) -> WakeAcousticSnapshot {
         match self {
             Self::Disabled => WakeAcousticSnapshot::default(),
-            #[cfg(beetle_esp32s3)]
+            #[cfg(beetle_esp_sr_wakenet)]
             Self::EspSrWakeNet(backend) => backend.snapshot(),
             #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
             Self::LinuxAcoustic(backend) => backend.snapshot(),

@@ -274,10 +274,10 @@ assert_file_contains \
   "$ROOT_DIR/partitions_32mb.csv" \
   'model,     data, spiffs,  0x1F70000, 0x080000' \
   "32MB partition table should publish the WakeNet model partition from the storage tail"
-assert_file_not_contains \
+assert_file_contains \
   "$ROOT_DIR/partitions_p4_16mb.csv" \
   'model,     data, spiffs' \
-  "P4 16MB partition table should not publish a WakeNet model partition for the S3-only wake transfer"
+  "P4 16MB partition table should publish the WakeNet model partition before coredump"
 assert_file_not_contains \
   "$ROOT_DIR/partitions.csv" \
   'ota_' \

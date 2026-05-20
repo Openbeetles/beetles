@@ -1,4 +1,5 @@
 use std::iter::once;
+use std::path::PathBuf;
 
 use anyhow::*;
 use common::*;
@@ -80,6 +81,31 @@ fn main() -> anyhow::Result<()> {
         })?
         .to_lowercase();
 
+    let idf_version_header = path_buf![
+        &build_output.esp_idf,
+        "components",
+        "esp_common",
+        "include",
+        "esp_idf_version.h"
+    ];
+    let idf_version_major: u32 = std::fs::read_to_string(&idf_version_header)
+        .ok()
+        .and_then(|s| {
+            regex::Regex::new(r"#define\s+ESP_IDF_VERSION_MAJOR\s+(\d+)")
+                .ok()?
+                .captures(&s)?
+                .get(1)?
+                .as_str()
+                .parse()
+                .ok()
+        })
+        .ok_or_else(|| {
+            anyhow!(
+                "Failed to parse ESP_IDF_VERSION_MAJOR from '{}'",
+                idf_version_header.display()
+            )
+        })?;
+
     let manifest_dir = manifest_dir()?;
 
     let header_file = path_buf![
@@ -96,10 +122,28 @@ fn main() -> anyhow::Result<()> {
 
     cargo::track_file(&header_file);
 
+    let picolibc_include: Option<PathBuf> = if cfg_args.get("esp_idf_libc_picolibc").is_some() {
+        let sysroot = build_output
+            .gcc_sysroot
+            .as_deref()
+            .ok_or_else(|| anyhow!("CONFIG_LIBC_PICOLIBC=y but GCC sysroot could not be found"))?;
+        let picolibc = sysroot
+            .parent()
+            .ok_or_else(|| anyhow!("GCC sysroot '{}' has no parent", sysroot.display()))?
+            .join("picolibc")
+            .join("include");
+        if !picolibc.exists() {
+            bail!("picolibc include dir not found at '{}'", picolibc.display());
+        }
+        Some(picolibc)
+    } else {
+        None
+    };
+
     // Because we have multiple bindgen invocations and we can't clone a bindgen::Builder,
     // we have to set the options every time.
     let configure_bindgen = |bindgen: embuild::bindgen::types::Builder| {
-        Ok(bindgen
+        let bindgen = bindgen
             .parse_callbacks(Box::new(BindgenCallbacks))
             .use_core()
             .enable_function_attribute_detection()
@@ -110,8 +154,18 @@ fn main() -> anyhow::Result<()> {
             .blocklist_function("v.*scanf")
             .blocklist_function("_v.*printf_r")
             .blocklist_function("_v.*scanf_r")
-            .blocklist_function("esp_log_writev")
-            .blocklist_type("pcnt_unit_t") // Fix for struct pcnt_unit_t vs enum pcnt_unit_t
+            .blocklist_function("esp_log_writev");
+        let bindgen = if idf_version_major < 6 {
+            bindgen.blocklist_type("pcnt_unit_t")
+        } else {
+            bindgen
+        };
+        let bindgen = if let Some(ref picolibc) = picolibc_include {
+            bindgen.clang_arg(format!("-I{}", picolibc.display()))
+        } else {
+            bindgen
+        };
+        let bindgen = bindgen
             .clang_args(build_output.components.clang_args())
             .clang_args(vec![
                 "-target",
@@ -122,7 +176,8 @@ fn main() -> anyhow::Result<()> {
                     // We don't really have a similar issue with Xtensa, but we pass it explicitly as well just in case
                     "xtensa"
                 },
-            ]))
+            ]);
+        Ok(bindgen)
     };
 
     let bindings_file = bindgen_utils::default_bindings_file()?;

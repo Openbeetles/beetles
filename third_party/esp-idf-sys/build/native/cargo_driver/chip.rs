@@ -153,6 +153,10 @@ impl Chip {
     }
 
     pub fn cmake_toolchain_file(self) -> String {
-        format!("toolchain-{self}.cmake")
+        if std::env::var("IDF_TOOLCHAIN").as_deref() == Ok("clang") {
+            format!("toolchain-clang-{self}.cmake")
+        } else {
+            format!("toolchain-{self}.cmake")
+        }
     }
 }

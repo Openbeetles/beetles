@@ -27,7 +27,11 @@
 #include "freertos/semphr.h"
 #include "freertos/stream_buffer.h"
 #include "freertos/task.h"
+#if ESP_IDF_VERSION_MAJOR > 5
+#include "freertos/freertos_debug.h"
+#else
 #include "freertos/task_snapshot.h"
+#endif
 #include "freertos/timers.h"
 
 #if CONFIG_IDF_TARGET_ESP32
@@ -273,6 +277,9 @@
 
 #ifdef ESP_IDF_COMP_MBEDTLS_ENABLED
 #include "mbedtls/ssl.h"
+#if ESP_IDF_VERSION_MAJOR > 5
+#include "mbedtls/private/sha256.h"
+#else
 #include "mbedtls/aes.h"
 #include "mbedtls/cipher.h"
 #include "mbedtls/entropy.h"
@@ -280,6 +287,8 @@
 #include "mbedtls/cmac.h"
 #include "mbedtls/ecdh.h"
 #include "mbedtls/ecp.h"
+#include "mbedtls/sha256.h"
+#endif
 #include "mbedtls/debug.h"
 
 #ifdef CONFIG_MBEDTLS_CERTIFICATE_BUNDLE
@@ -363,6 +372,7 @@
 #ifdef ESP_IDF_COMP_SOC_ENABLED
 // TODO: Include all XXX_periph.h headers here
 #include "soc/gpio_periph.h"
+#include "soc/gpio_reg.h"
 #include "soc/rtc_periph.h"
 #endif
 
@@ -531,6 +541,9 @@
 #if OLD_DRIVER_COMP || defined(ESP_IDF_COMP_ESP_DRIVER_UART_ENABLED)
 #include "driver/uart.h"
 #include "driver/uart_select.h"
+#if ESP_IDF_VERSION_MAJOR > 5
+#include "driver/uart_vfs.h"
+#endif
 #endif
 
 // TEMP SENSOR

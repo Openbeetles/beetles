@@ -33,7 +33,7 @@ fn main() {
     }
     // 声明自定义 cfg，避免 unexpected_cfgs 警告（http_client 等处使用）。
     println!("cargo:rustc-check-cfg=cfg(esp_idf_version_major, values(\"4\"))");
-    println!("cargo:rustc-check-cfg=cfg(beetle_esp32s3)");
+    println!("cargo:rustc-check-cfg=cfg(beetle_esp_sr_wakenet)");
 
     // 为看门狗 API 选择提供 esp_idf_version_major：IDF 4.x 用 esp_task_wdt_feed，5.x 用 esp_task_wdt_reset。
     // 从 IDF_PATH/version.txt 解析；未设置 IDF_PATH 时默认 5（常见于 espup 等）。
@@ -62,8 +62,11 @@ fn main() {
         println!("cargo:rustc-env=IDF_VERSION={}", idf_version);
 
         let sdkconfig_defaults = std::env::var("ESP_IDF_SDKCONFIG_DEFAULTS").unwrap_or_default();
-        if target.contains("esp32s3") || sdkconfig_defaults.contains("esp32s3") {
-            println!("cargo:rustc-cfg=beetle_esp32s3");
+        if target.contains("esp32s3")
+            || sdkconfig_defaults.contains("esp32s3")
+            || sdkconfig_defaults.contains("esp32p4")
+        {
+            println!("cargo:rustc-cfg=beetle_esp_sr_wakenet");
         }
     }
 }

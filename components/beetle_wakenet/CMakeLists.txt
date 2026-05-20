@@ -1,4 +1,4 @@
-if(IDF_TARGET STREQUAL "esp32s3")
+if((IDF_TARGET STREQUAL "esp32s3") OR (IDF_TARGET STREQUAL "esp32p4"))
     idf_component_register(
         SRCS "beetle_wakenet.c"
         INCLUDE_DIRS "include"
