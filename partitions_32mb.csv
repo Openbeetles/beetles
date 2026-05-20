@@ -2,5 +2,6 @@
 nvs,       data, nvs,     0x9000,   0x10000
 phy_init,  data, phy,     0x19000,   0x1000
 factory,   app,  factory, 0x20000,   0x600000
-storage,   data, littlefs,0x620000,  0x19D0000
+storage,   data, littlefs,0x620000,  0x1950000
+model,     data, spiffs,  0x1F70000, 0x080000
 coredump,  data, coredump,0x1FF0000, 0x10000

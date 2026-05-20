@@ -463,21 +463,20 @@
 - `speaker`
 - `codec`
 - `vad`
-- `wake_word`（当前配置 Beetle 内建的 acoustic 唤醒后端；外部 wake backend 只是未来扩展点，本轮不开放配置）
+- `wake_word`（ESP32-S3 语音唤醒开关与唤醒后提示语；S3 唤醒词固定为 `Hi,ESP`，不可配置）
 - `speech`
 - `tts`
 - `realtime`
 - `ambient_listening`
 - `led_indicator`
 
-`wake_word` 仍保留顶层对象名以兼容既有配置。当前字段形状为：
-`enabled`、`enter_threshold`、`leave_threshold`、`reference_suppress_ratio`、`zcr_min`、`zcr_max`、`min_speech_band_ratio`、`min_active_ms`、`hangover_ms`、`cooldown_ms`、`keyword`（仅兼容旧配置读取/回写）和 `wake_prompt`。configure-ui 只暴露 acoustic 参数和 `wake_prompt`。
+`wake_word` 保持现有配置面不扩展。ESP32-S3 产品态继续使用现有 `enabled` 和 `wake_prompt`；不新增 `backend` 字段，不新增模型选择器。
+
+ESP32-S3 固定唤醒词 / 唤醒短语为 `Hi,ESP`。它不同于唤醒后播报的 `wake_prompt`，且本身不是配置项：configure-ui 不展示唤醒词输入框或模型选择器，API 保存路径也不生成可写 `keyword` 字段。acoustic threshold 字段不参与 S3 产品态唤醒词选择。
 
 `topology` 当前支持 `discrete_i2s` 与 `i2s_codec`。在 `i2s_codec` 模式下，`codec` 包含 `input_codec`、`output_codec`、`input_addr`、`output_addr`、`pa_pin` 和 `input_reference`。当前 ESP-BOX-3 codec 路径支持 ES7210 输入与 ES8311 输出。
 
-当 `audio.topology = "i2s_codec"` 且启用 ES7210 input reference 时，旧 acoustic 默认值会在保存/运行时加载时规范化为 ESP-BOX-3 灵敏度 profile：`enter_threshold=0.01`、`leave_threshold=0.005`、`zcr_max=0.65`、`min_speech_band_ratio=0.35`、`min_active_ms=120`。
-
-同一模式下，设备端会读取 ES7210 的多路输入并将当前有效输入通道送入内建 acoustic 唤醒后端；用户无需手动配置 TDM 通道序号。
+当 `audio.topology = "i2s_codec"` 且启用 ES7210 input reference 时，设备端会读取 ES7210 的多路输入并将当前有效输入通道送入语音链路；用户无需手动配置 TDM 通道序号。
 
 可选查询参数：`restart=1`
 

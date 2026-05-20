@@ -358,6 +358,23 @@ function Get-ModelPartitionOffset {
   return $null
 }
 
+function Get-ModelPartitionSize {
+  param([string]$PartitionCsv)
+  if (-not (Test-Path $PartitionCsv)) { return $null }
+  foreach ($line in Get-Content -Path $PartitionCsv) {
+    $trimmed = $line.Trim()
+    if (-not $trimmed -or $trimmed.StartsWith("#")) { continue }
+    $parts = $line.Split(",")
+    if ($parts.Count -lt 5) { continue }
+    $name = $parts[0].Trim()
+    $size = $parts[4].Trim()
+    if ($name -eq "model" -and -not [string]::IsNullOrWhiteSpace($size)) {
+      return $size
+    }
+  }
+  return $null
+}
+
 function Get-SrModelsBin {
   $buildDir = Join-Path $releaseDir "build"
   if (-not (Test-Path $buildDir)) { return $null }
@@ -390,9 +407,10 @@ function Write-ModelPartition {
   param([string]$ChosenPort)
   $modelOffset = Get-ModelPartitionOffset -PartitionCsv $partitionCsv
   if (-not $modelOffset) {
-    Write-Host "  Model partition:    not present in $partitionTable (wake-word model flash skipped)" -ForegroundColor Yellow
+    Write-Host "No WakeNet model partition in $partitionTable; skipping WakeNet model flash." -ForegroundColor Gray
     return $true
   }
+  $modelPartitionSize = Get-ModelPartitionSize -PartitionCsv $partitionCsv
 
   $modelBin = Get-SrModelsBin
   if (-not $modelBin) {
@@ -406,6 +424,9 @@ function Write-ModelPartition {
   Write-Host ""
   Write-Host "  Model image:  $modelBin" -ForegroundColor Gray
   Write-Host "  Model offset: $modelOffset" -ForegroundColor Gray
+  if ($modelPartitionSize) { Write-Host "  Model part:   $modelPartitionSize" -ForegroundColor Gray }
+  Write-Host "  Model size:   $((Get-Item -Path $modelBin).Length) bytes" -ForegroundColor Gray
+  Write-Host "  Model SHA256: $((Get-FileHash -Path $modelBin -Algorithm SHA256).Hash.ToLowerInvariant())" -ForegroundColor Gray
   if (-not $eraseBeforeFlash) {
     $modelSize = (Get-Item -Path $modelBin).Length
     $localMd5 = Get-FileMd5Hex -Path $modelBin
@@ -629,6 +650,7 @@ function Select-FlashMode {
   param([string]$ChosenPort, [string]$TargetTriple, [bool]$FlashUpdate)
   if ($FlashUpdate) {
     Write-Host "✓ Flash mode: update only — entire flash will NOT be erased." -ForegroundColor Green
+    Write-Host "  Bootloader, partition table, model if present, and app will be refreshed in place."
     Write-Host "  Storage files are kept only when the storage partition offset, size, and format are unchanged."
     Write-Host ""
     $script:eraseBeforeFlash = $false

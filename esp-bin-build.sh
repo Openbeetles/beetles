@@ -18,7 +18,7 @@ Usage:
 Default behavior:
   - Enumerate every supported ESP board preset from board_presets.toml
   - Build each board through build.sh --no-deploy
-  - Merge bootloader + partition-table + app into one flashable bin
+  - Merge bootloader + partition-table + app (+ WakeNet model when the board has a model partition) into one flashable bin
   - Generate per-board ESP Web Tools manifests plus release catalog/report/checksums
   - Publish a complete release bundle under dist/esp/{version}/
 
@@ -114,6 +114,16 @@ with open(records_path, newline="", encoding="utf-8") as fh:
                 "size_bytes": int(row["update_app_size_bytes"]),
             },
         ]
+        if row["update_model_file"]:
+            update_parts.append(
+                {
+                    "kind": "model",
+                    "file": row["update_model_file"],
+                    "offset": int(row["update_model_offset"], 0),
+                    "sha256": row["update_model_sha256"],
+                    "size_bytes": int(row["update_model_size_bytes"]),
+                }
+            )
         boards.append(
             {
                 "id": row["board"],
@@ -201,6 +211,16 @@ with open(records_path, newline="", encoding="utf-8") as fh:
                 "size_bytes": int(row["update_app_size_bytes"]),
             },
         ]
+        if row["update_model_file"]:
+            update_parts.append(
+                {
+                    "kind": "model",
+                    "file": row["update_model_file"],
+                    "offset": int(row["update_model_offset"], 0),
+                    "sha256": row["update_model_sha256"],
+                    "size_bytes": int(row["update_model_size_bytes"]),
+                }
+            )
         boards.append(
             {
                 "board": row["board"],
@@ -383,7 +403,7 @@ git_ref="$(beetle_git_ref_name "$ROOT_DIR" || true)"
 git_dirty="$(beetle_git_dirty "$ROOT_DIR" || true)"
 records_file="$stage_dir/.board-records.tsv"
 build_args_file="$stage_dir/.build-args.txt"
-printf '%s\n' 'board	title	chip_family	target	flash_size	partition_table	bin_file	bin_sha256	bin_size_bytes	update_bootloader_file	update_bootloader_offset	update_bootloader_sha256	update_bootloader_size_bytes	update_partition_table_file	update_partition_table_offset	update_partition_table_sha256	update_partition_table_size_bytes	update_app_file	update_app_offset	update_app_sha256	update_app_size_bytes	manifest_file	manifest_sha256	manifest_size_bytes' >"$records_file"
+printf '%s\n' 'board	title	chip_family	target	flash_size	partition_table	bin_file	bin_sha256	bin_size_bytes	update_bootloader_file	update_bootloader_offset	update_bootloader_sha256	update_bootloader_size_bytes	update_partition_table_file	update_partition_table_offset	update_partition_table_sha256	update_partition_table_size_bytes	update_app_file	update_app_offset	update_app_sha256	update_app_size_bytes	update_model_file	update_model_offset	update_model_sha256	update_model_size_bytes	manifest_file	manifest_sha256	manifest_size_bytes' >"$records_file"
 if [[ ${#build_args[@]} -gt 0 ]]; then
   printf '%s\n' "${build_args[@]}" >"$build_args_file"
 else
@@ -456,25 +476,52 @@ for board in "${boards[@]}"; do
     echo "Error: app offset missing or invalid in $flasher_args_json" >&2
     exit 1
   }
+  partition_csv="$ROOT_DIR/$partition_table"
+  model_offset="$(beetle_partition_csv_offset "$partition_csv" model 2>/dev/null || true)"
+  model_partition_size=""
+  model_bin=""
+  if [[ -n "$model_offset" ]]; then
+    model_partition_size="$(beetle_partition_csv_size "$partition_csv" model)" || {
+      echo "Error: model partition size missing in $partition_csv" >&2
+      exit 1
+    }
+    model_bin="$(beetle_find_srmodels_bin "$release_dir" || true)"
+    if [[ -z "$model_bin" || ! -f "$model_bin" ]]; then
+      echo "Error: srmodels.bin missing for $board; release bundle must include the model partition image." >&2
+      echo "  Expected under: $release_dir/build/**/srmodels.bin" >&2
+      exit 1
+    fi
+  fi
 
   output_file="$stage_dir/${board}.bin"
+  merge_parts=(
+    "$bootloader_offset" "$bootloader_bin"
+    "$partition_table_offset" "$partition_table_bin"
+    "$app_offset" "$app_bin"
+  )
+  if [[ -n "$model_bin" ]]; then
+    merge_parts+=("$model_offset" "$model_bin")
+  fi
   python3 -m esptool --chip "$flash_chip" merge-bin \
     -o "$output_file" \
     --flash-mode "$flash_mode" \
     --flash-size "$flash_size" \
     --flash-freq "$flash_freq" \
-    "$bootloader_offset" "$bootloader_bin" \
-    "$partition_table_offset" "$partition_table_bin" \
-    "$app_offset" "$app_bin"
+    "${merge_parts[@]}"
 
   update_dir="$stage_dir/${board}/update"
   mkdir -p "$update_dir"
   update_bootloader_file="${board}/update/bootloader.bin"
   update_partition_table_file="${board}/update/partition-table.bin"
   update_app_file="${board}/update/app.bin"
+  update_model_file=""
   copy_update_part "$bootloader_bin" "$stage_dir/$update_bootloader_file"
   copy_update_part "$partition_table_bin" "$stage_dir/$update_partition_table_file"
   copy_update_part "$app_bin" "$stage_dir/$update_app_file"
+  if [[ -n "$model_bin" ]]; then
+    update_model_file="${board}/update/srmodels.bin"
+    copy_update_part "$model_bin" "$stage_dir/$update_model_file"
+  fi
 
   manifest_file="$stage_dir/${board}.manifest.json"
   write_board_manifest "$manifest_file" "$display_name" "$version" "$chip_family" "$board"
@@ -483,13 +530,25 @@ for board in "${boards[@]}"; do
   update_bootloader_sha256="$(beetle_sha256_file "$stage_dir/$update_bootloader_file")"
   update_partition_table_sha256="$(beetle_sha256_file "$stage_dir/$update_partition_table_file")"
   update_app_sha256="$(beetle_sha256_file "$stage_dir/$update_app_file")"
+  update_model_sha256=""
   manifest_sha256="$(beetle_sha256_file "$manifest_file")"
   bin_size_bytes="$(beetle_file_size_bytes "$output_file")"
   update_bootloader_size_bytes="$(beetle_file_size_bytes "$stage_dir/$update_bootloader_file")"
   update_partition_table_size_bytes="$(beetle_file_size_bytes "$stage_dir/$update_partition_table_file")"
   update_app_size_bytes="$(beetle_file_size_bytes "$stage_dir/$update_app_file")"
+  update_model_size_bytes=""
+  if [[ -n "$update_model_file" ]]; then
+    update_model_sha256="$(beetle_sha256_file "$stage_dir/$update_model_file")"
+    update_model_size_bytes="$(beetle_file_size_bytes "$stage_dir/$update_model_file")"
+    echo "  Model:       $model_bin"
+    echo "  Model offset:$model_offset"
+    echo "  Model part:  $model_partition_size"
+    echo "  Model SHA256:$update_model_sha256"
+  else
+    echo "  Model:       (not present for $board)"
+  fi
   manifest_size_bytes="$(beetle_file_size_bytes "$manifest_file")"
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
     "$board" \
     "$display_name" \
     "$chip_family" \
@@ -511,6 +570,10 @@ for board in "${boards[@]}"; do
     "$app_offset" \
     "$update_app_sha256" \
     "$update_app_size_bytes" \
+    "$update_model_file" \
+    "$model_offset" \
+    "$update_model_sha256" \
+    "$update_model_size_bytes" \
     "${board}.manifest.json" \
     "$manifest_sha256" \
     "$manifest_size_bytes" >>"$records_file"

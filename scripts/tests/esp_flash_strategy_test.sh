@@ -204,8 +204,28 @@ assert_file_contains \
   "build.sh should refresh the app image during update flash"
 assert_file_contains \
   "$ROOT_DIR/build.sh" \
+  'MODEL_PARTITION_OFFSET="$(beetle_partition_csv_offset "$PARTITION_CSV" model 2>/dev/null || true)"' \
+  "build.sh should parse the optional WakeNet model partition offset from the active partition table"
+assert_file_contains \
+  "$ROOT_DIR/build.sh" \
+  'write-bin --port "$port" --chip "$FLASH_CHIP" "$MODEL_PARTITION_OFFSET" "$MODEL_BIN"' \
+  "build.sh should refresh the WakeNet model partition during update flash"
+assert_file_contains \
+  "$ROOT_DIR/build.sh" \
+  'espflash checksum-md5 --port "$port" --chip "$FLASH_CHIP" "$offset" "$size"' \
+  "build.sh update flash should compare device and local WakeNet model MD5 before skipping model flash"
+assert_file_contains \
+  "$ROOT_DIR/build.sh" \
   'missing bootloader/partition-table bin required for update flash.' \
   "build.sh should fail fast when update flash lacks any compiled boot artifact"
+assert_file_not_contains \
+  "$ROOT_DIR/build.ps1" \
+  'wake-word model flash skipped' \
+  "build.ps1 should not keep the old missing-model skip path"
+assert_file_contains \
+  "$ROOT_DIR/build.ps1" \
+  'model partition exists but srmodels.bin was not generated' \
+  "build.ps1 should fail when a WakeNet model partition exists but the model image is missing"
 assert_file_contains \
   "$ROOT_DIR/build.sh" \
   'esp-artifacts/$artifact_id' \
@@ -232,16 +252,32 @@ if [[ ! -x "$ROOT_DIR/scripts/esp_symbolize_panic.sh" ]]; then
 fi
 assert_file_contains \
   "$ROOT_DIR/partitions.csv" \
-  'storage,   data, littlefs,0x620000, 0x9D0000' \
-  "default S3 partition table should move the storage partition behind the single 6MiB factory app slot"
+  'storage,   data, littlefs,0x620000, 0x950000' \
+  "default S3 partition table should keep storage at 0x620000 and cut the WakeNet model partition from its tail"
 assert_file_contains \
   "$ROOT_DIR/partitions.csv" \
   'factory,   app,  factory, 0x20000,  0x600000' \
   "default S3 partition table should publish a single 6MiB factory app slot"
-assert_file_not_contains \
+assert_file_contains \
   "$ROOT_DIR/partitions.csv" \
-  'model' \
-  "default S3 partition table must not restore the removed wake resource partition"
+  'model,     data, spiffs,  0xF70000, 0x080000' \
+  "default S3 partition table should publish the WakeNet model partition before coredump"
+assert_file_contains \
+  "$ROOT_DIR/partitions.csv" \
+  'coredump,  data, coredump,0xFF0000, 0x10000' \
+  "default S3 partition table should keep coredump unchanged after adding WakeNet model"
+assert_file_contains \
+  "$ROOT_DIR/partitions_8mb.csv" \
+  'model,     data, spiffs,  0x770000, 0x080000' \
+  "8MB partition table should publish the WakeNet model partition from the storage tail"
+assert_file_contains \
+  "$ROOT_DIR/partitions_32mb.csv" \
+  'model,     data, spiffs,  0x1F70000, 0x080000' \
+  "32MB partition table should publish the WakeNet model partition from the storage tail"
+assert_file_not_contains \
+  "$ROOT_DIR/partitions_p4_16mb.csv" \
+  'model,     data, spiffs' \
+  "P4 16MB partition table should not publish a WakeNet model partition for the S3-only wake transfer"
 assert_file_not_contains \
   "$ROOT_DIR/partitions.csv" \
   'ota_' \

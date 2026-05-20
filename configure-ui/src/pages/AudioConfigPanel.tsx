@@ -182,6 +182,7 @@ export function AudioConfigPanel() {
   const micOn = audioOn && form.microphone.enabled
   const spkOn = audioOn && form.speaker.enabled
   const showAcousticWake = micOn
+  const showAcousticWakeTuning = showAcousticWake && linuxRuntime
   const showSpeechInput = micOn
   const showSpeechOutput = spkOn
   const showSpeechCredentials = showSpeechInput || showSpeechOutput
@@ -1295,159 +1296,163 @@ export function AudioConfigPanel() {
                                 }
                               />
                             ) : null}
-                            <TextField
-                              type="number"
-                              label={t('audioConfig.wakeEnterThreshold')}
-                              value={String(form.wake_word.enter_threshold)}
-                              slotProps={{ htmlInput: { step: 0.01, min: 0.01, max: 1 } }}
-                              onChange={(e) => {
-                                const v = asNumber(e.target.value)
-                                if (v == null) return
-                                setDraftSafe({
-                                  ...form,
-                                  wake_word: {
-                                    ...form.wake_word,
-                                    enter_threshold: v,
-                                  },
-                                })
-                              }}
-                            />
-                            <TextField
-                              type="number"
-                              label={t('audioConfig.wakeLeaveThreshold')}
-                              value={String(form.wake_word.leave_threshold)}
-                              slotProps={{ htmlInput: { step: 0.01, min: 0, max: 1 } }}
-                              onChange={(e) => {
-                                const v = asNumber(e.target.value)
-                                if (v == null) return
-                                setDraftSafe({
-                                  ...form,
-                                  wake_word: {
-                                    ...form.wake_word,
-                                    leave_threshold: v,
-                                  },
-                                })
-                              }}
-                            />
-                            <TextField
-                              type="number"
-                              label={t('audioConfig.wakeReferenceSuppressRatio')}
-                              value={String(form.wake_word.reference_suppress_ratio)}
-                              slotProps={{ htmlInput: { step: 0.01, min: 0.5, max: 4 } }}
-                              onChange={(e) => {
-                                const v = asNumber(e.target.value)
-                                if (v == null) return
-                                setDraftSafe({
-                                  ...form,
-                                  wake_word: {
-                                    ...form.wake_word,
-                                    reference_suppress_ratio: v,
-                                  },
-                                })
-                              }}
-                            />
-                            <TextField
-                              type="number"
-                              label={t('audioConfig.wakeZcrMin')}
-                              value={String(form.wake_word.zcr_min)}
-                              slotProps={{ htmlInput: { step: 0.01, min: 0, max: 1 } }}
-                              onChange={(e) => {
-                                const v = asNumber(e.target.value)
-                                if (v == null) return
-                                setDraftSafe({
-                                  ...form,
-                                  wake_word: {
-                                    ...form.wake_word,
-                                    zcr_min: v,
-                                  },
-                                })
-                              }}
-                            />
-                            <TextField
-                              type="number"
-                              label={t('audioConfig.wakeZcrMax')}
-                              value={String(form.wake_word.zcr_max)}
-                              slotProps={{ htmlInput: { step: 0.01, min: 0, max: 1 } }}
-                              onChange={(e) => {
-                                const v = asNumber(e.target.value)
-                                if (v == null) return
-                                setDraftSafe({
-                                  ...form,
-                                  wake_word: {
-                                    ...form.wake_word,
-                                    zcr_max: v,
-                                  },
-                                })
-                              }}
-                            />
-                            <TextField
-                              type="number"
-                              label={t('audioConfig.wakeMinSpeechBandRatio')}
-                              value={String(form.wake_word.min_speech_band_ratio)}
-                              slotProps={{ htmlInput: { step: 0.01, min: 0, max: 1 } }}
-                              onChange={(e) => {
-                                const v = asNumber(e.target.value)
-                                if (v == null) return
-                                setDraftSafe({
-                                  ...form,
-                                  wake_word: {
-                                    ...form.wake_word,
-                                    min_speech_band_ratio: v,
-                                  },
-                                })
-                              }}
-                            />
-                            <TextField
-                              type="number"
-                              label={t('audioConfig.wakeMinActiveMs')}
-                              value={String(form.wake_word.min_active_ms)}
-                              slotProps={{ htmlInput: { step: 1, min: 20, max: 5000 } }}
-                              onChange={(e) => {
-                                const v = asNumber(e.target.value)
-                                if (v == null) return
-                                setDraftSafe({
-                                  ...form,
-                                  wake_word: {
-                                    ...form.wake_word,
-                                    min_active_ms: Math.trunc(v),
-                                  },
-                                })
-                              }}
-                            />
-                            <TextField
-                              type="number"
-                              label={t('audioConfig.wakeHangoverMs')}
-                              value={String(form.wake_word.hangover_ms)}
-                              slotProps={{ htmlInput: { step: 1, min: 0, max: 10000 } }}
-                              onChange={(e) => {
-                                const v = asNumber(e.target.value)
-                                if (v == null) return
-                                setDraftSafe({
-                                  ...form,
-                                  wake_word: {
-                                    ...form.wake_word,
-                                    hangover_ms: Math.trunc(v),
-                                  },
-                                })
-                              }}
-                            />
-                            <TextField
-                              type="number"
-                              label={t('audioConfig.wakeCooldownMs')}
-                              value={String(form.wake_word.cooldown_ms)}
-                              slotProps={{ htmlInput: { step: 1, min: 100, max: 10000 } }}
-                              onChange={(e) => {
-                                const v = asNumber(e.target.value)
-                                if (v == null) return
-                                setDraftSafe({
-                                  ...form,
-                                  wake_word: {
-                                    ...form.wake_word,
-                                    cooldown_ms: Math.trunc(v),
-                                  },
-                                })
-                              }}
-                            />
+                            {showAcousticWakeTuning ? (
+                              <>
+                                <TextField
+                                  type="number"
+                                  label={t('audioConfig.wakeEnterThreshold')}
+                                  value={String(form.wake_word.enter_threshold)}
+                                  slotProps={{ htmlInput: { step: 0.01, min: 0.01, max: 1 } }}
+                                  onChange={(e) => {
+                                    const v = asNumber(e.target.value)
+                                    if (v == null) return
+                                    setDraftSafe({
+                                      ...form,
+                                      wake_word: {
+                                        ...form.wake_word,
+                                        enter_threshold: v,
+                                      },
+                                    })
+                                  }}
+                                />
+                                <TextField
+                                  type="number"
+                                  label={t('audioConfig.wakeLeaveThreshold')}
+                                  value={String(form.wake_word.leave_threshold)}
+                                  slotProps={{ htmlInput: { step: 0.01, min: 0, max: 1 } }}
+                                  onChange={(e) => {
+                                    const v = asNumber(e.target.value)
+                                    if (v == null) return
+                                    setDraftSafe({
+                                      ...form,
+                                      wake_word: {
+                                        ...form.wake_word,
+                                        leave_threshold: v,
+                                      },
+                                    })
+                                  }}
+                                />
+                                <TextField
+                                  type="number"
+                                  label={t('audioConfig.wakeReferenceSuppressRatio')}
+                                  value={String(form.wake_word.reference_suppress_ratio)}
+                                  slotProps={{ htmlInput: { step: 0.01, min: 0.5, max: 4 } }}
+                                  onChange={(e) => {
+                                    const v = asNumber(e.target.value)
+                                    if (v == null) return
+                                    setDraftSafe({
+                                      ...form,
+                                      wake_word: {
+                                        ...form.wake_word,
+                                        reference_suppress_ratio: v,
+                                      },
+                                    })
+                                  }}
+                                />
+                                <TextField
+                                  type="number"
+                                  label={t('audioConfig.wakeZcrMin')}
+                                  value={String(form.wake_word.zcr_min)}
+                                  slotProps={{ htmlInput: { step: 0.01, min: 0, max: 1 } }}
+                                  onChange={(e) => {
+                                    const v = asNumber(e.target.value)
+                                    if (v == null) return
+                                    setDraftSafe({
+                                      ...form,
+                                      wake_word: {
+                                        ...form.wake_word,
+                                        zcr_min: v,
+                                      },
+                                    })
+                                  }}
+                                />
+                                <TextField
+                                  type="number"
+                                  label={t('audioConfig.wakeZcrMax')}
+                                  value={String(form.wake_word.zcr_max)}
+                                  slotProps={{ htmlInput: { step: 0.01, min: 0, max: 1 } }}
+                                  onChange={(e) => {
+                                    const v = asNumber(e.target.value)
+                                    if (v == null) return
+                                    setDraftSafe({
+                                      ...form,
+                                      wake_word: {
+                                        ...form.wake_word,
+                                        zcr_max: v,
+                                      },
+                                    })
+                                  }}
+                                />
+                                <TextField
+                                  type="number"
+                                  label={t('audioConfig.wakeMinSpeechBandRatio')}
+                                  value={String(form.wake_word.min_speech_band_ratio)}
+                                  slotProps={{ htmlInput: { step: 0.01, min: 0, max: 1 } }}
+                                  onChange={(e) => {
+                                    const v = asNumber(e.target.value)
+                                    if (v == null) return
+                                    setDraftSafe({
+                                      ...form,
+                                      wake_word: {
+                                        ...form.wake_word,
+                                        min_speech_band_ratio: v,
+                                      },
+                                    })
+                                  }}
+                                />
+                                <TextField
+                                  type="number"
+                                  label={t('audioConfig.wakeMinActiveMs')}
+                                  value={String(form.wake_word.min_active_ms)}
+                                  slotProps={{ htmlInput: { step: 1, min: 20, max: 5000 } }}
+                                  onChange={(e) => {
+                                    const v = asNumber(e.target.value)
+                                    if (v == null) return
+                                    setDraftSafe({
+                                      ...form,
+                                      wake_word: {
+                                        ...form.wake_word,
+                                        min_active_ms: Math.trunc(v),
+                                      },
+                                    })
+                                  }}
+                                />
+                                <TextField
+                                  type="number"
+                                  label={t('audioConfig.wakeHangoverMs')}
+                                  value={String(form.wake_word.hangover_ms)}
+                                  slotProps={{ htmlInput: { step: 1, min: 0, max: 10000 } }}
+                                  onChange={(e) => {
+                                    const v = asNumber(e.target.value)
+                                    if (v == null) return
+                                    setDraftSafe({
+                                      ...form,
+                                      wake_word: {
+                                        ...form.wake_word,
+                                        hangover_ms: Math.trunc(v),
+                                      },
+                                    })
+                                  }}
+                                />
+                                <TextField
+                                  type="number"
+                                  label={t('audioConfig.wakeCooldownMs')}
+                                  value={String(form.wake_word.cooldown_ms)}
+                                  slotProps={{ htmlInput: { step: 1, min: 100, max: 10000 } }}
+                                  onChange={(e) => {
+                                    const v = asNumber(e.target.value)
+                                    if (v == null) return
+                                    setDraftSafe({
+                                      ...form,
+                                      wake_word: {
+                                        ...form.wake_word,
+                                        cooldown_ms: Math.trunc(v),
+                                      },
+                                    })
+                                  }}
+                                />
+                              </>
+                            ) : null}
                           </FormGrid>
                         ) : null}
                       </Box>

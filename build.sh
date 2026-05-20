@@ -2787,6 +2787,12 @@ APP_FLASH_FREQ=""
 BOOTLOADER_FLASH_OFFSET=""
 PARTITION_TABLE_FLASH_OFFSET=""
 APP_FLASH_OFFSET=""
+MODEL_PARTITION_OFFSET=""
+MODEL_PARTITION_SIZE=""
+MODEL_BIN=""
+MODEL_BIN_SIZE=""
+MODEL_BIN_SHA256=""
+MODEL_BIN_MD5=""
 if [[ -n "$ESP_IDF_BUILD_DIR" ]]; then
   FLASHER_ARGS_JSON="$ESP_IDF_BUILD_DIR/flasher_args.json"
   if [[ -f "$FLASHER_ARGS_JSON" ]]; then
@@ -2835,6 +2841,112 @@ sha256_file() {
     echo "Error: need shasum or sha256sum to compute artifact identity" >&2
     return 1
   fi
+}
+
+md5_file() {
+  local file="$1"
+  if command -v md5 >/dev/null 2>&1; then
+    md5 -q "$file"
+  elif command -v md5sum >/dev/null 2>&1; then
+    md5sum "$file" | awk '{print $1}'
+  else
+    return 1
+  fi
+}
+
+resolve_esp_model_partition() {
+  [[ "$BUILD_TARGET" =~ -unknown-linux ]] && return 0
+  if [[ ! -f "$PARTITION_CSV" ]]; then
+    echo "Error: ESP partition CSV not found: $PARTITION_CSV" >&2
+    return 1
+  fi
+  MODEL_PARTITION_OFFSET="$(beetle_partition_csv_offset "$PARTITION_CSV" model 2>/dev/null || true)"
+  if [[ -z "$MODEL_PARTITION_OFFSET" ]]; then
+    MODEL_PARTITION_SIZE=""
+    return 0
+  fi
+  MODEL_PARTITION_SIZE="$(beetle_partition_csv_size "$PARTITION_CSV" model)" || {
+    echo "Error: model partition size missing in $PARTITION_CSV" >&2
+    return 1
+  }
+}
+
+resolve_esp_model_flash_artifact() {
+  [[ "$BUILD_TARGET" =~ -unknown-linux ]] && return 0
+  resolve_esp_model_partition || return 1
+  if [[ -z "$MODEL_PARTITION_OFFSET" ]]; then
+    MODEL_BIN=""
+    MODEL_BIN_SIZE=""
+    MODEL_BIN_SHA256=""
+    MODEL_BIN_MD5=""
+    return 0
+  fi
+  refresh_esp_idf_build_outputs
+
+  MODEL_BIN="$(beetle_find_srmodels_bin "$RELEASE_DIR" || true)"
+  if [[ -z "$MODEL_BIN" || ! -f "$MODEL_BIN" ]]; then
+    echo "Error: model partition exists but srmodels.bin was not generated." >&2
+    echo "  Expected under: $RELEASE_DIR/build/**/srmodels.bin" >&2
+    return 1
+  fi
+
+  MODEL_BIN_SIZE="$(beetle_file_size_bytes "$MODEL_BIN")" || return 1
+  MODEL_BIN_SHA256="$(sha256_file "$MODEL_BIN")" || return 1
+  MODEL_BIN_MD5="$(md5_file "$MODEL_BIN" || printf 'unknown')"
+}
+
+device_region_md5() {
+  local port="$1"
+  local offset="$2"
+  local size="$3"
+  local output=""
+
+  if ! output="$(ESPFLASH_SKIP_UPDATE_CHECK=true espflash checksum-md5 --port "$port" --chip "$FLASH_CHIP" "$offset" "$size" 2>/dev/null)"; then
+    return 1
+  fi
+  printf '%s\n' "$output" | sed -nE 's/.*\b([0-9a-fA-F]{32})\b.*/\1/p' | tail -n 1 | tr 'A-F' 'a-f'
+}
+
+flash_esp_model_partition_if_needed() {
+  local port="$1"
+  local device_md5=""
+
+  if [[ -z "$MODEL_PARTITION_OFFSET" || -z "$MODEL_BIN" ]]; then
+    echo ""
+    echo "========== WakeNet model =========="
+    echo ""
+    echo "  No WakeNet model partition in $PARTITION_CSV; skipping model flash."
+    return 0
+  fi
+
+  echo ""
+  echo "========== Flashing WakeNet model =========="
+  echo ""
+  echo "  Model image:        $MODEL_BIN"
+  echo "  Model offset:       $MODEL_PARTITION_OFFSET"
+  echo "  Model partition:    $MODEL_PARTITION_SIZE"
+  echo "  Model size bytes:   $MODEL_BIN_SIZE"
+  echo "  Model SHA256:       $MODEL_BIN_SHA256"
+  echo "  Model MD5(local):   $MODEL_BIN_MD5"
+
+  if [[ "$ERASE_BEFORE_FLASH" -eq 0 && "$MODEL_BIN_MD5" != "unknown" ]]; then
+    device_md5="$(device_region_md5 "$port" "$MODEL_PARTITION_OFFSET" "$MODEL_BIN_SIZE" || true)"
+    if [[ -n "$device_md5" ]]; then
+      echo "  Model MD5(device):  $device_md5"
+      if [[ "$device_md5" == "$MODEL_BIN_MD5" ]]; then
+        echo -e "${GREEN}✓ WakeNet model unchanged; skipping model flash.${NC}"
+        return 0
+      fi
+    else
+      echo -e "${YELLOW}  Model MD5(device):  unavailable; model will be reflashed.${NC}"
+    fi
+  fi
+
+  if ! run_espflash_with_connection_profiles write-bin --port "$port" --chip "$FLASH_CHIP" "$MODEL_PARTITION_OFFSET" "$MODEL_BIN"; then
+    print_flash_open_port_hints
+    return 1
+  fi
+  echo -e "${GREEN}✓ WakeNet model flashed.${NC}"
 }
 
 prepare_build_identity_env() {
@@ -2908,11 +3020,26 @@ collect_esp_build_artifacts() {
   fi
 
   local elf_sha idf_elf_sha partition_sha app_sha="missing" bootloader_sha="missing"
+  local model_src="" model_artifact="missing" model_sha="missing" model_md5="missing" model_size="missing"
+  local model_offset="missing" model_partition_size="missing"
   elf_sha="$(sha256_file "$elf_src")" || return 1
   idf_elf_sha="$(sha256_file "$idf_elf_src")" || return 1
   partition_sha="$(sha256_file "$PARTITION_TABLE_BIN")" || return 1
   [[ -f "$APP_BIN" ]] && app_sha="$(sha256_file "$APP_BIN")"
   [[ -f "$BOOTLOADER_BIN" ]] && bootloader_sha="$(sha256_file "$BOOTLOADER_BIN")"
+  if [[ -f "$PARTITION_CSV" ]]; then
+    model_offset="$(beetle_partition_csv_offset "$PARTITION_CSV" model 2>/dev/null || printf 'missing')"
+    model_partition_size="$(beetle_partition_csv_size "$PARTITION_CSV" model 2>/dev/null || printf 'missing')"
+  fi
+  if [[ "$model_offset" != "missing" ]]; then
+    model_src="$(beetle_find_srmodels_bin "$RELEASE_DIR" || true)"
+    if [[ -n "$model_src" && -f "$model_src" ]]; then
+      model_artifact="srmodels.bin"
+      model_sha="$(sha256_file "$model_src")"
+      model_md5="$(md5_file "$model_src" || printf 'unknown')"
+      model_size="$(beetle_file_size_bytes "$model_src")"
+    fi
+  fi
 
   local git_sha="${BEETLE_BUILD_GIT_SHA:-unknown}"
   local artifact_id="${git_sha}-${elf_sha}"
@@ -2924,6 +3051,7 @@ collect_esp_build_artifacts() {
   cp "$PARTITION_TABLE_BIN" "$artifact_dir/partition-table.bin"
   [[ -f "$APP_BIN" ]] && cp "$APP_BIN" "$artifact_dir/beetle.bin"
   [[ -f "$BOOTLOADER_BIN" ]] && cp "$BOOTLOADER_BIN" "$artifact_dir/bootloader.bin"
+  [[ -n "$model_src" && -f "$model_src" ]] && cp "$model_src" "$artifact_dir/srmodels.bin"
 
   cat > "$artifact_dir/artifact.env" <<EOF
 artifact_id=$artifact_id
@@ -2939,10 +3067,16 @@ partition_table_sha256=$partition_sha
 partition_csv_sha256=${BEETLE_PARTITION_CSV_SHA256:-unknown}
 app_bin_sha256=$app_sha
 bootloader_sha256=$bootloader_sha
+model_bin_sha256=$model_sha
+model_bin_md5=$model_md5
+model_bin_size_bytes=$model_size
+model_partition_offset=$model_offset
+model_partition_size=$model_partition_size
 symbol_elf=beetle.elf
 idf_elf=libespidf.elf
 map=libespidf.map
 partition_table=partition-table.bin
+model_bin=$model_artifact
 EOF
 
   echo ""
@@ -2953,6 +3087,8 @@ EOF
   echo "  Symbol ELF SHA256:  $elf_sha"
   echo "  IDF ELF SHA256:     $idf_elf_sha"
   echo "  Partition SHA256:   $partition_sha"
+  echo "  Model offset:       $model_offset"
+  echo "  Model SHA256:       $model_sha"
   echo "  Symbolize example:  scripts/esp_symbolize_panic.sh \"$artifact_dir\" 0x4037f815"
 }
 
@@ -2963,7 +3099,7 @@ select_flash_mode() {
   ERASE_BEFORE_FLASH=0
   if [[ -n "$FLASH_NO_ERASE" ]]; then
     echo -e "${YELLOW}! Flash mode: update only — no full-chip erase, but partition-table changes can still make storage format reinitialize.${NC}"
-    echo "  Bootloader, partition table, and app will be refreshed in place."
+    echo "  Bootloader, partition table, model if present, and app will be refreshed in place."
     echo "  NVS is kept; storage files are kept only when the storage partition offset, size, and format are unchanged."
     echo ""
     return 0
@@ -3292,6 +3428,7 @@ run_esp_flash_workflow() {
   fi
   PARTITION_FOR_FLASH="$PARTITION_TABLE_BIN"
   resolve_esp_flash_offsets || return 1
+  resolve_esp_model_flash_artifact || return 1
 
   ensure_espflash
   if ! CHOSEN_PORT="$(get_flash_port)"; then
@@ -3315,6 +3452,11 @@ run_esp_flash_workflow() {
   echo "  Bootloader:        $BOOTLOADER_BIN @ $BOOTLOADER_FLASH_OFFSET"
   echo "  Firmware ELF:      $BIN"
   echo "  Firmware app bin:  ${APP_BIN:-"(not found)"} @ $APP_FLASH_OFFSET"
+  if [[ -n "$MODEL_BIN" ]]; then
+    echo "  WakeNet model:     $MODEL_BIN @ $MODEL_PARTITION_OFFSET"
+  else
+    echo "  WakeNet model:     (not present for this board)"
+  fi
   echo ""
 
   echo "========== Checking connection =========="
@@ -3374,6 +3516,11 @@ run_esp_flash_workflow() {
   echo "  App bin: $APP_BIN"
   echo "  Bootloader: $BOOTLOADER_BIN @ $BOOTLOADER_FLASH_OFFSET"
   echo "  Partition table: $PARTITION_FOR_FLASH @ $PARTITION_TABLE_FLASH_OFFSET"
+  if [[ -n "$MODEL_BIN" ]]; then
+    echo "  WakeNet model: $MODEL_BIN @ $MODEL_PARTITION_OFFSET"
+  else
+    echo "  WakeNet model: (not present for this board)"
+  fi
   echo "  App offset: $APP_FLASH_OFFSET"
 
   if [[ "$ERASE_BEFORE_FLASH" -eq 1 ]]; then
@@ -3389,6 +3536,9 @@ run_esp_flash_workflow() {
     fi
     if ! run_espflash_with_connection_profiles write-bin --port "$CHOSEN_PORT" --chip "$FLASH_CHIP" "$PARTITION_TABLE_FLASH_OFFSET" "$PARTITION_TABLE_BIN"; then
       print_flash_open_port_hints
+      return 1
+    fi
+    if ! flash_esp_model_partition_if_needed "$CHOSEN_PORT"; then
       return 1
     fi
     if ! reset_before_final_app_flash_if_needed; then
@@ -3412,6 +3562,9 @@ run_esp_flash_workflow() {
     fi
     if ! run_espflash_with_connection_profiles write-bin --port "$CHOSEN_PORT" --chip "$FLASH_CHIP" "$PARTITION_TABLE_FLASH_OFFSET" "$PARTITION_TABLE_BIN"; then
       print_flash_open_port_hints
+      return 1
+    fi
+    if ! flash_esp_model_partition_if_needed "$CHOSEN_PORT"; then
       return 1
     fi
     if ! reset_before_final_app_flash_if_needed; then

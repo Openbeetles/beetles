@@ -493,7 +493,7 @@ export const enUS = {
       microphoneEnabled: 'Enable microphone',
       speakerEnabled: 'Enable speaker',
 
-      wakeWordEnabled: 'Enable acoustic wake',
+      wakeWordEnabled: 'Enable voice wake',
       wakePrompt: 'Wake prompt',
       wakeEnterThreshold: 'Enter threshold',
       wakeLeaveThreshold: 'Leave threshold',

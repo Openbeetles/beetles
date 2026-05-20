@@ -89,6 +89,60 @@ assert_file_exists \
 assert_file_exists \
   "$PACKAGE_SCRIPT_PATH" \
   "ESP release packaging should live in a dedicated script for CI/release reuse"
+assert_file_exists \
+  "$ROOT_DIR/components/json/CMakeLists.txt" \
+  "ESP-SR should keep a minimal json component-name shim for IDF6 cJSON without restoring a vendor tree"
+assert_file_exists \
+  "$ROOT_DIR/components/beetle_wakenet/idf_component.yml" \
+  "WakeNet managed dependencies should live with the S3 WakeNet component instead of Cargo-global ESP components"
+assert_file_contains \
+  "$ROOT_DIR/components/beetle_wakenet/idf_component.yml" \
+  'target in [esp32s3]' \
+  "WakeNet managed dependencies should be target-gated to ESP32-S3"
+assert_file_contains \
+  "$ROOT_DIR/build.rs" \
+  "cargo:rustc-check-cfg=cfg(beetle_esp32s3)" \
+  "build.rs should declare the Beetle S3 cfg used by the Rust WakeNet backend"
+assert_file_contains \
+  "$ROOT_DIR/build.rs" \
+  "cargo:rustc-cfg=beetle_esp32s3" \
+  "build.rs should enable the Rust WakeNet backend only for ESP32-S3 builds"
+assert_file_not_contains \
+  "$ROOT_DIR/Cargo.toml" \
+  'remote_component = { name = "espressif/esp-sr"' \
+  "ESP-SR should not be a Cargo-global extra component that forces P4 to link WakeNet"
+assert_file_contains \
+  "$ROOT_DIR/components/json/CMakeLists.txt" \
+  "REQUIRES espressif__cjson" \
+  "json shim should map ESP-SR's legacy component name to the registry cJSON component"
+assert_file_contains \
+  "$ROOT_DIR/components/beetle_wakenet/CMakeLists.txt" \
+  "idf_component_get_property(esp_dsp_lib espressif__esp-dsp COMPONENT_LIB)" \
+  "WakeNet component should own the ESP-DSP component lookup used by the IDF6 compile shim"
+assert_file_contains \
+  "$ROOT_DIR/components/beetle_wakenet/CMakeLists.txt" \
+  "target_compile_options(\${esp_dsp_lib} PRIVATE" \
+  "WakeNet component should apply the ESP-DSP IDF6 C++ compile shim without patching managed sources"
+assert_file_contains \
+  "$ROOT_DIR/sdkconfig.defaults.esp32s3" \
+  "CONFIG_SR_WN_WN9_HIESP=y" \
+  "ESP32-S3 sdkconfig should select the official WakeNet9 Hi,ESP model"
+assert_file_not_contains \
+  "$ROOT_DIR/sdkconfig.defaults.esp32p4" \
+  "CONFIG_SR_WN_WN9_HIESP=y" \
+  "ESP32-P4 sdkconfig should not select WakeNet until ESP-SR P4 prebuilt libraries link cleanly"
+assert_file_not_contains \
+  "$ROOT_DIR/sdkconfig.defaults.esp32s3" \
+  "CONFIG_USE_WAKENET" \
+  "ESP32-S3 sdkconfig should not keep stale ESP-SR Kconfig symbols"
+assert_file_not_contains \
+  "$ROOT_DIR/sdkconfig.defaults.esp32s3" \
+  "CONFIG_WAKENET_MODEL_IN_PSRAM" \
+  "ESP32-S3 sdkconfig should not keep stale WakeNet PSRAM Kconfig symbols"
+assert_file_not_contains \
+  "$ROOT_DIR/sdkconfig.defaults.esp32s3" \
+  "CONFIG_SR_WN_DETECTION_MODE" \
+  "ESP32-S3 sdkconfig should not keep stale WakeNet detection-mode Kconfig symbols"
 
 # shellcheck source=../esp_bin_build_lib.sh
 source "$LIB_PATH"
@@ -135,6 +189,42 @@ assert_file_contains \
   "$ROOT_DIR/partitions.csv" \
   'factory,   app,  factory, 0x20000,  0x600000' \
   "official ESP partition tables should use a single factory app slot at 0x20000 sized 0x600000"
+assert_file_contains \
+  "$ROOT_DIR/partitions.csv" \
+  'storage,   data, littlefs,0x620000, 0x950000' \
+  "default 16MB partition table should cut the WakeNet model space from the storage tail"
+assert_file_contains \
+  "$ROOT_DIR/partitions.csv" \
+  'model,     data, spiffs,  0xF70000, 0x080000' \
+  "default 16MB partition table should publish a 512KiB WakeNet model partition before coredump"
+assert_file_contains \
+  "$ROOT_DIR/partitions_8mb.csv" \
+  'storage,   data, littlefs,0x620000, 0x150000' \
+  "8MB partition table should keep the storage offset and cut the model partition from its tail"
+assert_file_contains \
+  "$ROOT_DIR/partitions_8mb.csv" \
+  'model,     data, spiffs,  0x770000, 0x080000' \
+  "8MB partition table should publish a 512KiB WakeNet model partition before coredump"
+assert_file_contains \
+  "$ROOT_DIR/partitions_32mb.csv" \
+  'storage,   data, littlefs,0x620000,  0x1950000' \
+  "32MB partition table should keep the storage offset and cut the model partition from its tail"
+assert_file_contains \
+  "$ROOT_DIR/partitions_32mb.csv" \
+  'model,     data, spiffs,  0x1F70000, 0x080000' \
+  "32MB partition table should publish a 512KiB WakeNet model partition before coredump"
+assert_file_contains \
+  "$ROOT_DIR/partitions_p4_16mb.csv" \
+  'storage,   data, littlefs,0x620000, 0x9D0000' \
+  "P4 16MB partition table should keep the full storage tail while WakeNet is S3-only"
+assert_file_not_contains \
+  "$ROOT_DIR/partitions_p4_16mb.csv" \
+  'model,     data, spiffs' \
+  "P4 16MB partition table should not publish a WakeNet model partition for the S3 wake transfer"
+assert_file_contains \
+  "$ROOT_DIR/partitions.csv" \
+  'coredump,  data, coredump,0xFF0000, 0x10000' \
+  "default 16MB partition table should keep the coredump partition unchanged"
 assert_file_not_contains \
   "$ROOT_DIR/partitions.csv" \
   "$legacy_ota_meta_partition" \
@@ -177,6 +267,18 @@ assert_file_contains \
   "$BUILD_SCRIPT_PATH" \
   'APP_FLASH_OFFSET="$(beetle_flasher_args_image_offset "$FLASHER_ARGS_JSON" app)"' \
   "build.sh should derive the application offset from ESP-IDF flasher_args.json"
+assert_file_contains \
+  "$BUILD_SCRIPT_PATH" \
+  'MODEL_PARTITION_OFFSET="$(beetle_partition_csv_offset "$PARTITION_CSV" model 2>/dev/null || true)"' \
+  "build.sh should derive the optional WakeNet model offset from the active partition CSV"
+assert_file_contains \
+  "$BUILD_SCRIPT_PATH" \
+  'MODEL_BIN="$(beetle_find_srmodels_bin "$RELEASE_DIR" || true)"' \
+  "build.sh should locate srmodels.bin from the current ESP-IDF build directory"
+assert_file_contains \
+  "$BUILD_SCRIPT_PATH" \
+  'if [[ "$model_offset" != "missing" ]]; then' \
+  "build.sh artifact collection should only attach srmodels.bin when the active partition table has a model partition"
 assert_file_not_contains \
   "$BUILD_SCRIPT_PATH" \
   'OTADATA_BIN=' \
@@ -217,10 +319,22 @@ assert_file_contains \
   "$ENTRYPOINT_PATH" \
   'app_offset="$(beetle_flasher_args_image_offset "$flasher_args_json" app)"' \
   "esp-bin-build should derive the app merge offset from ESP-IDF flasher_args.json"
+assert_file_contains \
+  "$ENTRYPOINT_PATH" \
+  'model_offset="$(beetle_partition_csv_offset "$partition_csv" model 2>/dev/null || true)"' \
+  "esp-bin-build should derive the optional WakeNet model offset from the board partition table"
+assert_file_contains \
+  "$ENTRYPOINT_PATH" \
+  'model_bin="$(beetle_find_srmodels_bin "$release_dir" || true)"' \
+  "esp-bin-build should locate srmodels.bin from the current ESP-IDF build directory"
 assert_file_not_contains \
   "$LIB_PATH" \
   'beetle_partition_offset()' \
   "esp-bin-build helper library should drop the OTA-only partition offset parser"
+assert_file_contains \
+  "$LIB_PATH" \
+  'beetle_partition_csv_offset()' \
+  "esp-bin-build helper library should expose a generic partition CSV offset parser for model partitions"
 assert_file_not_contains \
   "$ENTRYPOINT_PATH" \
   "$legacy_ota_meta_offset" \
@@ -249,6 +363,10 @@ assert_file_contains \
   "$ENTRYPOINT_PATH" \
   'copy_update_part "$app_bin"' \
   "esp-bin-build should publish app as an update-safe part"
+assert_file_contains \
+  "$ENTRYPOINT_PATH" \
+  'copy_update_part "$model_bin"' \
+  "esp-bin-build should publish srmodels.bin as an update-safe model part"
 assert_file_contains \
   "$ENTRYPOINT_PATH" \
   'write_release_catalog "$stage_dir/release-catalog.json"' \
@@ -296,12 +414,28 @@ cat >"$tmp_dir/board_presets.toml" <<'EOF'
 target = "xtensa-esp32s3-espidf"
 partition_table = "partitions_8mb.csv"
 flash_size = "8MB"
+
+[boards.esp32-p4-nano-16mb]
+target = "riscv32imafc-esp-espidf"
+partition_table = "partitions_p4_16mb.csv"
+flash_size = "16MB"
 EOF
 
 cat >"$tmp_dir/partitions_8mb.csv" <<'EOF'
 # Name, Type, SubType, Offset, Size
 phy_init, data, phy, 0x19000, 0x1000
 factory, app, factory, 0x20000, 0x600000
+storage, data, littlefs, 0x620000, 0x150000
+model, data, spiffs, 0x770000, 0x080000
+coredump, data, coredump, 0x7F0000, 0x10000
+EOF
+
+cat >"$tmp_dir/partitions_p4_16mb.csv" <<'EOF'
+# Name, Type, SubType, Offset, Size
+phy_init, data, phy, 0x19000, 0x1000
+factory, app, factory, 0x20000, 0x600000
+storage, data, littlefs, 0x620000, 0x9D0000
+coredump, data, coredump, 0xFF0000, 0x10000
 EOF
 
 cat >"$tmp_dir/build.sh" <<'EOF'
@@ -309,12 +443,21 @@ cat >"$tmp_dir/build.sh" <<'EOF'
 set -euo pipefail
 printf '%s\n' "$#" > "$PWD/build_argc.txt"
 printf '%s\n' "$*" > "$PWD/build_argv.txt"
-release_dir="$PWD/target/xtensa-esp32s3-espidf/release-size"
+case "${BOARD:-esp32-s3-8mb}" in
+  esp32-s3-8mb) target="xtensa-esp32s3-espidf" ;;
+  esp32-p4-nano-16mb) target="riscv32imafc-esp-espidf" ;;
+  *) echo "unexpected board: ${BOARD:-}" >&2; exit 1 ;;
+esac
+release_dir="$PWD/target/$target/release-size"
 idf_dir="$release_dir/build/mock/out/build"
 mkdir -p "$release_dir" "$idf_dir"
 printf 'boot' > "$release_dir/bootloader.bin"
 printf 'part' > "$release_dir/partition-table.bin"
 printf 'app' > "$release_dir/beetle.bin"
+if [[ "${BOARD:-esp32-s3-8mb}" == "esp32-s3-8mb" ]]; then
+  mkdir -p "$idf_dir/srmodels"
+  printf 'model' > "$idf_dir/srmodels/srmodels.bin"
+fi
 cat >"$idf_dir/flasher_args.json" <<'JSON'
 {
   "flash_mode": "dio",
@@ -341,7 +484,7 @@ if [[ "${1:-}" == "-m" && "${2:-}" == "esptool" ]]; then
   for arg in "$@"; do
     normalized_args+=("${arg#"$PWD"/}")
   done
-  printf '%s\n' "${normalized_args[*]}" > "$PWD/esptool_args.txt"
+  printf '%s\n' "${normalized_args[*]}" >> "$PWD/esptool_args.txt"
   out=""
   prev=""
   for arg in "$@"; do
@@ -375,6 +518,9 @@ assert_file_exists \
 assert_file_exists \
   "$tmp_dir/dist/esp/v9.9.9/esp32-s3-8mb.manifest.json" \
   "esp-bin-build should emit an ESP Web Tools manifest alongside each board bin"
+assert_file_exists \
+  "$tmp_dir/dist/esp/v9.9.9/esp32-p4-nano-16mb.bin" \
+  "esp-bin-build should also build no-model ESP boards in the same release bundle"
 assert_file_exists \
   "$tmp_dir/dist/esp/v9.9.9/release-catalog.json" \
   "esp-bin-build should emit a release catalog in the published bundle directory"
@@ -410,6 +556,10 @@ assert_file_contains \
   "$tmp_dir/esptool_args.txt" \
   '0x30000 target/xtensa-esp32s3-espidf/release-size/beetle.bin' \
   "merged images should use the app offset emitted by ESP-IDF"
+assert_file_contains \
+  "$tmp_dir/esptool_args.txt" \
+  '0x770000 target/xtensa-esp32s3-espidf/release-size/build/mock/out/build/srmodels/srmodels.bin' \
+  "merged images should include srmodels.bin at the model partition offset from the CSV"
 assert_file_not_contains \
   "$tmp_dir/esptool_args.txt" \
   '0x19000' \
@@ -425,6 +575,12 @@ assert_file_exists \
 assert_file_exists \
   "$tmp_dir/configure-ui/public/firmware/esp32-s3-8mb/update/app.bin" \
   "esp-bin-build should copy update-mode firmware parts into Configure UI firmware assets"
+assert_file_exists \
+  "$tmp_dir/configure-ui/public/firmware/esp32-s3-8mb/update/srmodels.bin" \
+  "esp-bin-build should copy the WakeNet model update part into Configure UI firmware assets"
+assert_file_not_exists \
+  "$tmp_dir/configure-ui/public/firmware/esp32-p4-nano-16mb/update/srmodels.bin" \
+  "esp-bin-build should not invent a WakeNet model update part for boards without a model partition"
 assert_file_exists \
   "$tmp_dir/configure-ui/public/firmware/release-catalog.json" \
   "esp-bin-build should copy the release catalog into Configure UI firmware assets"
@@ -451,6 +607,12 @@ assert_file_exists \
 assert_file_exists \
   "$tmp_dir/dist/esp/v9.9.9/esp32-s3-8mb/update/app.bin" \
   "esp-bin-build should publish app for update mode"
+assert_file_exists \
+  "$tmp_dir/dist/esp/v9.9.9/esp32-s3-8mb/update/srmodels.bin" \
+  "esp-bin-build should publish srmodels.bin for update mode"
+assert_file_not_exists \
+  "$tmp_dir/dist/esp/v9.9.9/esp32-p4-nano-16mb/update/srmodels.bin" \
+  "esp-bin-build should omit srmodels.bin for no-model boards"
 assert_file_contains \
   "$tmp_dir/dist/esp/v9.9.9/release-catalog.json" \
   '"id": "esp32-s3-8mb"' \
@@ -467,6 +629,14 @@ assert_file_contains \
   "$tmp_dir/dist/esp/v9.9.9/release-catalog.json" \
   '"offset": 196608' \
   "release catalog should expose the app update offset"
+assert_file_contains \
+  "$tmp_dir/dist/esp/v9.9.9/release-catalog.json" \
+  '"kind": "model"' \
+  "release catalog should expose the WakeNet model update part"
+assert_file_contains \
+  "$tmp_dir/dist/esp/v9.9.9/release-catalog.json" \
+  '"offset": 7798784' \
+  "release catalog should expose the model partition update offset"
 assert_file_not_contains \
   "$tmp_dir/dist/esp/v9.9.9/release-catalog.json" \
   'requires_full_erase' \
@@ -479,6 +649,10 @@ assert_file_contains \
   "$tmp_dir/dist/esp/v9.9.9/release-report.json" \
   '"status": "ok"' \
   "release report should capture a successful bundle build status"
+assert_file_contains \
+  "$tmp_dir/dist/esp/v9.9.9/release-report.json" \
+  '"kind": "model"' \
+  "release report should expose the WakeNet model update part"
 assert_file_not_contains \
   "$tmp_dir/dist/esp/v9.9.9/release-report.json" \
   'requires_full_erase' \
@@ -495,6 +669,14 @@ assert_file_contains \
   "$tmp_dir/dist/esp/v9.9.9/SHA256SUMS" \
   'esp32-s3-8mb/update/app.bin' \
   "SHA256SUMS should include update-mode app firmware"
+assert_file_contains \
+  "$tmp_dir/dist/esp/v9.9.9/SHA256SUMS" \
+  'esp32-s3-8mb/update/srmodels.bin' \
+  "SHA256SUMS should include update-mode WakeNet model firmware"
+assert_file_not_contains \
+  "$tmp_dir/dist/esp/v9.9.9/SHA256SUMS" \
+  'esp32-p4-nano-16mb/update/srmodels.bin' \
+  "SHA256SUMS should not include WakeNet model firmware for no-model boards"
 assert_file_contains \
   "$tmp_dir/dist/esp/v9.9.9/SHA256SUMS" \
   'release-catalog.json' \

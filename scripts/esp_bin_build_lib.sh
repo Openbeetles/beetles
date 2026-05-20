@@ -105,6 +105,50 @@ beetle_file_size_bytes() {
   fi
 }
 
+beetle_partition_csv_field() {
+  local partition_csv="${1:-}"
+  local partition_name="${2:-}"
+  local field_index="${3:-}"
+  [[ -f "$partition_csv" && -n "$partition_name" && "$field_index" =~ ^[1-5]$ ]] || return 1
+
+  awk -F',' -v partition_name="$partition_name" -v field_index="$field_index" '
+    /^[[:space:]]*#/ || /^[[:space:]]*$/ { next }
+    {
+      for (idx = 1; idx <= NF; idx++) {
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", $idx)
+      }
+      if ($1 == partition_name) {
+        print $field_index
+        found = 1
+        exit
+      }
+    }
+    END {
+      if (!found) {
+        exit 1
+      }
+    }
+  ' "$partition_csv"
+}
+
+beetle_partition_csv_offset() {
+  beetle_partition_csv_field "$1" "$2" 4
+}
+
+beetle_partition_csv_size() {
+  beetle_partition_csv_field "$1" "$2" 5
+}
+
+beetle_find_srmodels_bin() {
+  local release_dir="${1:-}"
+  local found=""
+  [[ -d "$release_dir/build" ]] || return 1
+
+  found="$(find "$release_dir/build" -type f -name 'srmodels.bin' 2>/dev/null | sort | head -n 1)"
+  [[ -n "$found" ]] || return 1
+  printf '%s\n' "$found"
+}
+
 beetle_iso_utc_now() {
   date -u '+%Y-%m-%dT%H:%M:%SZ'
 }

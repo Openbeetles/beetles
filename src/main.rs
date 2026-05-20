@@ -414,13 +414,7 @@ fn spawn_voice_session_if_ready(
     .map_err(|error| beetle::Error::io("voice_session_spawn", error))?;
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
     beetle::orchestrator::log_startup_memory_checkpoint("voice_session_spawn");
-    let wake_backend = if audio_cfg.wake_word.enabled {
-        beetle::wake::WakeBackend::Acoustic(beetle::wake::AcousticWakeBackend::from_audio_config(
-            audio_cfg,
-        ))
-    } else {
-        beetle::wake::WakeBackend::Disabled
-    };
+    let wake_backend = beetle::wake::WakeBackend::from_audio_config(audio_cfg);
     beetle::wake::configure(wake_backend, voice_tx.clone());
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
     beetle::orchestrator::log_startup_memory_checkpoint("wake_backend_configured");

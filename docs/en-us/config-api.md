@@ -463,21 +463,20 @@ Top-level fields:
 - `speaker`
 - `codec`
 - `vad`
-- `wake_word` (currently Beetle's built-in acoustic wake backend; external wake backends are future extension points and are not configured in this round)
+- `wake_word` (ESP32-S3 voice wake enablement and post-wake prompt; the S3 wake phrase is fixed to `Hi,ESP` and is not configurable)
 - `speech`
 - `tts`
 - `realtime`
 - `ambient_listening`
 - `led_indicator`
 
-`wake_word` currently keeps the top-level object name for compatibility. Its current shape is:
-`enabled`, `enter_threshold`, `leave_threshold`, `reference_suppress_ratio`, `zcr_min`, `zcr_max`, `min_speech_band_ratio`, `min_active_ms`, `hangover_ms`, `cooldown_ms`, `keyword` (legacy read-only compatibility), and `wake_prompt`. The configure-ui only exposes the acoustic parameters and `wake_prompt`.
+`wake_word` keeps the existing configuration surface unchanged. In the ESP32-S3 product path, the firmware continues to use the existing `enabled` and `wake_prompt` fields; no `backend` field or model selector is added.
+
+The ESP32-S3 wake phrase is fixed to `Hi,ESP`. It is separate from the post-wake `wake_prompt`, and it is not a configuration item: configure-ui does not show a wake-word text field or model selector, and the API save path does not generate a writable `keyword` field. Acoustic-threshold fields do not participate in S3 product wake-phrase selection.
 
 `topology` currently supports `discrete_i2s` and `i2s_codec`. In `i2s_codec` mode, `codec` contains `input_codec`, `output_codec`, `input_addr`, `output_addr`, `pa_pin`, and `input_reference`. The current ESP-BOX-3 codec path supports ES7210 input and ES8311 output.
 
-For `audio.topology = "i2s_codec"` with ES7210 input reference enabled, the old acoustic defaults are normalized to the ESP-BOX-3 sensitivity profile on save/runtime load: `enter_threshold=0.01`, `leave_threshold=0.005`, `zcr_max=0.65`, `min_speech_band_ratio=0.35`, and `min_active_ms=120`.
-
-In the same mode, the device reads ES7210 multi-channel input and feeds the currently active input channel to the built-in acoustic wake backend. Users do not need to configure a TDM channel index manually.
+For `audio.topology = "i2s_codec"` with ES7210 input reference enabled, the device reads ES7210 multi-channel input and feeds the currently active input channel into the voice path. Users do not need to configure a TDM channel index manually.
 
 Optional query parameter: `restart=1`
 

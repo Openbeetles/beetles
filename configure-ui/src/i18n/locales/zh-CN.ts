@@ -492,7 +492,7 @@ export const zhCN = {
       microphoneEnabled: '启用麦克风',
       speakerEnabled: '启用喇叭',
 
-      wakeWordEnabled: '启用声学唤醒',
+      wakeWordEnabled: '启用语音唤醒',
       wakePrompt: '唤醒提示语',
       wakeEnterThreshold: '进入阈值',
       wakeLeaveThreshold: '退出阈值',
