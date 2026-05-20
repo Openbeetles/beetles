@@ -3,7 +3,7 @@
  * @brief Stable C ABI for Beetle ESP-SR AFE WakeNet wake-word detection.
  *
  * This wrapper keeps ESP-SR headers inside the C component. Rust callers only
- * bind this small ABI and must serialize access externally.
+ * bind this small ABI and must serialize feed/reset/destroy access externally.
  */
 #pragma once
 
@@ -35,8 +35,15 @@ beetle_wn_err_t beetle_wakenet_init(const char *model_name, int input_sample_rat
 
 /**
  * Feed mono signed 16-bit PCM samples and optional playback-reference samples at the sample rate passed to init().
+ *
+ * This call only fills AFE feed chunks and never polls detection synchronously.
  */
 beetle_wn_result_t beetle_wakenet_feed(const int16_t *mic, const int16_t *reference, int samples);
+
+/**
+ * Non-blockingly consume one pending WakeNet detection from the detection task.
+ */
+beetle_wn_result_t beetle_wakenet_take_event(void);
 
 /**
  * Reset the internal chunk and resampling accumulators without destroying the model.

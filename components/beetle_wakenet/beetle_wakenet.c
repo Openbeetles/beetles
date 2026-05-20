@@ -3,9 +3,9 @@
  * @brief Minimal C wrapper over ESP-SR AFE WakeNet.
  *
  * The component owns one AFE WakeNet instance and a PSRAM feed-frame
- * accumulator. The Rust side is responsible for locking, cooldown, lifecycle
- * policy, and event handoff; this file only performs model initialization,
- * optional playback-reference formatting, and non-blocking detection polling.
+ * accumulator. The feed hot path only feeds full AFE chunks; a separate
+ * detection task blocks on AFE fetch and exposes detections through a tiny
+ * non-blocking pending-event ABI consumed by Rust.
  */
 
 #include "beetle_wakenet.h"
@@ -13,13 +13,20 @@
 #include "esp_afe_sr_models.h"
 #include "esp_err.h"
 #include "esp_heap_caps.h"
+#include "esp_log.h"
 #include "esp_wn_iface.h"
 #include "esp_wn_models.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "model_path.h"
 
 #include <stdbool.h>
 #include <string.h>
+
+#define TAG "beetle_wakenet"
+#define BEETLE_WN_DETECTION_TASK_STACK 4096
+#define BEETLE_WN_DETECTION_TASK_PRIORITY 3
+#define BEETLE_WN_PENDING_POLL_DELAY_TICKS pdMS_TO_TICKS(10)
 
 typedef struct {
     const esp_afe_sr_iface_t *afe;
@@ -33,14 +40,55 @@ typedef struct {
     int16_t resample_mic_tail[2];
     int16_t resample_ref_tail[2];
     int resample_tail_len;
+    TaskHandle_t detection_task;
+    volatile bool destroy_requested;
+    volatile bool pending_detection;
 } beetle_wn_ctx_t;
 
 static beetle_wn_ctx_t *s_ctx = NULL;
 static srmodel_list_t *s_models = NULL;
 
+static void detection_task_main(void *arg) {
+    beetle_wn_ctx_t *ctx = (beetle_wn_ctx_t *)arg;
+    if (ctx == NULL || ctx->afe == NULL || ctx->afe_data == NULL) {
+        vTaskDelete(NULL);
+        return;
+    }
+
+    int fetch_chunk_size = ctx->afe->get_fetch_chunksize(ctx->afe_data);
+    ESP_LOGI(TAG, "WakeNet detection task started, feed size: %d fetch size: %d",
+             ctx->feed_chunk_size, fetch_chunk_size);
+
+    while (!ctx->destroy_requested) {
+        if (ctx->pending_detection) {
+            vTaskDelay(BEETLE_WN_PENDING_POLL_DELAY_TICKS);
+            continue;
+        }
+
+        afe_fetch_result_t *res = ctx->afe->fetch_with_delay(ctx->afe_data, portMAX_DELAY);
+        if (ctx->destroy_requested) {
+            break;
+        }
+        if (res == NULL || res->ret_value == ESP_FAIL) {
+            continue;
+        }
+        if (res->wakeup_state == WAKENET_DETECTED) {
+            ctx->pending_detection = true;
+        }
+    }
+
+    vTaskDelete(NULL);
+}
+
 static void ctx_destroy(void) {
     if (s_ctx == NULL) {
         return;
+    }
+
+    s_ctx->destroy_requested = true;
+    if (s_ctx->detection_task != NULL) {
+        vTaskDelete(s_ctx->detection_task);
+        s_ctx->detection_task = NULL;
     }
 
     if (s_ctx->afe != NULL && s_ctx->afe_data != NULL) {
@@ -62,25 +110,7 @@ static void models_destroy(void) {
     }
 }
 
-static beetle_wn_result_t poll_detection(void) {
-    if (s_ctx == NULL || s_ctx->afe == NULL || s_ctx->afe_data == NULL) {
-        return BEETLE_WN_NO;
-    }
-
-    afe_fetch_result_t *res = s_ctx->afe->fetch_with_delay(s_ctx->afe_data, 0);
-    if (res == NULL || res->ret_value == ESP_FAIL) {
-        return BEETLE_WN_NO;
-    }
-    if (res->wakeup_state == WAKENET_DETECTED) {
-        s_ctx->afe->reset_buffer(s_ctx->afe_data);
-        s_ctx->frame_pos = 0;
-        s_ctx->resample_tail_len = 0;
-        return BEETLE_WN_DETECTED;
-    }
-    return BEETLE_WN_NO;
-}
-
-static beetle_wn_result_t feed_16k_sample(int16_t mic, int16_t reference) {
+static void feed_16k_sample(int16_t mic, int16_t reference) {
     int index = s_ctx->frame_pos * s_ctx->feed_channels;
     s_ctx->feed_frame[index] = mic;
     if (s_ctx->feed_channels > 1) {
@@ -89,12 +119,11 @@ static beetle_wn_result_t feed_16k_sample(int16_t mic, int16_t reference) {
     s_ctx->frame_pos++;
 
     if (s_ctx->frame_pos < s_ctx->feed_chunk_size) {
-        return poll_detection();
+        return;
     }
 
     s_ctx->afe->feed(s_ctx->afe_data, s_ctx->feed_frame);
     s_ctx->frame_pos = 0;
-    return poll_detection();
 }
 
 beetle_wn_err_t beetle_wakenet_init(const char *model_name, int input_sample_rate_hz, int use_reference) {
@@ -160,23 +189,40 @@ beetle_wn_err_t beetle_wakenet_init(const char *model_name, int input_sample_rat
         return BEETLE_WN_ERR_NOMEM;
     }
 
-    s_ctx = (beetle_wn_ctx_t *)heap_caps_malloc(
+    beetle_wn_ctx_t *ctx = (beetle_wn_ctx_t *)heap_caps_malloc(
         sizeof(beetle_wn_ctx_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    if (s_ctx == NULL) {
+    if (ctx == NULL) {
         heap_caps_free(feed_frame);
         afe->destroy(afe_data);
         return BEETLE_WN_ERR_NOMEM;
     }
 
-    s_ctx->afe = afe;
-    s_ctx->afe_data = afe_data;
-    s_ctx->feed_chunk_size = feed_chunk_size;
-    s_ctx->feed_channels = feed_channels;
-    s_ctx->frame_pos = 0;
-    s_ctx->input_sample_rate_hz = input_sample_rate_hz;
-    s_ctx->use_reference = use_reference ? true : false;
-    s_ctx->feed_frame = feed_frame;
-    s_ctx->resample_tail_len = 0;
+    memset(ctx, 0, sizeof(*ctx));
+    ctx->afe = afe;
+    ctx->afe_data = afe_data;
+    ctx->feed_chunk_size = feed_chunk_size;
+    ctx->feed_channels = feed_channels;
+    ctx->frame_pos = 0;
+    ctx->input_sample_rate_hz = input_sample_rate_hz;
+    ctx->use_reference = use_reference ? true : false;
+    ctx->feed_frame = feed_frame;
+    ctx->resample_tail_len = 0;
+
+    BaseType_t task_created = xTaskCreate(
+        detection_task_main,
+        "wakenet_detect",
+        BEETLE_WN_DETECTION_TASK_STACK,
+        ctx,
+        BEETLE_WN_DETECTION_TASK_PRIORITY,
+        &ctx->detection_task);
+    if (task_created != pdPASS) {
+        heap_caps_free(feed_frame);
+        afe->destroy(afe_data);
+        heap_caps_free(ctx);
+        return BEETLE_WN_ERR_NOMEM;
+    }
+
+    s_ctx = ctx;
 
     return BEETLE_WN_OK;
 }
@@ -189,9 +235,7 @@ beetle_wn_result_t beetle_wakenet_feed(const int16_t *mic, const int16_t *refere
     if (s_ctx->input_sample_rate_hz == 16000) {
         for (int i = 0; i < samples; ++i) {
             int16_t ref_sample = (s_ctx->use_reference && reference != NULL) ? reference[i] : 0;
-            if (feed_16k_sample(mic[i], ref_sample) == BEETLE_WN_DETECTED) {
-                return BEETLE_WN_DETECTED;
-            }
+            feed_16k_sample(mic[i], ref_sample);
         }
         return BEETLE_WN_NO;
     }
@@ -212,15 +256,11 @@ beetle_wn_result_t beetle_wakenet_feed(const int16_t *mic, const int16_t *refere
             continue;
         }
 
-        if (feed_16k_sample(mic_triple[0], ref_triple[0]) == BEETLE_WN_DETECTED) {
-            return BEETLE_WN_DETECTED;
-        }
+        feed_16k_sample(mic_triple[0], ref_triple[0]);
 
         int32_t mic_blended = ((int32_t)mic_triple[1] + (int32_t)mic_triple[2]) / 2;
         int32_t ref_blended = ((int32_t)ref_triple[1] + (int32_t)ref_triple[2]) / 2;
-        if (feed_16k_sample((int16_t)mic_blended, (int16_t)ref_blended) == BEETLE_WN_DETECTED) {
-            return BEETLE_WN_DETECTED;
-        }
+        feed_16k_sample((int16_t)mic_blended, (int16_t)ref_blended);
 
         triple_len = 0;
     }
@@ -233,6 +273,14 @@ beetle_wn_result_t beetle_wakenet_feed(const int16_t *mic, const int16_t *refere
     return BEETLE_WN_NO;
 }
 
+beetle_wn_result_t beetle_wakenet_take_event(void) {
+    if (s_ctx == NULL || !s_ctx->pending_detection) {
+        return BEETLE_WN_NO;
+    }
+    s_ctx->pending_detection = false;
+    return BEETLE_WN_DETECTED;
+}
+
 void beetle_wakenet_reset(void) {
     if (s_ctx != NULL) {
         if (s_ctx->afe != NULL && s_ctx->afe_data != NULL) {
@@ -240,6 +288,7 @@ void beetle_wakenet_reset(void) {
         }
         s_ctx->frame_pos = 0;
         s_ctx->resample_tail_len = 0;
+        s_ctx->pending_detection = false;
     }
 }
 

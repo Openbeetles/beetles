@@ -63,6 +63,7 @@ bash scripts/tests/esp_audio_codec_contract_test.sh >/dev/null
 bash scripts/tests/beetle_wss_recv_contract_test.sh >/dev/null
 bash scripts/tests/analyze_image_body_contract_test.sh >/dev/null
 bash scripts/tests/esp_realtime_voice_contract_test.sh >/dev/null
+bash scripts/tests/esp_wakenet_afe_contract_test.sh >/dev/null
 
 if [[ ! -f src/runtime/scheduler.rs ]] ||
    [[ ! -f src/runtime/foreground.rs ]] ||
@@ -140,6 +141,8 @@ if ! rg -n 'foreground_ack_missing_before_llm' scripts/esp_soak_analyze.sh scrip
    ! rg -n 'qq_msgseq_regression' scripts/esp_soak_analyze.sh scripts/tests/esp_soak_analyze_contract_test.sh >/dev/null ||
    ! rg -n 'voice_session_stack_overflow' scripts/esp_soak_analyze.sh scripts/tests/esp_soak_analyze_contract_test.sh >/dev/null ||
    ! rg -n 'startup_heap_largest_below_floor.*blocker' scripts/esp_soak_analyze.sh >/dev/null ||
+   ! rg -n 'wakenet_afe_empty_spam' scripts/esp_soak_analyze.sh scripts/tests/esp_soak_analyze_contract_test.sh >/dev/null ||
+   ! rg -n 'wakenet_feed_hot_path_slow' scripts/esp_soak_analyze.sh scripts/tests/esp_soak_analyze_contract_test.sh >/dev/null ||
    ! rg -n 'external_wss_worker_before_network_ready' scripts/esp_soak_analyze.sh scripts/tests/esp_soak_analyze_contract_test.sh >/dev/null ||
    ! rg -n 'voice_realtime_connect_before_network_ready' scripts/esp_soak_analyze.sh scripts/tests/esp_soak_analyze_contract_test.sh >/dev/null ||
    ! rg -n 'boot_normal_before_network_ready' scripts/esp_soak_analyze.sh scripts/tests/esp_soak_analyze_contract_test.sh >/dev/null ||

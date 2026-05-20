@@ -137,6 +137,11 @@ BEGIN {
   startup_network_violation_count = 0;
   qq_msgseq_regression_count = 0;
   voice_session_stack_overflow_count = 0;
+  wakenet_afe_empty_count = 0;
+  wakenet_afe_empty_first_line = 0;
+  wakenet_slow_feed_count = 0;
+  wakenet_afe_empty_blocker_threshold = 20;
+  wakenet_feed_slow_threshold_us = 1000000;
   wifi_sta_ready_seen = 0;
   recent_voice_session_spawn_line = -1;
   display_heavy_degrade_seen = 0;
@@ -235,6 +240,19 @@ function storage_contention_from_metrics(wait_last, hold_last, ops, hold_stage, 
 {
   line = $0;
   lower_line = tolower(line);
+  if (line ~ /Ringbuffer of AFE is empty, Please use feed\(\) to write data/) {
+    wakenet_afe_empty_count++;
+    if (wakenet_afe_empty_first_line == 0) {
+      wakenet_afe_empty_first_line = NR;
+    }
+  }
+  if (lower_line ~ /audio_wake/) {
+    wake_feed_us = numeric_after(line, "feed_us");
+    if (wake_feed_us != "" && wake_feed_us + 0 >= wakenet_feed_slow_threshold_us) {
+      wakenet_slow_feed_count++;
+      record_issue(NR, "wakenet_feed_hot_path_slow", "blocker", "feed_us=" wake_feed_us " threshold_us=" wakenet_feed_slow_threshold_us);
+    }
+  }
   if (lower_line ~ /\[heartbeat\] metrics .*spiffs_/) {
     record_issue(NR, "legacy_storage_metric_names", "blocker", "legacy backend metric names found");
   }
@@ -705,6 +723,9 @@ END {
   if (critical_open) {
     record_issue(NR, "unrecovered_critical_pressure", "blocker", "Critical pressure appeared without a later pressure=Normal line");
   }
+  if (wakenet_afe_empty_count >= wakenet_afe_empty_blocker_threshold) {
+    record_issue(wakenet_afe_empty_first_line, "wakenet_afe_empty_spam", "blocker", "lines=" wakenet_afe_empty_count " threshold=" wakenet_afe_empty_blocker_threshold);
+  }
 
   print "# ESP soak analysis summary" > summary;
   print "" >> summary;
@@ -743,6 +764,8 @@ END {
   print "- Startup network readiness violations: " startup_network_violation_count >> summary;
   print "- QQ msgseq regression lines: " qq_msgseq_regression_count >> summary;
   print "- Voice session stack overflow lines: " voice_session_stack_overflow_count >> summary;
+  print "- WakeNet AFE empty lines: " wakenet_afe_empty_count >> summary;
+  print "- WakeNet slow feed lines: " wakenet_slow_feed_count >> summary;
   if (saw_critical) {
     print "- Critical pressure observed: yes" >> summary;
   } else {

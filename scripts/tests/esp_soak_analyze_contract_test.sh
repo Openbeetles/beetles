@@ -10,12 +10,14 @@ SPACED_LOG="$TMP_DIR/spaced-write-back.log"
 SCHEDULER_HEALTHY_LOG="$TMP_DIR/healthy-scheduler.log"
 SCHEDULER_BAD_LOG="$TMP_DIR/bad-scheduler.log"
 PROTECTED_WRITE_BACK_LOG="$TMP_DIR/protected-write-back.log"
+WAKENET_BAD_LOG="$TMP_DIR/wakenet-bad.log"
 OUT="$TMP_DIR/out"
 HEALTHY_OUT="$TMP_DIR/healthy-out"
 SPACED_OUT="$TMP_DIR/spaced-out"
 SCHEDULER_HEALTHY_OUT="$TMP_DIR/scheduler-healthy-out"
 SCHEDULER_BAD_OUT="$TMP_DIR/scheduler-bad-out"
 PROTECTED_WRITE_BACK_OUT="$TMP_DIR/protected-write-back-out"
+WAKENET_BAD_OUT="$TMP_DIR/wakenet-bad-out"
 
 cat >"$LOG" <<'LOGEOF'
 I (900) beetle::orchestrator: [orchestrator] startup memory checkpoint stage=agent_loop_deferred internal_free=45807 internal_min=45807 largest_block=31744 pressure=Cautious tls_fragmentation=Healthy
@@ -166,6 +168,22 @@ grep -q 'Write-back starvation lines: 0' "$PROTECTED_WRITE_BACK_SUMMARY"
 grep -q 'Write-back defer churn lines: 0' "$PROTECTED_WRITE_BACK_SUMMARY"
 ! grep -q 'pending_write_back_starvation' "$PROTECTED_WRITE_BACK_REGRESSIONS"
 ! grep -q 'write_back_defer_churn' "$PROTECTED_WRITE_BACK_REGRESSIONS"
+
+{
+  for i in $(seq 1 25); do
+    printf 'W (%d) AFE: Ringbuffer of AFE is empty, Please use feed() to write data\n' "$((3000 + i * 10))"
+  done
+  printf 'I (35398) beetle::heartbeat: [heartbeat] audio_wake worker_turns=26 worker_idle=3 mic_polls=23 mic_frames=23 mic_zero=0 mic_read_us=319 feed_calls=23 feed_busy=0 feed_cooldown=0 feed_detect=0 feed_us=1407298 mic_level_pm=0 zcr_pm=0 speech_ratio_pm=0 speech_coverage_pm=0 speech_dominance_pm=0 activation_pm=0 speech_like=false ref_ok=false\n'
+} >"$WAKENET_BAD_LOG"
+
+"$ROOT/scripts/esp_soak_analyze.sh" --output-dir "$WAKENET_BAD_OUT" "$WAKENET_BAD_LOG" >/dev/null
+WAKENET_BAD_SUMMARY="$(find "$WAKENET_BAD_OUT" -name summary.md -print -quit)"
+WAKENET_BAD_REGRESSIONS="$(find "$WAKENET_BAD_OUT" -name regressions.csv -print -quit)"
+
+grep -q 'wakenet_afe_empty_spam' "$WAKENET_BAD_REGRESSIONS"
+grep -q 'wakenet_feed_hot_path_slow' "$WAKENET_BAD_REGRESSIONS"
+grep -q 'WakeNet AFE empty lines: 25' "$WAKENET_BAD_SUMMARY"
+grep -q 'WakeNet slow feed lines: 1' "$WAKENET_BAD_SUMMARY"
 
 cat >"$SCHEDULER_BAD_LOG" <<'LOGEOF'
 I (1000) beetle::heartbeat: [heartbeat] runtime_scheduler active_foreground=true source=external_user_message age_ms=500 resume_after_ms=29500 active_work=1 profile=esp_compact permits=1 defers=0 degrades=0 suspends=0 drains=0 rejects=0 last_class=external_user_message last_source=user_facing last_decision=proceed last_reason=none last_retry_after_ms=none

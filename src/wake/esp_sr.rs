@@ -20,6 +20,7 @@ extern "C" {
         use_reference: c_int,
     ) -> c_int;
     fn beetle_wakenet_feed(mic: *const i16, reference: *const i16, samples: c_int) -> c_int;
+    fn beetle_wakenet_take_event() -> c_int;
     fn beetle_wakenet_reset();
     fn beetle_wakenet_destroy();
 }
@@ -94,10 +95,10 @@ impl EspSrWakeBackend {
         } else {
             std::ptr::null()
         };
-        let detected = unsafe {
-            beetle_wakenet_feed(mic.as_ptr(), reference_ptr, mic.len() as c_int)
-                == BEETLE_WN_DETECTED
-        };
+        unsafe {
+            beetle_wakenet_feed(mic.as_ptr(), reference_ptr, mic.len() as c_int);
+        }
+        let detected = unsafe { beetle_wakenet_take_event() == BEETLE_WN_DETECTED };
         crate::metrics::record_wake_word_feed_us(feed_start.elapsed().as_micros());
         if !detected {
             return None;
