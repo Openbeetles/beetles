@@ -400,17 +400,16 @@ fn spawn_voice_session_if_ready(
     let vs_inbound_tx = user_inbound_tx.clone();
     let vs_prompt = audio_cfg.wake_word.wake_prompt.clone();
     spawn_planned_handle("voice_session", STACK_VOICE_CONTROL, move || {
-        beetle::audio::voice_session::run_voice_session(
-            beetle::audio::voice_session::VoiceSessionConfig {
+        let voice_session_config =
+            std::sync::Arc::new(beetle::audio::voice_session::VoiceSessionConfig {
                 platform: vs_platform,
                 network: vs_network,
                 audio_cfg: vs_audio,
                 baidu_token: vs_token,
                 inbound_tx: vs_inbound_tx,
                 wake_prompt: vs_prompt,
-            },
-            voice_rx,
-        );
+            });
+        beetle::audio::voice_session::run_voice_session(voice_session_config, voice_rx);
     })
     .map_err(|error| beetle::Error::io("voice_session_spawn", error))?;
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
@@ -487,6 +486,18 @@ fn spawn_supervised_channel_wss_thread(
     _stage: &'static str,
     spawner: Arc<dyn Fn() -> beetle::Result<beetle::util::TaskHandle> + Send + Sync>,
 ) -> beetle::Result<()> {
+    if let Some(reason) = beetle::runtime::channel_wss_worker_start_defer_reason() {
+        beetle::runtime::register_deferred_channel_wss_supervisor(owner, spawner, reason);
+        log::info!(
+            "[{}] external WSS worker deferred owner={} reason={}",
+            tag,
+            owner,
+            reason
+        );
+        #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+        beetle::orchestrator::log_startup_memory_checkpoint(_stage);
+        return Ok(());
+    }
     let handle = spawner()?;
     beetle::runtime::register_channel_wss_supervisor(owner, handle, spawner);
     log::info!("[{}] {}", tag, started_label);
@@ -3920,16 +3931,27 @@ fn start_communication_planes(assembly: &mut PreparedRuntimeAssembly) -> beetle:
         #[cfg(not(any(feature = "telegram", feature = "feishu", feature = "qq_channel")))]
         let active_outbound = None;
         if let Some(active_outbound) = active_outbound {
-            spawn_planned_handle("os_outbound_supervisor", STACK_DISPATCH, move || {
-                beetle::channels::run_os_outbound_supervisor(
-                    outbound_rx_for_dispatch,
-                    active_outbound,
-                    sinks_clone,
-                    channel_capability_registry,
-                )
-            })
-            .map_err(|error| beetle::Error::io("os_outbound_supervisor_spawn", error))?;
-            beetle::orchestrator::log_startup_memory_checkpoint("os_outbound_supervisor_spawn");
+            let supervisor = Arc::new(beetle::channels::LazyOsOutboundSupervisor::new(
+                outbound_rx_for_dispatch,
+                active_outbound,
+                sinks_clone,
+                channel_capability_registry,
+            ));
+            beetle::channels::install_lazy_os_outbound_supervisor(Arc::clone(&supervisor))
+                .map_err(|_| {
+                    beetle::Error::config(
+                        "os_outbound_lazy_init",
+                        "lazy outbound supervisor already installed",
+                    )
+                })?;
+            assembly
+                .bus
+                .outbound_tx
+                .set_after_successful_send_hook(Arc::new(|| {
+                    beetle::channels::service_lazy_os_outbound_supervisor("outbound_enqueue");
+                    beetle::bg_timer::notify_deadline_changed();
+                }));
+            beetle::orchestrator::log_startup_memory_checkpoint("os_outbound_lazy_ready");
             true
         } else {
             spawn_planned_handle("dispatch", STACK_DISPATCH, move || {

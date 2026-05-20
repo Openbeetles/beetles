@@ -55,7 +55,14 @@ enum VoiceWorkerTask {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum VoiceWorkerStartKind {
     SpawnWorker,
-    PrepareRealtimeTransportThenSpawnConnect,
+    SpawnRealtimeConnectWorker,
+}
+
+impl VoiceWorkerStartKind {
+    #[cfg(test)]
+    fn spawns_realtime_connect_worker_before_transport_ownership(self) -> bool {
+        matches!(self, Self::SpawnRealtimeConnectWorker)
+    }
 }
 
 enum VoiceWorkerStartResult {
@@ -72,7 +79,7 @@ enum VoiceWorkerStartDisposition {
 
 struct RealtimeSessionOwnership {
     conversation: VoiceConversationController,
-    _foreground_ticket: crate::runtime::RuntimeForegroundTicket,
+    _foreground_ticket: VoiceForegroundTicketGuard,
     _audio_input_call: crate::orchestrator::RuntimeCapabilityCallGuard,
     _audio_output_call: crate::orchestrator::RuntimeCapabilityCallGuard,
     _audio_input_lease: AudioLeaseGuard,
@@ -87,9 +94,29 @@ struct PreparedRealtimeSession {
     _ownership: RealtimeSessionOwnership,
 }
 
+struct VoiceForegroundTicketGuard {
+    ticket: Option<crate::runtime::RuntimeForegroundTicket>,
+}
+
+impl VoiceForegroundTicketGuard {
+    fn new(ticket: crate::runtime::RuntimeForegroundTicket) -> Self {
+        Self {
+            ticket: Some(ticket),
+        }
+    }
+}
+
+impl Drop for VoiceForegroundTicketGuard {
+    fn drop(&mut self) {
+        if let Some(ticket) = self.ticket.take() {
+            let _ = crate::runtime::finish_runtime_foreground(ticket);
+        }
+    }
+}
+
 enum VoiceWorkerMessage {
     Done,
-    RealtimePrepared(crate::Result<PreparedRealtimeSession>),
+    RealtimePrepared(Box<crate::Result<PreparedRealtimeSession>>),
 }
 
 #[derive(Default)]
@@ -123,7 +150,6 @@ impl VoiceWorkerRetryGate {
 }
 
 /// All dependencies for the voice session thread, injected by `main`.
-#[derive(Clone)]
 pub struct VoiceSessionConfig {
     pub platform: Arc<dyn Platform>,
     pub network: Arc<NetworkGovernor>,
@@ -134,7 +160,7 @@ pub struct VoiceSessionConfig {
 }
 
 /// Entry point for the voice session scheduler thread. Blocks on `rx` until the channel closes.
-pub fn run_voice_session(cfg: VoiceSessionConfig, rx: Receiver<VoiceEvent>) {
+pub fn run_voice_session(cfg: Arc<VoiceSessionConfig>, rx: Receiver<VoiceEvent>) {
     log::info!(
         "[{}] started realtime_enabled={}",
         TAG,
@@ -211,7 +237,7 @@ pub fn run_voice_session(cfg: VoiceSessionConfig, rx: Receiver<VoiceEvent>) {
 }
 
 fn spawn_voice_session_worker(
-    cfg: VoiceSessionConfig,
+    cfg: Arc<VoiceSessionConfig>,
     task: VoiceWorkerTask,
     worker_tx: mpsc::Sender<VoiceWorkerMessage>,
 ) -> crate::Result<VoiceWorkerStartResult> {
@@ -249,28 +275,16 @@ fn spawn_voice_session_worker(
             .map(VoiceWorkerStartResult::Started)
             .map_err(|error| crate::Error::io("voice_session_worker_spawn", error))
         }
-        VoiceWorkerStartKind::PrepareRealtimeTransportThenSpawnConnect => {
+        VoiceWorkerStartKind::SpawnRealtimeConnectWorker => {
             let VoiceWorkerTask::WakeInteraction(handoff) = task else {
                 return Ok(VoiceWorkerStartResult::Dropped);
-            };
-            let ownership = match prepare_realtime_session_ownership(&cfg, &handoff) {
-                Ok(ownership) => ownership,
-                Err(error) => {
-                    log::warn!(
-                        "[{}] realtime voice transport admission failed: {}",
-                        TAG,
-                        error
-                    );
-                    crate::metrics::record_voice_tool_failure("voice_session_realtime");
-                    return Ok(VoiceWorkerStartResult::Dropped);
-                }
             };
             spawn_guarded_with_profile_handle(
                 "voice_realtime_connect",
                 STACK_VOICE_REALTIME_CONNECT,
                 Some(SpawnCore::Core1),
                 HttpThreadRole::Background,
-                move || run_realtime_connect_worker(cfg, ownership, handoff, worker_tx),
+                move || run_realtime_connect_worker(cfg, handoff, worker_tx),
             )
             .map(VoiceWorkerStartResult::Started)
             .map_err(|error| crate::Error::io("voice_realtime_connect_spawn", error))
@@ -355,7 +369,7 @@ fn apply_voice_worker_start_result_for_test(
 
 fn voice_worker_start_kind(realtime_enabled: bool, task: &VoiceWorkerTask) -> VoiceWorkerStartKind {
     if realtime_enabled && matches!(task, VoiceWorkerTask::WakeInteraction(_)) {
-        VoiceWorkerStartKind::PrepareRealtimeTransportThenSpawnConnect
+        VoiceWorkerStartKind::SpawnRealtimeConnectWorker
     } else {
         VoiceWorkerStartKind::SpawnWorker
     }
@@ -370,7 +384,7 @@ fn voice_worker_spawn_profile(task: &VoiceWorkerTask) -> (&'static str, usize) {
 }
 
 fn run_voice_session_worker(
-    cfg: VoiceSessionConfig,
+    cfg: Arc<VoiceSessionConfig>,
     task: VoiceWorkerTask,
     worker_tx: mpsc::Sender<VoiceWorkerMessage>,
 ) {
@@ -380,18 +394,18 @@ fn run_voice_session_worker(
 }
 
 fn run_realtime_connect_worker(
-    cfg: VoiceSessionConfig,
-    ownership: RealtimeSessionOwnership,
+    cfg: Arc<VoiceSessionConfig>,
     handoff: WakeAudioHandoff,
     worker_tx: mpsc::Sender<VoiceWorkerMessage>,
 ) {
-    let result = connect_prepared_realtime_session(&cfg, ownership, handoff);
+    let result = prepare_realtime_session_ownership(&cfg, &handoff)
+        .and_then(|ownership| connect_prepared_realtime_session(&cfg, ownership, handoff));
     if let Err(error) = &result {
         log::warn!("[{}] realtime voice connect failed: {}", TAG, error);
         crate::metrics::record_voice_tool_failure("voice_session_realtime");
     }
     if worker_tx
-        .send(VoiceWorkerMessage::RealtimePrepared(result))
+        .send(VoiceWorkerMessage::RealtimePrepared(Box::new(result)))
         .is_err()
     {
         log::warn!("[{}] realtime prepare result receiver dropped", TAG);
@@ -400,7 +414,7 @@ fn run_realtime_connect_worker(
 }
 
 fn spawn_prepared_realtime_session_worker(
-    cfg: VoiceSessionConfig,
+    cfg: Arc<VoiceSessionConfig>,
     prepared: PreparedRealtimeSession,
     worker_tx: mpsc::Sender<VoiceWorkerMessage>,
 ) -> std::io::Result<TaskHandle> {
@@ -500,7 +514,7 @@ fn prepare_realtime_session_ownership(
 
     Ok(RealtimeSessionOwnership {
         conversation,
-        _foreground_ticket: foreground_ticket,
+        _foreground_ticket: VoiceForegroundTicketGuard::new(foreground_ticket),
         _audio_input_call: audio_input_call,
         _audio_output_call: audio_output_call,
         _audio_input_lease: audio_input_lease,
@@ -645,9 +659,10 @@ fn handle_wake_interaction<F>(
     }
 
     let _wake_reset = WakeSessionResetGuard;
-    let _foreground_ticket = crate::runtime::renew_runtime_foreground_now(
-        crate::runtime::RuntimeForegroundSource::VoiceFallbackInteraction,
-    );
+    let _foreground_ticket =
+        VoiceForegroundTicketGuard::new(crate::runtime::renew_runtime_foreground_now(
+            crate::runtime::RuntimeForegroundSource::VoiceFallbackInteraction,
+        ));
     log::info!("[{}] wake triggered, starting voice interaction", TAG);
     let duplex_caps = cfg.platform.audio_duplex_capabilities();
 
@@ -803,7 +818,7 @@ fn handle_speak<F>(
 }
 
 fn drain_worker_messages(
-    cfg: &VoiceSessionConfig,
+    cfg: &Arc<VoiceSessionConfig>,
     worker_tx: &mpsc::Sender<VoiceWorkerMessage>,
     worker_handle: &mut Option<TaskHandle>,
     worker_rx: &mpsc::Receiver<VoiceWorkerMessage>,
@@ -821,7 +836,7 @@ fn drain_worker_messages(
                 if let Some(handle) = worker_handle.take() {
                     let _ = handle.join();
                 }
-                match result {
+                match *result {
                     Ok(prepared) => match spawn_prepared_realtime_session_worker(
                         cfg.clone(),
                         prepared,
@@ -965,10 +980,11 @@ mod tests {
     }
 
     #[test]
-    fn realtime_wake_prepares_transport_before_session_worker() {
-        assert_eq!(
-            voice_worker_start_kind(true, &VoiceWorkerTask::WakeInteraction(test_handoff())),
-            VoiceWorkerStartKind::PrepareRealtimeTransportThenSpawnConnect
+    fn realtime_wake_does_not_prepare_transport_ownership_on_control_thread() {
+        assert!(
+            voice_worker_start_kind(true, &VoiceWorkerTask::WakeInteraction(test_handoff()))
+                .spawns_realtime_connect_worker_before_transport_ownership(),
+            "voice_session control thread must stay a light event owner; realtime transport ownership belongs inside the transient connect worker"
         );
         assert_eq!(
             voice_worker_start_kind(false, &VoiceWorkerTask::WakeInteraction(test_handoff())),
@@ -999,6 +1015,28 @@ mod tests {
         assert_eq!(
             voice_worker_runtime_work(true, &VoiceWorkerTask::Speak("reply".to_string())),
             None
+        );
+    }
+
+    #[test]
+    fn voice_foreground_ticket_guard_finishes_ticket_on_drop() {
+        let _guard = crate::runtime::foreground::runtime_foreground_test_guard();
+        crate::runtime::foreground::reset_runtime_foreground_for_tests();
+        let ticket = crate::runtime::foreground::renew_runtime_foreground(
+            crate::runtime::RuntimeForegroundSource::RealtimeVoiceSession,
+            1_000,
+        );
+
+        {
+            let _ticket_guard = VoiceForegroundTicketGuard::new(ticket);
+        }
+
+        let snapshot = crate::runtime::foreground::runtime_foreground_snapshot_at(1_001);
+        assert!(!snapshot.active);
+        assert_eq!(snapshot.records.len(), 1);
+        assert_eq!(
+            snapshot.records[0].state,
+            crate::runtime::foreground::RuntimeForegroundTicketState::Finished
         );
     }
 
@@ -1037,6 +1075,7 @@ mod tests {
                     primary_source: Some(crate::runtime::RuntimeForegroundSource::ConfigUiChat),
                     age_ms: Some(500),
                     resume_after_ms: Some(29_500),
+                    ..crate::runtime::RuntimeForegroundOverlay::default()
                 },
                 pressure: crate::orchestrator::PressureLevel::Normal,
             },
@@ -1069,6 +1108,7 @@ mod tests {
                     ),
                     age_ms: Some(500),
                     resume_after_ms: Some(29_500),
+                    ..crate::runtime::RuntimeForegroundOverlay::default()
                 },
                 pressure: crate::orchestrator::PressureLevel::Normal,
             },

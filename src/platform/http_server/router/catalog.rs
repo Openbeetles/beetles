@@ -278,6 +278,10 @@ impl RouteExecutionClass {
         }
     }
 
+    pub(crate) const fn requires_route_worker_runtime_busy_admission(self) -> bool {
+        !matches!(self, Self::AsyncConfigRoute)
+    }
+
     pub(crate) const fn worker_contract(self) -> Option<RouteWorkerContract> {
         match self {
             Self::ImmediateRoute | Self::StreamingRoute | Self::RejectedRoute => None,
@@ -352,6 +356,20 @@ impl RouteExecutionClass {
                 complete_stage: "http_diagnostic_complete",
             }),
         }
+    }
+
+    pub(crate) fn requires_route_worker_transport_admission(
+        self,
+        mode: crate::runtime::RuntimeModeSnapshot,
+    ) -> bool {
+        !matches!(
+            self,
+            Self::AsyncConfigRoute
+                if mode.current_mode == crate::runtime::RuntimeMode::ConfigActive
+                    && mode
+                        .config_activity_phase
+                        .blocks_new_non_voice_network_work()
+        )
     }
 }
 
@@ -1930,6 +1948,54 @@ mod tests {
         assert!(
             route_worker_runtime_busy_detail(chat_history, pressure_busy).is_none(),
             "chat history must remain available in Cautious when concrete worker memory admission still passes"
+        );
+    }
+
+    #[test]
+    fn config_worker_transport_gate_does_not_self_block_persisting_activity() {
+        let persisting_mode =
+            crate::runtime::mode::snapshot_from_source(crate::runtime::mode::RuntimeModeSource {
+                config_active: true,
+                config_activity_phase: crate::runtime::ConfigActivityPhase::Persisting,
+                ..crate::runtime::mode::RuntimeModeSource::default()
+            });
+
+        assert!(
+            !RouteExecutionClass::AsyncConfigRoute
+                .requires_route_worker_transport_admission(persisting_mode),
+            "config save worker is local persistence and must not consume NonVoiceHttp transport admission against its own guard"
+        );
+        assert!(
+            RouteExecutionClass::SlowDiagnosticRoute
+                .requires_route_worker_transport_admission(persisting_mode),
+            "diagnostic workers still obey transport admission during config persistence"
+        );
+
+        let voice_mode =
+            crate::runtime::mode::snapshot_from_source(crate::runtime::mode::RuntimeModeSource {
+                voice_exclusive_active: true,
+                ..crate::runtime::mode::RuntimeModeSource::default()
+            });
+        assert!(
+            RouteExecutionClass::AsyncConfigRoute
+                .requires_route_worker_transport_admission(voice_mode),
+            "voice-exclusive must keep blocking config worker transport"
+        );
+    }
+
+    #[test]
+    fn config_worker_does_not_use_generic_runtime_busy_gate() {
+        assert!(
+            !RouteExecutionClass::AsyncConfigRoute.requires_route_worker_runtime_busy_admission(),
+            "config save is the local config recovery owner; memory admission remains the floor gate"
+        );
+        assert!(
+            RouteExecutionClass::SlowDiagnosticRoute.requires_route_worker_runtime_busy_admission(),
+            "deep diagnostic work must still obey generic runtime busy admission"
+        );
+        assert!(
+            RouteExecutionClass::ChatHistoryRoute.requires_route_worker_runtime_busy_admission(),
+            "chat history remains a deep UI worker and must not inherit config save priority"
         );
     }
 

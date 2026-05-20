@@ -375,41 +375,47 @@ fn route_worker_admission_reject(
     memory_system_kind: crate::memory::MemorySystemKind,
 ) -> Option<RouteWorkerAdmissionReject> {
     let resource = crate::orchestrator::resource_light_snapshot();
-    let scheduler_decision = class
-        .runtime_work_class()
-        .map(|work_class| {
-            crate::runtime::admit_current_runtime_work(
-                work_class,
-                crate::runtime::RuntimeWorkSource::Operator,
-                memory_system_kind.into(),
-                resource.pressure,
-            )
-        })
-        .unwrap_or(crate::runtime::RuntimeWorkDecision::Proceed);
-    if let Some(detail) = catalog::route_worker_runtime_busy_detail(
-        contract,
-        catalog::RouteWorkerRuntimeLoad::from(&resource)
-            .with_scheduler_decision(scheduler_decision),
-    ) {
-        let stage = if scheduler_decision == crate::runtime::RuntimeWorkDecision::Proceed {
-            "http_route_worker_runtime_busy"
-        } else {
-            "runtime_scheduler_route_worker"
-        };
-        return Some(RouteWorkerAdmissionReject { stage, detail });
+    if class.requires_route_worker_runtime_busy_admission() {
+        let scheduler_decision = class
+            .runtime_work_class()
+            .map(|work_class| {
+                crate::runtime::admit_current_runtime_work(
+                    work_class,
+                    crate::runtime::RuntimeWorkSource::Operator,
+                    memory_system_kind.into(),
+                    resource.pressure,
+                )
+            })
+            .unwrap_or(crate::runtime::RuntimeWorkDecision::Proceed);
+        if let Some(detail) = catalog::route_worker_runtime_busy_detail(
+            contract,
+            catalog::RouteWorkerRuntimeLoad::from(&resource)
+                .with_scheduler_decision(scheduler_decision),
+        ) {
+            let stage = if scheduler_decision == crate::runtime::RuntimeWorkDecision::Proceed {
+                "http_route_worker_runtime_busy"
+            } else {
+                "runtime_scheduler_route_worker"
+            };
+            return Some(RouteWorkerAdmissionReject { stage, detail });
+        }
     }
-    if let Some(rejection) = crate::network::current_runtime_transport_admission(
-        crate::network::TransportAdmissionKind::NonVoiceHttp,
-    )
-    .rejection()
-    {
-        return Some(RouteWorkerAdmissionReject {
-            stage: rejection.stage,
-            detail: format!(
-                "route worker start deferred for {:?}: transport_reason={}",
-                contract.lane, rejection.reason
-            ),
-        });
+    let runtime_mode = crate::runtime::thread_registry::runtime_mode_snapshot();
+    if class.requires_route_worker_transport_admission(runtime_mode) {
+        if let Some(rejection) = crate::network::runtime_transport_admission(
+            crate::network::TransportAdmissionKind::NonVoiceHttp,
+            runtime_mode,
+        )
+        .rejection()
+        {
+            return Some(RouteWorkerAdmissionReject {
+                stage: rejection.stage,
+                detail: format!(
+                    "route worker start deferred for {:?}: transport_reason={}",
+                    contract.lane, rejection.reason
+                ),
+            });
+        }
     }
     let snap = crate::orchestrator::cached_memory_snapshot();
     let requirements = effective_route_worker_memory_requirements(contract);
@@ -1322,6 +1328,34 @@ mod tests {
         assert_eq!(
             super::route_worker_reject_error_key("http_route_worker_submit"),
             "http.route_worker_busy"
+        );
+    }
+
+    #[test]
+    fn config_worker_admission_does_not_self_block_during_config_persisting() {
+        let _state_guard = crate::state::test_state_guard();
+        crate::network::set_external_wss_managed_present(false);
+        apply_response_build_pressure(256 * 1024, 128 * 1024);
+        let contract = RouteExecutionClass::AsyncConfigRoute
+            .worker_contract()
+            .expect("config worker contract");
+        let mut guard = crate::runtime::ConfigActivityGuard::enter_at(
+            crate::runtime::ConfigActivityPhase::Persisting,
+            "/api/config/system",
+            100,
+        );
+
+        let reject = super::route_worker_admission_reject(
+            RouteExecutionClass::AsyncConfigRoute,
+            contract,
+            crate::memory::MemorySystemKind::EspCompact,
+        );
+
+        guard.finish_status_at(200, 101);
+        assert!(
+            reject.is_none(),
+            "config save worker must not self-block on its own persisting transport guard: {:?}",
+            reject.map(|r| (r.stage, r.detail))
         );
     }
 

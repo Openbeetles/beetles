@@ -197,6 +197,8 @@ pub fn run_bg_timer(ctx: BgTimerContext) -> std::io::Result<crate::util::TaskHan
                 };
                 let next_delayed_task_at =
                     now + crate::runtime::next_delayed_task_wait(heartbeat_interval);
+                let next_channel_wss_retry_at =
+                    crate::runtime::next_channel_wss_supervisor_retry_at();
                 let next_wake_at = [
                     Some(next_heartbeat_at),
                     Some(next_cron_at),
@@ -204,6 +206,7 @@ pub fn run_bg_timer(ctx: BgTimerContext) -> std::io::Result<crate::util::TaskHan
                     next_task_at,
                     Some(next_delayed_task_at),
                     Some(next_agent_guard_at),
+                    next_channel_wss_retry_at,
                 ]
                 .into_iter()
                 .flatten()
@@ -213,6 +216,7 @@ pub fn run_bg_timer(ctx: BgTimerContext) -> std::io::Result<crate::util::TaskHan
                 crate::platform::task_wdt::feed_current_task();
                 crate::runtime::service_delayed_tasks();
                 crate::runtime::service_channel_wss_supervisors(TAG);
+                crate::channels::service_lazy_os_outbound_supervisor(TAG);
 
                 let now = Instant::now();
                 let now_unix_secs = crate::util::current_unix_secs();
@@ -558,6 +562,7 @@ mod tests {
                 primary_source: Some(RuntimeForegroundSource::ExternalUserMessage),
                 age_ms: Some(500),
                 resume_after_ms: Some(29_500),
+                ..RuntimeForegroundOverlay::default()
             },
             PressureLevel::Normal,
         ));

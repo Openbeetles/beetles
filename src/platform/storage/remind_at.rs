@@ -235,7 +235,7 @@ impl RemindAtStore for StorageRemindAtStore {
 mod tests {
     use super::*;
     use crate::memory::RemindAtStore;
-    use std::sync::OnceLock;
+    use std::sync::{Mutex, MutexGuard, OnceLock};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn test_store_path() -> PathBuf {
@@ -258,6 +258,14 @@ mod tests {
         let _ = std::fs::create_dir_all(path.parent().unwrap());
     }
 
+    fn test_store_guard() -> MutexGuard<'static, ()> {
+        static GUARD: OnceLock<Mutex<()>> = OnceLock::new();
+        GUARD
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+    }
+
     fn reminder(id: &str, at_unix_secs: u64) -> ReminderItem {
         ReminderItem {
             id: id.to_string(),
@@ -271,6 +279,7 @@ mod tests {
 
     #[test]
     fn remind_store_rejects_new_entry_when_capacity_is_exhausted() {
+        let _guard = test_store_guard();
         reset_test_store();
         let store = StorageRemindAtStore::new_with_path(test_store_path);
         for idx in 0..REMIND_AT_MAX_ENTRIES {
@@ -298,6 +307,7 @@ mod tests {
 
     #[test]
     fn remind_store_allows_updating_existing_entry_at_capacity() {
+        let _guard = test_store_guard();
         reset_test_store();
         let store = StorageRemindAtStore::new_with_path(test_store_path);
         for idx in 0..REMIND_AT_MAX_ENTRIES {
@@ -317,6 +327,7 @@ mod tests {
 
     #[test]
     fn delete_due_does_not_remove_updated_same_id_reminder() {
+        let _guard = test_store_guard();
         reset_test_store();
         let store = StorageRemindAtStore::new_with_path(test_store_path);
         store.upsert(&reminder("rem-1", 1)).unwrap();

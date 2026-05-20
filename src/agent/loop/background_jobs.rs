@@ -1876,10 +1876,7 @@ fn schedule_user_inbound_retry(
     let due_at = Instant::now() + Duration::from_millis(delay_ms);
     let task = Box::new(move || {
         retry_msg.enqueue_ts_ms = super::now_unix_ms();
-        let source = retry_msg
-            .runtime_foreground_source()
-            .unwrap_or(crate::runtime::RuntimeForegroundSource::ExternalUserMessage);
-        match user_inbound_tx.try_submit_user(retry_msg, source) {
+        match user_inbound_tx.try_resubmit_user_without_foreground_renewal(retry_msg) {
             Ok(()) => {}
             Err(std::sync::mpsc::TrySendError::Full(msg)) => {
                 log::warn!(
@@ -2469,6 +2466,8 @@ mod tests {
     fn delayed_user_inbound_retry_replays_primary_turn() {
         let (_state_guard, _delayed_guard) =
             crate::runtime::delayed_task::delayed_task_test_scope();
+        let _foreground_guard = crate::runtime::foreground::runtime_foreground_test_guard();
+        crate::runtime::foreground::reset_runtime_foreground_for_tests();
         let (user_inbound_tx, user_inbound_rx, _user_depth) =
             crate::bus::new_user_inbound_channel(8);
         let msg = PcMsg::new_inbound("qq_channel", "chat-1", "primary", false).expect("message");
@@ -2485,6 +2484,10 @@ mod tests {
             .try_recv()
             .expect("delayed retry should requeue user turn");
         assert_eq!(replay.content, "primary");
+        assert!(
+            !crate::runtime::foreground::runtime_foreground_snapshot().active,
+            "delayed replay must not renew foreground until the turn is actually admitted"
+        );
     }
 
     #[test]

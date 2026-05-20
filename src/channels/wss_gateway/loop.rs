@@ -484,61 +484,64 @@ pub fn run_wss_gateway_loop<D, H, C, CreateHttp, Conn>(
             crate::runtime::PlaneLifecycleState::Starting,
             "connect_attempt",
         );
-        let mut http = match create_http() {
-            Ok(h) => h,
-            Err(e) => {
-                mark_wss_lifecycle(
-                    lifecycle_owner,
-                    crate::runtime::PlaneLifecycleState::Failed,
-                    "create_http_failed",
-                );
-                log::warn!("[{}] create_http failed: {}", tag, e);
-                if external_wss_worker_should_exit_for_evict(tag, lifecycle_owner) {
-                    return;
-                }
-                sleep_with_wdt(backoff_secs);
-                backoff_secs = (backoff_secs * 2).min(BACKOFF_MAX_SECS);
-                continue;
-            }
-        };
-        let runtime_mode = crate::runtime::thread_registry::runtime_mode_snapshot();
-        if let Some(rejection) = external_wss_connect_transport_admission(runtime_mode).rejection()
-        {
-            mark_wss_lifecycle(
-                lifecycle_owner,
-                crate::runtime::PlaneLifecycleState::Suspended,
-                rejection.reason,
-            );
-            if runtime_mode.action_budget.require_external_wss_suspended {
-                crate::network::wait_for_external_wss_resume(tag);
-            } else {
-                sleep_with_wdt(TLS_ADMISSION_RETRY_SLEEP_SECS);
-            }
-            continue;
-        }
-        let url = match driver.get_url(&mut http) {
-            Ok(u) => u,
-            Err(e) => {
-                mark_wss_lifecycle(
-                    lifecycle_owner,
-                    crate::runtime::PlaneLifecycleState::Failed,
-                    "get_url_failed",
-                );
-                crate::metrics::record_error_by_stage(e.metrics_stage());
-                log::warn!("[{}] get_url failed: {}", tag, e);
-                if external_wss_worker_should_exit_for_evict(tag, lifecycle_owner) {
-                    return;
-                }
-                if e.is_tls_admission() {
-                    let sleep_secs = tls_admission_retry_sleep_secs_for_pressure(
-                        crate::orchestrator::refresh_heap_if_stale(),
+        let url = {
+            let mut http = match create_http() {
+                Ok(h) => h,
+                Err(e) => {
+                    mark_wss_lifecycle(
+                        lifecycle_owner,
+                        crate::runtime::PlaneLifecycleState::Failed,
+                        "create_http_failed",
                     );
-                    sleep_with_wdt(sleep_secs);
-                } else {
+                    log::warn!("[{}] create_http failed: {}", tag, e);
+                    if external_wss_worker_should_exit_for_evict(tag, lifecycle_owner) {
+                        return;
+                    }
                     sleep_with_wdt(backoff_secs);
                     backoff_secs = (backoff_secs * 2).min(BACKOFF_MAX_SECS);
+                    continue;
+                }
+            };
+            let runtime_mode = crate::runtime::thread_registry::runtime_mode_snapshot();
+            if let Some(rejection) =
+                external_wss_connect_transport_admission(runtime_mode).rejection()
+            {
+                mark_wss_lifecycle(
+                    lifecycle_owner,
+                    crate::runtime::PlaneLifecycleState::Suspended,
+                    rejection.reason,
+                );
+                if runtime_mode.action_budget.require_external_wss_suspended {
+                    crate::network::wait_for_external_wss_resume(tag);
+                } else {
+                    sleep_with_wdt(TLS_ADMISSION_RETRY_SLEEP_SECS);
                 }
                 continue;
+            }
+            match driver.get_url(&mut http) {
+                Ok(u) => u,
+                Err(e) => {
+                    mark_wss_lifecycle(
+                        lifecycle_owner,
+                        crate::runtime::PlaneLifecycleState::Failed,
+                        "get_url_failed",
+                    );
+                    crate::metrics::record_error_by_stage(e.metrics_stage());
+                    log::warn!("[{}] get_url failed: {}", tag, e);
+                    if external_wss_worker_should_exit_for_evict(tag, lifecycle_owner) {
+                        return;
+                    }
+                    if e.is_tls_admission() {
+                        let sleep_secs = tls_admission_retry_sleep_secs_for_pressure(
+                            crate::orchestrator::refresh_heap_if_stale(),
+                        );
+                        sleep_with_wdt(sleep_secs);
+                    } else {
+                        sleep_with_wdt(backoff_secs);
+                        backoff_secs = (backoff_secs * 2).min(BACKOFF_MAX_SECS);
+                    }
+                    continue;
+                }
             }
         };
         log::info!("[{}] wss url obtained, connecting", tag);
@@ -989,10 +992,121 @@ mod tests {
         wss_runtime_gate_suspend_reason,
     };
     use crate::{
+        bus::PcMsg,
+        channels::{
+            wss_gateway::{WssGatewayDriver, WssRecvAction, WssSessionState},
+            ChannelHttpClient, WssConnection, WssEvent,
+        },
+        error::Result,
+        memory::PendingRetryStore,
         orchestrator::PressureLevel,
+        platform::ResponseBody,
         runtime::mode::{snapshot_from_source, RuntimeModeSource},
         runtime::ConfigActivityPhase,
     };
+    use std::{
+        any::Any,
+        sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc,
+        },
+        time::Duration,
+    };
+
+    struct DropProbeHttp {
+        dropped: Arc<AtomicBool>,
+    }
+
+    impl Drop for DropProbeHttp {
+        fn drop(&mut self) {
+            self.dropped.store(true, Ordering::SeqCst);
+        }
+    }
+
+    impl ChannelHttpClient for DropProbeHttp {
+        fn http_get(&mut self, _url: &str) -> Result<(u16, ResponseBody)> {
+            unreachable!("drop probe does not issue HTTP requests")
+        }
+
+        fn http_get_with_headers(
+            &mut self,
+            _url: &str,
+            _headers: &[(&str, &str)],
+        ) -> Result<(u16, ResponseBody)> {
+            unreachable!("drop probe does not issue HTTP requests")
+        }
+
+        fn http_post(&mut self, _url: &str, _body: &[u8]) -> Result<(u16, ResponseBody)> {
+            unreachable!("drop probe does not issue HTTP requests")
+        }
+
+        fn http_post_with_headers(
+            &mut self,
+            _url: &str,
+            _headers: &[(&str, &str)],
+            _body: &[u8],
+        ) -> Result<(u16, ResponseBody)> {
+            unreachable!("drop probe does not issue HTTP requests")
+        }
+    }
+
+    struct DropProbeDriver;
+
+    impl WssGatewayDriver for DropProbeDriver {
+        fn get_url(&mut self, _http: &mut dyn ChannelHttpClient) -> Result<String> {
+            Ok("wss://example.invalid/gateway".to_string())
+        }
+
+        fn on_hello(&mut self, _first_message: &[u8]) -> Result<WssSessionState> {
+            unreachable!("drop probe does not enter a WSS session")
+        }
+
+        fn on_recv(&mut self, _data: &[u8]) -> Result<WssRecvAction> {
+            unreachable!("drop probe does not enter a WSS session")
+        }
+
+        fn build_heartbeat(&self, _seq: Option<u64>) -> Result<Vec<u8>> {
+            unreachable!("drop probe does not enter a WSS session")
+        }
+    }
+
+    struct DropProbeConnection;
+
+    impl WssConnection for DropProbeConnection {
+        fn send_binary(&mut self, _data: &[u8]) -> Result<()> {
+            unreachable!("drop probe stops before a WSS session")
+        }
+
+        fn recv_timeout(&mut self, _timeout: Duration) -> Result<Option<WssEvent>> {
+            unreachable!("drop probe stops before a WSS session")
+        }
+    }
+
+    struct DropProbePendingRetry;
+
+    impl PendingRetryStore for DropProbePendingRetry {
+        fn save_pending_retry(&self, _msg: &PcMsg) -> Result<()> {
+            unreachable!("drop probe does not dispatch messages")
+        }
+
+        fn load_pending_retry(&self) -> Result<Option<PcMsg>> {
+            unreachable!("drop probe does not load pending retry")
+        }
+
+        fn clear_pending_retry(&self) -> Result<()> {
+            unreachable!("drop probe does not clear pending retry")
+        }
+    }
+
+    fn panic_message(payload: Box<dyn Any + Send>) -> String {
+        match payload.downcast::<String>() {
+            Ok(message) => *message,
+            Err(payload) => match payload.downcast::<&'static str>() {
+                Ok(message) => (*message).to_string(),
+                Err(_) => "non-string panic".to_string(),
+            },
+        }
+    }
 
     #[test]
     fn critical_pressure_pauses_external_wss_connect_attempts() {
@@ -1091,6 +1205,7 @@ mod tests {
                 primary_source: Some(crate::runtime::RuntimeForegroundSource::ExternalUserMessage),
                 age_ms: Some(500),
                 resume_after_ms: Some(29_500),
+                ..crate::runtime::RuntimeForegroundOverlay::default()
             },
             pressure: crate::orchestrator::PressureLevel::Normal,
         }
@@ -1178,5 +1293,44 @@ mod tests {
             "evict-aware WSS backoff sleep must not block realtime admission"
         );
         drop(evict);
+    }
+
+    #[test]
+    fn gateway_http_client_drops_before_wss_connect() {
+        let _state_guard = crate::state::test_state_guard();
+        let _foreground_guard = crate::runtime::foreground::runtime_foreground_test_guard();
+        crate::runtime::foreground::reset_runtime_foreground_for_tests();
+        crate::network::set_external_wss_managed_present(false);
+        let (inbound_tx, _rx, _depth) = crate::bus::new_user_inbound_channel(1);
+        let dropped_before_connect = Arc::new(AtomicBool::new(false));
+        let create_http_dropped = Arc::clone(&dropped_before_connect);
+        let connect_dropped = Arc::clone(&dropped_before_connect);
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            super::run_wss_gateway_loop(
+                "qq_ws",
+                DropProbeDriver,
+                inbound_tx,
+                &DropProbePendingRetry,
+                move || {
+                    Ok(DropProbeHttp {
+                        dropped: Arc::clone(&create_http_dropped),
+                    })
+                },
+                move |_url| -> Result<DropProbeConnection> {
+                    assert!(
+                        connect_dropped.load(Ordering::SeqCst),
+                        "gateway HTTP client must be dropped before WSS connect"
+                    );
+                    panic!("drop probe reached WSS connect after scoped HTTP");
+                },
+            );
+        }));
+
+        let payload = result.expect_err("drop probe should stop by panic after connect check");
+        assert_eq!(
+            panic_message(payload),
+            "drop probe reached WSS connect after scoped HTTP"
+        );
     }
 }

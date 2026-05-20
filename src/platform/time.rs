@@ -98,6 +98,7 @@ pub fn trusted_wall_clock_unix_secs() -> Option<u64> {
 /// Notify waiters that the wall clock may now be trustworthy; waiters still re-check the threshold.
 pub fn notify_wall_clock_trustworthy() {
     wall_clock_wake_generation().fetch_add(1, Ordering::Release);
+    crate::bg_timer::notify_deadline_changed();
 }
 
 /// 等待墙钟变为可信，直到收到同步通知或超时；返回前始终重新检查可信阈值。

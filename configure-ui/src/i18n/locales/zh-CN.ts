@@ -760,9 +760,13 @@ export const zhCN = {
     http: {
       route_worker_busy: '设备正在处理另一个请求，请稍后重试。',
       route_worker_memory_low: '设备当前内存余量不足，暂时无法启动该配置任务。',
+      response_pressure: '设备当前资源压力较高，暂时无法生成这个响应，请稍后重试。',
     },
     runtime: {
       config_blocked_by_voice: '实时语音会话进行中，配置操作暂时暂停。',
+      route_blocked_by_config_active: '配置操作正在进行中，请等待当前配置处理完成后重试。',
+      route_blocked_by_recovery_safe_mode: '设备处于恢复安全模式，当前操作暂时不可用。',
+      transport_blocked: '设备正在保护关键通信资源，请稍后重试。',
     },
     channel: {
       enabled_invalid: '启用通道无效',

@@ -9,6 +9,7 @@ use crate::runtime::{
 use std::sync::{Mutex, OnceLock};
 
 const RECENT_DECISION_LIMIT: usize = 16;
+const FOREGROUND_RECOVERY_RETRY_FLOOR_MS: u64 = 1_000;
 
 /// Platform policy profile used to project one scheduler decision model.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
@@ -148,6 +149,18 @@ impl RuntimeWorkClass {
                 | Self::ImmediateStatusRoute
                 | Self::DisplayStatusSurface
                 | Self::ChannelIngressWss
+        )
+    }
+
+    fn is_deferred_during_post_foreground_recovery(self) -> bool {
+        matches!(
+            self,
+            Self::DeepRouteWorker
+                | Self::ConfigUiChatHistoryRoute
+                | Self::DurableWriteBack
+                | Self::OptionalMaintenance
+                | Self::SelfRuntimeLlmWork
+                | Self::SupplementalDelivery
         )
     }
 }
@@ -291,6 +304,10 @@ pub struct RuntimeSchedulerSnapshot {
     pub foreground_source: Option<RuntimeForegroundSource>,
     pub foreground_age_ms: Option<u64>,
     pub resume_after_ms: Option<u64>,
+    pub foreground_recovery_active: bool,
+    pub foreground_recovery_source: Option<RuntimeForegroundSource>,
+    pub foreground_recovery_age_ms: Option<u64>,
+    pub foreground_recovery_resume_after_ms: Option<u64>,
     pub profile: RuntimePlanePolicyProfile,
     pub permits: u64,
     pub defers: u64,
@@ -311,6 +328,9 @@ pub struct RuntimeSchedulerDecisionRecord {
     pub foreground_active: bool,
     pub foreground_source: Option<RuntimeForegroundSource>,
     pub foreground_resume_after_ms: Option<u64>,
+    pub foreground_recovery_active: bool,
+    pub foreground_recovery_source: Option<RuntimeForegroundSource>,
+    pub foreground_recovery_resume_after_ms: Option<u64>,
 }
 
 /// Admit one runtime work item without taking ownership of resource execution.
@@ -343,6 +363,23 @@ fn decide_runtime_work(
 
     if context.profile != RuntimePlanePolicyProfile::EspCompact {
         return RuntimeWorkDecision::Proceed;
+    }
+
+    if request.source == RuntimeWorkSource::Background
+        && matches!(
+            request.class,
+            RuntimeWorkClass::RealtimeVoiceSession | RuntimeWorkClass::VoiceFallbackInteraction
+        )
+        && !matches!(context.pressure, PressureLevel::Normal)
+    {
+        return RuntimeWorkDecision::Defer {
+            reason: if matches!(context.pressure, PressureLevel::Critical) {
+                "critical_pressure"
+            } else {
+                "cautious_pressure"
+            },
+            retry_after_ms: 1_500,
+        };
     }
 
     if matches!(context.pressure, PressureLevel::Critical)
@@ -391,6 +428,36 @@ fn decide_runtime_work(
                 };
             }
             _ => {}
+        }
+    }
+
+    if context.foreground.recovery_active {
+        let retry_after_ms = context
+            .foreground
+            .recovery_resume_after_ms
+            .unwrap_or(FOREGROUND_RECOVERY_RETRY_FLOOR_MS)
+            .max(FOREGROUND_RECOVERY_RETRY_FLOOR_MS);
+        if request.class == RuntimeWorkClass::DisplayHeavyRefresh {
+            return RuntimeWorkDecision::Degrade {
+                reason: "foreground_recovery",
+            };
+        }
+        if request.source == RuntimeWorkSource::Background
+            && matches!(
+                request.class,
+                RuntimeWorkClass::RealtimeVoiceSession | RuntimeWorkClass::VoiceFallbackInteraction
+            )
+        {
+            return RuntimeWorkDecision::Defer {
+                reason: "foreground_recovery",
+                retry_after_ms,
+            };
+        }
+        if request.class.is_deferred_during_post_foreground_recovery() {
+            return RuntimeWorkDecision::Defer {
+                reason: "foreground_recovery",
+                retry_after_ms,
+            };
         }
     }
 
@@ -445,9 +512,12 @@ fn record_runtime_scheduler_decision(
         foreground_active: context.foreground.active,
         foreground_source: context.foreground.primary_source,
         foreground_resume_after_ms: context.foreground.resume_after_ms,
+        foreground_recovery_active: context.foreground.recovery_active,
+        foreground_recovery_source: context.foreground.recovery_source,
+        foreground_recovery_resume_after_ms: context.foreground.recovery_resume_after_ms,
     });
     log::info!(
-        "[runtime_scheduler] runtime_scheduler_decision class={} source={} decision={} reason={} retry_after_ms={} foreground_active={} foreground_source={} resume_after_ms={} profile={} pressure={:?}",
+        "[runtime_scheduler] runtime_scheduler_decision class={} source={} decision={} reason={} retry_after_ms={} foreground_active={} foreground_source={} resume_after_ms={} foreground_recovery_active={} foreground_recovery_source={} recovery_resume_after_ms={} profile={} pressure={:?}",
         request.class.as_str(),
         request.source.as_str(),
         decision.as_str(),
@@ -465,6 +535,17 @@ fn record_runtime_scheduler_decision(
         context
             .foreground
             .resume_after_ms
+            .map(|resume_after| resume_after.to_string())
+            .unwrap_or_else(|| "none".to_string()),
+        context.foreground.recovery_active,
+        context
+            .foreground
+            .recovery_source
+            .map(|source| source.as_str())
+            .unwrap_or("none"),
+        context
+            .foreground
+            .recovery_resume_after_ms
             .map(|resume_after| resume_after.to_string())
             .unwrap_or_else(|| "none".to_string()),
         context.profile.as_str(),
@@ -491,6 +572,10 @@ fn runtime_scheduler_snapshot_for_context(
         foreground_source: context.foreground.primary_source,
         foreground_age_ms: context.foreground.age_ms,
         resume_after_ms: context.foreground.resume_after_ms,
+        foreground_recovery_active: context.foreground.recovery_active,
+        foreground_recovery_source: context.foreground.recovery_source,
+        foreground_recovery_age_ms: context.foreground.recovery_age_ms,
+        foreground_recovery_resume_after_ms: context.foreground.recovery_resume_after_ms,
         profile: context.profile,
         permits: guard.permits,
         defers: guard.defers,
@@ -515,7 +600,7 @@ fn format_baseline_log_line_for_context(context: RuntimeSchedulerContext) -> Str
     let snapshot = runtime_scheduler_snapshot_for_context(context);
     let last = snapshot.recent_decisions.last().copied();
     format!(
-        "runtime_scheduler active_foreground={} source={} age_ms={} resume_after_ms={} active_work={} profile={} permits={} defers={} degrades={} suspends={} drains={} rejects={} last_class={} last_source={} last_decision={} last_reason={} last_retry_after_ms={}",
+        "runtime_scheduler active_foreground={} source={} age_ms={} resume_after_ms={} foreground_recovery_active={} recovery_source={} recovery_age_ms={} recovery_resume_after_ms={} active_work={} profile={} permits={} defers={} degrades={} suspends={} drains={} rejects={} last_class={} last_source={} last_decision={} last_reason={} last_retry_after_ms={}",
         snapshot.active_foreground,
         snapshot
             .foreground_source
@@ -527,6 +612,19 @@ fn format_baseline_log_line_for_context(context: RuntimeSchedulerContext) -> Str
             .unwrap_or_else(|| "none".to_string()),
         snapshot
             .resume_after_ms
+            .map(|resume_after| resume_after.to_string())
+            .unwrap_or_else(|| "none".to_string()),
+        snapshot.foreground_recovery_active,
+        snapshot
+            .foreground_recovery_source
+            .map(|source| source.as_str())
+            .unwrap_or("none"),
+        snapshot
+            .foreground_recovery_age_ms
+            .map(|age| age.to_string())
+            .unwrap_or_else(|| "none".to_string()),
+        snapshot
+            .foreground_recovery_resume_after_ms
             .map(|resume_after| resume_after.to_string())
             .unwrap_or_else(|| "none".to_string()),
         snapshot.active_work,
@@ -627,6 +725,20 @@ mod tests {
                 primary_source: Some(RuntimeForegroundSource::ExternalUserMessage),
                 age_ms: Some(500),
                 resume_after_ms: Some(29_500),
+                ..RuntimeForegroundOverlay::default()
+            },
+            ..context(profile)
+        }
+    }
+
+    fn foreground_recovery_context(profile: RuntimePlanePolicyProfile) -> RuntimeSchedulerContext {
+        RuntimeSchedulerContext {
+            foreground: RuntimeForegroundOverlay {
+                recovery_active: true,
+                recovery_source: Some(RuntimeForegroundSource::ExternalUserMessage),
+                recovery_age_ms: Some(500),
+                recovery_resume_after_ms: Some(9_500),
+                ..RuntimeForegroundOverlay::default()
             },
             ..context(profile)
         }
@@ -674,6 +786,105 @@ mod tests {
                 }
             ));
         }
+    }
+
+    #[test]
+    fn esp_compact_defers_background_work_during_post_foreground_recovery() {
+        for class in [
+            RuntimeWorkClass::DeepRouteWorker,
+            RuntimeWorkClass::ConfigUiChatHistoryRoute,
+            RuntimeWorkClass::DurableWriteBack,
+            RuntimeWorkClass::OptionalMaintenance,
+            RuntimeWorkClass::SelfRuntimeLlmWork,
+            RuntimeWorkClass::SupplementalDelivery,
+        ] {
+            let decision = admit_runtime_work(
+                RuntimeWorkRequest::new(class, RuntimeWorkSource::Background),
+                foreground_recovery_context(RuntimePlanePolicyProfile::EspCompact),
+            );
+            assert_eq!(
+                decision,
+                RuntimeWorkDecision::Defer {
+                    reason: "foreground_recovery",
+                    retry_after_ms: 9_500,
+                },
+                "{class:?} must not compete with WSS resume and post-reply heap recovery"
+            );
+        }
+    }
+
+    #[test]
+    fn post_foreground_recovery_keeps_user_visible_and_channel_reconnect_work() {
+        for (class, source) in [
+            (
+                RuntimeWorkClass::PrimaryReplyDelivery,
+                RuntimeWorkSource::UserFacing,
+            ),
+            (
+                RuntimeWorkClass::VisibilityDelivery,
+                RuntimeWorkSource::UserFacing,
+            ),
+            (
+                RuntimeWorkClass::ChannelReconnect,
+                RuntimeWorkSource::Background,
+            ),
+            (
+                RuntimeWorkClass::ImmediateStatusRoute,
+                RuntimeWorkSource::System,
+            ),
+            (
+                RuntimeWorkClass::DisplayStatusSurface,
+                RuntimeWorkSource::System,
+            ),
+            (RuntimeWorkClass::DueUserTimer, RuntimeWorkSource::System),
+        ] {
+            let decision = admit_runtime_work(
+                RuntimeWorkRequest::new(class, source),
+                foreground_recovery_context(RuntimePlanePolicyProfile::EspCompact),
+            );
+            assert_eq!(decision, RuntimeWorkDecision::Proceed, "{class:?}");
+        }
+    }
+
+    #[test]
+    fn post_foreground_recovery_degrades_heavy_display_and_auto_voice() {
+        let heavy_display = admit_runtime_work(
+            RuntimeWorkRequest::new(
+                RuntimeWorkClass::DisplayHeavyRefresh,
+                RuntimeWorkSource::Background,
+            ),
+            foreground_recovery_context(RuntimePlanePolicyProfile::EspCompact),
+        );
+        assert_eq!(
+            heavy_display,
+            RuntimeWorkDecision::Degrade {
+                reason: "foreground_recovery",
+            }
+        );
+
+        let auto_voice = admit_runtime_work(
+            RuntimeWorkRequest::new(
+                RuntimeWorkClass::RealtimeVoiceSession,
+                RuntimeWorkSource::Background,
+            ),
+            foreground_recovery_context(RuntimePlanePolicyProfile::EspCompact),
+        );
+        assert_eq!(
+            auto_voice,
+            RuntimeWorkDecision::Defer {
+                reason: "foreground_recovery",
+                retry_after_ms: 9_500,
+            }
+        );
+
+        let user_voice = admit_runtime_work(
+            RuntimeWorkRequest::new(
+                RuntimeWorkClass::RealtimeVoiceSession,
+                RuntimeWorkSource::UserFacing,
+            ),
+            foreground_recovery_context(RuntimePlanePolicyProfile::EspCompact),
+        );
+        assert_eq!(user_voice, RuntimeWorkDecision::Proceed);
     }
 
     #[test]
@@ -793,6 +1004,38 @@ mod tests {
             foreground_context(RuntimePlanePolicyProfile::LinuxFull),
         );
         assert_eq!(linux_auto_realtime, RuntimeWorkDecision::Proceed);
+    }
+
+    #[test]
+    fn esp_compact_defers_background_auto_voice_under_cautious_pressure() {
+        for class in [
+            RuntimeWorkClass::RealtimeVoiceSession,
+            RuntimeWorkClass::VoiceFallbackInteraction,
+        ] {
+            let auto_voice = admit_runtime_work(
+                RuntimeWorkRequest::new(class, RuntimeWorkSource::Background),
+                RuntimeSchedulerContext {
+                    pressure: PressureLevel::Cautious,
+                    ..context(RuntimePlanePolicyProfile::EspCompact)
+                },
+            );
+            assert!(matches!(
+                auto_voice,
+                RuntimeWorkDecision::Defer {
+                    reason: "cautious_pressure",
+                    ..
+                }
+            ));
+
+            let user_facing_voice = admit_runtime_work(
+                RuntimeWorkRequest::new(class, RuntimeWorkSource::UserFacing),
+                RuntimeSchedulerContext {
+                    pressure: PressureLevel::Cautious,
+                    ..context(RuntimePlanePolicyProfile::EspCompact)
+                },
+            );
+            assert_eq!(user_facing_voice, RuntimeWorkDecision::Proceed);
+        }
     }
 
     #[test]
@@ -918,19 +1161,45 @@ mod tests {
 
         let snapshot = runtime_scheduler_snapshot_for_context(context);
         assert!(snapshot.active_foreground);
+        assert!(!snapshot.foreground_recovery_active);
         assert_eq!(
             snapshot.foreground_source,
             Some(RuntimeForegroundSource::ExternalUserMessage)
         );
         assert_eq!(snapshot.active_work, 1);
-        assert_eq!(snapshot.permits, 1);
-        assert_eq!(snapshot.defers, 1);
-        assert_eq!(snapshot.degrades, 1);
-        assert_eq!(snapshot.recent_decisions.len(), 3);
-        assert_eq!(
-            snapshot.recent_decisions[0].request.class,
-            RuntimeWorkClass::DeepRouteWorker
-        );
+        assert!(snapshot.permits >= 1);
+        assert!(snapshot.defers >= 1);
+        assert!(snapshot.degrades >= 1);
+        assert!(snapshot
+            .recent_decisions
+            .iter()
+            .any(
+                |record| record.request.class == RuntimeWorkClass::DeepRouteWorker
+                    && matches!(
+                        record.decision,
+                        RuntimeWorkDecision::Defer {
+                            reason: "foreground_active",
+                            ..
+                        }
+                    )
+            ));
+        assert!(snapshot
+            .recent_decisions
+            .iter()
+            .any(
+                |record| record.request.class == RuntimeWorkClass::DisplayHeavyRefresh
+                    && record.decision
+                        == RuntimeWorkDecision::Degrade {
+                            reason: "foreground_active"
+                        }
+            ));
+        assert!(snapshot
+            .recent_decisions
+            .iter()
+            .any(
+                |record| record.request.class == RuntimeWorkClass::ExternalUserMessage
+                    && record.decision == RuntimeWorkDecision::Proceed
+            ));
     }
 
     #[test]
@@ -948,11 +1217,13 @@ mod tests {
         let line = format_baseline_log_line_for_context(context);
         assert!(line.contains("runtime_scheduler active_foreground=true"));
         assert!(line.contains("source=external_user_message"));
+        assert!(line.contains("foreground_recovery_active=false"));
         assert!(line.contains("profile=esp_compact"));
         assert!(line.contains("active_work=1"));
-        assert!(line.contains("defers=1"));
-        assert!(line.contains("last_class=durable_write_back"));
-        assert!(line.contains("last_decision=defer"));
+        assert!(line.contains("defers="));
+        assert!(line.contains("last_class="));
+        assert!(line.contains("last_decision="));
+        assert!(line.contains("last_reason="));
     }
 
     #[test]

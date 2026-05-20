@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 pub use crate::constants::{DEFAULT_CAPACITY, MAX_CONTENT_LEN};
 pub use crate::util::{truncate_content_to_max, truncate_to_byte_len};
@@ -831,18 +831,33 @@ impl PcMsg {
 }
 
 /// 带深度计数的发送端，send/try_send 成功时递增，供 health 查询。
+type SuccessfulSendHook = Arc<dyn Fn() + Send + Sync>;
+
 pub struct TrackedSender<T> {
     inner: SyncSender<T>,
     depth: Arc<AtomicUsize>,
     capacity: usize,
+    after_successful_send: Arc<Mutex<Option<SuccessfulSendHook>>>,
 }
 
 impl<T> TrackedSender<T> {
+    fn notify_successful_send(&self) {
+        let hook = self
+            .after_successful_send
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone();
+        if let Some(hook) = hook {
+            hook();
+        }
+    }
+
     /// 仅当 send 成功时递增深度。
     pub fn send(&self, t: T) -> std::result::Result<(), mpsc::SendError<T>> {
         let result = self.inner.send(t);
         if result.is_ok() {
             self.depth.fetch_add(1, Ordering::Relaxed);
+            self.notify_successful_send();
         }
         result
     }
@@ -852,8 +867,16 @@ impl<T> TrackedSender<T> {
         let result = self.inner.try_send(t);
         if result.is_ok() {
             self.depth.fetch_add(1, Ordering::Relaxed);
+            self.notify_successful_send();
         }
         result
+    }
+
+    pub fn set_after_successful_send_hook(&self, hook: SuccessfulSendHook) {
+        *self
+            .after_successful_send
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(hook);
     }
 
     pub fn queued_len(&self) -> usize {
@@ -875,6 +898,7 @@ impl<T> Clone for TrackedSender<T> {
             inner: self.inner.clone(),
             depth: Arc::clone(&self.depth),
             capacity: self.capacity,
+            after_successful_send: Arc::clone(&self.after_successful_send),
         }
     }
 }
@@ -962,6 +986,15 @@ impl UserInboundTx {
         result
     }
 
+    /// Requeue an already-accounted user turn without extending runtime foreground.
+    #[allow(clippy::result_large_err)]
+    pub fn try_resubmit_user_without_foreground_renewal(
+        &self,
+        msg: PcMsg,
+    ) -> std::result::Result<(), mpsc::TrySendError<PcMsg>> {
+        self.inner.try_send(msg)
+    }
+
     #[cfg(test)]
     #[allow(clippy::result_large_err)]
     pub fn try_submit_user_at(
@@ -1035,6 +1068,7 @@ pub fn new_inbound_channel(capacity: usize) -> (InboundTx, InboundRx, Arc<Atomic
             inner: tx,
             depth: Arc::clone(&depth),
             capacity,
+            after_successful_send: Arc::new(Mutex::new(None)),
         },
         TrackedReceiver {
             inner: rx,
@@ -1082,11 +1116,13 @@ impl MessageBus {
                     inner: inbound_tx,
                     depth: Arc::clone(&inbound_depth),
                     capacity,
+                    after_successful_send: Arc::new(Mutex::new(None)),
                 },
                 outbound_tx: TrackedSender {
                     inner: outbound_tx,
                     depth: Arc::clone(&outbound_depth),
                     capacity,
+                    after_successful_send: Arc::new(Mutex::new(None)),
                 },
                 inbound_depth,
                 outbound_depth,
@@ -1169,6 +1205,40 @@ mod tests {
     }
 
     #[test]
+    fn outbound_sender_success_hook_runs_for_shared_clones() {
+        let (bus, _inbound_rx, outbound_rx) = MessageBus::new(1);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let hook_calls = Arc::clone(&calls);
+
+        bus.outbound_tx
+            .set_after_successful_send_hook(Arc::new(move || {
+                hook_calls.fetch_add(1, Ordering::Relaxed);
+            }));
+
+        let tx_clone = bus.outbound_tx.clone();
+        tx_clone
+            .try_send(PcMsg::new("qq_channel", "chat-1", "first").expect("first"))
+            .expect("first enqueue");
+
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+        assert_eq!(outbound_rx.try_recv().expect("first recv").content, "first");
+
+        bus.outbound_tx
+            .try_send(PcMsg::new("qq_channel", "chat-1", "second").expect("second"))
+            .expect("second enqueue");
+        let full = bus
+            .outbound_tx
+            .try_send(PcMsg::new("qq_channel", "chat-1", "third").expect("third"));
+
+        assert!(matches!(full, Err(mpsc::TrySendError::Full(_))));
+        assert_eq!(
+            calls.load(Ordering::Relaxed),
+            2,
+            "failed sends must not wake lazy outbound execution"
+        );
+    }
+
+    #[test]
     fn outbound_kind_maps_to_runtime_delivery_work_class() {
         assert_eq!(
             OutboundKind::Primary.runtime_work_class(),
@@ -1248,6 +1318,31 @@ mod tests {
         assert_eq!(snapshot.active_count, 1);
         assert_eq!(snapshot.records.len(), 1);
         assert_eq!(snapshot.age_ms, Some(1));
+    }
+
+    #[test]
+    fn delayed_user_replay_requeues_without_renewing_runtime_foreground() {
+        let _guard = crate::runtime::foreground::runtime_foreground_test_guard();
+        crate::runtime::foreground::reset_runtime_foreground_for_tests();
+        let (tx, _rx, _) = new_user_inbound_channel(2);
+        let now_ms = 1_000_000_000_000;
+        tx.try_submit_user_at(
+            PcMsg::new_inbound("qq_channel", "chat-1", "first", false).expect("first"),
+            crate::runtime::RuntimeForegroundSource::ExternalUserMessage,
+            now_ms,
+        )
+        .expect("initial user message");
+
+        tx.try_resubmit_user_without_foreground_renewal(
+            PcMsg::new_inbound("qq_channel", "chat-1", "replay", false).expect("replay"),
+        )
+        .expect("delayed replay should requeue");
+
+        let snapshot = crate::runtime::foreground::runtime_foreground_snapshot_at(now_ms + 1_001);
+        assert_eq!(snapshot.active_count, 1);
+        assert_eq!(snapshot.records.len(), 1);
+        assert_eq!(snapshot.age_ms, Some(1_001));
+        assert_eq!(snapshot.resume_after_ms, Some(28_999));
     }
 
     #[test]

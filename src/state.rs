@@ -186,6 +186,9 @@ pub fn set_wifi_sta_state(connected: bool, ip: Option<String>) {
     if let Ok(mut g) = WIFI_STA_IP.get_or_init(|| Mutex::new(None)).lock() {
         *g = if connected { ip } else { None };
     }
+    if was_connected != connected {
+        crate::bg_timer::notify_deadline_changed();
+    }
 }
 
 /// 清空当前 WiFi STA 状态。

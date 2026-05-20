@@ -103,7 +103,8 @@ const WRITE_BACK_RUNNING_INTERNAL_FLOOR_BYTES: usize =
     crate::constants::TLS_ADMISSION_MIN_INTERNAL_BYTES - WRITE_BACK_INTERNAL_SPAWN_RELAXED_BYTES;
 const WRITE_BACK_MIN_INTERNAL_FREE_BYTES: usize =
     WRITE_BACK_RUNNING_INTERNAL_FLOOR_BYTES + WRITE_BACK_WORKER_STACK;
-const WRITE_BACK_DRAIN_BATCH_MAX: usize = 4;
+const WRITE_BACK_DRAIN_BATCH_MAX: usize = 1;
+const WRITE_BACK_CAUTIOUS_STARVATION_ESCAPE_AFTER_MS: u64 = 60_000;
 #[cfg(test)]
 const WRITE_BACK_DRAIN_YIELD_MS: u64 = 5;
 #[cfg(not(test))]
@@ -346,6 +347,15 @@ fn has_admitted_due_write_back_job(
             && evaluator
                 .work_runtime_delay(job.work_class, job.work_source)
                 .is_none()
+    })
+}
+
+fn has_starved_durable_write_back_job(state: &WriteBackQueueState, now: Instant) -> bool {
+    state.jobs.iter().any(|job| {
+        job.work_class == crate::runtime::RuntimeWorkClass::DurableWriteBack
+            && job.due_at <= now
+            && now.saturating_duration_since(job.due_at)
+                >= Duration::from_millis(WRITE_BACK_CAUTIOUS_STARVATION_ESCAPE_AFTER_MS)
     })
 }
 
@@ -685,6 +695,32 @@ fn defer_write_back_jobs_and_stop_worker(mut jobs: Vec<WriteBackJob>, delay: Dur
     }
 }
 
+fn defer_pending_write_back_jobs_and_stop_worker(delay: Duration) {
+    let scheduler = write_back_scheduler();
+    let due_at = Instant::now() + delay;
+    let mut state = scheduler.state.lock().unwrap_or_else(|e| e.into_inner());
+    state.worker_started = false;
+    if state.jobs.is_empty() {
+        state.next_attempt_at = None;
+        return;
+    }
+    let mut deferred = 0usize;
+    for job in &mut state.jobs {
+        if job.due_at < due_at {
+            job.due_at = due_at;
+            deferred = deferred.saturating_add(1);
+        }
+    }
+    state.next_attempt_at = Some(due_at);
+    drop(state);
+    if deferred > 0 {
+        record_write_back_deferred(deferred);
+    }
+    if should_auto_service_write_back_tasks() {
+        schedule_write_back_retry(delay);
+    }
+}
+
 fn write_back_admission_delay() -> Option<WriteBackAdmissionWait> {
     #[cfg(test)]
     match WRITE_BACK_TEST_ADMISSION_OVERRIDE.load(Ordering::Acquire) {
@@ -720,7 +756,12 @@ fn write_back_admission_delay_for_resource_now(
         }
         state.next_attempt_at = None;
     }
-    if let Some(delay) = write_back_admission_delay_for_resource(resource, config_active) {
+    let allow_cautious_starvation_escape = has_starved_durable_write_back_job(&state, now);
+    if let Some(delay) = write_back_admission_delay_for_resource_with_starvation_escape(
+        resource,
+        config_active,
+        allow_cautious_starvation_escape,
+    ) {
         state.quiet_started_at = None;
         return Some(record_next_write_back_attempt(&mut state, now, delay));
     }
@@ -750,11 +791,21 @@ fn record_next_write_back_attempt(
     WriteBackAdmissionWait::deferred(delay)
 }
 
+#[cfg(test)]
 fn write_back_admission_delay_for_resource(
     resource: &crate::orchestrator::ResourceSnapshot,
     config_active: bool,
 ) -> Option<Duration> {
-    StorageAdmissionEvaluator::new(resource, config_active).durable_write_back_delay()
+    write_back_admission_delay_for_resource_with_starvation_escape(resource, config_active, false)
+}
+
+fn write_back_admission_delay_for_resource_with_starvation_escape(
+    resource: &crate::orchestrator::ResourceSnapshot,
+    config_active: bool,
+    allow_cautious_starvation_escape: bool,
+) -> Option<Duration> {
+    StorageAdmissionEvaluator::new(resource, config_active)
+        .durable_write_back_delay(allow_cautious_starvation_escape)
 }
 
 fn running_write_back_worker_admission_delay(
@@ -790,6 +841,25 @@ fn running_write_back_worker_admission_delay_for_jobs(
     jobs.iter()
         .filter_map(|job| evaluator.work_runtime_delay(job.work_class, job.work_source))
         .min()
+}
+
+fn running_write_back_worker_post_batch_delay() -> Option<WriteBackAdmissionWait> {
+    #[cfg(not(test))]
+    crate::orchestrator::update_heap_state();
+    let resource = crate::orchestrator::snapshot();
+    running_write_back_worker_post_batch_delay_for_resource(
+        &resource,
+        crate::runtime::config_activity_active(),
+    )
+    .map(WriteBackAdmissionWait::deferred)
+}
+
+fn running_write_back_worker_post_batch_delay_for_resource(
+    resource: &crate::orchestrator::ResourceSnapshot,
+    config_active: bool,
+) -> Option<Duration> {
+    StorageAdmissionEvaluator::new(resource, config_active)
+        .durable_running_worker_post_batch_delay()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -864,14 +934,26 @@ impl<'a> StorageAdmissionEvaluator<'a> {
         Self::new_with_scheduler_context(resource, config_active, scheduler_context)
     }
 
-    fn durable_write_back_delay(&self) -> Option<Duration> {
+    fn durable_write_back_delay(&self, allow_cautious_starvation_escape: bool) -> Option<Duration> {
         if let Some(delay) = self.scheduler_runtime_delay(
             crate::runtime::RuntimeWorkClass::DurableWriteBack,
             crate::runtime::RuntimeWorkSource::Background,
         ) {
             return Some(delay.delay);
         }
-        if self.resource.pressure == crate::orchestrator::PressureLevel::Critical {
+        if self.scheduler_context.profile == crate::runtime::RuntimePlanePolicyProfile::EspCompact {
+            match self.resource.pressure {
+                crate::orchestrator::PressureLevel::Critical => return self.durable_delay(),
+                crate::orchestrator::PressureLevel::Cautious
+                    if !allow_cautious_starvation_escape
+                        || self.resource.tls_fragmentation_risk
+                            != crate::orchestrator::TlsFragmentationRisk::Healthy =>
+                {
+                    return self.durable_delay();
+                }
+                _ => {}
+            }
+        } else if self.resource.pressure == crate::orchestrator::PressureLevel::Critical {
             return self.durable_delay();
         }
         if self.internal_heap_low(write_back_min_internal_free_bytes()) {
@@ -897,6 +979,32 @@ impl<'a> StorageAdmissionEvaluator<'a> {
             crate::runtime::RuntimeWorkSource::Background,
         ) {
             return Some(delay.delay);
+        }
+        if self.resource.storage_contention_risk
+            != crate::orchestrator::StorageContentionRisk::Healthy
+        {
+            return self.durable_delay();
+        }
+        if self.foreground_activity_active() {
+            return self.durable_delay();
+        }
+        None
+    }
+
+    fn durable_running_worker_post_batch_delay(&self) -> Option<Duration> {
+        if let Some(delay) = self.scheduler_runtime_delay_preserving_pressure(
+            crate::runtime::RuntimeWorkClass::DurableWriteBack,
+            crate::runtime::RuntimeWorkSource::Background,
+        ) {
+            return Some(delay.delay);
+        }
+        if self.resource.tls_fragmentation_risk
+            == crate::orchestrator::TlsFragmentationRisk::Critical
+        {
+            return self.durable_delay();
+        }
+        if self.largest_block_low(crate::constants::TLS_ADMISSION_MIN_LARGEST_BLOCK_BYTES) {
+            return self.durable_delay();
         }
         if self.resource.storage_contention_risk
             != crate::orchestrator::StorageContentionRisk::Healthy
@@ -955,7 +1063,7 @@ impl<'a> StorageAdmissionEvaluator<'a> {
         if self.largest_block_low(periodic_storage_maintenance_min_largest_block_bytes()) {
             return PeriodicStorageMaintenanceAdmission::Deferred("largest_block_headroom");
         }
-        if self.durable_write_back_delay().is_some() {
+        if self.durable_write_back_delay(false).is_some() {
             return PeriodicStorageMaintenanceAdmission::Deferred("write_back_admission");
         }
         PeriodicStorageMaintenanceAdmission::Admitted
@@ -1173,7 +1281,6 @@ fn write_back_worker_loop() {
                 }
             }
         }
-        mark_write_back_lifecycle(crate::runtime::PlaneLifecycleState::Starting, "idle_poll");
         if ran_due_user_timer {
             mark_write_back_lifecycle(
                 crate::runtime::PlaneLifecycleState::Draining,
@@ -1194,6 +1301,21 @@ fn write_back_worker_loop() {
             );
             return;
         }
+
+        if let Some(wait) = running_write_back_worker_post_batch_delay() {
+            mark_write_back_lifecycle(
+                crate::runtime::PlaneLifecycleState::Draining,
+                "post_batch_pressure_defer",
+            );
+            defer_pending_write_back_jobs_and_stop_worker(wait.delay);
+            mark_write_back_lifecycle(
+                crate::runtime::PlaneLifecycleState::Unloaded,
+                "post_batch_pressure_defer",
+            );
+            return;
+        }
+
+        mark_write_back_lifecycle(crate::runtime::PlaneLifecycleState::Starting, "idle_poll");
     }
 }
 
@@ -3944,6 +4066,50 @@ mod tests {
         reset_write_back_queue_for_tests();
     }
 
+    #[test]
+    fn write_back_drain_runs_one_storage_closure_per_resource_check() {
+        let _write_back_guard = write_back_test_guard();
+        reset_write_back_queue_for_tests();
+        WRITE_BACK_TEST_AUTO_SERVICE.store(false, Ordering::Release);
+        {
+            let scheduler = write_back_scheduler();
+            let mut state = scheduler.state.lock().unwrap_or_else(|e| e.into_inner());
+            state.worker_started = true;
+            for index in 0..4 {
+                state.jobs.push(WriteBackJob {
+                    label: "single_closure_resource_check",
+                    due_at: Instant::now(),
+                    work_class: crate::runtime::RuntimeWorkClass::DurableWriteBack,
+                    work_source: crate::runtime::RuntimeWorkSource::Background,
+                    task: Some(Box::new(move || {
+                        let _ = index;
+                    })),
+                });
+            }
+        }
+
+        match next_write_back_worker_step(&mut Instant::now()) {
+            WriteBackWorkerStep::Run(due) => {
+                assert_eq!(
+                    due.len(),
+                    1,
+                    "ESP storage write-back must re-check resource state after every closure"
+                );
+            }
+            WriteBackWorkerStep::Sleep(_) | WriteBackWorkerStep::Stop => {
+                panic!("due write-back jobs should produce a runnable storage closure");
+            }
+        }
+
+        let mut state = write_back_scheduler()
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        state.worker_started = false;
+        drop(state);
+        reset_write_back_queue_for_tests();
+    }
+
     fn write_back_resource_for_tests(
         pressure: crate::orchestrator::PressureLevel,
         storage_contention_risk: crate::orchestrator::StorageContentionRisk,
@@ -3957,6 +4123,19 @@ mod tests {
         resource.inbound_depth = 0;
         resource.outbound_depth = 0;
         resource
+    }
+
+    fn esp_compact_scheduler_context_for_tests(
+        resource: &crate::orchestrator::ResourceSnapshot,
+    ) -> crate::runtime::RuntimeSchedulerContext {
+        crate::runtime::RuntimeSchedulerContext {
+            profile: crate::runtime::RuntimePlanePolicyProfile::EspCompact,
+            runtime_mode: crate::runtime::mode::snapshot_from_source(
+                crate::runtime::mode::RuntimeModeSource::default(),
+            ),
+            foreground: crate::runtime::RuntimeForegroundOverlay::default(),
+            pressure: resource.pressure,
+        }
     }
 
     fn mark_write_back_quiet_window_stable_for_tests() {
@@ -4074,13 +4253,14 @@ mod tests {
                     ),
                     age_ms: Some(500),
                     resume_after_ms: Some(29_500),
+                    ..crate::runtime::RuntimeForegroundOverlay::default()
                 },
                 pressure: resource.pressure,
             },
         );
 
         assert_eq!(
-            evaluator.durable_write_back_delay(),
+            evaluator.durable_write_back_delay(false),
             Some(Duration::from_millis(29_500)),
             "runtime foreground overlay must defer durable write-back even when resource counters are idle"
         );
@@ -4118,6 +4298,7 @@ mod tests {
                     primary_source: Some(crate::runtime::RuntimeForegroundSource::ConfigUiChat),
                     age_ms: Some(250),
                     resume_after_ms: Some(30_000),
+                    ..crate::runtime::RuntimeForegroundOverlay::default()
                 },
                 pressure: resource.pressure,
             },
@@ -4152,6 +4333,7 @@ mod tests {
                     ),
                     age_ms: Some(500),
                     resume_after_ms: Some(29_500),
+                    ..crate::runtime::RuntimeForegroundOverlay::default()
                 },
                 pressure: resource.pressure,
             },
@@ -4166,7 +4348,7 @@ mod tests {
             "due reminder/task work must not be delayed by foreground quiet-window policy"
         );
         assert_eq!(
-            evaluator.durable_write_back_delay(),
+            evaluator.durable_write_back_delay(false),
             Some(Duration::from_millis(29_500)),
             "ordinary durable write-back remains deferred under foreground"
         );
@@ -4328,7 +4510,7 @@ mod tests {
     }
 
     #[test]
-    fn lazy_worker_durable_write_back_drains_cautious_post_reply_after_http_idle() {
+    fn durable_write_back_waits_for_normal_post_foreground_recovery_after_http_idle() {
         let _write_back_guard = write_back_test_guard();
         reset_write_back_queue_for_tests();
         let mut resource = write_back_resource_for_tests(
@@ -4340,10 +4522,14 @@ mod tests {
         resource.active_wss_count = 1;
         resource.active_http_count = 0;
 
-        assert_eq!(
-            write_back_admission_delay_for_resource(&resource, false),
-            None,
-            "post-reply durable write-back must drain on the lazy worker once HTTP send is idle"
+        let evaluator = StorageAdmissionEvaluator::new_with_scheduler_context_for_tests(
+            &resource,
+            false,
+            esp_compact_scheduler_context_for_tests(&resource),
+        );
+        assert!(
+            evaluator.durable_write_back_delay(false).is_some(),
+            "post-foreground durable write-back must wait for a Normal recovery window instead of draining under Cautious pressure"
         );
         assert_eq!(
             periodic_storage_maintenance_admission_for_resource(&resource, false),
@@ -4355,7 +4541,7 @@ mod tests {
     }
 
     #[test]
-    fn lazy_worker_durable_write_back_drains_logged_post_reply_idle_window() {
+    fn durable_write_back_defers_logged_cautious_post_reply_idle_window() {
         let _write_back_guard = write_back_test_guard();
         reset_write_back_queue_for_tests();
         let mut resource = write_back_resource_for_tests(
@@ -4370,15 +4556,24 @@ mod tests {
         resource.inbound_depth = 0;
         resource.outbound_depth = 0;
 
-        assert_eq!(
-            write_back_admission_delay_for_resource(&resource, false),
-            None,
-            "observed S3 post-reply idle window must drain queued durable write-back instead of staying Cautious forever"
+        let evaluator = StorageAdmissionEvaluator::new_with_scheduler_context_for_tests(
+            &resource,
+            false,
+            esp_compact_scheduler_context_for_tests(&resource),
+        );
+        assert!(
+            evaluator.durable_write_back_delay(false).is_some(),
+            "observed S3 post-reply idle window must not drain durable write-back while pressure is still Cautious"
         );
 
         resource.active_http_count = 1;
+        let evaluator = StorageAdmissionEvaluator::new_with_scheduler_context_for_tests(
+            &resource,
+            false,
+            esp_compact_scheduler_context_for_tests(&resource),
+        );
         assert!(
-            write_back_admission_delay_for_resource(&resource, false).is_some(),
+            evaluator.durable_write_back_delay(false).is_some(),
             "the same heap window must still defer while foreground HTTP send is active"
         );
 
@@ -4386,7 +4581,68 @@ mod tests {
     }
 
     #[test]
-    fn lazy_worker_durable_write_back_drains_logged_wss_9k_idle_window() {
+    fn durable_write_back_has_bounded_cautious_starvation_escape_when_tls_is_healthy() {
+        let _write_back_guard = write_back_test_guard();
+        reset_write_back_queue_for_tests();
+        let mut resource = write_back_resource_for_tests(
+            crate::orchestrator::PressureLevel::Cautious,
+            crate::orchestrator::StorageContentionRisk::Healthy,
+        );
+        resource.tls_fragmentation_risk = crate::orchestrator::TlsFragmentationRisk::Healthy;
+        resource.heap_free_internal = (WRITE_BACK_MIN_INTERNAL_FREE_BYTES + 4096) as u32;
+        resource.heap_largest_block_internal = (WRITE_BACK_MIN_LARGEST_BLOCK_BYTES + 4096) as u32;
+        resource.active_wss_count = 1;
+        let now = Instant::now();
+        {
+            let scheduler = write_back_scheduler();
+            let mut state = scheduler.state.lock().unwrap_or_else(|e| e.into_inner());
+            state.quiet_started_at =
+                Some(now - Duration::from_millis(WRITE_BACK_QUIET_WINDOW_MS + 1));
+            state.jobs.push(WriteBackJob {
+                label: "starved_durable",
+                due_at: now
+                    - Duration::from_millis(WRITE_BACK_CAUTIOUS_STARVATION_ESCAPE_AFTER_MS + 1),
+                work_class: crate::runtime::RuntimeWorkClass::DurableWriteBack,
+                work_source: crate::runtime::RuntimeWorkSource::Background,
+                task: Some(Box::new(|| {})),
+            });
+            assert!(
+                has_starved_durable_write_back_job(&state, now),
+                "a durable job past the starvation window must enable the bounded escape"
+            );
+        }
+
+        let evaluator = StorageAdmissionEvaluator::new_with_scheduler_context_for_tests(
+            &resource,
+            false,
+            esp_compact_scheduler_context_for_tests(&resource),
+        );
+        assert_eq!(
+            evaluator.durable_write_back_delay(true),
+            None,
+            "Cautious pressure must not starve durable write-back forever once TLS fragmentation is healthy"
+        );
+        assert!(
+            evaluator.durable_write_back_delay(false).is_some(),
+            "ordinary durable write-back still waits for a Normal window before starvation escape"
+        );
+
+        resource.tls_fragmentation_risk = crate::orchestrator::TlsFragmentationRisk::Critical;
+        let evaluator = StorageAdmissionEvaluator::new_with_scheduler_context_for_tests(
+            &resource,
+            false,
+            esp_compact_scheduler_context_for_tests(&resource),
+        );
+        assert!(
+            evaluator.durable_write_back_delay(true).is_some(),
+            "starvation escape must not bypass Critical TLS fragmentation"
+        );
+
+        reset_write_back_queue_for_tests();
+    }
+
+    #[test]
+    fn durable_write_back_defers_logged_wss_9k_cautious_idle_window() {
         let _write_back_guard = write_back_test_guard();
         reset_write_back_queue_for_tests();
         let mut resource = write_back_resource_for_tests(
@@ -4401,15 +4657,25 @@ mod tests {
         resource.inbound_depth = 0;
         resource.outbound_depth = 0;
 
-        assert_eq!(
-            write_back_admission_delay_for_resource(&resource, false),
-            None,
-            "observed S3 9KB-WSS post-reply idle window must drain queued durable write-back instead of looping deferred_total"
+        let evaluator = StorageAdmissionEvaluator::new_with_scheduler_context_for_tests(
+            &resource,
+            false,
+            esp_compact_scheduler_context_for_tests(&resource),
+        );
+        assert!(
+            evaluator.durable_write_back_delay(false).is_some(),
+            "observed S3 9KB-WSS post-reply idle window must wait for Normal pressure before draining durable write-back"
         );
 
+        resource.pressure = crate::orchestrator::PressureLevel::Normal;
         resource.heap_largest_block_internal = 25_599;
+        let evaluator = StorageAdmissionEvaluator::new_with_scheduler_context_for_tests(
+            &resource,
+            false,
+            esp_compact_scheduler_context_for_tests(&resource),
+        );
         assert!(
-            write_back_admission_delay_for_resource(&resource, false).is_some(),
+            evaluator.durable_write_back_delay(false).is_some(),
             "durable write-back still keeps an explicit 1KB largest-block margin above the 24KB worker stack"
         );
 
@@ -4449,6 +4715,31 @@ mod tests {
             running_write_back_worker_admission_delay_for_jobs(&running_jobs, &resource, false)
                 .is_some(),
             "running worker must still defer if foreground HTTP becomes active"
+        );
+
+        reset_write_back_queue_for_tests();
+    }
+
+    #[test]
+    fn running_write_back_worker_stops_after_batch_when_resource_turns_critical() {
+        let _write_back_guard = write_back_test_guard();
+        reset_write_back_queue_for_tests();
+        let mut resource = write_back_resource_for_tests(
+            crate::orchestrator::PressureLevel::Critical,
+            crate::orchestrator::StorageContentionRisk::Healthy,
+        );
+        resource.heap_free_internal = crate::constants::TLS_ADMISSION_MIN_INTERNAL_BYTES as u32;
+        resource.heap_largest_block_internal =
+            (crate::constants::TLS_ADMISSION_MIN_LARGEST_BLOCK_BYTES as u32).saturating_sub(2_048);
+        resource.active_wss_count = 1;
+        resource.active_http_count = 0;
+        resource.active_agent_tasks = 0;
+        resource.inbound_depth = 0;
+        resource.outbound_depth = 0;
+
+        assert!(
+            running_write_back_worker_post_batch_delay_for_resource(&resource, false).is_some(),
+            "after one storage closure, Critical pressure must release the lazy worker before draining more durable work"
         );
 
         reset_write_back_queue_for_tests();

@@ -1026,7 +1026,7 @@ pub fn is_private_url(url: &str) -> bool {
 // |---------------------------------------|------------------------|-------|-------|
 // | http_config_worker_*                  | DEFAULT_GUARD_STACK_SIZE (spawn_guarded) | 8 KB | 96 KB |
 // | qq_ws, feishu_ws                      | STACK_CHANNEL_WS       | 9 KB  | 96 KB |
-// | agent_loop                            | STACK_AGENT_LOOP       | 48 KB | 96 KB |
+// | agent_loop                            | STACK_AGENT_LOOP       | 40 KB | 96 KB |
 // | os_outbound                           | STACK_OS_OUTBOUND      | 20 KB | 96 KB |
 // | tg_sender, qq_sender, fs/dt/wc_sender | STACK_CHANNEL_SENDER   | 8 KB  | 96 KB |
 // | tg_poll                               | STACK_CHANNEL_SENDER   | 8 KB  | 96 KB |
@@ -1097,10 +1097,13 @@ pub const STACK_VOICE_REALTIME_CONNECT: usize = LINUX_RUSTLS_THREAD_STACK;
 /// stack overflow，说明未 boxed 的回复收尾/ledger 结算峰值不能压在 48KB 内。
 /// 当前生产路径已把 heavy turn state 改为 boxed handoff；2026-05-03 S3
 /// QQ 实机完整首轮消息后 `agent_loop` high-water 仍保留约 32KB，实际栈使用
-/// 约 32KB。48KB 给当前路径保留约 16KB 余量，同时释放 16KB 常驻 internal SRAM
-/// 给下一轮 LLM/QQ 出站 TLS。若实机 high-water 低于 8KB，必须回到拆分
-/// agent hot path，而不是再盲目抬常驻栈。
-pub const ESP_AGENT_LOOP_STACK_BUDGET: usize = 48 * 1024;
+/// 约 32KB。2026-05-19 S3 启动实机进一步显示，旧 48KB 常驻预算会让
+/// `os_outbound_supervisor_spawn` 后 `heap_largest_internal` 固定在 26624，
+/// 在第一条 LLM turn 前已经低于 TLS floor。当前 40KB 预算保留约 8KB
+/// 完整 turn 栈余量，同时把 8KB 连续 internal SRAM 还给启动 steady TLS
+/// headroom。若实机 high-water 低于 8KB，必须回到拆分 agent hot path，
+/// 而不是再盲目抬常驻栈。
+pub const ESP_AGENT_LOOP_STACK_BUDGET: usize = 40 * 1024;
 
 /// `agent_loop`：统一 agent 主执行面，承接用户消息与自治/system 作业。
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
@@ -1577,12 +1580,22 @@ mod thread_stack_budget_tests {
     fn esp_agent_loop_stack_keeps_prompt_storage_headroom() {
         const {
             assert!(
-                ESP_AGENT_LOOP_STACK_BUDGET >= 48 * 1024,
-                "ESP agent_loop needs headroom for first real inbound prompt and reply settlement"
+                ESP_AGENT_LOOP_STACK_BUDGET >= 40 * 1024,
+                "ESP agent_loop needs the boxed-handoff full-turn margin proven by S3 high-water logs"
             );
             assert!(
-                ESP_AGENT_LOOP_STACK_BUDGET <= 64 * 1024,
-                "ESP agent_loop must not copy the Linux 96KB budget without first freeing resident SRAM"
+                ESP_AGENT_LOOP_STACK_BUDGET <= 48 * 1024,
+                "ESP agent_loop must return startup TLS floor headroom before any user turn can be admitted"
+            );
+        }
+    }
+
+    #[test]
+    fn esp_agent_loop_stack_returns_startup_tls_floor_headroom() {
+        const {
+            assert!(
+                ESP_AGENT_LOOP_STACK_BUDGET <= 40 * 1024,
+                "ESP agent_loop steady stack must return enough contiguous internal SRAM for startup TLS floor"
             );
         }
     }

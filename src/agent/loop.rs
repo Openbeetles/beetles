@@ -2036,7 +2036,7 @@ fn run_agent_loop_main(
             msg_key,
             queue_wait_ms,
             admission_ms,
-            _agent_task_guard,
+            _agent_task_guard: mut turn_guard,
         } = admitted;
         log_user_turn_memory_checkpoint("agent_turn_admitted", &msg);
         let turn_started_at_ms = now_unix_ms();
@@ -2125,6 +2125,9 @@ fn run_agent_loop_main(
             };
         log_user_turn_memory_checkpoint("agent_turn_after_finalize", &msg);
         let handoff = deliver_turn(&outbound_tx, &msg, finalized.as_ref(), config);
+        if handoff.delivered {
+            turn_guard.finish_user_visible_delivery_window();
+        }
         let checkpoint_ingress = msg.ingress;
         let checkpoint_channel = Arc::clone(&msg.channel);
         let checkpoint_chat_id = Arc::clone(&msg.chat_id);
@@ -2182,6 +2185,21 @@ mod tests {
     };
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn pre_llm_visibility_window_waits_for_os_outbound_worker_to_exit() {
+        assert!(
+            !turn_execution::pre_llm_visibility_window_is_settled(0, 0, 1, false, true, true),
+            "queue depth alone is not enough; the visibility worker stack must be released before LLM"
+        );
+        assert!(turn_execution::pre_llm_visibility_window_is_settled(
+            0, 0, 0, false, true, false
+        ));
+        assert!(
+            !turn_execution::pre_llm_visibility_window_is_settled(0, 1, 0, true, true, true),
+            "active HTTP must still keep the pre-LLM window open"
+        );
+    }
 
     fn synthetic_catalog(entries: &[(&str, ToolLlmVisibility)]) -> Arc<ToolCatalogAuthority> {
         let mut authority = ToolCatalogAuthority::default();

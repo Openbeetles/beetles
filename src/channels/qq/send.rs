@@ -17,8 +17,8 @@ use crate::channels::send::{
 };
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 use crate::platform::PlatformHttpClient;
-#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-use std::sync::Arc;
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
+use std::sync::{Arc, Mutex};
 
 use super::markdown::render_qq_plain_text;
 use super::msg_id::{pop_msg_id, QqMsgIdCache};
@@ -222,6 +222,23 @@ impl QqTurnReservationTracker {
     }
 }
 
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
+pub(crate) type SharedQqOutboundProtocolState = Arc<Mutex<QqOutboundProtocolState>>;
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
+#[derive(Default)]
+pub(crate) struct QqOutboundProtocolState {
+    turn_tracker: QqTurnReservationTracker,
+    active_reservation: Option<QqRetryableSendReservation>,
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
+impl QqOutboundProtocolState {
+    pub(crate) fn shared() -> SharedQqOutboundProtocolState {
+        Arc::new(Mutex::new(Self::default()))
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct QqRetryableSendReservation {
     transport_send_id: u32,
@@ -328,6 +345,33 @@ fn release_retryable_send_reservation(
     {
         *active = None;
     }
+}
+
+#[cfg(test)]
+fn resolve_retryable_send_reservation_with_protocol_state(
+    protocol_state: &SharedQqOutboundProtocolState,
+    cache: &QqMsgIdCache,
+    message: &QueuedOutboundMessage,
+) -> QqRetryableSendReservation {
+    let mut state = protocol_state
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let mut active = state.active_reservation.take();
+    let reservation =
+        resolve_retryable_send_reservation(&mut active, &mut state.turn_tracker, cache, message);
+    state.active_reservation = active;
+    reservation
+}
+
+#[cfg(test)]
+fn release_retryable_send_reservation_with_protocol_state(
+    protocol_state: &SharedQqOutboundProtocolState,
+    transport_send_id: u32,
+) {
+    let mut state = protocol_state
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    release_retryable_send_reservation(&mut state.active_reservation, transport_send_id);
 }
 
 /// 连通性检查：供 GET /api/channel_connectivity?channel=... 单通道探测使用。
@@ -1090,8 +1134,7 @@ pub(crate) struct QqOutboundDriver {
     /// Kept only within one send attempt on ESP; steady-state TLS buffers must be released.
     http: Option<Box<dyn PlatformHttpClient>>,
     token_cache: Option<CachedQqToken>,
-    turn_tracker: QqTurnReservationTracker,
-    active_reservation: Option<QqRetryableSendReservation>,
+    protocol_state: SharedQqOutboundProtocolState,
     create_http: Arc<dyn Fn() -> crate::Result<Box<dyn PlatformHttpClient>> + Send + Sync>,
 }
 
@@ -1101,6 +1144,7 @@ pub(crate) fn qq_outbound_driver(
     secret: String,
     cache: QqMsgIdCache,
     shared_token_cache: SharedQqTokenCache,
+    protocol_state: SharedQqOutboundProtocolState,
     create_http: Arc<dyn Fn() -> crate::Result<Box<dyn PlatformHttpClient>> + Send + Sync>,
 ) -> Box<dyn ActiveChannelSender> {
     Box::new(QqOutboundDriver {
@@ -1110,8 +1154,7 @@ pub(crate) fn qq_outbound_driver(
         shared_token_cache,
         http: None,
         token_cache: None,
-        turn_tracker: QqTurnReservationTracker::default(),
-        active_reservation: None,
+        protocol_state,
         create_http,
     })
 }
@@ -1129,7 +1172,15 @@ impl ActiveChannelSender for QqOutboundDriver {
     ) -> crate::error::Result<()> {
         let create_http = Arc::clone(&self.create_http);
         let mut create = || create_http();
+        let mut protocol_state = self
+            .protocol_state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let result = {
+            let QqOutboundProtocolState {
+                turn_tracker,
+                active_reservation,
+            } = &mut *protocol_state;
             let mut runtime = QqSendRuntime {
                 app_id: &self.app_id,
                 secret: &self.secret,
@@ -1137,8 +1188,8 @@ impl ActiveChannelSender for QqOutboundDriver {
                 shared_token_cache: &self.shared_token_cache,
                 http: &mut self.http,
                 token_cache: &mut self.token_cache,
-                turn_tracker: &mut self.turn_tracker,
-                active_reservation: &mut self.active_reservation,
+                turn_tracker,
+                active_reservation,
                 create_http: &mut create,
                 record_channel_health: false,
             };
@@ -1430,6 +1481,52 @@ mod tests {
         assert_eq!(first_seq.start, 1);
         assert_eq!(second_seq.start, 2);
         assert_eq!(pop_msg_id(&cache, "c2c:chat-1"), None);
+    }
+
+    #[test]
+    fn shared_protocol_state_survives_recreated_outbound_driver_for_visibility_then_primary() {
+        let cache: QqMsgIdCache = Arc::new(Mutex::new(HashMap::new()));
+        cache_msg_id(&cache, "c2c:chat-1", "msg-1").expect("cache msg_id");
+        let visibility = queued_message(
+            51,
+            "c2c:chat-1",
+            "已收到，正在处理",
+            Some("req-1"),
+            OutboundKind::Visibility,
+        );
+        let primary = queued_message(
+            52,
+            "c2c:chat-1",
+            "final reply",
+            Some("req-1"),
+            OutboundKind::Primary,
+        );
+        let protocol_state = QqOutboundProtocolState::shared();
+
+        let first = resolve_retryable_send_reservation_with_protocol_state(
+            &protocol_state,
+            &cache,
+            &visibility,
+        );
+        release_retryable_send_reservation_with_protocol_state(
+            &protocol_state,
+            visibility.transport_send_id,
+        );
+        let second = resolve_retryable_send_reservation_with_protocol_state(
+            &protocol_state,
+            &cache,
+            &primary,
+        );
+
+        let first_seq = first.msg_seq.expect("visibility seq");
+        let second_seq = second.msg_seq.expect("primary seq");
+        assert_eq!(first.msg_id.as_deref(), Some("msg-1"));
+        assert_eq!(second.msg_id.as_deref(), Some("msg-1"));
+        assert_eq!(first_seq.start, 1);
+        assert_eq!(
+            second_seq.start, 2,
+            "QQ msgseq state must belong to the channel owner, not to one transient os_outbound worker"
+        );
     }
 
     #[derive(Default)]

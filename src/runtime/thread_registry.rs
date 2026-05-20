@@ -305,27 +305,52 @@ pub fn format_baseline_log_line() -> String {
 /// 返回线程栈风险日志行，包含 ESP stack high-water 采样摘要。
 pub fn format_stack_risk_log_line() -> String {
     let snapshot = build_snapshot(true);
-    let mut top = Vec::new();
-    for detail in snapshot.details.iter().take(3) {
-        let margin = detail
-            .stack_high_water_free_bytes
-            .map(|bytes| bytes.to_string())
-            .unwrap_or_else(|| "n/a".to_string());
-        top.push(format!(
-            "{}:{:?}:budget={} free={}",
-            detail.name, detail.risk_class, detail.stack_budget_bytes, margin
-        ));
-    }
+    let top = format_stack_detail_list(snapshot.details.iter().take(3));
+    let low = format_stack_detail_list(
+        snapshot
+            .details
+            .iter()
+            .filter(|detail| is_low_stack_margin_detail(detail))
+            .take(5),
+    );
     format!(
-        "thread_stack stack_hw_supported={} sampled={} low_margin={} top={}",
+        "thread_stack stack_hw_supported={} sampled={} low_margin={} low={} top={}",
         snapshot.stack_high_water_supported,
         snapshot.stack_high_water_sampled_threads,
         snapshot.low_stack_margin_threads,
-        if top.is_empty() {
-            "none".to_string()
-        } else {
-            top.join(",")
-        }
+        low,
+        top,
+    )
+}
+
+fn is_low_stack_margin_detail(detail: &ThreadRuntimeSnapshot) -> bool {
+    detail
+        .stack_high_water_free_bytes
+        .is_some_and(|bytes| bytes <= LOW_STACK_MARGIN_BYTES)
+}
+
+fn format_stack_detail_list<'a>(
+    details: impl Iterator<Item = &'a ThreadRuntimeSnapshot>,
+) -> String {
+    let mut entries = Vec::new();
+    for detail in details {
+        entries.push(format_stack_detail(detail));
+    }
+    if entries.is_empty() {
+        "none".to_string()
+    } else {
+        entries.join(",")
+    }
+}
+
+fn format_stack_detail(detail: &ThreadRuntimeSnapshot) -> String {
+    let margin = detail
+        .stack_high_water_free_bytes
+        .map(|bytes| bytes.to_string())
+        .unwrap_or_else(|| "n/a".to_string());
+    format!(
+        "{}:{:?}:budget={} free={}",
+        detail.name, detail.risk_class, detail.stack_budget_bytes, margin
     )
 }
 
@@ -333,7 +358,7 @@ pub fn format_stack_risk_log_line() -> String {
 pub fn format_runtime_mode_log_line() -> String {
     let mode = runtime_mode_snapshot();
     format!(
-        "runtime_mode current_mode={} wifi_sta={} booting={} pairing_known={} pairing_required={} voice_exclusive={} bg_maintenance={} recovery_safe_mode={} config_plane={} config_active={} config_phase={} channel_plane={} voice_plane={} agent_plane={} foreground_active={} foreground_source={} foreground_age_ms={} foreground_resume_after_ms={} ext_wss_connecting={} timers={} periodic_maintenance={} non_voice_outbound={} realtime_voice={} ext_wss_connect={} ext_wss_suspend={}",
+        "runtime_mode current_mode={} wifi_sta={} booting={} pairing_known={} pairing_required={} voice_exclusive={} bg_maintenance={} recovery_safe_mode={} config_plane={} config_active={} config_phase={} channel_plane={} voice_plane={} agent_plane={} foreground_active={} foreground_source={} foreground_age_ms={} foreground_resume_after_ms={} foreground_recovery_active={} foreground_recovery_source={} foreground_recovery_age_ms={} foreground_recovery_resume_after_ms={} ext_wss_connecting={} timers={} periodic_maintenance={} non_voice_outbound={} realtime_voice={} ext_wss_connect={} ext_wss_suspend={}",
         mode.current_mode.as_str(),
         mode.wifi_sta_connected,
         mode.boot_phase_active,
@@ -359,6 +384,19 @@ pub fn format_runtime_mode_log_line() -> String {
             .unwrap_or_else(|| "none".to_string()),
         mode.runtime_foreground
             .resume_after_ms
+            .map(|resume_after| resume_after.to_string())
+            .unwrap_or_else(|| "none".to_string()),
+        mode.runtime_foreground.recovery_active,
+        mode.runtime_foreground
+            .recovery_source
+            .map(|source| source.as_str())
+            .unwrap_or("none"),
+        mode.runtime_foreground
+            .recovery_age_ms
+            .map(|age| age.to_string())
+            .unwrap_or_else(|| "none".to_string()),
+        mode.runtime_foreground
+            .recovery_resume_after_ms
             .map(|resume_after| resume_after.to_string())
             .unwrap_or_else(|| "none".to_string()),
         crate::network::external_wss_connecting_count(),
@@ -776,6 +814,47 @@ mod tests {
         assert!(detail.mode_sensitive);
 
         reset_for_tests();
+    }
+
+    fn stack_detail_for_tests(name: &str, free: usize) -> ThreadRuntimeSnapshot {
+        ThreadRuntimeSnapshot {
+            name: name.to_string(),
+            starts: 1,
+            alive: true,
+            stack_budget_bytes: 8192,
+            stack_high_water_free_bytes: Some(free),
+            stack_high_water_used_bytes: Some(8192usize.saturating_sub(free)),
+            stack_margin_percent: Some(((free as u64 * 100) / 8192) as u8),
+            core_target: ThreadCoreTarget::Core1,
+            role: ThreadRoleSnapshot::Background,
+            spawn_surface: TaskSpawnSurface::StdThreadCompat,
+            native_allowlist_hit: false,
+            native_std_sync_forbidden: false,
+            task_wdt_policy: crate::platform::task_wdt::TaskWdtThreadPolicy::FeedOnly,
+            execution_class: ThreadExecutionClass::Voice,
+            risk_class: ThreadRiskClass::Medium,
+            tls_capable: false,
+            http_capable: false,
+            wss_capable: false,
+            mode_sensitive: true,
+        }
+    }
+
+    #[test]
+    fn stack_risk_low_margin_list_exposes_the_actual_owner() {
+        let safe = stack_detail_for_tests("qq_ws", LOW_STACK_MARGIN_BYTES + 512);
+        let low = stack_detail_for_tests("voice_session", LOW_STACK_MARGIN_BYTES - 256);
+
+        assert!(!is_low_stack_margin_detail(&safe));
+        assert!(is_low_stack_margin_detail(&low));
+        assert_eq!(
+            format_stack_detail_list(
+                [safe, low]
+                    .iter()
+                    .filter(|detail| { is_low_stack_margin_detail(detail) })
+            ),
+            "voice_session:Medium:budget=8192 free=1792"
+        );
     }
 
     #[test]

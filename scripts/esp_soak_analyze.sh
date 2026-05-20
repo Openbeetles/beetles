@@ -89,7 +89,7 @@ awk -v floor="$heap_largest_floor" \
     -v summary="$summary_md" \
     -v log_file="$log_file" '
 BEGIN {
-  print "line,pressure,tls_fragmentation,storage_contention,storage_ops,storage_wait_last_us,storage_wait_total_us,storage_hold_last_us,storage_hold_total_us,storage_hold_last_stage,storage_last_age_ms,heap_largest,worker_starts_total,stack_low_margin,active_wss,camera_frame_active,scheduler_active_foreground,scheduler_last_class,scheduler_last_decision,scheduler_defers,scheduler_degrades,scheduler_rejects" > metrics;
+  print "line,pressure,tls_fragmentation,storage_contention,storage_ops,storage_wait_last_us,storage_wait_total_us,storage_hold_last_us,storage_hold_total_us,storage_hold_last_stage,storage_last_age_ms,heap_largest,worker_starts_total,stack_low_margin,active_wss,camera_frame_active,scheduler_active_foreground,scheduler_recovery_active,scheduler_last_class,scheduler_last_decision,scheduler_defers,scheduler_degrades,scheduler_rejects" > metrics;
   print "line,check,severity,detail" > regressions;
   first_largest = -1;
   min_largest = -1;
@@ -120,7 +120,9 @@ BEGIN {
   chat_stream_error_count = 0;
   scheduler_contract_seen = 0;
   scheduler_foreground_open = 0;
+  scheduler_recovery_open = 0;
   scheduler_foreground_samples = 0;
+  scheduler_recovery_samples = 0;
   scheduler_defer_count = 0;
   scheduler_degrade_count = 0;
   scheduler_resume_count = 0;
@@ -130,7 +132,13 @@ BEGIN {
   deep_worker_not_deferred_count = 0;
   voice_auto_not_suppressed_count = 0;
   write_back_started_during_foreground_count = 0;
+  post_foreground_recovery_violation_count = 0;
   display_status_missing_count = 0;
+  startup_network_violation_count = 0;
+  qq_msgseq_regression_count = 0;
+  voice_session_stack_overflow_count = 0;
+  wifi_sta_ready_seen = 0;
+  recent_voice_session_spawn_line = -1;
   display_heavy_degrade_seen = 0;
   display_status_retained_seen = 0;
   foreground_ack_seen = 0;
@@ -157,6 +165,16 @@ function value_after(line, key,    pattern, start, rest) {
   return trim(rest);
 }
 
+function rest_after(line, key,    pattern, start, rest) {
+  pattern = key "=";
+  start = index(line, pattern);
+  if (start == 0) {
+    return "";
+  }
+  rest = substr(line, start + length(pattern));
+  return trim(rest);
+}
+
 function numeric_after(line, key,    value) {
   value = value_after(line, key);
   gsub(/[^0-9].*/, "", value);
@@ -173,6 +191,19 @@ function log_timestamp_ms(line,    captured) {
 
 function is_boot_startup_checkpoint_stage(stage) {
   return stage ~ /^(memory_provider_registered|config_loaded|wifi_stack_ready|csrf_initialized|display_initialized|display_boot_dashboard|boot_memory_reads|audio_init_phase_done|voice_event_channel_ready|startup_self_check_ok|config_api_spawned|bg_timer_spawn|bg_timer_started|communication_plane_ready|orchestrator_initialized|display_thread_spawned|qq_ws_spawn|os_outbound_spawn|agent_loop_spawn)$/;
+}
+
+function scheduler_class_requires_resume(class) {
+  return class != "optional_maintenance" && class != "self_runtime_llm_work";
+}
+
+function scheduler_class_must_defer_during_recovery(class) {
+  return class == "deep_route_worker" ||
+    class == "config_ui_chat_history_route" ||
+    class == "durable_write_back" ||
+    class == "optional_maintenance" ||
+    class == "self_runtime_llm_work" ||
+    class == "supplemental_delivery";
 }
 
 function record_issue(line_no, check, severity, detail) {
@@ -266,6 +297,7 @@ function storage_contention_from_metrics(wait_last, hold_last, ops, hold_stage, 
   }
 
   scheduler_active_foreground = value_after(line, "active_foreground");
+  scheduler_recovery_active = value_after(line, "foreground_recovery_active");
   scheduler_last_class = value_after(line, "last_class");
   scheduler_last_decision = value_after(line, "last_decision");
   scheduler_defers = numeric_after(line, "defers");
@@ -274,11 +306,16 @@ function storage_contention_from_metrics(wait_last, hold_last, ops, hold_stage, 
   scheduler_event_class = value_after(line, "class");
   scheduler_event_source = value_after(line, "source");
   scheduler_event_decision = value_after(line, "decision");
-  if (scheduler_event_class == "" || scheduler_event_class == "none") {
-    scheduler_event_class = scheduler_last_class;
+  scheduler_event_foreground = value_after(line, "foreground_active");
+  scheduler_event_recovery = value_after(line, "foreground_recovery_active");
+  scheduler_decision_event_line = lower_line ~ /runtime_scheduler_decision/;
+  scheduler_metric_class = scheduler_event_class;
+  scheduler_metric_decision = scheduler_event_decision;
+  if (scheduler_metric_class == "" || scheduler_metric_class == "none") {
+    scheduler_metric_class = scheduler_last_class;
   }
-  if (scheduler_event_decision == "" || scheduler_event_decision == "none") {
-    scheduler_event_decision = scheduler_last_decision;
+  if (scheduler_metric_decision == "" || scheduler_metric_decision == "none") {
+    scheduler_metric_decision = scheduler_last_decision;
   }
   scheduler_line = lower_line ~ /runtime_scheduler/ ||
     scheduler_active_foreground != "" ||
@@ -295,6 +332,22 @@ function storage_contention_from_metrics(wait_last, hold_last, ops, hold_stage, 
     scheduler_foreground_open = 0;
     foreground_ack_seen = 0;
     foreground_llm_seen = 0;
+  } else if (scheduler_event_foreground == "true") {
+    scheduler_foreground_open = 1;
+  } else if (scheduler_event_foreground == "false") {
+    scheduler_foreground_open = 0;
+    foreground_ack_seen = 0;
+    foreground_llm_seen = 0;
+  }
+  if (scheduler_recovery_active == "true") {
+    scheduler_recovery_open = 1;
+    scheduler_recovery_samples++;
+  } else if (scheduler_recovery_active == "false") {
+    scheduler_recovery_open = 0;
+  } else if (scheduler_event_recovery == "true") {
+    scheduler_recovery_open = 1;
+  } else if (scheduler_event_recovery == "false") {
+    scheduler_recovery_open = 0;
   }
   if ((lower_line ~ /foreground_ack/ && value_after(line, "before_llm") == "true") ||
       lower_line ~ /\[chat_stream\].*event=queued/) {
@@ -317,23 +370,33 @@ function storage_contention_from_metrics(wait_last, hold_last, ops, hold_stage, 
   if (scheduler_contract_seen && lower_line ~ /primary_delivery/ && value_after(line, "delivered") == "true") {
     foreground_primary_delivered_seen = 1;
   }
-  if (scheduler_event_decision == "defer") {
+  if (scheduler_decision_event_line && scheduler_event_decision == "defer") {
     scheduler_defer_count++;
-    if (scheduler_event_class != "" && scheduler_event_class != "none") {
+    if (scheduler_event_class != "" &&
+        scheduler_event_class != "none" &&
+        scheduler_class_requires_resume(scheduler_event_class)) {
       scheduler_pending_resume[scheduler_event_class] = 1;
     }
-  } else if (scheduler_event_decision == "degrade") {
+  } else if (scheduler_decision_event_line && scheduler_event_decision == "degrade") {
     scheduler_degrade_count++;
-    if (scheduler_event_class != "" && scheduler_event_class != "none") {
+    if (scheduler_event_class != "" &&
+        scheduler_event_class != "none" &&
+        scheduler_class_requires_resume(scheduler_event_class)) {
       scheduler_pending_resume[scheduler_event_class] = 1;
     }
-  } else if (scheduler_event_decision == "proceed" && scheduler_event_class != "" && scheduler_event_class != "none") {
+  } else if (scheduler_decision_event_line &&
+             scheduler_event_decision == "proceed" &&
+             scheduler_event_class != "" &&
+             scheduler_event_class != "none") {
     if (scheduler_pending_resume[scheduler_event_class]) {
       scheduler_resume_count++;
       scheduler_pending_resume[scheduler_event_class] = 0;
     }
   }
-  if (scheduler_foreground_open && scheduler_event_class != "" && scheduler_event_decision != "") {
+  if (scheduler_decision_event_line &&
+      scheduler_foreground_open &&
+      scheduler_event_class != "" &&
+      scheduler_event_decision != "") {
     if ((scheduler_event_class == "deep_route_worker" ||
          scheduler_event_class == "config_ui_chat_history_route") &&
         scheduler_event_decision != "defer") {
@@ -355,11 +418,70 @@ function storage_contention_from_metrics(wait_last, hold_last, ops, hold_stage, 
       record_issue(NR, "write_back_started_during_foreground", "blocker", trim(line));
     }
   }
+  if (scheduler_decision_event_line &&
+      !scheduler_foreground_open &&
+      scheduler_recovery_open &&
+      scheduler_event_class != "" &&
+      scheduler_event_decision != "") {
+    if (scheduler_class_must_defer_during_recovery(scheduler_event_class) &&
+        scheduler_event_decision != "defer") {
+      post_foreground_recovery_violation_count++;
+      record_issue(NR, "post_foreground_recovery_violation", "blocker", trim(line));
+    }
+    if ((scheduler_event_class == "realtime_voice_session" ||
+         scheduler_event_class == "voice_fallback_interaction") &&
+        scheduler_event_source != "user_facing" &&
+        scheduler_event_decision != "defer") {
+      post_foreground_recovery_violation_count++;
+      record_issue(NR, "post_foreground_recovery_violation", "blocker", trim(line));
+    }
+    if (scheduler_event_class == "display_heavy_refresh" &&
+        scheduler_event_decision != "degrade") {
+      post_foreground_recovery_violation_count++;
+      record_issue(NR, "post_foreground_recovery_violation", "blocker", trim(line));
+    }
+  }
   if (lower_line ~ /display_heavy_refresh/ && scheduler_event_decision == "degrade") {
     display_heavy_degrade_seen = 1;
   }
   if (lower_line ~ /display_status_surface/ && value_after(line, "retained") == "true") {
     display_status_retained_seen = 1;
+  }
+
+  runtime_wifi_sta = value_after(line, "wifi_sta");
+  if (runtime_wifi_sta == "true" || lower_line ~ /sta.*connected|wifi.*got ip/) {
+    wifi_sta_ready_seen = 1;
+  }
+  runtime_mode_current = value_after(line, "current_mode");
+  runtime_booting = value_after(line, "booting");
+  runtime_non_voice_outbound = value_after(line, "non_voice_outbound");
+  runtime_realtime_voice = value_after(line, "realtime_voice");
+  runtime_ext_wss_connect = value_after(line, "ext_wss_connect");
+  if (lower_line ~ /\[thread\] started name=voice_realtime_connect/ && !wifi_sta_ready_seen) {
+    startup_network_violation_count++;
+    record_issue(NR, "voice_realtime_connect_before_network_ready", "blocker", trim(line));
+  }
+  if (lower_line ~ /\[thread\] started name=(qq_ws|feishu_ws|wecom_aibot(_ws)?|dingtalk_stream)/ &&
+      !wifi_sta_ready_seen) {
+    startup_network_violation_count++;
+    record_issue(NR, "external_wss_worker_before_network_ready", "blocker", trim(line));
+  }
+  if (lower_line ~ /wifi sta not ready, waiting up to/ &&
+      lower_line ~ /\[(qq_ws|feishu_ws|wecom_aibot(_ws)?|dingtalk_stream)\]/) {
+    startup_network_violation_count++;
+    record_issue(NR, "external_wss_worker_before_network_ready", "blocker", trim(line));
+  }
+  if (runtime_wifi_sta == "false" && runtime_booting == "false" &&
+      (runtime_non_voice_outbound == "true" ||
+       runtime_realtime_voice == "true" ||
+       runtime_ext_wss_connect == "true")) {
+    startup_network_violation_count++;
+    record_issue(NR, "boot_normal_before_network_ready", "blocker", trim(line));
+  }
+  if (runtime_wifi_sta == "false" &&
+      (runtime_mode_current == "voice_exclusive" || value_after(line, "voice_exclusive") == "true")) {
+    startup_network_violation_count++;
+    record_issue(NR, "voice_exclusive_before_network_ready", "blocker", trim(line));
   }
 
   if (storage_contention_state == "Critical") {
@@ -389,8 +511,7 @@ function storage_contention_from_metrics(wait_last, hold_last, ops, hold_stage, 
       startup_stage = value_after(line, "stage");
       heap_detail = "stage=" startup_stage " heap_largest=" heap_largest " floor=" floor " pressure=" pressure " tls_fragmentation=" tls_fragmentation;
       if (lower_line ~ /startup memory checkpoint/ && is_boot_startup_checkpoint_stage(startup_stage)) {
-        record_issue(NR, "startup_heap_largest_below_floor", "risk", heap_detail);
-        heap_floor_risk_count++;
+        record_issue(NR, "startup_heap_largest_below_floor", "blocker", heap_detail);
       } else if (pressure == "Normal" && tls_fragmentation == "Healthy") {
         record_issue(NR, "heap_largest_below_observation_floor", "risk", heap_detail);
         heap_floor_risk_count++;
@@ -499,14 +620,33 @@ function storage_contention_from_metrics(wait_last, hold_last, ops, hold_stage, 
     record_issue(NR, "camera_frame_lease_active", "blocker", trim(line));
   }
 
-  if (low_margin != "" && low_margin + 0 > 0) {
+  if (low_margin != "" && low_margin + 0 > 0 && lower_line ~ /thread_stack/) {
+    stack_detail = "low_margin=" low_margin;
+    low_stack_detail = rest_after(line, "low");
+    if (low_stack_detail != "") {
+      sub(/[[:space:]]+top=.*/, "", low_stack_detail);
+      stack_detail = stack_detail " low=" low_stack_detail;
+    }
     stack_low_margin_count++;
-    record_issue(NR, "stack_low_margin", "blocker", "low_margin=" low_margin);
+    record_issue(NR, "stack_low_margin", "blocker", stack_detail);
   }
 
   if (line ~ /Guru Meditation|Core[[:space:]]+[0-9]+ panic|panic.ed|PANIC|core dump|coredump.*(written|stored|checksum|panic)|stack overflow in task pthread|Failed to create task/) {
     panic_count++;
     record_issue(NR, "panic_or_task_failure", "blocker", trim(line));
+  }
+  if (lower_line ~ /voice_session_spawn/) {
+    recent_voice_session_spawn_line = NR;
+  }
+  if (line ~ /40054005/ || lower_line ~ /消息被去重.*msgseq/) {
+    qq_msgseq_regression_count++;
+    record_issue(NR, "qq_msgseq_regression", "blocker", trim(line));
+  }
+  if (line ~ /stack overflow in task pthread/ &&
+      recent_voice_session_spawn_line > 0 &&
+      NR - recent_voice_session_spawn_line <= 8) {
+    voice_session_stack_overflow_count++;
+    record_issue(NR, "voice_session_stack_overflow", "blocker", trim(line));
   }
 
   if (lower_line ~ /spawn failed name=http_.*_exec|http_route_worker_start:.*dispatch worker start failed/) {
@@ -536,7 +676,7 @@ function storage_contention_from_metrics(wait_last, hold_last, ops, hold_stage, 
       storage_last_age_ms != "" || heap_largest != "" || worker_starts != "" ||
       low_margin != "" || active_wss != "" || camera_frame_active != "" ||
       scheduler_line) {
-    print NR "," pressure "," tls_fragmentation "," storage_contention "," storage_ops "," storage_wait_last_us "," storage_wait_total_us "," storage_hold_last_us "," storage_hold_total_us "," storage_hold_last_stage "," storage_last_age_ms "," heap_largest "," worker_starts "," low_margin "," active_wss "," camera_frame_active "," scheduler_active_foreground "," scheduler_event_class "," scheduler_event_decision "," scheduler_defers "," scheduler_degrades "," scheduler_rejects >> metrics;
+    print NR "," pressure "," tls_fragmentation "," storage_contention "," storage_ops "," storage_wait_last_us "," storage_wait_total_us "," storage_hold_last_us "," storage_hold_total_us "," storage_hold_last_stage "," storage_last_age_ms "," heap_largest "," worker_starts "," low_margin "," active_wss "," camera_frame_active "," scheduler_active_foreground "," scheduler_recovery_active "," scheduler_metric_class "," scheduler_metric_decision "," scheduler_defers "," scheduler_degrades "," scheduler_rejects >> metrics;
     metric_rows++;
   }
 }
@@ -582,6 +722,7 @@ END {
   print "- Chat stream final events: " chat_stream_final_count >> summary;
   print "- Chat stream error events: " chat_stream_error_count >> summary;
   print "- Scheduler foreground samples: " scheduler_foreground_samples >> summary;
+  print "- Scheduler post-foreground recovery samples: " scheduler_recovery_samples >> summary;
   print "- Scheduler defer decisions: " scheduler_defer_count >> summary;
   print "- Scheduler degrade decisions: " scheduler_degrade_count >> summary;
   print "- Scheduler resume decisions: " scheduler_resume_count >> summary;
@@ -591,7 +732,11 @@ END {
   print "- Deep worker foreground violations: " deep_worker_not_deferred_count >> summary;
   print "- Auto voice foreground violations: " voice_auto_not_suppressed_count >> summary;
   print "- Write-back foreground violations: " write_back_started_during_foreground_count >> summary;
+  print "- Post-foreground recovery violations: " post_foreground_recovery_violation_count >> summary;
   print "- Display status missing lines: " display_status_missing_count >> summary;
+  print "- Startup network readiness violations: " startup_network_violation_count >> summary;
+  print "- QQ msgseq regression lines: " qq_msgseq_regression_count >> summary;
+  print "- Voice session stack overflow lines: " voice_session_stack_overflow_count >> summary;
   if (saw_critical) {
     print "- Critical pressure observed: yes" >> summary;
   } else {

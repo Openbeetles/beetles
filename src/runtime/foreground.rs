@@ -7,6 +7,9 @@ use std::time::Instant;
 /// Default idle window for user-visible foreground work.
 pub const RUNTIME_FOREGROUND_IDLE_SECS: u64 = 30;
 const RUNTIME_FOREGROUND_IDLE_MS: u64 = RUNTIME_FOREGROUND_IDLE_SECS * 1_000;
+/// Short recovery window after foreground work releases its exclusive pressure.
+pub const RUNTIME_FOREGROUND_RECOVERY_SECS: u64 = 10;
+const RUNTIME_FOREGROUND_RECOVERY_MS: u64 = RUNTIME_FOREGROUND_RECOVERY_SECS * 1_000;
 const FOREGROUND_RECORD_LIMIT: usize = 16;
 
 /// Source that creates or renews a user-visible runtime foreground ticket.
@@ -65,6 +68,10 @@ pub struct RuntimeForegroundOverlay {
     pub primary_source: Option<RuntimeForegroundSource>,
     pub age_ms: Option<u64>,
     pub resume_after_ms: Option<u64>,
+    pub recovery_active: bool,
+    pub recovery_source: Option<RuntimeForegroundSource>,
+    pub recovery_age_ms: Option<u64>,
+    pub recovery_resume_after_ms: Option<u64>,
 }
 
 /// Full foreground snapshot for diagnostics and tests.
@@ -75,6 +82,10 @@ pub struct RuntimeForegroundSnapshot {
     pub primary_source: Option<RuntimeForegroundSource>,
     pub age_ms: Option<u64>,
     pub resume_after_ms: Option<u64>,
+    pub recovery_active: bool,
+    pub recovery_source: Option<RuntimeForegroundSource>,
+    pub recovery_age_ms: Option<u64>,
+    pub recovery_resume_after_ms: Option<u64>,
     pub records: Vec<RuntimeForegroundTicketRecord>,
 }
 
@@ -86,6 +97,10 @@ impl RuntimeForegroundSnapshot {
             primary_source: self.primary_source,
             age_ms: self.age_ms,
             resume_after_ms: self.resume_after_ms,
+            recovery_active: self.recovery_active,
+            recovery_source: self.recovery_source,
+            recovery_age_ms: self.recovery_age_ms,
+            recovery_resume_after_ms: self.recovery_resume_after_ms,
         }
     }
 }
@@ -186,6 +201,10 @@ pub fn renew_runtime_foreground_now(source: RuntimeForegroundSource) -> RuntimeF
 
 /// Finish a foreground ticket. Returns false when the ticket is unknown or stale.
 pub fn finish_runtime_foreground(ticket: RuntimeForegroundTicket) -> bool {
+    finish_runtime_foreground_at(ticket, now_ms())
+}
+
+fn finish_runtime_foreground_at(ticket: RuntimeForegroundTicket, now_ms: u64) -> bool {
     let mut guard = registry().lock().unwrap_or_else(|e| e.into_inner());
     let Some(record) = guard
         .records
@@ -198,7 +217,10 @@ pub fn finish_runtime_foreground(ticket: RuntimeForegroundTicket) -> bool {
         return false;
     }
     record.state = RuntimeForegroundTicketState::Finished;
+    record.expires_at_ms = now_ms.max(record.started_at_ms);
     prune_records(&mut guard.records);
+    drop(guard);
+    crate::bg_timer::notify_deadline_changed();
     true
 }
 
@@ -244,6 +266,10 @@ fn build_snapshot(
         primary_source: overlay.primary_source,
         age_ms: overlay.age_ms,
         resume_after_ms: overlay.resume_after_ms,
+        recovery_active: overlay.recovery_active,
+        recovery_source: overlay.recovery_source,
+        recovery_age_ms: overlay.recovery_age_ms,
+        recovery_resume_after_ms: overlay.recovery_resume_after_ms,
         records: records.to_vec(),
     }
 }
@@ -271,12 +297,41 @@ fn build_overlay(
         resume_after_ms =
             Some(resume_after_ms.map_or(resume_after, |current| current.max(resume_after)));
     }
+    let active = active_count > 0;
+    let mut recovery: Option<RuntimeForegroundTicketRecord> = None;
+    let mut recovery_resume_after_ms: Option<u64> = None;
+    if !active {
+        for record in records.iter().copied().filter(|record| {
+            record.state != RuntimeForegroundTicketState::Active
+                && record.expires_at_ms <= now_ms
+                && now_ms
+                    < record
+                        .expires_at_ms
+                        .saturating_add(RUNTIME_FOREGROUND_RECOVERY_MS)
+        }) {
+            if recovery
+                .map(|current| record.expires_at_ms > current.expires_at_ms)
+                .unwrap_or(true)
+            {
+                let resume_after = record
+                    .expires_at_ms
+                    .saturating_add(RUNTIME_FOREGROUND_RECOVERY_MS)
+                    .saturating_sub(now_ms);
+                recovery = Some(record);
+                recovery_resume_after_ms = Some(resume_after);
+            }
+        }
+    }
     RuntimeForegroundOverlay {
-        active: active_count > 0,
+        active,
         active_count,
         primary_source: primary.map(|record| record.ticket.source),
         age_ms: primary.map(|record| now_ms.saturating_sub(record.renewed_at_ms)),
         resume_after_ms,
+        recovery_active: recovery.is_some(),
+        recovery_source: recovery.map(|record| record.ticket.source),
+        recovery_age_ms: recovery.map(|record| now_ms.saturating_sub(record.expires_at_ms)),
+        recovery_resume_after_ms,
     }
 }
 
@@ -319,6 +374,7 @@ mod tests {
         let snapshot = runtime_foreground_snapshot_at(3_000);
         assert!(snapshot.active);
         assert_eq!(snapshot.active_count, 4);
+        assert!(!snapshot.recovery_active);
         assert_eq!(
             snapshot.primary_source,
             Some(RuntimeForegroundSource::VoiceFallbackInteraction)
@@ -338,6 +394,7 @@ mod tests {
         let snapshot = runtime_foreground_snapshot_at(2_500);
         assert_eq!(snapshot.records.len(), 1);
         assert_eq!(snapshot.active_count, 1);
+        assert!(!snapshot.recovery_active);
         assert_eq!(snapshot.age_ms, Some(500));
         assert_eq!(snapshot.resume_after_ms, Some(29_500));
     }
@@ -379,12 +436,20 @@ mod tests {
             Some(RuntimeForegroundSource::ConfigUiChat)
         );
 
-        assert!(finish_runtime_foreground(chat));
+        assert!(finish_runtime_foreground_at(chat, 2_000));
         assert!(!runtime_foreground_active(2_100));
+        let recovery = runtime_foreground_snapshot_at(2_100);
+        assert!(recovery.recovery_active);
+        assert_eq!(
+            recovery.recovery_source,
+            Some(RuntimeForegroundSource::ConfigUiChat)
+        );
+        assert_eq!(recovery.recovery_age_ms, Some(100));
+        assert_eq!(recovery.recovery_resume_after_ms, Some(9_900));
     }
 
     #[test]
-    fn expired_tickets_do_not_keep_foreground_active() {
+    fn expired_tickets_leave_a_bounded_recovery_overlay_without_staying_active() {
         let _guard = runtime_foreground_test_guard();
         reset_runtime_foreground_for_tests();
 
@@ -392,5 +457,16 @@ mod tests {
 
         assert!(runtime_foreground_active(30_999));
         assert!(!runtime_foreground_active(31_001));
+        let recovery = runtime_foreground_snapshot_at(31_001);
+        assert!(recovery.recovery_active);
+        assert_eq!(
+            recovery.recovery_source,
+            Some(RuntimeForegroundSource::ExternalUserMessage)
+        );
+        assert_eq!(recovery.recovery_age_ms, Some(1));
+        assert_eq!(recovery.recovery_resume_after_ms, Some(9_999));
+        let settled = runtime_foreground_snapshot_at(41_001);
+        assert!(!settled.active);
+        assert!(!settled.recovery_active);
     }
 }

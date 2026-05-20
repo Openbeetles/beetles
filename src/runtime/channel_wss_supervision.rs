@@ -7,6 +7,9 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 const CHANNEL_WSS_SUPERVISOR_RETRY_DELAY: Duration = Duration::from_secs(5);
+const CHANNEL_WSS_FOREGROUND_ACTIVITY_RETRY_DELAY: Duration = Duration::from_millis(500);
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
+const CHANNEL_WSS_NETWORK_RETRY_DELAY: Duration = Duration::from_secs(1);
 
 pub type ChannelWssSpawner = dyn Fn() -> Result<TaskHandle> + Send + Sync + 'static;
 
@@ -37,6 +40,19 @@ fn supervisors() -> &'static Mutex<Vec<ChannelWssSupervisor>> {
     SUPERVISORS.get_or_init(|| Mutex::new(Vec::new()))
 }
 
+fn mark_channel_wss_lifecycle(
+    owner: &'static str,
+    state: crate::runtime::PlaneLifecycleState,
+    reason: &'static str,
+) {
+    let _ = crate::runtime::plane_lifecycle::mark(
+        crate::runtime::PlaneId::ChannelWss,
+        owner,
+        state,
+        reason,
+    );
+}
+
 /// Register one enabled external WSS worker for restart after voice-exclusive eviction.
 pub fn register_channel_wss_supervisor(
     owner: &'static str,
@@ -56,6 +72,38 @@ pub fn register_channel_wss_supervisor(
             next_retry_at: None,
         });
     }
+}
+
+/// Register one enabled external WSS worker without spawning it yet.
+pub fn register_deferred_channel_wss_supervisor(
+    owner: &'static str,
+    spawner: Arc<ChannelWssSpawner>,
+    reason: &'static str,
+) {
+    let mut state = supervisors().lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(existing) = state.iter_mut().find(|entry| entry.owner == owner) {
+        existing.handle = None;
+        existing.spawner = spawner;
+        existing.next_retry_at = None;
+    } else {
+        state.push(ChannelWssSupervisor {
+            owner,
+            handle: None,
+            spawner,
+            next_retry_at: None,
+        });
+    }
+    mark_channel_wss_lifecycle(
+        owner,
+        crate::runtime::PlaneLifecycleState::Suspended,
+        reason,
+    );
+    crate::bg_timer::notify_deadline_changed();
+}
+
+/// Current reason why an external WSS worker should stay unloaded.
+pub fn channel_wss_worker_start_defer_reason() -> Option<&'static str> {
+    current_channel_wss_restart_delay().map(|delay| delay.reason)
 }
 
 /// Restart unloaded external WSS workers once the resource window has resumed.
@@ -87,6 +135,11 @@ pub fn service_channel_wss_supervisors(tag: &str) {
         }
         if let Some(delay) = current_channel_wss_restart_delay() {
             entry.next_retry_at = Some(now + delay.delay);
+            mark_channel_wss_lifecycle(
+                entry.owner,
+                crate::runtime::PlaneLifecycleState::Suspended,
+                delay.reason,
+            );
             log::debug!(
                 "[{}] external WSS worker restart deferred owner={} reason={}",
                 tag,
@@ -120,14 +173,77 @@ pub fn service_channel_wss_supervisors(tag: &str) {
     }
 }
 
+/// Earliest retry deadline for a deferred external WSS worker.
+pub fn next_channel_wss_supervisor_retry_at() -> Option<Instant> {
+    let state = supervisors().lock().unwrap_or_else(|e| e.into_inner());
+    state
+        .iter()
+        .filter(|entry| entry.handle.is_none())
+        .filter_map(|entry| entry.next_retry_at)
+        .min()
+}
+
 fn current_channel_wss_restart_delay() -> Option<ChannelWssRestartDelay> {
+    if let Some(delay) = channel_wss_restart_delay_for_network() {
+        return Some(delay);
+    }
     let resource = crate::orchestrator::resource_light_snapshot();
+    if let Some(delay) = channel_wss_restart_delay_for_resource_activity(&resource) {
+        return Some(delay);
+    }
     channel_wss_restart_delay_for_scheduler_context(
         crate::runtime::current_runtime_scheduler_context(
             crate::runtime::default_runtime_scheduler_profile(),
             resource.pressure,
         ),
     )
+}
+
+fn channel_wss_restart_delay_for_network() -> Option<ChannelWssRestartDelay> {
+    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
+    {
+        let snapshot = crate::state::network_runtime_snapshot(
+            crate::platform::time::wall_clock_is_trustworthy(),
+            crate::network::EXTERNAL_WSS_OUTBOUND_SETTLE_SECS,
+        );
+        channel_wss_restart_delay_for_network_snapshot(&snapshot)
+    }
+    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32", test)))]
+    {
+        None
+    }
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
+fn channel_wss_restart_delay_for_network_snapshot(
+    snapshot: &crate::state::NetworkRuntimeSnapshot,
+) -> Option<ChannelWssRestartDelay> {
+    crate::network::external_wss_network_suspend_reason(snapshot).map(|reason| {
+        ChannelWssRestartDelay {
+            reason,
+            delay: CHANNEL_WSS_NETWORK_RETRY_DELAY,
+        }
+    })
+}
+
+fn channel_wss_restart_delay_for_resource_activity(
+    resource: &crate::orchestrator::ResourceLightSnapshot,
+) -> Option<ChannelWssRestartDelay> {
+    let reason = if resource.active_agent_tasks > 0 {
+        "active_agent_task"
+    } else if resource.active_http_count > 0 {
+        "active_http"
+    } else if crate::channels::active_os_outbound_worker_count() > 0 {
+        "active_os_outbound"
+    } else if resource.outbound_depth > 0 {
+        "outbound_pending"
+    } else {
+        return None;
+    };
+    Some(ChannelWssRestartDelay {
+        reason,
+        delay: CHANNEL_WSS_FOREGROUND_ACTIVITY_RETRY_DELAY,
+    })
 }
 
 fn channel_wss_restart_delay_for_scheduler_context(
@@ -179,6 +295,39 @@ fn channel_wss_restart_action_for_scheduler_context(
 mod tests {
     use super::*;
 
+    fn resource_snapshot() -> crate::orchestrator::ResourceLightSnapshot {
+        crate::orchestrator::ResourceLightSnapshot {
+            pressure: crate::orchestrator::PressureLevel::Normal,
+            tls_fragmentation_risk: crate::orchestrator::TlsFragmentationRisk::Healthy,
+            storage_contention_risk: crate::orchestrator::StorageContentionRisk::Healthy,
+            heap_free_internal: 96 * 1024,
+            heap_min_free_internal: 80 * 1024,
+            heap_free_spiram: 8 * 1024 * 1024,
+            heap_total_spiram: 16 * 1024 * 1024,
+            heap_min_free_spiram: 8 * 1024 * 1024,
+            heap_largest_block_spiram: 8 * 1024 * 1024,
+            heap_used_spiram_est: 8 * 1024 * 1024,
+            heap_largest_block_internal: 32 * 1024,
+            active_http_count: 0,
+            active_wss_count: 0,
+            active_agent_tasks: 0,
+            inbound_depth: 0,
+            outbound_depth: 0,
+            budget: crate::orchestrator::pressure::budget_for_level(
+                crate::orchestrator::PressureLevel::Normal,
+            ),
+            session_count: 0,
+            storage_used_kb: 0,
+            storage_total_kb: 0,
+            #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+            cpu_usage_percent: 0.0,
+            #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+            load_average: (0.0, 0.0, 0.0),
+            #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+            process_memory_kb: 0,
+        }
+    }
+
     fn foreground_scheduler_context() -> crate::runtime::RuntimeSchedulerContext {
         crate::runtime::RuntimeSchedulerContext {
             profile: crate::runtime::RuntimePlanePolicyProfile::EspCompact,
@@ -191,8 +340,22 @@ mod tests {
                 primary_source: Some(crate::runtime::RuntimeForegroundSource::ExternalUserMessage),
                 age_ms: Some(500),
                 resume_after_ms: Some(29_500),
+                ..crate::runtime::RuntimeForegroundOverlay::default()
             },
             pressure: crate::orchestrator::PressureLevel::Normal,
+        }
+    }
+
+    fn foreground_recovery_scheduler_context() -> crate::runtime::RuntimeSchedulerContext {
+        crate::runtime::RuntimeSchedulerContext {
+            foreground: crate::runtime::RuntimeForegroundOverlay {
+                recovery_active: true,
+                recovery_source: Some(crate::runtime::RuntimeForegroundSource::ExternalUserMessage),
+                recovery_age_ms: Some(500),
+                recovery_resume_after_ms: Some(9_500),
+                ..crate::runtime::RuntimeForegroundOverlay::default()
+            },
+            ..foreground_scheduler_context()
         }
     }
 
@@ -203,6 +366,143 @@ mod tests {
 
         assert_eq!(delay.reason, "foreground_active");
         assert_eq!(delay.delay, Duration::from_millis(29_500));
+    }
+
+    #[test]
+    fn channel_wss_restart_admission_allows_reconnect_during_post_foreground_recovery() {
+        let delay = channel_wss_restart_delay_for_scheduler_context(
+            foreground_recovery_scheduler_context(),
+        );
+
+        assert!(
+            delay.is_none(),
+            "post-foreground recovery keeps WSS reconnect user-reachable while background work stays deferred"
+        );
+    }
+
+    #[test]
+    fn channel_wss_restart_waits_for_primary_delivery_activity_to_settle() {
+        let mut resource = resource_snapshot();
+        resource.active_agent_tasks = 1;
+        assert_eq!(
+            channel_wss_restart_delay_for_resource_activity(&resource),
+            Some(ChannelWssRestartDelay {
+                reason: "active_agent_task",
+                delay: CHANNEL_WSS_FOREGROUND_ACTIVITY_RETRY_DELAY,
+            })
+        );
+
+        resource.active_agent_tasks = 0;
+        resource.active_http_count = 1;
+        assert_eq!(
+            channel_wss_restart_delay_for_resource_activity(&resource),
+            Some(ChannelWssRestartDelay {
+                reason: "active_http",
+                delay: CHANNEL_WSS_FOREGROUND_ACTIVITY_RETRY_DELAY,
+            })
+        );
+
+        resource.active_http_count = 0;
+        crate::channels::set_active_os_outbound_worker_count_for_tests(1);
+        assert_eq!(
+            channel_wss_restart_delay_for_resource_activity(&resource),
+            Some(ChannelWssRestartDelay {
+                reason: "active_os_outbound",
+                delay: CHANNEL_WSS_FOREGROUND_ACTIVITY_RETRY_DELAY,
+            })
+        );
+
+        crate::channels::set_active_os_outbound_worker_count_for_tests(0);
+        resource.outbound_depth = 1;
+        assert_eq!(
+            channel_wss_restart_delay_for_resource_activity(&resource),
+            Some(ChannelWssRestartDelay {
+                reason: "outbound_pending",
+                delay: CHANNEL_WSS_FOREGROUND_ACTIVITY_RETRY_DELAY,
+            })
+        );
+    }
+
+    #[test]
+    fn channel_wss_restart_waits_outside_worker_until_wifi_outbound_ready() {
+        let snapshot = crate::state::NetworkRuntimeSnapshot {
+            sta_expected: true,
+            sta_configured: true,
+            sta_connecting: false,
+            sta_l2_connected: false,
+            sta_ip_present: false,
+            outbound_settled: false,
+            wall_clock_trustworthy: false,
+            last_wifi_stage: crate::state::NetworkWifiStage::StaApNotFound,
+            last_wifi_reason_code: Some(201),
+        };
+
+        assert_eq!(
+            channel_wss_restart_delay_for_network_snapshot(&snapshot),
+            Some(ChannelWssRestartDelay {
+                reason: "wifi_not_ready",
+                delay: CHANNEL_WSS_NETWORK_RETRY_DELAY,
+            })
+        );
+    }
+
+    #[test]
+    fn channel_wss_start_defer_reason_uses_current_wifi_runtime_state() {
+        let _guard = crate::state::test_state_guard();
+        crate::state::set_network_sta_expected(true, true);
+        crate::state::set_network_wifi_stage(
+            crate::state::NetworkWifiStage::StaApNotFound,
+            Some(201),
+        );
+        crate::state::clear_wifi_sta_state();
+
+        assert_eq!(
+            channel_wss_worker_start_defer_reason(),
+            Some("wifi_not_ready")
+        );
+    }
+
+    #[test]
+    fn channel_wss_restart_waits_outside_worker_until_wall_clock_ready() {
+        let snapshot = crate::state::NetworkRuntimeSnapshot {
+            sta_expected: true,
+            sta_configured: true,
+            sta_connecting: false,
+            sta_l2_connected: true,
+            sta_ip_present: true,
+            outbound_settled: true,
+            wall_clock_trustworthy: false,
+            last_wifi_stage: crate::state::NetworkWifiStage::StaIpReady,
+            last_wifi_reason_code: None,
+        };
+
+        assert_eq!(
+            channel_wss_restart_delay_for_network_snapshot(&snapshot),
+            Some(ChannelWssRestartDelay {
+                reason: "wall_clock_untrusted",
+                delay: CHANNEL_WSS_NETWORK_RETRY_DELAY,
+            })
+        );
+    }
+
+    #[test]
+    fn channel_wss_restart_allows_worker_after_network_snapshot_ready() {
+        let snapshot = crate::state::NetworkRuntimeSnapshot {
+            sta_expected: true,
+            sta_configured: true,
+            sta_connecting: false,
+            sta_l2_connected: true,
+            sta_ip_present: true,
+            outbound_settled: true,
+            wall_clock_trustworthy: true,
+            last_wifi_stage: crate::state::NetworkWifiStage::StaIpReady,
+            last_wifi_reason_code: None,
+        };
+
+        assert_eq!(
+            channel_wss_restart_delay_for_network_snapshot(&snapshot),
+            None
+        );
     }
 
     #[test]

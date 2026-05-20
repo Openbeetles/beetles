@@ -105,7 +105,7 @@ pub const LLM_RETRY_LATER_DELAY_MS: u64 = 700;
 ///
 /// 该窗口只在 ack 已经入队时生效，用于让 outbound worker 先完成或至少启动
 /// 用户可见反馈，避免 LLM TLS 先抢占导致“收到消息后无任何响应”。
-pub const PRE_LLM_VISIBILITY_FLUSH_WINDOW_MS: u64 = 700;
+pub const PRE_LLM_VISIBILITY_FLUSH_WINDOW_MS: u64 = 3_200;
 /// LLM 前可见 ack flush 轮询间隔。
 pub const PRE_LLM_VISIBILITY_FLUSH_POLL_MS: u64 = 25;
 /// pending_retry 重放次数上限；超过则清除不再注入，避免重复饥饿。

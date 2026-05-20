@@ -55,7 +55,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc;
 use std::sync::Arc;
 #[cfg(any(feature = "telegram", feature = "feishu", feature = "qq_channel", test))]
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 /// 出站发送抽象；各通道实现此 trait，由 main 注册到 ChannelSinks。
@@ -966,6 +966,11 @@ pub fn active_os_outbound_worker_count() -> u32 {
     ACTIVE_OS_OUTBOUND_WORKER_COUNT.load(Ordering::Relaxed)
 }
 
+#[cfg(test)]
+pub(crate) fn set_active_os_outbound_worker_count_for_tests(count: u32) {
+    ACTIVE_OS_OUTBOUND_WORKER_COUNT.store(count, Ordering::Relaxed);
+}
+
 #[cfg(any(feature = "telegram", feature = "feishu", feature = "qq_channel", test))]
 struct OsOutboundWorkerActiveGuard;
 
@@ -1538,20 +1543,34 @@ fn run_os_outbound_worker_inner<F>(
 }
 
 #[cfg(any(feature = "telegram", feature = "feishu", feature = "qq_channel", test))]
-/// 常驻小栈出站监管器：持有 OS outbound receiver，按 runtime mode 拉起/卸载重栈 HTTP sender。
-pub fn run_os_outbound_supervisor(
-    outbound_rx: OutboundRx,
+pub struct LazyOsOutboundSupervisor {
+    outbound_rx: Arc<Mutex<OutboundRx>>,
     active: ActiveOutboundDriverConfig,
     local_sinks: Arc<ChannelSinks>,
     capability_registry: Arc<ChannelCapabilityRegistry>,
-) {
-    const TAG: &str = "os_outbound_supervisor";
-    let outbound_rx = Arc::new(Mutex::new(outbound_rx));
-    let supervisor_pending: Arc<Mutex<VecDeque<PcMsg>>> = Arc::new(Mutex::new(VecDeque::new()));
-    let mut worker_handle: Option<TaskHandle> = None;
+    supervisor_pending: Arc<Mutex<VecDeque<PcMsg>>>,
+    worker_handle: Mutex<Option<TaskHandle>>,
+}
 
-    loop {
-        crate::platform::task_wdt::feed_current_task();
+#[cfg(any(feature = "telegram", feature = "feishu", feature = "qq_channel", test))]
+impl LazyOsOutboundSupervisor {
+    pub fn new(
+        outbound_rx: OutboundRx,
+        active: ActiveOutboundDriverConfig,
+        local_sinks: Arc<ChannelSinks>,
+        capability_registry: Arc<ChannelCapabilityRegistry>,
+    ) -> Self {
+        Self {
+            outbound_rx: Arc::new(Mutex::new(outbound_rx)),
+            active,
+            local_sinks,
+            capability_registry,
+            supervisor_pending: Arc::new(Mutex::new(VecDeque::new())),
+            worker_handle: Mutex::new(None),
+        }
+    }
+
+    fn cleanup_finished_worker(&self, worker_handle: &mut Option<TaskHandle>) {
         if worker_handle
             .as_ref()
             .is_some_and(crate::util::TaskHandle::is_finished)
@@ -1560,74 +1579,112 @@ pub fn run_os_outbound_supervisor(
                 let _ = handle.join();
             }
         }
+    }
+
+    fn take_prefetched(&self) -> Option<VecDeque<PcMsg>> {
+        let mut pending = self
+            .supervisor_pending
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if !pending.is_empty() {
+            let mut prefetched = VecDeque::new();
+            std::mem::swap(&mut *pending, &mut prefetched);
+            return Some(prefetched);
+        }
+        drop(pending);
+
+        let rx = self
+            .outbound_rx
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        match rx.try_recv() {
+            Ok(msg) => Some(VecDeque::from([msg])),
+            Err(std::sync::mpsc::TryRecvError::Empty) => None,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                log::warn!("[os_outbound_lazy] outbound disconnected");
+                None
+            }
+        }
+    }
+
+    pub fn service(&self, tag: &str) {
+        let mut worker_handle = self
+            .worker_handle
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        self.cleanup_finished_worker(&mut worker_handle);
+        if worker_handle.is_some() {
+            return;
+        }
 
         let allow_non_voice_outbound = crate::runtime::thread_registry::runtime_mode_snapshot()
             .action_budget
             .allow_non_voice_outbound;
-        if allow_non_voice_outbound && worker_handle.is_none() {
-            let prefetched = {
-                let mut pending = supervisor_pending
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner());
-                if let Some(msg) = pending.pop_front() {
-                    VecDeque::from([msg])
-                } else {
-                    drop(pending);
-                    let rx = outbound_rx
-                        .lock()
-                        .unwrap_or_else(|error| error.into_inner());
-                    match rx.try_recv() {
-                        Ok(msg) => VecDeque::from([msg]),
-                        Err(std::sync::mpsc::TryRecvError::Empty) => {
-                            std::thread::sleep(Duration::from_millis(DISPATCH_POLL_MAX_WAIT_MS));
-                            continue;
-                        }
-                        Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                            log::warn!("[{}] outbound disconnected, supervisor exiting", TAG);
-                            break;
-                        }
-                    }
-                }
-            };
-            let worker_rx = Arc::clone(&outbound_rx);
-            let worker_pending = Arc::clone(&supervisor_pending);
-            let active = active.clone();
-            let sinks = Arc::clone(&local_sinks);
-            let registry = Arc::clone(&capability_registry);
-            let prefetched_for_worker = prefetched.clone();
-            match spawn_guarded_with_profile_handle(
-                "os_outbound",
-                crate::util::STACK_OS_OUTBOUND,
-                Some(SpawnCore::Core0),
-                HttpThreadRole::Io,
-                move || {
-                    run_os_outbound_worker_from_shared_rx(
-                        worker_rx,
-                        active,
-                        sinks,
-                        registry,
-                        prefetched_for_worker,
-                        worker_pending,
-                    )
-                },
-            ) {
-                Ok(handle) => {
-                    log::info!("[{}] started os_outbound worker", TAG);
-                    worker_handle = Some(handle);
-                }
-                Err(error) => {
-                    log::warn!("[{}] os_outbound worker spawn failed: {}", TAG, error);
-                    let mut pending = supervisor_pending
-                        .lock()
-                        .unwrap_or_else(|lock_error| lock_error.into_inner());
-                    restore_os_outbound_prefetch(&mut pending, prefetched);
-                }
-            }
+        if !allow_non_voice_outbound {
+            return;
         }
 
-        std::thread::sleep(Duration::from_millis(DISPATCH_POLL_MAX_WAIT_MS));
+        let Some(prefetched) = self.take_prefetched() else {
+            return;
+        };
+
+        let worker_rx = Arc::clone(&self.outbound_rx);
+        let worker_pending = Arc::clone(&self.supervisor_pending);
+        let active = self.active.clone();
+        let sinks = Arc::clone(&self.local_sinks);
+        let registry = Arc::clone(&self.capability_registry);
+        let prefetched_for_worker = prefetched.clone();
+        match spawn_guarded_with_profile_handle(
+            "os_outbound",
+            crate::util::STACK_OS_OUTBOUND,
+            Some(SpawnCore::Core0),
+            HttpThreadRole::Io,
+            move || {
+                run_os_outbound_worker_from_shared_rx(
+                    worker_rx,
+                    active,
+                    sinks,
+                    registry,
+                    prefetched_for_worker,
+                    worker_pending,
+                )
+            },
+        ) {
+            Ok(handle) => {
+                log::info!("[{}] started os_outbound worker", tag);
+                *worker_handle = Some(handle);
+            }
+            Err(error) => {
+                log::warn!("[{}] os_outbound worker spawn failed: {}", tag, error);
+                let mut pending = self
+                    .supervisor_pending
+                    .lock()
+                    .unwrap_or_else(|lock_error| lock_error.into_inner());
+                restore_os_outbound_prefetch(&mut pending, prefetched);
+            }
+        }
     }
 }
+
+#[cfg(any(feature = "telegram", feature = "feishu", feature = "qq_channel", test))]
+static LAZY_OS_OUTBOUND_SUPERVISOR: OnceLock<Arc<LazyOsOutboundSupervisor>> = OnceLock::new();
+
+#[cfg(any(feature = "telegram", feature = "feishu", feature = "qq_channel", test))]
+pub fn install_lazy_os_outbound_supervisor(
+    supervisor: Arc<LazyOsOutboundSupervisor>,
+) -> std::result::Result<(), Arc<LazyOsOutboundSupervisor>> {
+    LAZY_OS_OUTBOUND_SUPERVISOR.set(supervisor)
+}
+
+#[cfg(any(feature = "telegram", feature = "feishu", feature = "qq_channel", test))]
+pub fn service_lazy_os_outbound_supervisor(tag: &str) {
+    if let Some(supervisor) = LAZY_OS_OUTBOUND_SUPERVISOR.get() {
+        supervisor.service(tag);
+    }
+}
+
+#[cfg(not(any(feature = "telegram", feature = "feishu", feature = "qq_channel", test)))]
+pub fn service_lazy_os_outbound_supervisor(_tag: &str) {}
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 #[cfg(any(feature = "telegram", feature = "feishu", feature = "qq_channel"))]
@@ -1679,6 +1736,7 @@ pub fn build_esp_active_outbound_driver(
             if !config.qq_channel_app_id.trim().is_empty()
                 && !config.qq_channel_secret.trim().is_empty() =>
         {
+            let protocol_state = super::qq::QqOutboundProtocolState::shared();
             Some(ActiveOutboundDriverConfig {
                 channel: "qq_channel".to_string(),
                 driver_builder: {
@@ -1687,12 +1745,14 @@ pub fn build_esp_active_outbound_driver(
                     let msg_id_cache = Arc::clone(qq_msg_id_cache);
                     let token_cache = qq_token_cache.clone();
                     let create_http = Arc::clone(&create_http);
+                    let protocol_state = Arc::clone(&protocol_state);
                     Arc::new(move || {
                         super::qq::qq_outbound_driver(
                             app_id.clone(),
                             secret.clone(),
                             Arc::clone(&msg_id_cache),
                             token_cache.clone(),
+                            Arc::clone(&protocol_state),
                             Arc::clone(&create_http),
                         )
                     })
@@ -2197,6 +2257,47 @@ mod tests {
         assert_eq!(contents, vec!["deferred", "prefetched", "older"]);
     }
 
+    #[test]
+    fn lazy_supervisor_prefetches_full_pending_backlog_for_one_worker() {
+        let (_bus, _inbound_rx, outbound_rx) = crate::bus::MessageBus::new(8);
+        let supervisor = super::LazyOsOutboundSupervisor::new(
+            outbound_rx,
+            super::ActiveOutboundDriverConfig {
+                channel: "qq_channel".to_string(),
+                driver_builder: Arc::new(|| {
+                    Box::new(FailingActiveDriver {
+                        attempts: Arc::new(AtomicUsize::new(0)),
+                    })
+                }),
+            },
+            Arc::new(super::ChannelSinks::default()),
+            Arc::new(super::ChannelCapabilityRegistry::default()),
+        );
+        {
+            let mut pending = supervisor
+                .supervisor_pending
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            pending.push_back(build_msg("qq_channel", "chat-1", "visibility"));
+            pending.push_back(build_msg("qq_channel", "chat-1", "progress"));
+            pending.push_back(build_msg("qq_channel", "chat-1", "final"));
+        }
+
+        let prefetched = supervisor
+            .take_prefetched()
+            .expect("pending backlog should prefetch");
+        let contents: Vec<_> = prefetched.iter().map(|msg| msg.content.as_str()).collect();
+        assert_eq!(contents, vec!["visibility", "progress", "final"]);
+        assert!(
+            supervisor
+                .supervisor_pending
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .is_empty(),
+            "all pending outbound UX messages must move into one worker handoff"
+        );
+    }
+
     struct TlsAdmissionFailingActiveDriver {
         attempts: Arc<AtomicUsize>,
     }
@@ -2274,6 +2375,7 @@ mod tests {
                 primary_source: Some(crate::runtime::RuntimeForegroundSource::ExternalUserMessage),
                 age_ms: Some(500),
                 resume_after_ms: Some(29_500),
+                ..crate::runtime::RuntimeForegroundOverlay::default()
             },
             pressure: crate::orchestrator::PressureLevel::Normal,
         }

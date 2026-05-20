@@ -699,6 +699,7 @@ mod tests {
                     ),
                     age_ms: Some(500),
                     resume_after_ms: Some(29_500),
+                    ..crate::runtime::RuntimeForegroundOverlay::default()
                 },
                 pressure: crate::orchestrator::PressureLevel::Normal,
             },

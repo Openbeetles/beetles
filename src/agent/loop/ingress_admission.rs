@@ -11,8 +11,47 @@ pub(super) struct AdmittedTurn {
 
 #[allow(dead_code)]
 pub(super) enum AdmittedTurnGuard {
-    Foreground(crate::orchestrator::ForegroundTurnGuard),
+    Foreground {
+        _turn_guard: crate::orchestrator::ForegroundTurnGuard,
+        runtime_foreground_ticket: Option<crate::runtime::RuntimeForegroundTicket>,
+    },
     Background(crate::orchestrator::AgentTaskGuard),
+}
+
+impl AdmittedTurnGuard {
+    pub(super) fn finish_user_visible_delivery_window(&mut self) {
+        if let Self::Foreground {
+            runtime_foreground_ticket,
+            ..
+        } = self
+        {
+            if let Some(ticket) = runtime_foreground_ticket.take() {
+                let _ = crate::runtime::finish_runtime_foreground(ticket);
+            }
+        }
+    }
+}
+
+impl Drop for AdmittedTurnGuard {
+    fn drop(&mut self) {
+        self.finish_user_visible_delivery_window();
+    }
+}
+
+fn renew_runtime_foreground_for_admitted_turn(
+    msg: &PcMsg,
+) -> Option<crate::runtime::RuntimeForegroundTicket> {
+    msg.runtime_foreground_source()
+        .map(crate::runtime::renew_runtime_foreground_now)
+}
+
+#[cfg(test)]
+fn renew_runtime_foreground_for_admitted_turn_at(
+    msg: &PcMsg,
+    now_ms: u64,
+) -> Option<crate::runtime::RuntimeForegroundTicket> {
+    msg.runtime_foreground_source()
+        .map(|source| crate::runtime::renew_runtime_foreground(source, now_ms))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -87,7 +126,13 @@ pub(super) fn admit_turn(
 
     let turn_guard = if msg.ingress == IngressKind::User {
         match crate::orchestrator::begin_foreground_turn() {
-            Ok(guard) => AdmittedTurnGuard::Foreground(guard),
+            Ok(guard) => {
+                let runtime_foreground_ticket = renew_runtime_foreground_for_admitted_turn(&msg);
+                AdmittedTurnGuard::Foreground {
+                    _turn_guard: guard,
+                    runtime_foreground_ticket,
+                }
+            }
             Err(error) => {
                 metrics::record_error_by_stage(error.metrics_stage());
                 log::warn!(
@@ -125,4 +170,81 @@ pub(super) fn admit_turn(
         admission_ms,
         _agent_task_guard: turn_guard,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn admitted_user_turn_renews_foreground_at_admission_boundary() {
+        let _guard = crate::runtime::foreground::runtime_foreground_test_guard();
+        crate::runtime::foreground::reset_runtime_foreground_for_tests();
+        let msg = PcMsg::new_inbound("qq_channel", "chat-1", "primary", false).expect("message");
+
+        let ticket = renew_runtime_foreground_for_admitted_turn_at(&msg, 1_000)
+            .expect("user message creates foreground ticket");
+
+        let snapshot = crate::runtime::foreground::runtime_foreground_snapshot_at(1_001);
+        assert!(snapshot.active);
+        assert_eq!(
+            snapshot.primary_source,
+            Some(crate::runtime::RuntimeForegroundSource::ExternalUserMessage)
+        );
+        assert_eq!(
+            snapshot.records[0].ticket, ticket,
+            "the admitted turn must keep the concrete ticket it will finish after primary delivery"
+        );
+    }
+
+    #[test]
+    fn delivered_foreground_turn_finishes_runtime_ticket_into_recovery() {
+        let _lease_guard = crate::runtime::lease::lease_test_guard();
+        let _foreground_guard = crate::runtime::foreground::runtime_foreground_test_guard();
+        crate::runtime::foreground::reset_runtime_foreground_for_tests();
+        let ticket = crate::runtime::renew_runtime_foreground_now(
+            crate::runtime::RuntimeForegroundSource::ExternalUserMessage,
+        );
+        let mut guard = AdmittedTurnGuard::Foreground {
+            _turn_guard: crate::orchestrator::begin_foreground_turn()
+                .expect("foreground turn should acquire lease"),
+            runtime_foreground_ticket: Some(ticket),
+        };
+
+        guard.finish_user_visible_delivery_window();
+
+        let snapshot = crate::runtime::foreground::runtime_foreground_snapshot();
+        assert!(!snapshot.active);
+        assert!(snapshot.recovery_active);
+        assert_eq!(
+            snapshot.recovery_source,
+            Some(crate::runtime::RuntimeForegroundSource::ExternalUserMessage)
+        );
+    }
+
+    #[test]
+    fn foreground_user_turn_does_not_request_external_wss_evict() {
+        let _state_guard = crate::state::test_state_guard();
+        let _lease_guard = crate::runtime::lease::lease_test_guard();
+        let _foreground_guard = crate::runtime::foreground::runtime_foreground_test_guard();
+        crate::runtime::foreground::reset_runtime_foreground_for_tests();
+        crate::network::set_external_wss_managed_present(true);
+        let ticket = crate::runtime::renew_runtime_foreground_now(
+            crate::runtime::RuntimeForegroundSource::ExternalUserMessage,
+        );
+
+        let _guard = AdmittedTurnGuard::Foreground {
+            _turn_guard: crate::orchestrator::begin_foreground_turn()
+                .expect("foreground turn should acquire lease"),
+            runtime_foreground_ticket: Some(ticket),
+        };
+
+        assert!(!crate::network::external_wss_suspend_requested());
+        assert!(!crate::network::external_wss_worker_evict_requested());
+        assert_eq!(crate::network::active_external_wss_count(), 0);
+        assert!(
+            crate::network::external_wss_managed_present(),
+            "ordinary foreground user work must keep the active external ingress owner online"
+        );
+    }
 }

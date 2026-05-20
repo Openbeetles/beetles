@@ -761,9 +761,13 @@ export const enUS = {
     http: {
       route_worker_busy: 'The device is busy handling another request. Wait a moment and retry.',
       route_worker_memory_low: 'The device does not have enough memory headroom to start this configuration task.',
+      response_pressure: 'The device is under resource pressure and cannot build this response right now. Retry shortly.',
     },
     runtime: {
       config_blocked_by_voice: 'Configuration is paused while a realtime voice session is active.',
+      route_blocked_by_config_active: 'A configuration operation is already running. Wait for it to finish and retry.',
+      route_blocked_by_recovery_safe_mode: 'The device is in recovery safe mode, so this operation is temporarily unavailable.',
+      transport_blocked: 'The device is protecting critical communication resources. Retry shortly.',
     },
     channel: {
       enabled_invalid: 'Enabled channel is invalid',

@@ -88,8 +88,7 @@ impl PlaneProfile {
             }
             "http_chat_history" => RuntimeWorkClass::ConfigUiChatHistoryRoute,
             "external_wss" => RuntimeWorkClass::ChannelIngressWss,
-            "channel_outbound_supervisor" => RuntimeWorkClass::ChannelReconnect,
-            "channel_outbound" | "os_outbound" | "dispatch" => {
+            "channel_outbound" | "channel_outbound_mailbox" | "os_outbound" | "dispatch" => {
                 RuntimeWorkClass::SupplementalDelivery
             }
             "agent_loop" => RuntimeWorkClass::ExternalUserMessage,
@@ -332,12 +331,12 @@ const PLANE_PROFILES: &[PlaneProfile] = &[
     },
     PlaneProfile {
         id: PlaneId::ChannelOutbound,
-        owner: "channel_outbound_supervisor",
+        owner: "channel_outbound_mailbox",
         startup_phase: PlaneStartupPhase::Runtime,
         residency: PlaneResidency::Steady,
         allowed_modes: MODES_ALL,
         required_leases: &[],
-        thread_names: &["os_outbound_supervisor"],
+        thread_names: &[],
         queue_budget: Some(PlaneQueueBudget {
             name: "runtime_outbound",
             capacity: crate::constants::DEFAULT_CAPACITY,
@@ -798,6 +797,14 @@ mod tests {
         assert_eq!(profile.residency, PlaneResidency::Lazy);
         assert_eq!(profile.required_leases, &[LeaseKind::StorageSessionWrite]);
         assert_eq!(profile.risk_class, ThreadRiskClass::High);
+    }
+
+    #[test]
+    fn os_outbound_supervisor_is_not_a_steady_thread_plane() {
+        assert!(
+            profile_for_thread("os_outbound_supervisor").is_none(),
+            "ESP outbound supervision must be event-triggered and serviced by existing runtime timers, not a startup steady thread"
+        );
     }
 
     #[test]

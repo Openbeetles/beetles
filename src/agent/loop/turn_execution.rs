@@ -45,6 +45,21 @@ fn append_only_ack_enqueued(before: DeliveryReport, after: DeliveryReport) -> bo
     after.append_only_ack_sent > before.append_only_ack_sent
 }
 
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
+pub(super) fn pre_llm_visibility_window_is_settled(
+    outbound_queued: usize,
+    active_http: u32,
+    active_os_outbound: u32,
+    observed_outbound_http: bool,
+    observed_os_outbound: bool,
+    grace_elapsed: bool,
+) -> bool {
+    outbound_queued == 0
+        && active_http == 0
+        && active_os_outbound == 0
+        && (observed_outbound_http || observed_os_outbound || grace_elapsed)
+}
+
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 fn yield_pre_llm_visibility_window_if_needed(
     before: DeliveryReport,
@@ -62,28 +77,32 @@ fn yield_pre_llm_visibility_window_if_needed(
             crate::constants::PRE_LLM_VISIBILITY_FLUSH_POLL_MS.saturating_mul(3),
         );
     let mut observed_outbound_http = false;
+    let mut observed_os_outbound = false;
     while std::time::Instant::now() < deadline {
         crate::platform::task_wdt::feed_current_task();
         let active_http = crate::orchestrator::resource_light_snapshot().active_http_count;
+        let active_os_outbound = crate::channels::active_os_outbound_worker_count();
         if active_http > 0 {
             observed_outbound_http = true;
         }
-        if observed_outbound_http && active_http == 0 {
-            return;
+        if active_os_outbound > 0 {
+            observed_os_outbound = true;
         }
-        if !observed_outbound_http
-            && outbound_tx.queued_len() == 0
-            && std::time::Instant::now() >= min_grace_until
-        {
+        if pre_llm_visibility_window_is_settled(
+            outbound_tx.queued_len(),
+            active_http,
+            active_os_outbound,
+            observed_outbound_http,
+            observed_os_outbound,
+            std::time::Instant::now() >= min_grace_until,
+        ) {
             return;
         }
         std::thread::sleep(std::time::Duration::from_millis(
             crate::constants::PRE_LLM_VISIBILITY_FLUSH_POLL_MS,
         ));
     }
-    log::warn!(
-        "[agent_delivery] pre-LLM visibility window elapsed before outbound HTTP completion"
-    );
+    log::warn!("[agent_delivery] pre-LLM visibility window elapsed before outbound worker settled");
 }
 
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]

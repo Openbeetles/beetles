@@ -135,7 +135,15 @@ if ! rg -n 'foreground_ack_missing_before_llm' scripts/esp_soak_analyze.sh scrip
    ! rg -n 'voice_auto_connect_not_suppressed' scripts/esp_soak_analyze.sh scripts/tests/esp_soak_analyze_contract_test.sh >/dev/null ||
    ! rg -n 'write_back_started_during_foreground' scripts/esp_soak_analyze.sh scripts/tests/esp_soak_analyze_contract_test.sh >/dev/null ||
    ! rg -n 'display_status_missing_during_degrade' scripts/esp_soak_analyze.sh scripts/tests/esp_soak_analyze_contract_test.sh >/dev/null ||
-   ! rg -n 'scheduler_resume_missing' scripts/esp_soak_analyze.sh scripts/tests/esp_soak_analyze_contract_test.sh >/dev/null; then
+   ! rg -n 'scheduler_resume_missing' scripts/esp_soak_analyze.sh scripts/tests/esp_soak_analyze_contract_test.sh >/dev/null ||
+   ! rg -n 'post_foreground_recovery_violation' scripts/esp_soak_analyze.sh scripts/tests/esp_soak_analyze_contract_test.sh >/dev/null ||
+   ! rg -n 'qq_msgseq_regression' scripts/esp_soak_analyze.sh scripts/tests/esp_soak_analyze_contract_test.sh >/dev/null ||
+   ! rg -n 'voice_session_stack_overflow' scripts/esp_soak_analyze.sh scripts/tests/esp_soak_analyze_contract_test.sh >/dev/null ||
+   ! rg -n 'startup_heap_largest_below_floor.*blocker' scripts/esp_soak_analyze.sh >/dev/null ||
+   ! rg -n 'external_wss_worker_before_network_ready' scripts/esp_soak_analyze.sh scripts/tests/esp_soak_analyze_contract_test.sh >/dev/null ||
+   ! rg -n 'voice_realtime_connect_before_network_ready' scripts/esp_soak_analyze.sh scripts/tests/esp_soak_analyze_contract_test.sh >/dev/null ||
+   ! rg -n 'boot_normal_before_network_ready' scripts/esp_soak_analyze.sh scripts/tests/esp_soak_analyze_contract_test.sh >/dev/null ||
+   ! rg -n 'voice_exclusive_before_network_ready' scripts/esp_soak_analyze.sh scripts/tests/esp_soak_analyze_contract_test.sh >/dev/null; then
   echo "FAIL: soak analyzer must gate foreground scheduler, delivery, display, voice, write-back, and resume evidence" >&2
   exit 1
 fi
@@ -944,7 +952,8 @@ if ! rg -n 'begin_external_wss_worker_evict_request' src/network/mod.rs >/dev/nu
    ! rg -n 'service_channel_wss_supervisors' src/bg_timer.rs >/dev/null ||
    ! rg -n 'realtime_voice_pre_spawn_largest_floor' src/network/mod.rs >/dev/null ||
    ! rg -n 'active_os_outbound_worker_count' src/network/mod.rs >/dev/null ||
-   ! rg -n 'run_os_outbound_supervisor' src/channels/dispatch.rs >/dev/null; then
+   ! rg -n 'LazyOsOutboundSupervisor' src/channels/dispatch.rs >/dev/null ||
+   ! rg -n 'service_lazy_os_outbound_supervisor' src/bg_timer.rs >/dev/null; then
   echo "FAIL: realtime voice admission must evict external WSS/outbound workers and reserve connect-stack largest-block before spawning" >&2
   exit 1
 fi
@@ -985,7 +994,9 @@ if ! rg -n 'TransportAdmissionKind::NonVoiceHttp' src/platform/http_server/esp_t
   exit 1
 fi
 
-if ! rg -n 'PrepareRealtimeTransportThenSpawnConnect' src/audio/voice_session.rs >/dev/null ||
+if ! rg -n 'SpawnRealtimeConnectWorker' src/audio/voice_session.rs >/dev/null ||
+   ! rg -n 'voice_realtime_connect' src/audio/voice_session.rs >/dev/null ||
+   ! rg -n 'prepare_realtime_session_ownership\(&cfg, &handoff\)' src/audio/voice_session.rs >/dev/null ||
    ! rg -n 'spawn_prepared_realtime_session_worker' src/audio/voice_session.rs >/dev/null; then
   echo "FAIL: realtime voice startup must keep connect and session workers split" >&2
   exit 1

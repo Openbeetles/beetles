@@ -41,7 +41,9 @@ pub use acceptance::{
 };
 pub use agent_supervision::{register_agent_loop_guard, service_agent_loop_guard};
 pub use channel_wss_supervision::{
-    register_channel_wss_supervisor, service_channel_wss_supervisors,
+    channel_wss_worker_start_defer_reason, next_channel_wss_supervisor_retry_at,
+    register_channel_wss_supervisor, register_deferred_channel_wss_supervisor,
+    service_channel_wss_supervisors,
 };
 pub use continuity_flush::{
     flush_reboot_continuity_bundle, request_restart_with_continuity_flush,
@@ -58,6 +60,7 @@ pub use foreground::{
     runtime_foreground_active, runtime_foreground_overlay, runtime_foreground_snapshot,
     RuntimeForegroundOverlay, RuntimeForegroundSnapshot, RuntimeForegroundSource,
     RuntimeForegroundTicket, RuntimeForegroundTicketState, RUNTIME_FOREGROUND_IDLE_SECS,
+    RUNTIME_FOREGROUND_RECOVERY_SECS,
 };
 pub use frame_lease::{
     admit_current_camera_frame_capture, try_borrow_frame, try_borrow_frame_with_admission,

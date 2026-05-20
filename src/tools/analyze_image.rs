@@ -703,6 +703,7 @@ mod tests {
                     primary_source: Some(RuntimeForegroundSource::ExternalUserMessage),
                     age_ms: Some(500),
                     resume_after_ms: Some(29_500),
+                    ..RuntimeForegroundOverlay::default()
                 },
                 pressure: crate::orchestrator::PressureLevel::Normal,
             },
