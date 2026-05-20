@@ -115,10 +115,10 @@ export async function saveSystem(
   baseUrl: string,
   pairingCode: string,
   body: SystemConfigSegment,
-): Promise<ApiResult<void>> {
+): Promise<ApiResult<{ ok?: boolean; restart_required?: boolean }>> {
   if (!baseUrl?.trim()) return { ok: false, error: API_ERROR.NO_BASE_URL }
   if (!pairingCode?.trim()) return { ok: false, error: API_ERROR.PAIRING_REQUIRED }
-  return requestProtected<void>(baseUrl, '/api/config/system', {
+  return requestProtected<{ ok?: boolean; restart_required?: boolean }>(baseUrl, '/api/config/system', {
     method: 'POST',
     body,
     pairingCode: pairingCode.trim(),

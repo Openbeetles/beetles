@@ -227,13 +227,23 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
       save: (body: TBody) => Promise<ApiResult<unknown>>,
       body: TBody,
       applySuccess?: () => void,
-    ): Promise<{ ok: boolean; error?: string }> => {
+    ): Promise<{ ok: boolean; error?: string; restartRequired?: boolean }> => {
       const sessionKey = deviceSessionKey;
       const res = await save(body);
       if (res.ok && deviceSessionKeyRef.current === sessionKey) {
         applySuccess?.();
       }
-      return { ok: res.ok ?? false, error: mapSaveError(res.error) };
+      const restartRequired =
+        res.ok &&
+        typeof res.data === "object" &&
+        res.data !== null &&
+        "restart_required" in res.data &&
+        Boolean((res.data as { restart_required?: unknown }).restart_required);
+      return {
+        ok: res.ok ?? false,
+        error: mapSaveError(res.error),
+        restartRequired,
+      };
     },
     [deviceSessionKey],
   );
@@ -272,7 +282,7 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
   const saveSystem = useCallback(
     async (
       body: SystemConfigSegment,
-    ): Promise<{ ok: boolean; error?: string }> => {
+    ): Promise<{ ok: boolean; error?: string; restartRequired?: boolean }> => {
       return runSingleFlightConfigSave(systemSaveFlightRef, () =>
         saveSegment(api.config.saveSystem, body, () => {
           setSystemConfig((prev) => (prev ? { ...prev, ...body } : body));

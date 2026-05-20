@@ -802,6 +802,7 @@ mod tests {
             platform_event_id: String::new(),
             inbound_dedup_key: String::new(),
             is_group: false,
+            ingress_visibility_ack: crate::bus::IngressVisibilityAckClaim::default(),
         }
     }
 

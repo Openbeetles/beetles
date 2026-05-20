@@ -463,19 +463,79 @@ where
     test
 ))]
 fn spawn_required_planned_thread<F>(
-    tag: &str,
-    name: &str,
+    tag: &'static str,
+    name: &'static str,
     stack_size: usize,
-    started_label: &str,
+    started_label: &'static str,
     stage: &'static str,
     f: F,
 ) -> beetle::Result<()>
 where
     F: FnOnce() + Send + 'static,
 {
+    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+    if !beetle::runtime::runtime_startup_readiness_snapshot().allow_channel_outbound_worker {
+        return schedule_deferred_required_planned_thread(
+            tag,
+            name,
+            stack_size,
+            started_label,
+            stage,
+            f,
+        );
+    }
     finalize_required_thread_start(tag, started_label, stage, || {
         spawn_planned_handle(name, stack_size, f)
     })
+}
+
+#[cfg(all(
+    any(target_arch = "xtensa", target_arch = "riscv32"),
+    any(
+        feature = "telegram",
+        all(
+            feature = "dingtalk",
+            not(any(target_arch = "xtensa", target_arch = "riscv32"))
+        ),
+        test
+    )
+))]
+fn schedule_deferred_required_planned_thread<F>(
+    tag: &'static str,
+    name: &'static str,
+    stack_size: usize,
+    started_label: &'static str,
+    stage: &'static str,
+    f: F,
+) -> beetle::Result<()>
+where
+    F: FnOnce() + Send + 'static,
+{
+    let retry_at = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    beetle::runtime::schedule_critical_delayed_task(
+        retry_at,
+        Box::new(move || {
+            if let Err(error) =
+                spawn_required_planned_thread(tag, name, stack_size, started_label, stage, f)
+            {
+                log::error!(
+                    "[{}] deferred planned thread start failed stage={}: {}",
+                    tag,
+                    stage,
+                    error
+                );
+                beetle::metrics::record_runtime_spawn_failure();
+            }
+        }),
+    )
+    .map_err(|_| beetle::Error::config(stage, "deferred planned start retry schedule failed"))?;
+    log::info!(
+        "[{}] defer planned thread start name={} stage={} until startup outbound network is ready",
+        tag,
+        name,
+        stage
+    );
+    Ok(())
 }
 
 #[cfg(any(feature = "feishu", feature = "qq_channel", feature = "wecom", test))]
@@ -3421,6 +3481,20 @@ fn prepare_runtime_assembly(
         config.as_ref(),
         voice_channel_enabled,
     ));
+    {
+        let outbound_tx = bus.outbound_tx.clone();
+        let channel_capability_registry_for_ack = Arc::clone(&channel_capability_registry);
+        let resolve_locale_for_ack = Arc::clone(&resolve_locale_ui);
+        bus.user_inbound_tx
+            .set_after_accepted_user_ingress_hook(move |msg| {
+                beetle::agent::send_ingress_accepted_visibility_ack(
+                    &msg,
+                    &outbound_tx,
+                    channel_capability_registry_for_ack.as_ref(),
+                    (resolve_locale_for_ack)(),
+                )
+            });
+    }
     let capability_package_runtime_capabilities = Arc::new(
         beetle::build_capability_package_runtime_capabilities(channel_capability_registry.as_ref()),
     );
@@ -4233,71 +4307,97 @@ fn start_agent_plane(
         beetle::Error::config("agent_loop_spawn", "system_inbound_rx already taken")
     })?;
     let worker_outbound_tx = assembly.bus.outbound_tx.clone();
-    let handle = beetle::util::spawn_guarded_with_profile_handle(
-        "agent_loop",
-        STACK_AGENT_LOOP,
-        agent_plan.core,
-        agent_plan.role,
+
+    type AgentLoopStartOnce = Box<dyn FnOnce() -> beetle::Result<beetle::util::TaskHandle> + Send>;
+    let start_once: Arc<Mutex<Option<AgentLoopStartOnce>>> = Arc::new(Mutex::new(Some(Box::new(
         move || {
-            let mut agent_http = loop {
-                match agent_network.open_http_client(HttpClientClass::Interactive) {
-                    Ok(client) => break client,
-                    Err(error) => match agent_http_open_failure_action(&error) {
-                        AgentHttpOpenFailureAction::RetryAfterWifiRecovery => {
-                            log::warn!(
-                                "[{}] agent_loop waiting for WiFi before opening interactive HTTP client: {}",
-                                tag,
-                                error
-                            );
-                            beetle::state::set_last_error(&error);
-                            beetle::platform::task_wdt::feed_current_task();
-                            std::thread::sleep(std::time::Duration::from_secs(5));
-                            beetle::platform::task_wdt::feed_current_task();
-                        }
-                        AgentHttpOpenFailureAction::RestartRuntime => {
-                            log::error!(
-                                "[{}] agent_loop open interactive HTTP client failed: {}",
-                                tag,
-                                error
-                            );
-                            beetle::state::set_last_error(&error);
-                            beetle::runtime::request_restart_with_continuity_flush(
-                                Arc::clone(&agent_platform),
-                                None,
-                                "agent_loop_http_init_failed",
-                            );
-                            return;
-                        }
-                    },
-                }
-            };
-            log::info!("[{}] agent_loop running on Core1 thread", tag);
-            if let Err(error) = run_agent_loop(
-                agent_http.as_mut(),
-                agent_worker_llm.as_ref(),
-                agent_registry.as_ref(),
-                agent_loop_config.as_ref(),
-                worker_user_inbound_tx,
-                user_inbound_rx,
-                worker_system_inbound_tx,
-                system_inbound_rx,
-                worker_outbound_tx,
-                typing_notifier,
-            ) {
-                log::warn!("[{}] agent_loop error: {}", tag, error);
-                beetle::state::set_last_error(&error);
-            }
-            beetle::runtime::request_restart_with_continuity_flush(
-                agent_platform,
-                None,
-                "agent_loop_exit",
-            );
+            beetle::util::spawn_guarded_with_profile_handle(
+                "agent_loop",
+                STACK_AGENT_LOOP,
+                agent_plan.core,
+                agent_plan.role,
+                move || {
+                    let mut agent_http =
+                        match agent_network.open_http_client(HttpClientClass::Interactive) {
+                            Ok(client) => client,
+                            Err(error) => {
+                                let restart_reason = match agent_http_open_failure_action(&error) {
+                                    AgentHttpOpenFailureAction::RetryAfterWifiRecovery => {
+                                        "agent_loop_http_init_not_ready_after_startup_gate"
+                                    }
+                                    AgentHttpOpenFailureAction::RestartRuntime => {
+                                        "agent_loop_http_init_failed"
+                                    }
+                                };
+                                log::error!(
+                                    "[{}] agent_loop open interactive HTTP client failed after startup readiness gate: {}",
+                                    tag,
+                                    error
+                                );
+                                beetle::state::set_last_error(&error);
+                                beetle::runtime::request_restart_with_continuity_flush(
+                                    Arc::clone(&agent_platform),
+                                    None,
+                                    restart_reason,
+                                );
+                                return;
+                            }
+                        };
+                    log::info!("[{}] agent_loop running on Core1 thread", tag);
+                    if let Err(error) = run_agent_loop(
+                        agent_http.as_mut(),
+                        agent_worker_llm.as_ref(),
+                        agent_registry.as_ref(),
+                        agent_loop_config.as_ref(),
+                        worker_user_inbound_tx,
+                        user_inbound_rx,
+                        worker_system_inbound_tx,
+                        system_inbound_rx,
+                        worker_outbound_tx,
+                        typing_notifier,
+                    ) {
+                        log::warn!("[{}] agent_loop error: {}", tag, error);
+                        beetle::state::set_last_error(&error);
+                    }
+                    beetle::runtime::request_restart_with_continuity_flush(
+                        agent_platform,
+                        None,
+                        "agent_loop_exit",
+                    );
+                },
+            )
+            .map_err(|error| beetle::Error::io("agent_loop_spawn", error))
         },
-    )
-    .map_err(|error| beetle::Error::io("agent_loop_spawn", error))?;
+    ))));
+    let spawn_agent_loop: Arc<beetle::runtime::AgentLoopSpawner> = Arc::new({
+        let start_once = Arc::clone(&start_once);
+        move || {
+            let start = start_once
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .take()
+                .ok_or_else(|| {
+                    beetle::Error::config("agent_loop_spawn", "agent_loop starter already consumed")
+                })?;
+            start()
+        }
+    });
+
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-    beetle::orchestrator::log_startup_memory_checkpoint("agent_loop_spawn");
-    Ok(Some(handle))
+    {
+        beetle::runtime::register_deferred_agent_loop_guard(
+            Arc::clone(&assembly.runtime.platform),
+            spawn_agent_loop,
+        );
+        beetle::orchestrator::log_startup_memory_checkpoint("agent_loop_deferred");
+        return Ok(None);
+    }
+
+    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    {
+        let handle = spawn_agent_loop()?;
+        Ok(Some(handle))
+    }
 }
 
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
@@ -4366,6 +4466,6 @@ fn start_runtime_planes(
         );
         return None;
     }
-    beetle::state::set_boot_phase_active(false);
+    beetle::runtime::service_runtime_startup_readiness(TAG);
     Some(agent_handle)
 }

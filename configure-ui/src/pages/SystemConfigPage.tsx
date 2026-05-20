@@ -1,4 +1,5 @@
 import { useTranslation } from "react-i18next";
+import { useState } from "react";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
 import TextField from "@mui/material/TextField";
@@ -52,6 +53,7 @@ export function SystemConfigPage() {
     canLoad: ready && deviceConnected,
   });
   const [form, setForm] = useSyncedNullableState<SystemConfigSegment>(systemConfig);
+  const [saveRestartRequired, setSaveRestartRequired] = useState(false);
   const {
     wifiScanList,
     wifiScanLoading,
@@ -73,6 +75,10 @@ export function SystemConfigPage() {
     await editor.runSave({
       validate: () => validateSystemConfig(form, t),
       performSave: () => saveSystem(form),
+      onBeforeSave: () => setSaveRestartRequired(false),
+      onSuccess: (result) => {
+        setSaveRestartRequired(Boolean(result.restartRequired));
+      },
     });
   };
 
@@ -139,7 +145,13 @@ export function SystemConfigPage() {
             <SaveFeedback
               placement="belowTitle"
               status={editor.saveFeedback.status}
-              message={editor.saveFeedback.status === "ok" ? t("common.saveOk") : editor.saveFeedback.error}
+              message={
+                editor.saveFeedback.status === "ok"
+                  ? saveRestartRequired
+                    ? t("config.restartRequired")
+                    : t("common.saveOk")
+                  : editor.saveFeedback.error
+              }
               autoDismissMs={3000}
               onDismiss={editor.saveFeedback.dismiss}
             />

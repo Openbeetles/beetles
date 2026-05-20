@@ -736,17 +736,20 @@ fn dispatch_impl(
                 Ok(json_ok(body))
             })
         }
-        Some(RouteHandler::ConfigSystemPost) => dispatch_api_body_route(
-            guard_pairing_csrf(store, uri, &incoming.headers),
-            &incoming.body,
-            uri,
-            false,
-            route_body_mode,
-            |body_str| {
-                handlers::config::post_system(ctx, body_str)
-                    .map_err(|e| err_other("http_router_dispatch", e))
-            },
-        ),
+        Some(RouteHandler::ConfigSystemPost) => {
+            if let Some(response) = guard_pairing_csrf(store, uri, &incoming.headers) {
+                Ok(response)
+            } else {
+                let body_str = read_route_body(&incoming.body, route_body_mode)?;
+                let outcome = handlers::config::post_system(ctx, body_str)
+                    .map_err(|e| err_other("http_router_dispatch", e))?;
+                let mut response = api_to_out(outcome.response);
+                if outcome.restart_required && response.status == 200 {
+                    response.restart = RestartAction::After300Ms;
+                }
+                Ok(response)
+            }
+        }
         Some(RouteHandler::ConfigHardwareGet) => {
             dispatch_guarded_route(guard_pairing(store, uri, &incoming.headers), || {
                 let body = handlers::config::get_hardware_body(ctx)
@@ -1261,7 +1264,7 @@ mod tests {
         build_default_test_handler_context, default_test_handler_context_guard, HandlerContext,
     };
     use crate::platform::http_server::router::{
-        IncomingBody, IncomingRequest, OutgoingBody, OutgoingResponse, RouterEnv,
+        IncomingBody, IncomingRequest, OutgoingBody, OutgoingResponse, RestartAction, RouterEnv,
     };
     use crate::runtime::{OperatorMaintenanceAction, OperatorMaintenanceRequest};
     use serde_json::Value;
@@ -1728,6 +1731,22 @@ mod tests {
         }
     }
 
+    fn authed_json_post(uri: &str, body: serde_json::Value) -> IncomingRequest {
+        let csrf = crate::platform::csrf::get_token().expect("csrf token");
+        IncomingRequest {
+            method: "POST".to_string(),
+            uri: uri.to_string(),
+            headers: vec![
+                ("X-Pairing-Code".to_string(), "123456".to_string()),
+                ("X-CSRF-Token".to_string(), csrf),
+                ("Content-Type".to_string(), "application/json".to_string()),
+            ],
+            body: IncomingBody::from_vec(
+                serde_json::to_vec(&body).expect("serialize request body"),
+            ),
+        }
+    }
+
     #[cfg(all(
         feature = "capability_office",
         not(any(target_arch = "xtensa", target_arch = "riscv32"))
@@ -1853,6 +1872,71 @@ mod tests {
         assert_eq!(parsed["llm_sources"][0]["id"], "primary");
         assert!(parsed.get("locale").is_none());
         assert!(parsed.get("build_package").is_none());
+    }
+
+    #[test]
+    fn system_config_save_restarts_when_wifi_runtime_source_changes() {
+        let _guard = default_test_handler_context_guard();
+        let ctx = build_authed_ctx();
+        let env = build_router_env();
+        ctx.update_cached_config(|config| {
+            config.wifi_ssid = "OldNet".to_string();
+            config.wifi_pass = "old-pass".to_string();
+            config.proxy_url.clear();
+        });
+
+        let response = dispatch(
+            &ctx,
+            &env,
+            authed_json_post(
+                "/api/config/system",
+                serde_json::json!({
+                    "wifi_ssid": "NewNet",
+                    "wifi_pass": "new-pass",
+                    "proxy_url": "",
+                    "locale": "zh"
+                }),
+            ),
+        )
+        .expect("dispatch system config save");
+
+        assert_eq!(response.status, 200);
+        assert_eq!(response.restart, RestartAction::After300Ms);
+        let parsed: Value = serde_json::from_slice(response_body(&response)).unwrap();
+        assert_eq!(parsed["restart_required"], true);
+    }
+
+    #[test]
+    fn system_config_locale_only_save_does_not_restart_runtime() {
+        let _guard = default_test_handler_context_guard();
+        let ctx = build_authed_ctx();
+        let env = build_router_env();
+        ctx.update_cached_config(|config| {
+            config.wifi_ssid = "StableNet".to_string();
+            config.wifi_pass = "stable-pass".to_string();
+            config.proxy_url = "http://proxy.local:8080".to_string();
+            config.locale = Some("zh".to_string());
+        });
+
+        let response = dispatch(
+            &ctx,
+            &env,
+            authed_json_post(
+                "/api/config/system",
+                serde_json::json!({
+                    "wifi_ssid": "StableNet",
+                    "wifi_pass": "stable-pass",
+                    "proxy_url": "http://proxy.local:8080",
+                    "locale": "en"
+                }),
+            ),
+        )
+        .expect("dispatch system config save");
+
+        assert_eq!(response.status, 200);
+        assert_eq!(response.restart, RestartAction::None);
+        let parsed: Value = serde_json::from_slice(response_body(&response)).unwrap();
+        assert_eq!(parsed["restart_required"], false);
     }
 
     #[test]

@@ -3,7 +3,7 @@ use crate::bus::{
     CanonicalMessageBody, IngressKind, MessageTransport, OutboundKind, OutboundTx, PcMsg,
     PlatformNativeBody,
 };
-use crate::channel_capability::ChannelDeliveryOrderingModel;
+use crate::channel_capability::{ChannelCapabilityRegistry, ChannelDeliveryOrderingModel};
 use crate::error::Result;
 use crate::i18n::Locale as UiLocale;
 use crate::memory::MemorySystemKind;
@@ -69,6 +69,7 @@ pub(crate) struct DeliverySession<'a> {
     policy: DeliveryPolicy,
     visible_update_contract: VisibleUpdateContract,
     fact_state: DeliveryFactState,
+    ingress_ack_claimed: bool,
 }
 
 enum DeliveryMode<'a> {
@@ -278,6 +279,7 @@ impl<'a> DeliverySession<'a> {
             policy,
             visible_update_contract,
             fact_state: DeliveryFactState::default(),
+            ingress_ack_claimed: msg.suppress_agent_ack_for_ingress_claim(),
         }
     }
 
@@ -299,6 +301,9 @@ impl<'a> DeliverySession<'a> {
 
     pub(crate) fn emit_fact(&mut self, fact: TurnVisibilityFact<'_>) {
         if !self.policy.supports_current_supplemental {
+            return;
+        }
+        if matches!(fact, TurnVisibilityFact::Acknowledged) && self.ingress_ack_claimed {
             return;
         }
         match self.mode {
@@ -765,6 +770,17 @@ impl AppendOnlyVisibilityShared {
                 | ChannelDeliveryOrderingModel::AudioPlayback => return None,
             }
         };
+        let initial_state = if msg.suppress_agent_ack_for_ingress_claim()
+            && matches!(mode, AppendOnlyVisibilityMode::PrivateAck)
+        {
+            AppendOnlyVisibilityState {
+                ack_sent: true,
+                supplemental_emitted: 1,
+                ..AppendOnlyVisibilityState::default()
+            }
+        } else {
+            AppendOnlyVisibilityState::default()
+        };
         let shared = Arc::new(Self {
             delivery: AppendOnlyVisibilityDelivery {
                 channel: Arc::clone(&msg.channel),
@@ -780,7 +796,7 @@ impl AppendOnlyVisibilityShared {
                 contract: AppendOnlyVisibilityContract { loc },
             },
             mode,
-            state: Arc::new(Mutex::new(AppendOnlyVisibilityState::default())),
+            state: Arc::new(Mutex::new(initial_state)),
         });
         if !matches!(shared.mode, AppendOnlyVisibilityMode::AnchoredReaction) {
             shared.register_deadline();
@@ -1319,6 +1335,14 @@ fn send_current_chat_supplemental(
     delivery: &AppendOnlyVisibilityDelivery,
     content: &str,
 ) -> std::result::Result<(), ()> {
+    send_current_chat_supplemental_with_owner(delivery, content, "current_chat_visibility")
+}
+
+fn send_current_chat_supplemental_with_owner(
+    delivery: &AppendOnlyVisibilityDelivery,
+    content: &str,
+    log_owner: &str,
+) -> std::result::Result<(), ()> {
     let mut msg = match PcMsg::new_outbound_for_chat(
         &delivery.channel,
         &delivery.chat_id,
@@ -1347,7 +1371,124 @@ fn send_current_chat_supplemental(
         )
         .with_platform_thread_id(delivery.platform_thread_id.clone());
     msg.outbound_kind = OutboundKind::Visibility;
-    send_reliable_or_best_effort_outbound(&delivery.outbound_tx, msg, "current_chat_visibility")
+    send_reliable_or_best_effort_outbound(&delivery.outbound_tx, msg, log_owner)
+}
+
+pub fn send_ingress_accepted_visibility_ack(
+    msg: &PcMsg,
+    outbound_tx: &OutboundTx,
+    channel_capability_registry: &ChannelCapabilityRegistry,
+    loc: UiLocale,
+) -> bool {
+    if msg.ingress != IngressKind::User || msg.is_group {
+        return false;
+    }
+    let Some(entry) = channel_capability_registry.get(msg.channel.as_ref()) else {
+        return false;
+    };
+    if !entry.enabled
+        || !entry.contract.supports_primary_reply
+        || !entry.contract.supports_supplemental_reply
+        || !matches!(
+            entry.contract.delivery_ordering_model,
+            ChannelDeliveryOrderingModel::AppendOnly
+                | ChannelDeliveryOrderingModel::StatelessWebhook
+                | ChannelDeliveryOrderingModel::SessionSocket
+        )
+    {
+        return false;
+    }
+    let delivery = AppendOnlyVisibilityDelivery {
+        channel: Arc::clone(&msg.channel),
+        chat_id: Arc::clone(&msg.chat_id),
+        req_id: msg.req_id.clone().unwrap_or_default(),
+        is_group: msg.is_group,
+        source_transport: msg.source_transport,
+        platform_thread_id: msg.platform_thread_id.clone(),
+        platform_message_id: msg.platform_message_id.clone(),
+        platform_event_id: msg.platform_event_id.clone(),
+        inbound_dedup_key: msg.inbound_dedup_key.clone(),
+        outbound_tx: outbound_tx.clone(),
+        contract: AppendOnlyVisibilityContract { loc },
+    };
+    let Some(projection) = delivery.contract.private_ack() else {
+        return false;
+    };
+    try_enqueue_current_chat_visibility(&delivery, &projection.text, "ingress_accepted_visibility")
+        .is_ok()
+}
+
+fn try_enqueue_current_chat_visibility(
+    delivery: &AppendOnlyVisibilityDelivery,
+    content: &str,
+    log_owner: &str,
+) -> std::result::Result<(), ()> {
+    let mut msg = match PcMsg::new_outbound_for_chat(
+        &delivery.channel,
+        &delivery.chat_id,
+        content,
+        Some(delivery.req_id.clone()),
+        delivery.is_group,
+    ) {
+        Ok(msg) => msg,
+        Err(error) => {
+            log::warn!(
+                "[agent_delivery] current-chat visibility rejected req_id={} channel={} chat_id={} owner={}: {}",
+                delivery.req_id,
+                delivery.channel,
+                delivery.chat_id,
+                log_owner,
+                error
+            );
+            return Err(());
+        }
+    };
+    msg = msg
+        .with_inbound_provenance(
+            delivery.source_transport,
+            delivery.platform_message_id.clone(),
+            delivery.platform_event_id.clone(),
+            delivery.inbound_dedup_key.clone(),
+        )
+        .with_platform_thread_id(delivery.platform_thread_id.clone());
+    msg.outbound_kind = OutboundKind::Visibility;
+    let req_id = msg.req_id.clone().unwrap_or_default();
+    let channel = msg.channel.clone();
+    let chat_id = msg.chat_id.clone();
+    match delivery.outbound_tx.try_send(msg) {
+        Ok(()) => {
+            metrics::record_message_out();
+            log::info!(
+                "[agent_delivery] foreground_ack event=visibility_enqueued before_llm=true owner={} req_id={} channel={} chat_id={}",
+                log_owner,
+                req_id,
+                channel,
+                chat_id
+            );
+            Ok(())
+        }
+        Err(std::sync::mpsc::TrySendError::Full(_)) => {
+            log::warn!(
+                "[agent_delivery] ingress visibility ack deferred to agent: outbound queue full owner={} req_id={} channel={} chat_id={}",
+                log_owner,
+                req_id,
+                channel,
+                chat_id
+            );
+            Err(())
+        }
+        Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+            metrics::record_outbound_enqueue_fail();
+            log::error!(
+                "[agent_delivery] ingress visibility ack dropped: outbound disconnected owner={} req_id={} channel={} chat_id={}",
+                log_owner,
+                req_id,
+                channel,
+                chat_id
+            );
+            Err(())
+        }
+    }
 }
 
 fn reaction_visibility_enabled(msg: &PcMsg, entry: crate::ChannelCapabilityEntry) -> bool {
@@ -1476,7 +1617,9 @@ fn map_tool_outbound_kind(delivery_kind: ToolOutboundDeliveryKind) -> OutboundKi
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bus::{new_inbound_channel, OutboundKind, TextBody, TextFormat};
+    use crate::bus::{
+        new_inbound_channel, new_user_inbound_channel, OutboundKind, TextBody, TextFormat,
+    };
     use crate::channel_capability::{
         ChannelCapabilityContract, ChannelCapabilityEntry, ChannelDeliveryOrderingModel,
     };
@@ -1651,6 +1794,97 @@ mod tests {
         assert_eq!(delivery.report().append_only_heartbeat_sent, 0);
         assert_eq!(delivery.report().edit_phase_header_updates_sent, 0);
         assert_eq!(delivery.report().partial_updates_sent, 0);
+    }
+
+    #[test]
+    fn ingress_accepted_ack_claim_suppresses_duplicate_ack_but_keeps_progress() {
+        let _guard = delayed_task_test_lock();
+        reset_delayed_tasks();
+        let (user_tx, user_rx, _) = new_user_inbound_channel(1);
+        user_tx.set_after_accepted_user_ingress_hook(|_msg| true);
+        let msg = build_msg("qq_channel").with_inbound_provenance(
+            MessageTransport::Wss,
+            "msg-1",
+            "evt-1",
+            "qq_message:msg-1",
+        );
+
+        user_tx
+            .try_submit_user(
+                msg,
+                crate::runtime::RuntimeForegroundSource::ExternalUserMessage,
+            )
+            .expect("accepted user ingress");
+        let msg = user_rx.try_recv().expect("queued user message");
+        assert!(msg.req_id.is_some());
+        assert!(msg.suppress_agent_ack_for_ingress_claim());
+
+        let (outbound_tx, outbound_rx, _) = new_inbound_channel(8);
+        let mut delivery = DeliverySession::new(
+            &msg,
+            msg.req_id.as_deref().unwrap_or("req-1"),
+            &outbound_tx,
+            None,
+            Some(capability_entry("qq_channel", true, true, false)),
+            MemorySystemKind::LinuxFull,
+            UiLocale::Zh,
+        );
+
+        delivery.emit_fact(TurnVisibilityFact::Acknowledged);
+        assert!(outbound_rx.try_recv().is_err());
+        delivery.emit_fact(TurnVisibilityFact::RunningTool {
+            tool: "board_info",
+            index: 0,
+            total: 1,
+        });
+
+        let progress = outbound_rx.try_recv().expect("first tool milestone");
+        assert_eq!(progress.content, "已进入首个工具执行");
+        assert_eq!(progress.outbound_kind, OutboundKind::Visibility);
+        assert!(outbound_rx.try_recv().is_err());
+        assert_eq!(delivery.report().append_only_ack_sent, 1);
+        assert_eq!(delivery.report().append_only_first_tool_milestone_sent, 1);
+    }
+
+    #[test]
+    fn failed_ingress_accepted_ack_claim_falls_back_to_agent_ack() {
+        let _guard = delayed_task_test_lock();
+        reset_delayed_tasks();
+        let (user_tx, user_rx, _) = new_user_inbound_channel(1);
+        user_tx.set_after_accepted_user_ingress_hook(|_msg| false);
+        let msg = build_msg("qq_channel").with_inbound_provenance(
+            MessageTransport::Wss,
+            "msg-1",
+            "evt-1",
+            "qq_message:msg-1",
+        );
+
+        user_tx
+            .try_submit_user(
+                msg,
+                crate::runtime::RuntimeForegroundSource::ExternalUserMessage,
+            )
+            .expect("accepted user ingress");
+        let msg = user_rx.try_recv().expect("queued user message");
+        assert!(!msg.suppress_agent_ack_for_ingress_claim());
+
+        let (outbound_tx, outbound_rx, _) = new_inbound_channel(8);
+        let mut delivery = DeliverySession::new(
+            &msg,
+            msg.req_id.as_deref().unwrap_or("req-1"),
+            &outbound_tx,
+            None,
+            Some(capability_entry("qq_channel", true, true, false)),
+            MemorySystemKind::LinuxFull,
+            UiLocale::Zh,
+        );
+
+        delivery.emit_fact(TurnVisibilityFact::Acknowledged);
+
+        let ack = outbound_rx.try_recv().expect("agent fallback ack");
+        assert_eq!(ack.content, "已收到，正在处理");
+        assert_eq!(ack.outbound_kind, OutboundKind::Visibility);
+        assert_eq!(delivery.report().append_only_ack_sent, 1);
     }
 
     #[test]

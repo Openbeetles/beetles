@@ -97,6 +97,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::hash::{Hash, Hasher};
+#[cfg(test)]
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::RecvTimeoutError;
 use std::sync::Arc;
@@ -154,26 +155,11 @@ const TASK_EXECUTION_MIN_CHARS: usize = 96;
 const TASK_EXECUTION_MIN_LINES: usize = 3;
 const TASK_EXECUTION_MIN_SEPARATORS: usize = 2;
 const TASK_EXECUTION_ARTIFACT_PREVIEW_LIMIT: usize = 4;
+const INGRESS_VISIBILITY_ACK_SETTLE_MS: u64 = 5;
 
 /// 程序性会话摘要：单次轻量 LLM 调用的 system 提示。
 /// 同一 chat_id 的 "low memory, defer" 日志最少间隔，避免刷屏。
 const LOW_MEM_DEFER_LOG_INTERVAL: Duration = Duration::from_secs(60);
-static REQ_SEQ: AtomicU32 = AtomicU32::new(1);
-
-fn next_req_id(channel: &str, chat_id: &str) -> String {
-    let seq = REQ_SEQ.fetch_add(1, Ordering::Relaxed);
-    let ts_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis();
-    let mut hasher = DefaultHasher::new();
-    channel.hash(&mut hasher);
-    chat_id.hash(&mut hasher);
-    let short = (hasher.finish() & 0xffff) as u16;
-    let mut s = String::with_capacity(40);
-    let _ = write!(&mut s, "r{}-{}-{:04x}", ts_ms, seq, short);
-    s
-}
 
 fn now_unix_ms() -> u64 {
     std::time::SystemTime::now()
@@ -1956,9 +1942,10 @@ fn run_agent_loop_main(
         crate::platform::task_wdt::feed_current_task();
         let loc = (config.resolve_locale)();
         let msg_start = Instant::now();
-        if msg.req_id.is_none() {
-            msg.req_id = Some(next_req_id(&msg.channel, &msg.chat_id));
-        }
+        msg.ensure_req_id();
+        msg.settle_ingress_visibility_ack_claim(Duration::from_millis(
+            INGRESS_VISIBILITY_ACK_SETTLE_MS,
+        ));
         // Periodic GC: evict expired failure/defer entries to prevent unbounded growth.
         msg_since_gc += 1;
         if msg_since_gc >= GC_INTERVAL_MSGS

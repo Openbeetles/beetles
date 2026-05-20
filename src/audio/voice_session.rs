@@ -279,6 +279,11 @@ fn spawn_voice_session_worker(
             let VoiceWorkerTask::WakeInteraction(handoff) = task else {
                 return Ok(VoiceWorkerStartResult::Dropped);
             };
+            if let Some(retry_after_ms) = voice_realtime_startup_defer_ms(
+                crate::runtime::runtime_startup_readiness_snapshot(),
+            ) {
+                return Ok(VoiceWorkerStartResult::Deferred { retry_after_ms });
+            }
             spawn_guarded_with_profile_handle(
                 "voice_realtime_connect",
                 STACK_VOICE_REALTIME_CONNECT,
@@ -289,6 +294,21 @@ fn spawn_voice_session_worker(
             .map(VoiceWorkerStartResult::Started)
             .map_err(|error| crate::Error::io("voice_realtime_connect_spawn", error))
         }
+    }
+}
+
+fn voice_realtime_startup_defer_ms(
+    readiness: crate::runtime::RuntimeStartupReadiness,
+) -> Option<u64> {
+    if readiness.allow_voice_realtime_connect {
+        None
+    } else {
+        log::debug!(
+            "[{}] defer realtime voice worker start: {}",
+            TAG,
+            readiness.worker_block_reason()
+        );
+        Some(1_000)
     }
 }
 
@@ -1057,6 +1077,28 @@ mod tests {
             pending.wake_handoff.is_some(),
             "scheduler defer must retain auto wake instead of dropping the voice interaction"
         );
+    }
+
+    #[test]
+    fn realtime_voice_startup_gate_defers_before_transport_ownership() {
+        let retry_after_ms =
+            voice_realtime_startup_defer_ms(crate::runtime::RuntimeStartupReadiness {
+                phase: crate::runtime::RuntimeStartupPhase::LocalRuntimeAssembled,
+                reason: "wifi_not_ready",
+                network_reason: crate::runtime::RuntimeStartupNetworkReason::WifiNotReady,
+                allow_config_recovery_routes: true,
+                allow_default_status_routes: true,
+                allow_external_wss_worker: false,
+                allow_agent_heavy_execution: false,
+                allow_channel_outbound_worker: false,
+                allow_voice_realtime_connect: false,
+                allow_write_back_worker: false,
+                allow_display_status_surface: true,
+                allow_display_heavy_refresh: true,
+                config_worker_floor_available: true,
+            });
+
+        assert_eq!(retry_after_ms, Some(1_000));
     }
 
     #[test]

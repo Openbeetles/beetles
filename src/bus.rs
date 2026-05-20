@@ -4,9 +4,13 @@
 use crate::error::{Error, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::collections::hash_map::DefaultHasher;
+use std::fmt::Write as _;
+use std::hash::{Hash, Hasher};
+use std::sync::atomic::{AtomicU32, AtomicU8, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 pub use crate::constants::{DEFAULT_CAPACITY, MAX_CONTENT_LEN};
 pub use crate::util::{truncate_content_to_max, truncate_to_byte_len};
@@ -414,6 +418,84 @@ impl OutboundKind {
     }
 }
 
+const INGRESS_VISIBILITY_ACK_PENDING: u8 = 0;
+const INGRESS_VISIBILITY_ACK_CLAIMING: u8 = 1;
+const INGRESS_VISIBILITY_ACK_SENT: u8 = 2;
+const INGRESS_VISIBILITY_ACK_FAILED: u8 = 3;
+
+/// Transient claim that an accepted user ingress already owns the first visibility ack.
+/// It is intentionally not serialized; pending-retry replay falls back to normal agent ack.
+#[derive(Clone, Debug, Default)]
+pub struct IngressVisibilityAckClaim {
+    state: Option<Arc<AtomicU8>>,
+}
+
+impl PartialEq for IngressVisibilityAckClaim {
+    fn eq(&self, other: &Self) -> bool {
+        self.status_for_eq() == other.status_for_eq()
+    }
+}
+
+impl Eq for IngressVisibilityAckClaim {}
+
+impl IngressVisibilityAckClaim {
+    fn pending() -> Self {
+        Self {
+            state: Some(Arc::new(AtomicU8::new(INGRESS_VISIBILITY_ACK_PENDING))),
+        }
+    }
+
+    fn status_for_eq(&self) -> Option<u8> {
+        self.state
+            .as_ref()
+            .map(|state| state.load(Ordering::Relaxed))
+    }
+
+    fn is_disabled(&self) -> bool {
+        self.state.is_none()
+    }
+
+    fn mark_claiming(&self) {
+        if let Some(state) = self.state.as_ref() {
+            state.store(INGRESS_VISIBILITY_ACK_CLAIMING, Ordering::Release);
+        }
+    }
+
+    fn mark_sent(&self) {
+        if let Some(state) = self.state.as_ref() {
+            state.store(INGRESS_VISIBILITY_ACK_SENT, Ordering::Release);
+        }
+    }
+
+    fn mark_failed(&self) {
+        if let Some(state) = self.state.as_ref() {
+            state.store(INGRESS_VISIBILITY_ACK_FAILED, Ordering::Release);
+        }
+    }
+
+    fn suppress_agent_ack(&self) -> bool {
+        self.state
+            .as_ref()
+            .is_some_and(|state| state.load(Ordering::Acquire) == INGRESS_VISIBILITY_ACK_SENT)
+    }
+
+    fn settle_before_agent_ack(&self, max_wait: Duration) {
+        let Some(state) = self.state.as_ref() else {
+            return;
+        };
+        let deadline = Instant::now() + max_wait;
+        while matches!(
+            state.load(Ordering::Acquire),
+            INGRESS_VISIBILITY_ACK_PENDING | INGRESS_VISIBILITY_ACK_CLAIMING
+        ) {
+            if Instant::now() >= deadline {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+}
+
 /// 总线消息。入队前需校验 `content.len() <= MAX_CONTENT_LEN`。可序列化供 pending_retry 持久化。
 /// channel/chat_id 用 Arc<str> 减少 clone 开销。
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -456,6 +538,10 @@ pub struct PcMsg {
     pub inbound_dedup_key: String,
     /// 是否来自群组（group/supergroup）；用于 system 注入与 SILENT 约定。
     pub is_group: bool,
+    /// 入站接受层是否已经承接首个可见 ack；瞬态运行态，不进入 pending retry。
+    #[serde(skip)]
+    #[doc(hidden)]
+    pub ingress_visibility_ack: IngressVisibilityAckClaim,
 }
 
 #[derive(Deserialize)]
@@ -517,6 +603,7 @@ impl<'de> Deserialize<'de> for PcMsg {
             platform_event_id: raw.platform_event_id,
             inbound_dedup_key: raw.inbound_dedup_key,
             is_group: raw.is_group,
+            ingress_visibility_ack: IngressVisibilityAckClaim::default(),
         })
     }
 }
@@ -534,6 +621,23 @@ fn current_unix_ms() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis().min(u64::MAX as u128) as u64)
         .unwrap_or(0)
+}
+
+static REQ_SEQ: AtomicU32 = AtomicU32::new(1);
+
+fn next_req_id(channel: &str, chat_id: &str) -> String {
+    let seq = REQ_SEQ.fetch_add(1, Ordering::Relaxed);
+    let ts_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let mut hasher = DefaultHasher::new();
+    channel.hash(&mut hasher);
+    chat_id.hash(&mut hasher);
+    let short = (hasher.finish() & 0xffff) as u16;
+    let mut s = String::with_capacity(40);
+    let _ = write!(&mut s, "r{}-{}-{:04x}", ts_ms, seq, short);
+    s
 }
 
 fn serialize_arc_str<S>(arc: &Arc<str>, serializer: S) -> std::result::Result<S::Ok, S::Error>
@@ -582,6 +686,7 @@ impl PcMsg {
             platform_event_id: String::new(),
             inbound_dedup_key: String::new(),
             is_group,
+            ingress_visibility_ack: IngressVisibilityAckClaim::default(),
         })
     }
 
@@ -788,6 +893,29 @@ impl PcMsg {
         self
     }
 
+    pub fn ensure_req_id(&mut self) -> &str {
+        if self.req_id.is_none() {
+            self.req_id = Some(next_req_id(&self.channel, &self.chat_id));
+        }
+        self.req_id.as_deref().unwrap_or_default()
+    }
+
+    fn ensure_ingress_visibility_ack_claim(&mut self) -> IngressVisibilityAckClaim {
+        if self.ingress_visibility_ack.is_disabled() {
+            self.ingress_visibility_ack = IngressVisibilityAckClaim::pending();
+        }
+        self.ingress_visibility_ack.clone()
+    }
+
+    pub(crate) fn suppress_agent_ack_for_ingress_claim(&self) -> bool {
+        self.ingress_visibility_ack.suppress_agent_ack()
+    }
+
+    pub(crate) fn settle_ingress_visibility_ack_claim(&self, max_wait: Duration) {
+        self.ingress_visibility_ack
+            .settle_before_agent_ack(max_wait);
+    }
+
     pub fn with_platform_thread_id(mut self, platform_thread_id: impl Into<String>) -> Self {
         self.platform_thread_id = platform_thread_id.into();
         self
@@ -948,26 +1076,86 @@ pub type UserInboundRx = InboundRx;
 pub type SystemInboundRx = InboundRx;
 
 /// User inbound queue sender. Successful user submissions renew runtime foreground.
+type AcceptedUserIngressHook = Arc<dyn Fn(PcMsg) -> bool + Send + Sync>;
+
 #[derive(Clone)]
 pub struct UserInboundTx {
     inner: InboundTx,
+    after_accepted_user_ingress: Arc<Mutex<Option<AcceptedUserIngressHook>>>,
 }
 
 impl UserInboundTx {
     pub fn new(inner: InboundTx) -> Self {
-        Self { inner }
+        Self {
+            inner,
+            after_accepted_user_ingress: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    pub fn set_after_accepted_user_ingress_hook<F>(&self, hook: F)
+    where
+        F: Fn(PcMsg) -> bool + Send + Sync + 'static,
+    {
+        *self
+            .after_accepted_user_ingress
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(Arc::new(hook));
+    }
+
+    fn accepted_user_ingress_hook(&self) -> Option<AcceptedUserIngressHook> {
+        self.after_accepted_user_ingress
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone()
+    }
+
+    fn prepare_accepted_user_ingress_observer(
+        &self,
+        msg: &mut PcMsg,
+        source: crate::runtime::RuntimeForegroundSource,
+    ) -> Option<(AcceptedUserIngressHook, PcMsg, IngressVisibilityAckClaim)> {
+        if msg.ingress != IngressKind::User
+            || source != crate::runtime::RuntimeForegroundSource::ExternalUserMessage
+        {
+            return None;
+        }
+        let hook = self.accepted_user_ingress_hook()?;
+        msg.ensure_req_id();
+        let ack_claim = msg.ensure_ingress_visibility_ack_claim();
+        Some((hook, msg.clone(), ack_claim))
+    }
+
+    fn notify_accepted_user_ingress(
+        observer: Option<(AcceptedUserIngressHook, PcMsg, IngressVisibilityAckClaim)>,
+    ) {
+        let Some((hook, msg, ack_claim)) = observer else {
+            return;
+        };
+        ack_claim.mark_claiming();
+        if hook(msg) {
+            ack_claim.mark_sent();
+        } else {
+            ack_claim.mark_failed();
+        }
     }
 
     #[allow(clippy::result_large_err)]
     pub fn send_user(
         &self,
-        msg: PcMsg,
+        mut msg: PcMsg,
         source: crate::runtime::RuntimeForegroundSource,
     ) -> std::result::Result<(), mpsc::SendError<PcMsg>> {
         let should_renew = msg.ingress == IngressKind::User;
+        if should_renew {
+            msg.ensure_req_id();
+        }
+        let observer = self.prepare_accepted_user_ingress_observer(&mut msg, source);
         let result = self.inner.send(msg);
         if result.is_ok() && should_renew {
             crate::runtime::renew_runtime_foreground_now(source);
+        }
+        if result.is_ok() {
+            Self::notify_accepted_user_ingress(observer);
         }
         result
     }
@@ -975,13 +1163,20 @@ impl UserInboundTx {
     #[allow(clippy::result_large_err)]
     pub fn try_submit_user(
         &self,
-        msg: PcMsg,
+        mut msg: PcMsg,
         source: crate::runtime::RuntimeForegroundSource,
     ) -> std::result::Result<(), mpsc::TrySendError<PcMsg>> {
         let should_renew = msg.ingress == IngressKind::User;
+        if should_renew {
+            msg.ensure_req_id();
+        }
+        let observer = self.prepare_accepted_user_ingress_observer(&mut msg, source);
         let result = self.inner.try_send(msg);
         if should_renew && !matches!(result, Err(mpsc::TrySendError::Disconnected(_))) {
             crate::runtime::renew_runtime_foreground_now(source);
+        }
+        if result.is_ok() {
+            Self::notify_accepted_user_ingress(observer);
         }
         result
     }
@@ -999,14 +1194,21 @@ impl UserInboundTx {
     #[allow(clippy::result_large_err)]
     pub fn try_submit_user_at(
         &self,
-        msg: PcMsg,
+        mut msg: PcMsg,
         source: crate::runtime::RuntimeForegroundSource,
         now_ms: u64,
     ) -> std::result::Result<(), mpsc::TrySendError<PcMsg>> {
         let should_renew = msg.ingress == IngressKind::User;
+        if should_renew {
+            msg.ensure_req_id();
+        }
+        let observer = self.prepare_accepted_user_ingress_observer(&mut msg, source);
         let result = self.inner.try_send(msg);
         if should_renew && !matches!(result, Err(mpsc::TrySendError::Disconnected(_))) {
             crate::runtime::renew_runtime_foreground(source, now_ms);
+        }
+        if result.is_ok() {
+            Self::notify_accepted_user_ingress(observer);
         }
         result
     }
@@ -1289,6 +1491,35 @@ mod tests {
             snapshot.primary_source,
             Some(crate::runtime::RuntimeForegroundSource::ExternalUserMessage)
         );
+    }
+
+    #[test]
+    fn accepted_user_ingress_hook_claims_visibility_ack_after_successful_enqueue() {
+        let _guard = crate::runtime::foreground::runtime_foreground_test_guard();
+        crate::runtime::foreground::reset_runtime_foreground_for_tests();
+        let (tx, rx, _) = new_user_inbound_channel(1);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let hook_calls = Arc::clone(&calls);
+        tx.set_after_accepted_user_ingress_hook(move |msg| {
+            assert_eq!(msg.channel.as_ref(), "qq_channel");
+            assert!(msg.req_id.is_some());
+            hook_calls.fetch_add(1, Ordering::Relaxed);
+            true
+        });
+        let msg = PcMsg::new_inbound("qq_channel", "chat-1", "hello", false)
+            .expect("user message")
+            .with_inbound_provenance(MessageTransport::Wss, "m1", "e1", "k1");
+
+        tx.try_submit_user(
+            msg,
+            crate::runtime::RuntimeForegroundSource::ExternalUserMessage,
+        )
+        .expect("accepted user message");
+
+        let queued = rx.try_recv().expect("queued user message");
+        assert!(queued.req_id.is_some());
+        assert!(queued.suppress_agent_ack_for_ingress_claim());
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
     }
 
     #[test]

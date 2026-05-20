@@ -148,6 +148,28 @@ if ! rg -n 'foreground_ack_missing_before_llm' scripts/esp_soak_analyze.sh scrip
   exit 1
 fi
 
+if ! rg -n 'pub mod startup' src/runtime/mod.rs >/dev/null ||
+   ! rg -n 'pub struct RuntimeStartupReadiness' src/runtime/startup.rs >/dev/null ||
+   ! rg -n 'runtime_startup_readiness_snapshot' src/runtime/startup.rs src/runtime/mod.rs >/dev/null ||
+   ! rg -n 'service_runtime_startup_readiness' src/bg_timer.rs src/runtime/startup.rs >/dev/null ||
+   ! rg -n 'runtime_startup_readiness_snapshot' src/runtime/channel_wss_supervision.rs src/channels/wss_gateway/loop.rs >/dev/null ||
+   ! rg -n 'allow_channel_outbound_worker' src/channels/dispatch.rs >/dev/null ||
+   ! rg -n 'allow_voice_realtime_connect' src/audio/voice_session.rs >/dev/null ||
+   ! rg -n 'allow_write_back_worker' src/runtime/write_back.rs >/dev/null ||
+   ! rg -n 'register_deferred_agent_loop_guard' src/main.rs src/runtime/agent_supervision.rs >/dev/null ||
+   ! rg -n 'schedule_deferred_sender_thread' src/channels/dispatch.rs >/dev/null ||
+   ! rg -n 'schedule_deferred_required_planned_thread' src/main.rs >/dev/null ||
+   ! rg -n 'runtime_startup' src/platform/http_server/handlers/health.rs >/dev/null; then
+  echo "FAIL: startup order governance must route worker start gates through RuntimeStartupReadiness" >&2
+  exit 1
+fi
+
+if prod_source src/main.rs | rg -n 'agent_loop waiting for WiFi|set_boot_phase_active\(false\)' >/dev/null; then
+  echo "FAIL: agent_loop must not wait for WiFi inside the heavy thread and boot phase must only clear via startup readiness" >&2
+  prod_source src/main.rs | rg -n 'agent_loop waiting for WiFi|set_boot_phase_active\(false\)' >&2
+  exit 1
+fi
+
 if ! rg -n 'runtime_scheduler_decision class=' src/runtime/scheduler.rs >/dev/null ||
    ! rg -n 'foreground_ack event=visibility_enqueued' src/agent/delivery.rs src/agent/loop.rs >/dev/null ||
    ! rg -n 'primary_delivery event=outbound_enqueued delivered=true' src/agent/delivery.rs src/agent/loop.rs >/dev/null ||

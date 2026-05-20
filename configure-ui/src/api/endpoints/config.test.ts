@@ -7,6 +7,7 @@ import {
   getLlm,
   getProviders,
   saveLlm,
+  saveSystem,
   getSystem,
 } from "./config.ts";
 
@@ -48,6 +49,40 @@ test("getSystem GETs the dedicated system segment endpoint", async () => {
       {
         url: "http://device/api/config/system",
         method: "GET",
+        pairing: "123456",
+      },
+    ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("saveSystem preserves restart_required from device response", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls: Array<{ url: string; method: string; pairing: string | null }> = [];
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const headers = new Headers(init?.headers);
+    calls.push({
+      url: String(input),
+      method: init?.method ?? "GET",
+      pairing: headers.get("x-pairing-code"),
+    });
+    return jsonResponse({ ok: true, restart_required: true });
+  }) as typeof fetch;
+
+  try {
+    const result = await saveSystem("http://device", "123456", {
+      wifi_ssid: "BeetleNet",
+      wifi_pass: "secret-pass",
+      proxy_url: "",
+      locale: "zh",
+    });
+    assert.equal(result.ok, true);
+    assert.equal(result.data?.restart_required, true);
+    assert.deepEqual(calls, [
+      {
+        url: "http://device/api/config/system",
+        method: "POST",
         pairing: "123456",
       },
     ]);

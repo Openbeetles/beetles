@@ -112,20 +112,56 @@ pub fn post_channels(ctx: &HandlerContext, body: &str) -> Result<ApiResponse, st
     }
 }
 
+pub struct SystemConfigSaveOutcome {
+    pub response: ApiResponse,
+    pub restart_required: bool,
+}
+
+fn system_segment_requires_runtime_restart(
+    config: &crate::config::AppConfig,
+    segment: &config::SystemSegment,
+) -> bool {
+    config.wifi_ssid != segment.wifi_ssid
+        || config.wifi_pass != segment.wifi_pass
+        || config.proxy_url != segment.proxy_url
+}
+
 /// POST /api/config/system：仅写系统段（wifi/proxy/locale），body 为 SystemSegment JSON。
-pub fn post_system(ctx: &HandlerContext, body: &str) -> Result<ApiResponse, std::io::Error> {
+pub fn post_system(
+    ctx: &HandlerContext,
+    body: &str,
+) -> Result<SystemConfigSaveOutcome, std::io::Error> {
     let segment: config::SystemSegment = match serde_json::from_str(body) {
         Ok(segment) => segment,
-        Err(_) => return Ok(ApiResponse::err_400_key(api_contract::COMMON_INVALID_JSON)),
+        Err(_) => {
+            return Ok(SystemConfigSaveOutcome {
+                response: ApiResponse::err_400_key(api_contract::COMMON_INVALID_JSON),
+                restart_required: false,
+            });
+        }
+    };
+    let restart_required = {
+        let current = ctx.config();
+        system_segment_requires_runtime_restart(&current, &segment)
     };
     match config::save_system_segment_value_to_nvs(ctx.config_store.as_ref(), &segment) {
         Ok(()) => {
             ctx.update_cached_config(|config| {
                 config::apply_system_segment_to_config(config, &segment);
             });
-            Ok(ApiResponse::ok_200_json("{\"ok\":true}"))
+            Ok(SystemConfigSaveOutcome {
+                response: if restart_required {
+                    ApiResponse::ok_200_json(r#"{"ok":true,"restart_required":true}"#)
+                } else {
+                    ApiResponse::ok_200_json(r#"{"ok":true,"restart_required":false}"#)
+                },
+                restart_required,
+            })
         }
-        Err(e) => Ok(ApiResponse::err_400_key(api_contract::error_key(&e))),
+        Err(e) => Ok(SystemConfigSaveOutcome {
+            response: ApiResponse::err_400_key(api_contract::error_key(&e)),
+            restart_required: false,
+        }),
     }
 }
 
@@ -750,7 +786,8 @@ mod tests {
         )
         .expect("post_system response");
 
-        assert_eq!(response.status, 400);
+        assert_eq!(response.response.status, 400);
+        assert!(!response.restart_required);
     }
 
     #[test]
@@ -802,13 +839,45 @@ mod tests {
         )
         .expect("post_system response");
 
-        assert_eq!(response.status, 200);
+        assert_eq!(response.response.status, 200);
+        assert!(response.restart_required);
+        let parsed: Value = serde_json::from_slice(&response.response.body).unwrap();
+        assert_eq!(parsed["restart_required"], true);
         let config = ctx.config();
         assert_eq!(config.wifi_ssid, "BeetleNet");
         assert_eq!(config.wifi_pass, "secret-pass");
         assert_eq!(config.proxy_url, "http://proxy.local:8080");
         assert_eq!(config.tg_group_activation, "mention");
         assert_eq!(config.locale.as_deref(), Some("en"));
+    }
+
+    #[test]
+    fn post_system_locale_only_change_does_not_restart_wifi_worker() {
+        let mut ctx = build_test_context();
+        ctx.config_file_store = Arc::new(PanicConfigFileStore);
+        ctx.update_cached_config(|config| {
+            config.wifi_ssid = "BeetleNet".to_string();
+            config.wifi_pass = "secret-pass".to_string();
+            config.proxy_url = "http://proxy.local:8080".to_string();
+            config.locale = Some("zh".to_string());
+        });
+
+        let response = post_system(
+            &ctx,
+            r#"{
+                "wifi_ssid":"BeetleNet",
+                "wifi_pass":"secret-pass",
+                "proxy_url":"http://proxy.local:8080",
+                "locale":"en"
+            }"#,
+        )
+        .expect("post_system response");
+
+        assert_eq!(response.response.status, 200);
+        assert!(!response.restart_required);
+        let parsed: Value = serde_json::from_slice(&response.response.body).unwrap();
+        assert_eq!(parsed["restart_required"], false);
+        assert_eq!(ctx.config().locale.as_deref(), Some("en"));
     }
 
     #[test]

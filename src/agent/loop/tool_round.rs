@@ -1,6 +1,7 @@
 #![allow(clippy::too_many_arguments)]
 
 use super::*;
+use std::fmt::Write as _;
 
 fn tool_failure_kind_from_outcome(
     failure_kind: crate::tools::ToolExecutionFailureKind,

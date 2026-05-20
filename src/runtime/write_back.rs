@@ -359,6 +359,12 @@ fn has_starved_durable_write_back_job(state: &WriteBackQueueState, now: Instant)
     })
 }
 
+fn has_due_user_timer_write_back_job(state: &WriteBackQueueState, now: Instant) -> bool {
+    state.jobs.iter().any(|job| {
+        job.due_at <= now && job.work_class == crate::runtime::RuntimeWorkClass::DueUserTimer
+    })
+}
+
 fn next_pending_write_back_wait(now: Instant) -> Option<Duration> {
     let scheduler = write_back_scheduler();
     let state = scheduler.state.lock().unwrap_or_else(|e| e.into_inner());
@@ -732,10 +738,38 @@ fn write_back_admission_delay() -> Option<WriteBackAdmissionWait> {
         2 => return None,
         _ => {}
     }
+    if let Some(wait) = write_back_startup_admission_delay() {
+        return Some(wait);
+    }
     #[cfg(not(test))]
     crate::orchestrator::update_heap_state();
     let resource = crate::orchestrator::snapshot();
     write_back_admission_delay_for_resource_now(&resource, crate::runtime::config_activity_active())
+}
+
+fn write_back_startup_admission_delay() -> Option<WriteBackAdmissionWait> {
+    let readiness = crate::runtime::runtime_startup_readiness_snapshot();
+    let scheduler = write_back_scheduler();
+    let mut state = scheduler.state.lock().unwrap_or_else(|e| e.into_inner());
+    let now = Instant::now();
+    let has_due_user_timer = has_due_user_timer_write_back_job(&state, now);
+    if write_back_startup_allows_worker(readiness, has_due_user_timer) {
+        return None;
+    }
+    state.quiet_started_at = None;
+    Some(record_next_write_back_attempt(
+        &mut state,
+        now,
+        Duration::from_millis(WRITE_BACK_RETRY_BACKOFF_MS),
+    ))
+}
+
+fn write_back_startup_allows_worker(
+    readiness: crate::runtime::RuntimeStartupReadiness,
+    has_due_user_timer: bool,
+) -> bool {
+    readiness.allow_write_back_worker
+        || (has_due_user_timer && readiness.allow_default_status_routes)
 }
 
 fn write_back_admission_delay_for_resource_now(
@@ -5164,6 +5198,34 @@ mod tests {
         );
 
         WRITE_BACK_TEST_AUTO_SERVICE.store(false, Ordering::Release);
+    }
+
+    #[test]
+    fn startup_readiness_allows_local_write_back_without_network_readiness() {
+        let readiness = crate::runtime::RuntimeStartupReadiness {
+            phase: crate::runtime::RuntimeStartupPhase::LocalRuntimeAssembled,
+            reason: "wifi_not_ready",
+            network_reason: crate::runtime::RuntimeStartupNetworkReason::WifiNotReady,
+            allow_config_recovery_routes: true,
+            allow_default_status_routes: true,
+            allow_external_wss_worker: false,
+            allow_agent_heavy_execution: false,
+            allow_channel_outbound_worker: false,
+            allow_voice_realtime_connect: false,
+            allow_write_back_worker: true,
+            allow_display_status_surface: true,
+            allow_display_heavy_refresh: true,
+            config_worker_floor_available: true,
+        };
+
+        assert!(
+            write_back_startup_allows_worker(readiness, false),
+            "durable write-back is a local storage plane and must not wait for WiFi/IP readiness"
+        );
+        assert!(
+            write_back_startup_allows_worker(readiness, true),
+            "DueUserTimer work may claim user-visible due state, while durable jobs stay batched by the worker drain selector"
+        );
     }
 
     #[test]

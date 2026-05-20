@@ -26,7 +26,7 @@ export interface ConfigContextValue {
   clearCachedSystemConfig: () => void
   saveLlm: (body: LlmConfigSegment) => Promise<{ ok: boolean; error?: string }>
   saveChannels: (body: ChannelsConfigSegment) => Promise<{ ok: boolean; error?: string }>
-  saveSystem: (body: SystemConfigSegment) => Promise<{ ok: boolean; error?: string }>
+  saveSystem: (body: SystemConfigSegment) => Promise<{ ok: boolean; error?: string; restartRequired?: boolean }>
   displayConfig: DisplayConfig | null
   displayLoading: boolean
   displayError: string | null

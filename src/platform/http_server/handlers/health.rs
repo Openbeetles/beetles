@@ -29,6 +29,7 @@ struct CurrentChannelHealth {
 #[derive(serde::Serialize)]
 struct HealthBody {
     status: &'static str,
+    runtime_startup: StartupHealthStatus,
     network_status: NetworkHealthStatus,
     last_error: String,
     current_channel: CurrentChannelHealth,
@@ -44,6 +45,16 @@ struct NetworkHealthStatus {
     wall_clock_trustworthy: bool,
 }
 
+#[derive(serde::Serialize)]
+struct StartupHealthStatus {
+    phase: crate::runtime::RuntimeStartupPhase,
+    reason: &'static str,
+    network_reason: crate::runtime::RuntimeStartupNetworkReason,
+    allow_config_recovery_routes: bool,
+    allow_default_status_routes: bool,
+    allow_display_status_surface: bool,
+}
+
 /// 生成 health JSON body（轻量状态摘要，无敏感信息）。
 pub fn body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
     crate::platform::refresh_runtime_state();
@@ -53,6 +64,7 @@ pub fn body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
         crate::platform::time::wall_clock_is_trustworthy(),
         3,
     );
+    let startup = crate::runtime::runtime_startup_readiness_snapshot();
     let audio_caps = if crate::compiled_voice_capability() {
         ctx.platform.audio_duplex_capabilities()
     } else {
@@ -64,6 +76,14 @@ pub fn body(ctx: &HandlerContext) -> Result<String, std::io::Error> {
     };
     let payload = HealthBody {
         status,
+        runtime_startup: StartupHealthStatus {
+            phase: startup.phase,
+            reason: startup.reason,
+            network_reason: startup.network_reason,
+            allow_config_recovery_routes: startup.allow_config_recovery_routes,
+            allow_default_status_routes: startup.allow_default_status_routes,
+            allow_display_status_surface: startup.allow_display_status_surface,
+        },
         network_status: NetworkHealthStatus {
             stage: network.last_wifi_stage,
             sta_connected: network.sta_ip_present,
@@ -126,6 +146,7 @@ mod tests {
         );
         assert!(parsed.get("display").is_some());
         assert!(parsed.get("audio").is_some());
+        assert!(parsed.get("runtime_startup").is_some());
         assert!(parsed.get("network_status").is_some());
         assert!(parsed.get("last_error").is_some());
         assert_eq!(
@@ -141,6 +162,9 @@ mod tests {
             Some(false)
         );
         assert!(parsed["network_status"].get("wall_clock_trusted").is_some());
+        assert!(parsed["runtime_startup"].get("phase").is_some());
+        assert!(parsed["runtime_startup"].get("reason").is_some());
+        assert!(parsed["runtime_startup"].get("network_reason").is_some());
         assert!(parsed["display"]["available"].is_boolean());
         assert!(parsed["audio"]["duplex_profile"].is_string());
         assert!(parsed["audio"]["duplex_capabilities"]

@@ -391,9 +391,9 @@ mod tests {
                 allow_heartbeat_injection: false,
                 allow_best_effort_delayed_tasks: false,
                 allow_idle_self_runtime: false,
-                allow_non_voice_outbound: true,
+                allow_non_voice_outbound: false,
                 allow_realtime_voice_connect: false,
-                allow_external_wss_connect: true,
+                allow_external_wss_connect: false,
                 require_external_wss_suspended: false,
             },
             RuntimeMode::Normal => RuntimeModeActionBudget {

@@ -1608,12 +1608,32 @@ impl LazyOsOutboundSupervisor {
     }
 
     pub fn service(&self, tag: &str) {
+        self.service_with_startup_readiness(
+            tag,
+            crate::runtime::runtime_startup_readiness_snapshot(),
+        );
+    }
+
+    fn service_with_startup_readiness(
+        &self,
+        tag: &str,
+        startup_readiness: crate::runtime::RuntimeStartupReadiness,
+    ) {
         let mut worker_handle = self
             .worker_handle
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         self.cleanup_finished_worker(&mut worker_handle);
         if worker_handle.is_some() {
+            return;
+        }
+
+        if !startup_readiness.allow_channel_outbound_worker {
+            log::debug!(
+                "[{}] defer os_outbound worker start: {}",
+                tag,
+                startup_readiness.worker_block_reason()
+            );
             return;
         }
 
@@ -1977,8 +1997,30 @@ pub fn build_channel_sinks(
     feature = "qq_channel"
 ))]
 fn spawn_sender_thread<F>(
-    tag: &str,
-    started_label: &str,
+    tag: &'static str,
+    started_label: &'static str,
+    stage: &'static str,
+    spawn: F,
+) -> Result<()>
+where
+    F: FnOnce() -> std::io::Result<crate::util::TaskHandle> + Send + 'static,
+{
+    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+    if !crate::runtime::runtime_startup_readiness_snapshot().allow_channel_outbound_worker {
+        return schedule_deferred_sender_thread(tag, started_label, stage, spawn);
+    }
+    spawn_sender_thread_now(tag, started_label, stage, spawn)
+}
+
+#[cfg(any(
+    feature = "telegram",
+    feature = "feishu",
+    feature = "dingtalk",
+    feature = "qq_channel"
+))]
+fn spawn_sender_thread_now<F>(
+    tag: &'static str,
+    started_label: &'static str,
     stage: &'static str,
     spawn: F,
 ) -> Result<()>
@@ -1989,6 +2031,50 @@ where
     log::info!("[{}] {}", tag, started_label);
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
     crate::orchestrator::log_startup_memory_checkpoint(stage);
+    Ok(())
+}
+
+#[cfg(all(
+    any(target_arch = "xtensa", target_arch = "riscv32"),
+    any(
+        feature = "telegram",
+        feature = "feishu",
+        feature = "dingtalk",
+        feature = "qq_channel"
+    )
+))]
+fn schedule_deferred_sender_thread<F>(
+    tag: &'static str,
+    started_label: &'static str,
+    stage: &'static str,
+    spawn: F,
+) -> Result<()>
+where
+    F: FnOnce() -> std::io::Result<crate::util::TaskHandle> + Send + 'static,
+{
+    let retry_at = Instant::now() + Duration::from_secs(1);
+    crate::runtime::schedule_critical_delayed_task(
+        retry_at,
+        Box::new(move || {
+            if let Err(error) = spawn_sender_thread(tag, started_label, stage, spawn) {
+                log::error!(
+                    "[{}] deferred sender thread start failed stage={}: {}",
+                    tag,
+                    stage,
+                    error
+                );
+                crate::metrics::record_runtime_spawn_failure();
+            }
+        }),
+    )
+    .map_err(|_| {
+        crate::error::Error::config(stage, "deferred sender start retry schedule failed")
+    })?;
+    log::info!(
+        "[{}] defer sender thread start stage={} until startup outbound network is ready",
+        tag,
+        stage
+    );
     Ok(())
 }
 
@@ -2295,6 +2381,66 @@ mod tests {
                 .unwrap_or_else(|error| error.into_inner())
                 .is_empty(),
             "all pending outbound UX messages must move into one worker handoff"
+        );
+    }
+
+    #[test]
+    fn lazy_supervisor_start_gate_preserves_pending_fifo_before_network_ready() {
+        let (_bus, _inbound_rx, outbound_rx) = crate::bus::MessageBus::new(8);
+        let supervisor = super::LazyOsOutboundSupervisor::new(
+            outbound_rx,
+            super::ActiveOutboundDriverConfig {
+                channel: "qq_channel".to_string(),
+                driver_builder: Arc::new(|| {
+                    Box::new(FailingActiveDriver {
+                        attempts: Arc::new(AtomicUsize::new(0)),
+                    })
+                }),
+            },
+            Arc::new(super::ChannelSinks::default()),
+            Arc::new(super::ChannelCapabilityRegistry::default()),
+        );
+        {
+            let mut pending = supervisor
+                .supervisor_pending
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            pending.push_back(build_msg("qq_channel", "chat-1", "ack"));
+            pending.push_back(build_msg("qq_channel", "chat-1", "final"));
+        }
+
+        supervisor.service_with_startup_readiness(
+            "test",
+            crate::runtime::RuntimeStartupReadiness {
+                phase: crate::runtime::RuntimeStartupPhase::LocalRuntimeAssembled,
+                reason: "wifi_not_ready",
+                network_reason: crate::runtime::RuntimeStartupNetworkReason::WifiNotReady,
+                allow_config_recovery_routes: true,
+                allow_default_status_routes: true,
+                allow_external_wss_worker: false,
+                allow_agent_heavy_execution: false,
+                allow_channel_outbound_worker: false,
+                allow_voice_realtime_connect: false,
+                allow_write_back_worker: false,
+                allow_display_status_surface: true,
+                allow_display_heavy_refresh: true,
+                config_worker_floor_available: true,
+            },
+        );
+
+        let pending = supervisor
+            .supervisor_pending
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let contents: Vec<_> = pending.iter().map(|msg| msg.content.as_str()).collect();
+        assert_eq!(contents, vec!["ack", "final"]);
+        assert!(
+            supervisor
+                .worker_handle
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .is_none(),
+            "startup gate must not create os_outbound before outbound network is ready"
         );
     }
 

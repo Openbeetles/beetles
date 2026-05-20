@@ -1332,9 +1332,10 @@ mod tests {
     }
 
     #[test]
-    fn config_worker_admission_does_not_self_block_during_config_persisting() {
+    fn config_worker_admission_does_not_self_block_during_boot_config_persisting() {
         let _state_guard = crate::state::test_state_guard();
         crate::network::set_external_wss_managed_present(false);
+        crate::state::set_boot_phase_active(true);
         apply_response_build_pressure(256 * 1024, 128 * 1024);
         let contract = RouteExecutionClass::AsyncConfigRoute
             .worker_contract()
@@ -1354,7 +1355,7 @@ mod tests {
         guard.finish_status_at(200, 101);
         assert!(
             reject.is_none(),
-            "config save worker must not self-block on its own persisting transport guard: {:?}",
+            "config save worker must not self-block on boot/config transport guard: {:?}",
             reject.map(|r| (r.stage, r.detail))
         );
     }

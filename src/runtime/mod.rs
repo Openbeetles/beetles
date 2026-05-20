@@ -29,6 +29,7 @@ pub mod plane_lifecycle;
 pub mod presence;
 pub mod scheduler;
 pub mod soul_kernel;
+pub mod startup;
 pub mod system_work;
 pub mod thread_registry;
 pub mod thread_util;
@@ -39,7 +40,10 @@ pub use acceptance::{
     inspect_beetle_os_closure, inspect_platform_beetle_os_closure, BeetleOsClosureReport,
     BeetleOsPlane, BeetleOsPlaneReport,
 };
-pub use agent_supervision::{register_agent_loop_guard, service_agent_loop_guard};
+pub use agent_supervision::{
+    register_agent_loop_guard, register_deferred_agent_loop_guard, service_agent_loop_guard,
+    AgentLoopSpawner,
+};
 pub use channel_wss_supervision::{
     channel_wss_worker_start_defer_reason, next_channel_wss_supervisor_retry_at,
     register_channel_wss_supervisor, register_deferred_channel_wss_supervisor,
@@ -108,6 +112,10 @@ pub use scheduler::{
 pub use soul_kernel::{
     ensure_platform_soul_kernel_recovery, inspect_platform_soul_kernel, SoulKernelPromptProjection,
     SoulKernelRecoveryAction, SoulKernelRecoveryReport, SoulKernelStatus,
+};
+pub use startup::{
+    runtime_startup_readiness_snapshot, service_runtime_startup_readiness,
+    RuntimeStartupNetworkReason, RuntimeStartupPhase, RuntimeStartupReadiness,
 };
 pub use thread_registry::ThreadRegistrySnapshot;
 pub use thread_util::{spawn_planned, spawn_planned_handle, thread_plan, ThreadPlan};

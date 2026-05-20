@@ -360,16 +360,9 @@ impl RouteExecutionClass {
 
     pub(crate) fn requires_route_worker_transport_admission(
         self,
-        mode: crate::runtime::RuntimeModeSnapshot,
+        _mode: crate::runtime::RuntimeModeSnapshot,
     ) -> bool {
-        !matches!(
-            self,
-            Self::AsyncConfigRoute
-                if mode.current_mode == crate::runtime::RuntimeMode::ConfigActive
-                    && mode
-                        .config_activity_phase
-                        .blocks_new_non_voice_network_work()
-        )
+        !matches!(self, Self::AsyncConfigRoute)
     }
 }
 
@@ -1952,7 +1945,7 @@ mod tests {
     }
 
     #[test]
-    fn config_worker_transport_gate_does_not_self_block_persisting_activity() {
+    fn config_worker_transport_gate_does_not_guard_local_config_routes() {
         let persisting_mode =
             crate::runtime::mode::snapshot_from_source(crate::runtime::mode::RuntimeModeSource {
                 config_active: true,
@@ -1964,6 +1957,19 @@ mod tests {
             !RouteExecutionClass::AsyncConfigRoute
                 .requires_route_worker_transport_admission(persisting_mode),
             "config save worker is local persistence and must not consume NonVoiceHttp transport admission against its own guard"
+        );
+        let boot_persisting_mode =
+            crate::runtime::mode::snapshot_from_source(crate::runtime::mode::RuntimeModeSource {
+                boot_phase_active: true,
+                config_active: true,
+                config_activity_phase: crate::runtime::ConfigActivityPhase::Persisting,
+                ..crate::runtime::mode::RuntimeModeSource::default()
+            });
+
+        assert!(
+            !RouteExecutionClass::AsyncConfigRoute
+                .requires_route_worker_transport_admission(boot_persisting_mode),
+            "config save remains the recovery plane owner while booting; boot transport suspension must only cover outbound/network workers"
         );
         assert!(
             RouteExecutionClass::SlowDiagnosticRoute
@@ -1977,9 +1983,9 @@ mod tests {
                 ..crate::runtime::mode::RuntimeModeSource::default()
             });
         assert!(
-            RouteExecutionClass::AsyncConfigRoute
+            !RouteExecutionClass::AsyncConfigRoute
                 .requires_route_worker_transport_admission(voice_mode),
-            "voice-exclusive must keep blocking config worker transport"
+            "voice-exclusive config blocking belongs to route runtime admission, not outbound transport admission"
         );
     }
 

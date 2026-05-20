@@ -262,15 +262,11 @@ pub(crate) fn external_wss_connect_gate(
         return false;
     }
 
-    let wall_clock_valid = crate::platform::time::wall_clock_is_trustworthy();
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
     {
-        let network_snapshot = crate::state::network_runtime_snapshot(
-            wall_clock_valid,
-            crate::network::EXTERNAL_WSS_OUTBOUND_SETTLE_SECS,
-        );
-        if let Some(reason) = crate::network::external_wss_network_suspend_reason(&network_snapshot)
-        {
+        let startup_readiness = crate::runtime::runtime_startup_readiness_snapshot();
+        if !startup_readiness.allow_external_wss_worker {
+            let reason = startup_readiness.worker_block_reason();
             mark_wss_lifecycle(
                 lifecycle_owner,
                 crate::runtime::PlaneLifecycleState::Suspended,
@@ -294,18 +290,15 @@ pub(crate) fn external_wss_connect_gate(
                 if reason == "wifi_not_ready" {
                     wait_for_wifi(tag);
                 } else {
-                    log::info!(
-                        "[{}] defer external WSS connect: {} stage={:?}",
-                        tag,
-                        reason,
-                        network_snapshot.last_wifi_stage
-                    );
+                    log::info!("[{}] defer external WSS connect: {}", tag, reason);
                     sleep_with_wdt(TLS_ADMISSION_RETRY_SLEEP_SECS);
                 }
                 return false;
             }
         }
     }
+    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    let wall_clock_valid = crate::platform::time::wall_clock_is_trustworthy();
     #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
     if should_defer_external_wss_for_wall_clock(wall_clock_valid) {
         if !*waiting_for_wall_clock {

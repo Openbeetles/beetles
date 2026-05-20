@@ -8,7 +8,6 @@ use std::time::{Duration, Instant};
 
 const CHANNEL_WSS_SUPERVISOR_RETRY_DELAY: Duration = Duration::from_secs(5);
 const CHANNEL_WSS_FOREGROUND_ACTIVITY_RETRY_DELAY: Duration = Duration::from_millis(500);
-#[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
 const CHANNEL_WSS_NETWORK_RETRY_DELAY: Duration = Duration::from_secs(1);
 
 pub type ChannelWssSpawner = dyn Fn() -> Result<TaskHandle> + Send + Sync + 'static;
@@ -184,7 +183,7 @@ pub fn next_channel_wss_supervisor_retry_at() -> Option<Instant> {
 }
 
 fn current_channel_wss_restart_delay() -> Option<ChannelWssRestartDelay> {
-    if let Some(delay) = channel_wss_restart_delay_for_network() {
+    if let Some(delay) = channel_wss_restart_delay_for_startup() {
         return Some(delay);
     }
     let resource = crate::orchestrator::resource_light_snapshot();
@@ -199,22 +198,31 @@ fn current_channel_wss_restart_delay() -> Option<ChannelWssRestartDelay> {
     )
 }
 
-fn channel_wss_restart_delay_for_network() -> Option<ChannelWssRestartDelay> {
-    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
-    {
-        let snapshot = crate::state::network_runtime_snapshot(
-            crate::platform::time::wall_clock_is_trustworthy(),
-            crate::network::EXTERNAL_WSS_OUTBOUND_SETTLE_SECS,
-        );
-        channel_wss_restart_delay_for_network_snapshot(&snapshot)
+fn channel_wss_restart_delay_for_startup() -> Option<ChannelWssRestartDelay> {
+    channel_wss_restart_delay_for_startup_readiness(
+        crate::runtime::runtime_startup_readiness_snapshot(),
+    )
+}
+
+fn channel_wss_restart_delay_for_startup_readiness(
+    readiness: crate::runtime::RuntimeStartupReadiness,
+) -> Option<ChannelWssRestartDelay> {
+    if readiness.allow_external_wss_worker {
+        return None;
     }
-    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32", test)))]
-    {
-        None
+    match readiness.network_reason {
+        crate::runtime::RuntimeStartupNetworkReason::None => Some(ChannelWssRestartDelay {
+            reason: readiness.worker_block_reason(),
+            delay: CHANNEL_WSS_NETWORK_RETRY_DELAY,
+        }),
+        reason => Some(ChannelWssRestartDelay {
+            reason: reason.as_str(),
+            delay: CHANNEL_WSS_NETWORK_RETRY_DELAY,
+        }),
     }
 }
 
-#[cfg(any(target_arch = "xtensa", target_arch = "riscv32", test))]
+#[cfg(test)]
 fn channel_wss_restart_delay_for_network_snapshot(
     snapshot: &crate::state::NetworkRuntimeSnapshot,
 ) -> Option<ChannelWssRestartDelay> {
@@ -439,6 +447,33 @@ mod tests {
 
         assert_eq!(
             channel_wss_restart_delay_for_network_snapshot(&snapshot),
+            Some(ChannelWssRestartDelay {
+                reason: "wifi_not_ready",
+                delay: CHANNEL_WSS_NETWORK_RETRY_DELAY,
+            })
+        );
+    }
+
+    #[test]
+    fn channel_wss_restart_uses_startup_readiness_before_spawning_worker() {
+        let readiness = crate::runtime::RuntimeStartupReadiness {
+            phase: crate::runtime::RuntimeStartupPhase::LocalRuntimeAssembled,
+            reason: "wifi_not_ready",
+            network_reason: crate::runtime::RuntimeStartupNetworkReason::WifiNotReady,
+            allow_config_recovery_routes: true,
+            allow_default_status_routes: true,
+            allow_external_wss_worker: false,
+            allow_agent_heavy_execution: false,
+            allow_channel_outbound_worker: false,
+            allow_voice_realtime_connect: false,
+            allow_write_back_worker: false,
+            allow_display_status_surface: true,
+            allow_display_heavy_refresh: true,
+            config_worker_floor_available: true,
+        };
+
+        assert_eq!(
+            channel_wss_restart_delay_for_startup_readiness(readiness),
             Some(ChannelWssRestartDelay {
                 reason: "wifi_not_ready",
                 delay: CHANNEL_WSS_NETWORK_RETRY_DELAY,

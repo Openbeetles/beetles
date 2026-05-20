@@ -190,7 +190,7 @@ function log_timestamp_ms(line,    captured) {
 }
 
 function is_boot_startup_checkpoint_stage(stage) {
-  return stage ~ /^(memory_provider_registered|config_loaded|wifi_stack_ready|csrf_initialized|display_initialized|display_boot_dashboard|boot_memory_reads|audio_init_phase_done|voice_event_channel_ready|startup_self_check_ok|config_api_spawned|bg_timer_spawn|bg_timer_started|communication_plane_ready|orchestrator_initialized|display_thread_spawned|qq_ws_spawn|os_outbound_spawn|agent_loop_spawn)$/;
+  return stage ~ /^(memory_provider_registered|config_loaded|wifi_stack_ready|csrf_initialized|display_initialized|display_boot_dashboard|boot_memory_reads|audio_init_phase_done|voice_event_channel_ready|startup_self_check_ok|config_api_spawned|bg_timer_spawn|bg_timer_started|communication_plane_ready|orchestrator_initialized|display_thread_spawned|qq_ws_spawn|os_outbound_spawn|agent_loop_deferred|agent_loop_spawn)$/;
 }
 
 function scheduler_class_requires_resume(class) {
@@ -536,27 +536,33 @@ function storage_contention_from_metrics(wait_last, hold_last, ops, hold_stage, 
     write_back_queued = numeric_after(line, "queued");
     write_back_worker_started = value_after(line, "worker_started");
     write_back_deferred = numeric_after(line, "deferred_total");
+    write_back_protected_defer_window = scheduler_foreground_open || scheduler_recovery_open;
     if (write_back_queued != "" &&
         write_back_queued + 0 > 0 &&
         write_back_worker_started == "false") {
-      if (write_back_deferred != "" &&
-          last_write_back_deferred >= 0 &&
-          write_back_deferred + 0 >= last_write_back_deferred) {
-        write_back_stalled_samples++;
+      if (write_back_protected_defer_window) {
+        write_back_stalled_samples = 0;
+        write_back_starvation_reported = 0;
       } else {
-        write_back_stalled_samples = 1;
-      }
-      if (write_back_deferred != "" && last_write_back_deferred >= 0) {
-        write_back_defer_delta = (write_back_deferred + 0) - last_write_back_deferred;
-        if (write_back_defer_delta > 60) {
-          write_back_defer_churn_count++;
-          record_issue(NR, "write_back_defer_churn", "blocker", "queued=" write_back_queued " worker_started=false deferred_delta=" write_back_defer_delta);
+        if (write_back_deferred != "" &&
+            last_write_back_deferred >= 0 &&
+            write_back_deferred + 0 >= last_write_back_deferred) {
+          write_back_stalled_samples++;
+        } else {
+          write_back_stalled_samples = 1;
         }
-      }
-      if (write_back_stalled_samples >= 3 && !write_back_starvation_reported) {
-        write_back_starvation_count++;
-        write_back_starvation_reported = 1;
-        record_issue(NR, "pending_write_back_starvation", "blocker", "queued=" write_back_queued " worker_started=false stalled_samples=" write_back_stalled_samples " deferred_total=" write_back_deferred);
+        if (write_back_deferred != "" && last_write_back_deferred >= 0) {
+          write_back_defer_delta = (write_back_deferred + 0) - last_write_back_deferred;
+          if (write_back_defer_delta > 60) {
+            write_back_defer_churn_count++;
+            record_issue(NR, "write_back_defer_churn", "blocker", "queued=" write_back_queued " worker_started=false deferred_delta=" write_back_defer_delta);
+          }
+        }
+        if (write_back_stalled_samples >= 3 && !write_back_starvation_reported) {
+          write_back_starvation_count++;
+          write_back_starvation_reported = 1;
+          record_issue(NR, "pending_write_back_starvation", "blocker", "queued=" write_back_queued " worker_started=false stalled_samples=" write_back_stalled_samples " deferred_total=" write_back_deferred);
+        }
       }
     } else {
       write_back_stalled_samples = 0;

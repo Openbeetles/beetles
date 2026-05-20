@@ -188,9 +188,9 @@ fn base_action_budget_for_mode(mode: RuntimeMode) -> RuntimeModeActionBudget {
             allow_heartbeat_injection: false,
             allow_best_effort_delayed_tasks: false,
             allow_idle_self_runtime: false,
-            allow_non_voice_outbound: true,
+            allow_non_voice_outbound: false,
             allow_realtime_voice_connect: false,
-            allow_external_wss_connect: true,
+            allow_external_wss_connect: false,
             require_external_wss_suspended: false,
         },
         RuntimeMode::Normal => RuntimeModeActionBudget {
@@ -295,6 +295,19 @@ mod tests {
         assert!(!snapshot.action_budget.allow_periodic_maintenance);
         assert!(snapshot.action_budget.allow_due_user_timers);
         assert!(!snapshot.action_budget.allow_idle_self_runtime);
+    }
+
+    #[test]
+    fn booting_mode_blocks_network_execution_planes() {
+        let snapshot = snapshot_from_source(RuntimeModeSource {
+            boot_phase_active: true,
+            ..RuntimeModeSource::default()
+        });
+
+        assert_eq!(snapshot.current_mode, RuntimeMode::Booting);
+        assert!(!snapshot.action_budget.allow_non_voice_outbound);
+        assert!(!snapshot.action_budget.allow_external_wss_connect);
+        assert!(!snapshot.action_budget.allow_realtime_voice_connect);
     }
 
     #[test]

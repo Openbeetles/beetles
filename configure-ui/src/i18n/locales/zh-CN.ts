@@ -840,6 +840,7 @@ export const zhCN = {
       errorLoadFailed: '加载配置失败，请检查设备地址与网络后重试。',
       errorNetwork: '网络异常，请检查连接后重试。',
       saveInProgress: '当前配置正在保存，请等待完成后再保存。',
+      restartRequired: '保存成功，设备将重启并使用新配置。',
       sectionSystem: '系统',
       sectionSystemDesc: 'WiFi、代理与系统语言。',
       sectionProxy: '代理',

@@ -842,6 +842,7 @@ export const enUS = {
       errorLoadFailed: 'Failed to load config. Check device URL and network, then retry.',
       errorNetwork: 'Network error. Check connection and retry.',
       saveInProgress: 'This config is already being saved. Wait for it to finish before saving again.',
+      restartRequired: 'Saved. The device will restart and use the new config.',
       sectionSystem: 'System',
       sectionSystemDesc: 'WiFi, proxy, and system language.',
       sectionProxy: 'Proxy',
