@@ -107,20 +107,41 @@ pub fn service_runtime_startup_readiness(tag: &str) {
     static STEADY_RECORDED: AtomicBool = AtomicBool::new(false);
 
     let readiness = runtime_startup_readiness_snapshot();
-    if readiness.phase != RuntimeStartupPhase::SteadyRuntime {
+    if readiness.phase == RuntimeStartupPhase::SteadyRuntime {
+        let boot_was_active = crate::state::boot_phase_active();
+        if boot_was_active {
+            crate::state::set_boot_phase_active(false);
+            crate::bg_timer::notify_deadline_changed();
+        }
+        if !STEADY_RECORDED.swap(true, Ordering::AcqRel) {
+            if boot_was_active {
+                log::info!(
+                    "[{}] startup readiness reached steady_runtime; boot phase cleared",
+                    tag
+                );
+            } else {
+                log::info!("[{}] startup readiness reached steady_runtime", tag);
+            }
+        }
         return;
     }
+
+    let Some(reason) = boot_phase_clear_reason(readiness) else {
+        return;
+    };
     if !crate::state::boot_phase_active() {
         return;
     }
     crate::state::set_boot_phase_active(false);
-    if !STEADY_RECORDED.swap(true, Ordering::AcqRel) {
+    crate::bg_timer::notify_deadline_changed();
+    if !STEADY_RECORDED.load(Ordering::Acquire) {
         log::info!(
-            "[{}] startup readiness reached steady_runtime; boot phase cleared",
-            tag
+            "[{}] startup local runtime reached {}; boot phase cleared reason={}",
+            tag,
+            readiness.phase.as_str(),
+            reason
         );
     }
-    crate::bg_timer::notify_deadline_changed();
 }
 
 pub(crate) fn runtime_startup_readiness_from_parts(
@@ -216,6 +237,16 @@ fn startup_network_reason(network: &NetworkRuntimeSnapshot) -> RuntimeStartupNet
 fn config_worker_floor_available(resource: &ResourceLightSnapshot) -> bool {
     resource.heap_largest_block_internal == 0
         || resource.heap_largest_block_internal >= CONFIG_WORKER_LARGEST_BLOCK_FLOOR_BYTES
+}
+
+fn boot_phase_clear_reason(readiness: RuntimeStartupReadiness) -> Option<&'static str> {
+    match readiness.phase {
+        RuntimeStartupPhase::LocalRuntimeAssembled | RuntimeStartupPhase::OutboundNetworkReady => {
+            Some(readiness.reason)
+        }
+        RuntimeStartupPhase::SteadyRuntime => Some("ready"),
+        RuntimeStartupPhase::BootKernel | RuntimeStartupPhase::ConfigRecoveryReady => None,
+    }
 }
 
 fn startup_reason(
@@ -396,6 +427,33 @@ mod tests {
             readiness.allow_write_back_worker,
             "local durable write-back must not wait for outbound WiFi readiness"
         );
+    }
+
+    #[test]
+    fn startup_readiness_clears_boot_for_unconfigured_wifi_recovery() {
+        let readiness = runtime_startup_readiness_from_parts(
+            &network(false, false, false, false, true),
+            &mode(true, RuntimeMode::Booting),
+            &resource(
+                PressureLevel::Normal,
+                TlsFragmentationRisk::Healthy,
+                CONFIG_WORKER_LARGEST_BLOCK_FLOOR_BYTES,
+            ),
+        );
+
+        assert_eq!(readiness.phase, RuntimeStartupPhase::LocalRuntimeAssembled);
+        assert_eq!(
+            readiness.network_reason,
+            RuntimeStartupNetworkReason::WifiNotConfigured
+        );
+        assert!(readiness.allow_config_recovery_routes);
+        assert!(readiness.allow_default_status_routes);
+        assert!(readiness.allow_display_status_surface);
+        assert!(boot_phase_clear_reason(readiness).is_some());
+        assert!(!readiness.allow_external_wss_worker);
+        assert!(!readiness.allow_agent_heavy_execution);
+        assert!(!readiness.allow_channel_outbound_worker);
+        assert!(!readiness.allow_voice_realtime_connect);
     }
 
     #[test]

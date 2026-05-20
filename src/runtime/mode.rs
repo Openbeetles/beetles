@@ -123,7 +123,7 @@ impl RuntimeModeSnapshot {
 
 pub fn snapshot_from_source(source: RuntimeModeSource) -> RuntimeModeSnapshot {
     let current_mode = derive_mode(source);
-    let action_budget = action_budget_for_source(current_mode, source.config_activity_phase);
+    let action_budget = action_budget_for_source(current_mode, source);
     RuntimeModeSnapshot {
         current_mode,
         wifi_sta_connected: source.wifi_sta_connected,
@@ -167,17 +167,43 @@ fn derive_mode(source: RuntimeModeSource) -> RuntimeMode {
 
 fn action_budget_for_source(
     mode: RuntimeMode,
-    config_phase: crate::runtime::ConfigActivityPhase,
+    source: RuntimeModeSource,
 ) -> RuntimeModeActionBudget {
     let mut budget = base_action_budget_for_mode(mode);
-    if mode == RuntimeMode::ConfigActive && config_phase.blocks_new_non_voice_network_work() {
+    if mode == RuntimeMode::ConfigActive
+        && source
+            .config_activity_phase
+            .blocks_new_non_voice_network_work()
+    {
         budget.allow_non_voice_outbound = false;
         // Persisting/stopping config work should not start a new external WSS/TLS
         // session; config apply waits for the external WSS plane to suspend first.
         budget.allow_external_wss_connect = false;
         budget.require_external_wss_suspended = true;
     }
+    if should_apply_network_recovery_budget(mode, source) {
+        budget.allow_periodic_maintenance = false;
+        budget.allow_heartbeat_injection = false;
+        budget.allow_best_effort_delayed_tasks = false;
+        budget.allow_idle_self_runtime = false;
+        budget.allow_non_voice_outbound = false;
+        budget.allow_realtime_voice_connect = false;
+        budget.allow_external_wss_connect = false;
+        budget.require_external_wss_suspended = false;
+    }
     budget
+}
+
+fn should_apply_network_recovery_budget(mode: RuntimeMode, source: RuntimeModeSource) -> bool {
+    source.config_plane_alive
+        && !source.wifi_sta_connected
+        && !matches!(
+            mode,
+            RuntimeMode::Booting
+                | RuntimeMode::Pairing
+                | RuntimeMode::VoiceExclusive
+                | RuntimeMode::RecoverySafeMode
+        )
 }
 
 fn base_action_budget_for_mode(mode: RuntimeMode) -> RuntimeModeActionBudget {
@@ -311,8 +337,30 @@ mod tests {
     }
 
     #[test]
+    fn local_network_recovery_blocks_external_execution_without_booting() {
+        let snapshot = snapshot_from_source(RuntimeModeSource {
+            wifi_sta_connected: false,
+            boot_phase_active: false,
+            config_plane_alive: true,
+            ..RuntimeModeSource::default()
+        });
+
+        assert_eq!(snapshot.current_mode, RuntimeMode::Normal);
+        assert!(!snapshot.boot_phase_active);
+        assert!(!snapshot.action_budget.allow_periodic_maintenance);
+        assert!(snapshot.action_budget.allow_due_user_timers);
+        assert!(!snapshot.action_budget.allow_heartbeat_injection);
+        assert!(!snapshot.action_budget.allow_best_effort_delayed_tasks);
+        assert!(!snapshot.action_budget.allow_idle_self_runtime);
+        assert!(!snapshot.action_budget.allow_non_voice_outbound);
+        assert!(!snapshot.action_budget.allow_realtime_voice_connect);
+        assert!(!snapshot.action_budget.allow_external_wss_connect);
+    }
+
+    #[test]
     fn config_active_mode_keeps_external_wss_and_user_outbound_but_pauses_background_work() {
         let snapshot = snapshot_from_source(RuntimeModeSource {
+            wifi_sta_connected: true,
             config_active: true,
             config_plane_alive: true,
             config_activity_phase: crate::runtime::ConfigActivityPhase::Active,
@@ -334,6 +382,7 @@ mod tests {
     #[test]
     fn config_persisting_pauses_new_non_voice_network_work_and_requires_wss_suspend() {
         let snapshot = snapshot_from_source(RuntimeModeSource {
+            wifi_sta_connected: true,
             config_active: true,
             config_plane_alive: true,
             config_activity_phase: crate::runtime::ConfigActivityPhase::Persisting,
