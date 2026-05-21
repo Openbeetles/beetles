@@ -57,6 +57,13 @@ unsafe extern "C" {
         sample_count: usize,
         out_samples_read: *mut usize,
     ) -> i32;
+    fn beetle_audio_codec_read_mic_reference_pcm16(
+        codec: *mut BeetleAudioCodec,
+        out_samples: *mut i16,
+        out_reference: *mut i16,
+        sample_count: usize,
+        out_samples_read: *mut usize,
+    ) -> i32;
     fn beetle_audio_codec_write_speaker_pcm16(
         codec: *mut BeetleAudioCodec,
         samples: *const i16,
@@ -115,6 +122,7 @@ pub(crate) struct CodecAudioBackend {
     raw: *mut BeetleAudioCodec,
     mic_enabled: bool,
     speaker_enabled: bool,
+    input_reference: bool,
 }
 
 unsafe impl Send for CodecAudioBackend {}
@@ -200,6 +208,7 @@ impl CodecAudioBackend {
             raw,
             mic_enabled: seg.microphone.enabled,
             speaker_enabled: seg.speaker.enabled,
+            input_reference: seg.codec.input_reference,
         })
     }
 }
@@ -228,6 +237,40 @@ impl AudioBackend for CodecAudioBackend {
         };
         if status == BEETLE_AUDIO_CODEC_OK {
             return Ok(samples_read);
+        }
+        Err(codec_status_to_error("audio_mic", self.raw, status))
+    }
+
+    fn read_mic_reference_frame_pcm16(
+        &mut self,
+        mic: &mut [i16],
+        reference: &mut [i16],
+    ) -> Result<(usize, usize)> {
+        if !self.input_reference {
+            let n = self.read_mic_frame_pcm16(mic)?;
+            return Ok((n, 0));
+        }
+        if !self.mic_enabled {
+            return Err(Error::config("audio_mic", "microphone not initialized"));
+        }
+        if reference.len() < mic.len() {
+            return Err(Error::config(
+                "audio_reference",
+                "reference frame capacity is smaller than mic frame capacity",
+            ));
+        }
+        let mut samples_read = 0usize;
+        let status = unsafe {
+            beetle_audio_codec_read_mic_reference_pcm16(
+                self.raw,
+                mic.as_mut_ptr(),
+                reference.as_mut_ptr(),
+                mic.len(),
+                &mut samples_read,
+            )
+        };
+        if status == BEETLE_AUDIO_CODEC_OK {
+            return Ok((samples_read, samples_read));
         }
         Err(codec_status_to_error("audio_mic", self.raw, status))
     }

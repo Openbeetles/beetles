@@ -430,6 +430,14 @@ pub(crate) trait AudioBackend: Send {
     fn mic_ready(&self) -> bool;
     fn speaker_ready(&self) -> bool;
     fn read_mic_frame_pcm16(&mut self, out: &mut [i16]) -> Result<usize>;
+    fn read_mic_reference_frame_pcm16(
+        &mut self,
+        mic: &mut [i16],
+        _reference: &mut [i16],
+    ) -> Result<(usize, usize)> {
+        let n = self.read_mic_frame_pcm16(mic)?;
+        Ok((n, 0))
+    }
     fn write_speaker_frame_pcm16(&mut self, buf: &[i16]) -> Result<()>;
 }
 
@@ -1082,11 +1090,9 @@ impl AudioPipelineState {
         let mic_enabled = backend.mic_ready();
         let speaker_enabled = backend.speaker_ready();
         let wake_handoff_sample_rate_hz = seg.microphone.sample_rate.max(8_000);
-        let duplex_capabilities = duplex_capabilities_for_runtime(
-            mic_enabled,
-            speaker_enabled,
-            codec_topology && seg.codec.input_reference,
-        );
+        let input_reference_capture = codec_topology && seg.codec.input_reference;
+        let duplex_capabilities =
+            duplex_capabilities_for_runtime(mic_enabled, speaker_enabled, input_reference_capture);
         let worker_shared = Arc::clone(&shared);
         let worker_plan = thread_plan("audio_io_worker");
         let worker_surface =
@@ -1192,10 +1198,12 @@ impl AudioPipelineState {
                                 crate::metrics::record_audio_speaker_write_us(
                                     speaker_write_start.elapsed().as_micros(),
                                 );
-                                push_playback_reference_frame(
-                                    worker_shared.as_ref(),
-                                    &speaker_frame[..n],
-                                );
+                                if !input_reference_capture {
+                                    push_playback_reference_frame(
+                                        worker_shared.as_ref(),
+                                        &speaker_frame[..n],
+                                    );
+                                }
                                 progressed = true;
                             }
                         }
@@ -1219,8 +1227,10 @@ impl AudioPipelineState {
                         crate::metrics::record_audio_mic_poll_turn();
                         crate::platform::task_wdt::feed_current_task();
                         let mic_read_start = Instant::now();
-                        match backend.read_mic_frame_pcm16(&mut mic_frame) {
-                            Ok(n) if n > 0 => {
+                        match backend
+                            .read_mic_reference_frame_pcm16(&mut mic_frame, &mut reference_frame)
+                        {
+                            Ok((n, reference_n)) if n > 0 => {
                                 crate::metrics::record_audio_mic_read_us(
                                     mic_read_start.elapsed().as_micros(),
                                 );
@@ -1234,15 +1244,21 @@ impl AudioPipelineState {
                                     interrupt_listening,
                                     wake_backend_requires_pcm_feed,
                                 ) {
-                                    let reference_copied = {
-                                        let guard = worker_shared
-                                            .reference
-                                            .lock()
-                                            .unwrap_or_else(|e| e.into_inner());
-                                        guard.copy_recent_into(&mut reference_frame[..n])
-                                    };
-                                    if reference_copied < n {
-                                        reference_frame[reference_copied..n].fill(0);
+                                    if input_reference_capture {
+                                        if reference_n < n {
+                                            reference_frame[reference_n..n].fill(0);
+                                        }
+                                    } else {
+                                        let reference_copied = {
+                                            let guard = worker_shared
+                                                .reference
+                                                .lock()
+                                                .unwrap_or_else(|e| e.into_inner());
+                                            guard.copy_recent_into(&mut reference_frame[..n])
+                                        };
+                                        if reference_copied < n {
+                                            reference_frame[reference_copied..n].fill(0);
+                                        }
                                     }
                                     crate::wake::feed_pcm_i16(
                                         &mic_frame[..n],
@@ -1256,6 +1272,17 @@ impl AudioPipelineState {
                                         worker_shared.mic.lock().unwrap_or_else(|e| e.into_inner());
                                     guard.push_slice_drop_oldest(&mic_frame[..n]);
                                     worker_shared.mic_cv.notify_one();
+                                }
+                                if input_reference_capture && reference_n > 0 {
+                                    let mut guard = worker_shared
+                                        .reference
+                                        .lock()
+                                        .unwrap_or_else(|e| e.into_inner());
+                                    let usable_reference = reference_n.min(n);
+                                    guard.push_slice_drop_oldest(
+                                        &reference_frame[..usable_reference],
+                                    );
+                                    worker_shared.reference_cv.notify_one();
                                 }
                                 progressed = true;
                             }

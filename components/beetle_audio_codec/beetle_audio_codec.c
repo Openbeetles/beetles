@@ -25,7 +25,8 @@
 #define BEETLE_AUDIO_CODEC_DEFAULT_OUT_VOL 70
 #define BEETLE_AUDIO_CODEC_DEFAULT_IN_GAIN 30.0f
 #define BEETLE_AUDIO_CODEC_MAX_INPUT_CHANNELS 4U
-#define BEETLE_AUDIO_CODEC_REFERENCE_INPUT_CHANNELS 4U
+#define BEETLE_AUDIO_CODEC_TDM_INPUT_SLOTS 4U
+#define BEETLE_AUDIO_CODEC_INPUT_REFERENCE_OUTPUT_CHANNELS 2U
 #define BEETLE_AUDIO_CODEC_DIAG_READ_INTERVAL 1000U
 #define BEETLE_AUDIO_CODEC_CHANNEL_SWITCH_NUM 5U
 #define BEETLE_AUDIO_CODEC_CHANNEL_SWITCH_DEN 4U
@@ -45,7 +46,8 @@ struct beetle_audio_codec {
     int16_t *input_read_buf;
     size_t input_read_buf_samples;
     size_t input_channels;
-    size_t input_selected_channel;
+    size_t input_selected_mic;
+    size_t input_selected_secondary;
     uint32_t input_read_count;
     int last_esp_err;
     bool mic_enabled;
@@ -90,24 +92,30 @@ static uint32_t beetle_audio_codec_abs_permille(uint64_t abs_sum, size_t sample_
     return (uint32_t) ((abs_sum * 1000ULL) / ((uint64_t) sample_count * 32768ULL));
 }
 
-static size_t beetle_audio_codec_select_loudest_channel(
+static void beetle_audio_codec_select_primary_pair(
     const int16_t *samples,
     size_t frame_count,
     size_t channels,
-    size_t previous_channel,
-    bool has_previous_channel,
+    size_t previous_mic,
+    bool has_previous_mic,
     uint64_t *energy,
-    uint64_t *abs_sum
+    uint64_t *abs_sum,
+    size_t *out_mic,
+    size_t *out_secondary
 ) {
-    size_t selected = 0;
+    size_t selected_mic = 0;
+    size_t selected_secondary = 0;
     uint64_t selected_energy = 0;
+    uint64_t secondary_energy = 0;
 
     for (size_t ch = 0; ch < BEETLE_AUDIO_CODEC_MAX_INPUT_CHANNELS; ++ch) {
         energy[ch] = 0;
         abs_sum[ch] = 0;
     }
     if (samples == NULL || frame_count == 0 || channels == 0) {
-        return 0;
+        *out_mic = 0;
+        *out_secondary = 0;
+        return;
     }
     if (channels > BEETLE_AUDIO_CODEC_MAX_INPUT_CHANNELS) {
         channels = BEETLE_AUDIO_CODEC_MAX_INPUT_CHANNELS;
@@ -125,18 +133,33 @@ static size_t beetle_audio_codec_select_loudest_channel(
     for (size_t ch = 0; ch < channels; ++ch) {
         if (energy[ch] > selected_energy) {
             selected_energy = energy[ch];
-            selected = ch;
+            selected_mic = ch;
         }
     }
-    if (has_previous_channel &&
-        previous_channel < channels &&
-        selected != previous_channel &&
-        energy[previous_channel] > 0 &&
+    if (has_previous_mic &&
+        previous_mic < channels &&
+        selected_mic != previous_mic &&
+        energy[previous_mic] > 0 &&
         selected_energy * BEETLE_AUDIO_CODEC_CHANNEL_SWITCH_DEN <=
-            energy[previous_channel] * BEETLE_AUDIO_CODEC_CHANNEL_SWITCH_NUM) {
-        selected = previous_channel;
+            energy[previous_mic] * BEETLE_AUDIO_CODEC_CHANNEL_SWITCH_NUM) {
+        selected_mic = previous_mic;
     }
-    return selected;
+
+    for (size_t ch = 0; ch < channels; ++ch) {
+        if (ch == selected_mic) {
+            continue;
+        }
+        if (energy[ch] >= secondary_energy) {
+            secondary_energy = energy[ch];
+            selected_secondary = ch;
+        }
+    }
+    if (channels > 1 && selected_secondary == selected_mic) {
+        selected_secondary = selected_mic == 0 ? 1 : 0;
+    }
+
+    *out_mic = selected_mic;
+    *out_secondary = selected_secondary;
 }
 
 static int beetle_audio_codec_i2c_ctrl_open(const audio_codec_ctrl_if_t *ctrl, void *cfg, int cfg_size) {
@@ -612,9 +635,9 @@ static beetle_audio_codec_status_t beetle_audio_codec_init_input_dev(
 
     esp_codec_dev_sample_info_t fs = {
         .bits_per_sample = 16,
-        .channel = config->input_reference ? BEETLE_AUDIO_CODEC_MAX_INPUT_CHANNELS : 1,
+        .channel = config->input_reference ? BEETLE_AUDIO_CODEC_TDM_INPUT_SLOTS : 1,
         .channel_mask = config->input_reference
-            ? beetle_audio_codec_make_channel_mask(BEETLE_AUDIO_CODEC_REFERENCE_INPUT_CHANNELS)
+            ? beetle_audio_codec_make_channel_mask(BEETLE_AUDIO_CODEC_TDM_INPUT_SLOTS)
             : ESP_CODEC_DEV_MAKE_CHANNEL_MASK(0),
         .sample_rate = (uint32_t) config->input_sample_rate_hz,
         .mclk_multiple = 0,
@@ -624,7 +647,7 @@ static beetle_audio_codec_status_t beetle_audio_codec_init_input_dev(
         return beetle_audio_codec_set_error(codec, BEETLE_AUDIO_CODEC_ERR_ESP, ret);
     }
     codec->input_open = true;
-    codec->input_channels = config->input_reference ? BEETLE_AUDIO_CODEC_REFERENCE_INPUT_CHANNELS : 1;
+    codec->input_channels = config->input_reference ? BEETLE_AUDIO_CODEC_TDM_INPUT_SLOTS : 1;
 
     ret = esp_codec_dev_set_in_channel_gain(
         codec->input_dev,
@@ -721,9 +744,10 @@ void beetle_audio_codec_destroy(beetle_audio_codec_t *codec) {
     free(codec);
 }
 
-beetle_audio_codec_status_t beetle_audio_codec_read_mic_pcm16(
+static beetle_audio_codec_status_t beetle_audio_codec_read_mic_reference_internal(
     beetle_audio_codec_t *codec,
     int16_t *out_samples,
+    int16_t *out_reference,
     size_t sample_count,
     size_t *out_samples_read
 ) {
@@ -732,7 +756,8 @@ beetle_audio_codec_status_t beetle_audio_codec_read_mic_pcm16(
     size_t buffered_samples;
     uint64_t energy[BEETLE_AUDIO_CODEC_MAX_INPUT_CHANNELS];
     uint64_t abs_sum[BEETLE_AUDIO_CODEC_MAX_INPUT_CHANNELS];
-    size_t selected_channel;
+    size_t selected_mic;
+    size_t selected_secondary;
     int ret;
 
     if (codec == NULL || out_samples == NULL || out_samples_read == NULL) {
@@ -752,12 +777,15 @@ beetle_audio_codec_status_t beetle_audio_codec_read_mic_pcm16(
         if (ret != ESP_OK) {
             return beetle_audio_codec_set_error(codec, BEETLE_AUDIO_CODEC_ERR_ESP, ret);
         }
+        if (out_reference != NULL) {
+            memset(out_reference, 0, sample_count * sizeof(int16_t));
+        }
         *out_samples_read = sample_count;
         return BEETLE_AUDIO_CODEC_OK;
     }
 
     input_channels = codec->input_channels;
-    if (input_channels == 0 || input_channels > BEETLE_AUDIO_CODEC_MAX_INPUT_CHANNELS) {
+    if (input_channels != BEETLE_AUDIO_CODEC_TDM_INPUT_SLOTS) {
         return beetle_audio_codec_set_error(codec, BEETLE_AUDIO_CODEC_ERR_STATE, 0);
     }
     if (sample_count > SIZE_MAX / input_channels / sizeof(int16_t)) {
@@ -778,26 +806,33 @@ beetle_audio_codec_status_t beetle_audio_codec_read_mic_pcm16(
     if (ret != ESP_OK) {
         return beetle_audio_codec_set_error(codec, BEETLE_AUDIO_CODEC_ERR_ESP, ret);
     }
-    selected_channel = beetle_audio_codec_select_loudest_channel(
+    beetle_audio_codec_select_primary_pair(
         codec->input_read_buf,
         sample_count,
         input_channels,
-        codec->input_selected_channel,
+        codec->input_selected_mic,
         codec->input_read_count > 0,
         energy,
-        abs_sum
+        abs_sum,
+        &selected_mic,
+        &selected_secondary
     );
-    codec->input_selected_channel = selected_channel;
+    codec->input_selected_mic = selected_mic;
+    codec->input_selected_secondary = selected_secondary;
     for (size_t i = 0; i < sample_count; ++i) {
-        out_samples[i] = codec->input_read_buf[i * input_channels + selected_channel];
+        out_samples[i] = codec->input_read_buf[i * input_channels + selected_mic];
+        if (out_reference != NULL) {
+            out_reference[i] = codec->input_read_buf[i * input_channels + selected_secondary];
+        }
     }
     codec->input_read_count++;
     if (codec->input_read_count == 1 ||
         codec->input_read_count % BEETLE_AUDIO_CODEC_DIAG_READ_INTERVAL == 0) {
         ESP_LOGI(
             BEETLE_AUDIO_CODEC_LOG_TAG,
-            "input channel diag selected=%u ch0_abs_pm=%u ch1_abs_pm=%u ch2_abs_pm=%u ch3_abs_pm=%u",
-            (unsigned int) selected_channel,
+            "input reference diag selected_mic=%u selected_secondary=%u ch0_abs_pm=%u ch1_abs_pm=%u ch2_abs_pm=%u ch3_abs_pm=%u",
+            (unsigned int) selected_mic,
+            (unsigned int) selected_secondary,
             (unsigned int) beetle_audio_codec_abs_permille(abs_sum[0], sample_count),
             (unsigned int) beetle_audio_codec_abs_permille(abs_sum[1], sample_count),
             (unsigned int) beetle_audio_codec_abs_permille(abs_sum[2], sample_count),
@@ -806,6 +841,40 @@ beetle_audio_codec_status_t beetle_audio_codec_read_mic_pcm16(
     }
     *out_samples_read = sample_count;
     return BEETLE_AUDIO_CODEC_OK;
+}
+
+beetle_audio_codec_status_t beetle_audio_codec_read_mic_pcm16(
+    beetle_audio_codec_t *codec,
+    int16_t *out_samples,
+    size_t sample_count,
+    size_t *out_samples_read
+) {
+    return beetle_audio_codec_read_mic_reference_internal(
+        codec,
+        out_samples,
+        NULL,
+        sample_count,
+        out_samples_read
+    );
+}
+
+beetle_audio_codec_status_t beetle_audio_codec_read_mic_reference_pcm16(
+    beetle_audio_codec_t *codec,
+    int16_t *out_samples,
+    int16_t *out_reference,
+    size_t sample_count,
+    size_t *out_samples_read
+) {
+    if (out_reference == NULL) {
+        return BEETLE_AUDIO_CODEC_ERR_INVALID_ARG;
+    }
+    return beetle_audio_codec_read_mic_reference_internal(
+        codec,
+        out_samples,
+        out_reference,
+        sample_count,
+        out_samples_read
+    );
 }
 
 beetle_audio_codec_status_t beetle_audio_codec_write_speaker_pcm16(

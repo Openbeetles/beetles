@@ -476,7 +476,7 @@ ESP32-S3 / ESP32-P4 的固定唤醒短语为 `Hi,ESP`。该短语不可自定义
 
 `topology` 当前支持 `discrete_i2s` 与 `i2s_codec`。在 `i2s_codec` 模式下，`codec` 包含 `input_codec`、`output_codec`、`input_addr`、`output_addr`、`pa_pin` 和 `input_reference`。当前 ESP-BOX-3 codec 路径支持 ES7210 输入与 ES8311 输出。
 
-当 `audio.topology = "i2s_codec"` 且启用 ES7210 input reference 时，设备端会读取 ES7210 的多路输入并将当前有效输入通道送入语音链路；用户无需手动配置 TDM 通道序号。
+当 `audio.topology = "i2s_codec"` 且启用 ES7210 input reference 时，设备端会在内部自动选择板级麦克风 / secondary 输入对进入语音链路；用户无需手动配置 TDM 通道序号。
 
 可选查询参数：`restart=1`
 

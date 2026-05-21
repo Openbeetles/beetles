@@ -53,6 +53,13 @@ beetle_audio_codec_status_t beetle_audio_codec_read_mic_pcm16(
     size_t sample_count,
     size_t *out_samples_read);
 
+beetle_audio_codec_status_t beetle_audio_codec_read_mic_reference_pcm16(
+    beetle_audio_codec_t *codec,
+    int16_t *out_samples,
+    int16_t *out_reference,
+    size_t sample_count,
+    size_t *out_samples_read);
+
 beetle_audio_codec_status_t beetle_audio_codec_write_speaker_pcm16(
     beetle_audio_codec_t *codec,
     const int16_t *samples,

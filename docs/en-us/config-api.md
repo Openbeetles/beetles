@@ -476,7 +476,7 @@ ESP32-S3 / ESP32-P4 use the fixed wake phrase `Hi,ESP`. This phrase is not custo
 
 `topology` currently supports `discrete_i2s` and `i2s_codec`. In `i2s_codec` mode, `codec` contains `input_codec`, `output_codec`, `input_addr`, `output_addr`, `pa_pin`, and `input_reference`. The current ESP-BOX-3 codec path supports ES7210 input and ES8311 output.
 
-For `audio.topology = "i2s_codec"` with ES7210 input reference enabled, the device reads ES7210 multi-channel input and feeds the currently active input channel into the voice path. Users do not need to configure a TDM channel index manually.
+For `audio.topology = "i2s_codec"` with ES7210 input reference enabled, the device chooses the board mic/secondary input pair internally for the voice path. Users do not need to configure a TDM channel index manually.
 
 Optional query parameter: `restart=1`
 

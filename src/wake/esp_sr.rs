@@ -1,6 +1,7 @@
 use super::backend::WakeEvent;
 use crate::audio::wake_handoff::WakeAcousticSnapshot;
 use crate::config::AudioSegment;
+use crate::metrics::WakeWordAcousticFrameMetrics;
 use std::ffi::CString;
 use std::os::raw::{c_char, c_int};
 use std::time::Instant;
@@ -30,13 +31,14 @@ pub struct EspSrWakeBackend {
     model_name: &'static str,
     input_sample_rate_hz: u32,
     use_reference: bool,
+    last_snapshot: WakeAcousticSnapshot,
 }
 
 impl EspSrWakeBackend {
     pub fn from_audio_config(audio: &AudioSegment) -> Result<Self, &'static str> {
         Self::new(
             audio.microphone.sample_rate.max(8_000),
-            audio.speaker.enabled,
+            crate::config::audio_uses_es7210_codec_input(audio),
         )
     }
 
@@ -75,6 +77,7 @@ impl EspSrWakeBackend {
             model_name: ESP_SR_WAKENET_MODEL_HIESP,
             input_sample_rate_hz,
             use_reference,
+            last_snapshot: WakeAcousticSnapshot::default(),
         })
     }
 
@@ -90,7 +93,32 @@ impl EspSrWakeBackend {
         }
 
         let feed_start = Instant::now();
-        let reference_ptr = if self.use_reference && reference.len() >= mic.len() {
+        let reference_available = self.use_reference && reference.len() >= mic.len();
+        let mic_level = pcm_abs_level(mic);
+        let zcr = zero_crossing_rate(mic);
+        let reference_ok = !self.use_reference || reference_available;
+        crate::metrics::record_wake_word_acoustic_frame(WakeWordAcousticFrameMetrics {
+            mic_level,
+            zcr,
+            speech_ratio: 0.0,
+            speech_coverage: 0.0,
+            speech_dominance: 0.0,
+            activation_score: 0.0,
+            speech_like: mic_level > 0.0,
+            reference_ok,
+        });
+        self.last_snapshot = WakeAcousticSnapshot {
+            mic_level_pm: unit_per_mille(mic_level),
+            zcr_pm: unit_per_mille(zcr),
+            speech_ratio_pm: 0,
+            speech_coverage_pm: 0,
+            speech_dominance_pm: 0,
+            activation_pm: 0,
+            speech_like: mic_level > 0.0,
+            reference_ok,
+        };
+
+        let reference_ptr = if reference_available {
             reference.as_ptr()
         } else {
             std::ptr::null()
@@ -125,7 +153,7 @@ impl EspSrWakeBackend {
     }
 
     pub fn snapshot(&self) -> WakeAcousticSnapshot {
-        WakeAcousticSnapshot::default()
+        self.last_snapshot
     }
 }
 
@@ -133,4 +161,37 @@ impl Drop for EspSrWakeBackend {
     fn drop(&mut self) {
         unsafe { beetle_wakenet_destroy() };
     }
+}
+
+fn pcm_abs_level(samples: &[i16]) -> f32 {
+    if samples.is_empty() {
+        return 0.0;
+    }
+    let abs_sum: u64 = samples
+        .iter()
+        .map(|sample| {
+            let sample = i32::from(*sample);
+            if sample < 0 {
+                (-sample) as u64
+            } else {
+                sample as u64
+            }
+        })
+        .sum();
+    (abs_sum as f32 / samples.len() as f32 / 32768.0).clamp(0.0, 1.0)
+}
+
+fn zero_crossing_rate(samples: &[i16]) -> f32 {
+    if samples.len() < 2 {
+        return 0.0;
+    }
+    let crossings = samples
+        .windows(2)
+        .filter(|pair| (pair[0] < 0 && pair[1] >= 0) || (pair[0] >= 0 && pair[1] < 0))
+        .count();
+    (crossings as f32 / (samples.len() - 1) as f32).clamp(0.0, 1.0)
+}
+
+fn unit_per_mille(value: f32) -> u32 {
+    (value.clamp(0.0, 1.0) * 1000.0).round() as u32
 }

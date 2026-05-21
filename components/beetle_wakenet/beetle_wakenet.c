@@ -27,6 +27,8 @@
 #define BEETLE_WN_DETECTION_TASK_STACK 4096
 #define BEETLE_WN_DETECTION_TASK_PRIORITY 3
 #define BEETLE_WN_PENDING_POLL_DELAY_TICKS pdMS_TO_TICKS(10)
+#define BEETLE_WN_INPUT_FORMAT_MONO "M"
+#define BEETLE_WN_INPUT_FORMAT_WITH_SECONDARY "MMR"
 
 typedef struct {
     const esp_afe_sr_iface_t *afe;
@@ -112,9 +114,15 @@ static void models_destroy(void) {
 
 static void feed_16k_sample(int16_t mic, int16_t reference) {
     int index = s_ctx->frame_pos * s_ctx->feed_channels;
+    for (int ch = 0; ch < s_ctx->feed_channels; ++ch) {
+        s_ctx->feed_frame[index + ch] = 0;
+    }
     s_ctx->feed_frame[index] = mic;
     if (s_ctx->feed_channels > 1) {
         s_ctx->feed_frame[index + 1] = reference;
+    }
+    if (s_ctx->feed_channels > 2) {
+        s_ctx->feed_frame[index + 2] = 0;
     }
     s_ctx->frame_pos++;
 
@@ -148,12 +156,14 @@ beetle_wn_err_t beetle_wakenet_init(const char *model_name, int input_sample_rat
         return BEETLE_WN_ERR_MODEL;
     }
 
-    const char *input_format = use_reference ? "MR" : "M";
+    const char *input_format = use_reference
+        ? BEETLE_WN_INPUT_FORMAT_WITH_SECONDARY
+        : BEETLE_WN_INPUT_FORMAT_MONO;
     afe_config_t *afe_config = afe_config_init(input_format, s_models, AFE_TYPE_SR, AFE_MODE_HIGH_PERF);
     if (afe_config == NULL) {
         return BEETLE_WN_ERR_NOMEM;
     }
-    afe_config->aec_init = use_reference ? true : false;
+    afe_config->aec_init = false;
     afe_config->aec_mode = AEC_MODE_SR_HIGH_PERF;
     afe_config->wakenet_init = true;
     afe_config->wakenet_model_name = wn_name;
