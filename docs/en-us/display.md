@@ -127,10 +127,17 @@ In SPI mode, set `spi.host` to `2` or `3` according to your wiring.
 
 The screen mainly shows:
 
-- current state
-- network information
-- channel status
-- a few basic runtime details
+- current-state beetle
+- resource/performance status
+- channels and channel status
+- inbound/outbound message counts
+- last LLM latency
+- last processing time
+- device IP
+- microphone status
+- speaker status
+
+The default status surface uses a sci-fi HUD layout: device IP, resource pressure word, and resource strip at the top, the material-highlighted state beetle in the center, channel state on the left, message and latency data on the right, and microphone/speaker state at the bottom.
 
 ## Read Next
 

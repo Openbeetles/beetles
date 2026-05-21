@@ -375,8 +375,6 @@ pub enum DisplayCommand {
     UpdateChannels {
         channels: [DisplayChannelStatus; DISPLAY_CHANNEL_CAPACITY],
     },
-    /// F8: 启动进度条。stage: 0=WiFi前, 1=WiFi后, 2=SNTP后, 3=Channels后, 4=Agent前。
-    UpdateBootProgress { stage: u8 },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

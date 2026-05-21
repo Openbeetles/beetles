@@ -1429,6 +1429,43 @@ mod tests {
     }
 
     #[test]
+    fn display_refresh_plan_keeps_ip_update_when_state_header_also_changes() {
+        use beetle::DisplaySystemState;
+
+        let deltas = super::DisplayRefreshDeltas {
+            state_changed: true,
+            subtitle_changed: false,
+            ip_changed: true,
+            channels_changed: false,
+            footer_changed: false,
+        };
+
+        assert_eq!(
+            super::plan_display_refresh(Some(DisplaySystemState::Booting), deltas),
+            super::DisplayRefreshPlan {
+                header: Some(super::StateChangeDisplayRefreshMode::StateHeaderOnly),
+                ip: true,
+                channels: false,
+                footer: false,
+            },
+            "STA IP changes must not be hidden behind a state-header-only partial refresh"
+        );
+    }
+
+    #[test]
+    fn state_header_only_refresh_does_not_own_top_ip_cache() {
+        assert!(
+            !super::header_refresh_paints_top_cache_fields(
+                super::StateChangeDisplayRefreshMode::StateHeaderOnly
+            ),
+            "UpdateStateHeader does not repaint top IP/subtitle, so it must not mark them clean"
+        );
+        assert!(super::header_refresh_paints_top_cache_fields(
+            super::StateChangeDisplayRefreshMode::FullDashboard
+        ));
+    }
+
+    #[test]
     fn display_refresh_plan_uses_full_dashboard_only_for_first_render() {
         let deltas = super::DisplayRefreshDeltas {
             state_changed: true,
@@ -1464,7 +1501,7 @@ mod tests {
             super::degrade_display_heavy_refresh_plan(heavy_plan, deltas),
             super::DisplayRefreshPlan {
                 header: Some(super::StateChangeDisplayRefreshMode::StateHeaderOnly),
-                ip: false,
+                ip: true,
                 channels: false,
                 footer: true,
             },
@@ -1613,6 +1650,17 @@ fn state_change_display_refresh_mode(
     target_os = "linux"
 ))]
 #[cfg_attr(test, allow(dead_code))]
+fn header_refresh_paints_top_cache_fields(mode: StateChangeDisplayRefreshMode) -> bool {
+    mode == StateChangeDisplayRefreshMode::FullDashboard
+}
+
+#[cfg(any(
+    test,
+    target_arch = "xtensa",
+    target_arch = "riscv32",
+    target_os = "linux"
+))]
+#[cfg_attr(test, allow(dead_code))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct DisplayRefreshDeltas {
     state_changed: bool,
@@ -1661,7 +1709,7 @@ fn plan_display_refresh(
     }
     DisplayRefreshPlan {
         header,
-        ip: header.is_none() && (deltas.ip_changed || deltas.subtitle_changed),
+        ip: deltas.ip_changed || deltas.subtitle_changed,
         channels: deltas.channels_changed,
         footer: deltas.footer_changed,
     }
@@ -1685,7 +1733,7 @@ fn degrade_display_heavy_refresh_plan(
     };
     DisplayRefreshPlan {
         header,
-        ip: header.is_none() && plan.ip,
+        ip: plan.ip || deltas.ip_changed || deltas.subtitle_changed,
         channels: false,
         footer: plan.footer || deltas.footer_changed,
     }
@@ -2383,11 +2431,7 @@ fn run_display_loop(platform: Arc<dyn Platform>, config: Arc<AppConfig>) {
             match display_command_with_owner(&platform, DisplayOwner::DefaultDashboard, cmd) {
                 Some(Ok(())) => {
                     loop_state.last_state = Some(state);
-                    loop_state
-                        .last_presence_subtitle
-                        .clone_from(&display_projection.subtitle_override);
-                    loop_state.last_ip.clone_from(&ip_owned);
-                    if header_mode == StateChangeDisplayRefreshMode::FullDashboard {
+                    if header_refresh_paints_top_cache_fields(header_mode) {
                         update_display_loop_cache(
                             &mut loop_state,
                             DisplayLoopCacheUpdate {
@@ -3739,15 +3783,6 @@ fn start_communication_planes(assembly: &mut PreparedRuntimeAssembly) -> beetle:
         #[cfg(feature = "wecom")]
         &assembly.wecom_aibot_route_store,
     );
-    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", target_os = "linux"))]
-    if assembly.runtime.platform.display_available() {
-        let _ = display_command_with_owner(
-            &assembly.runtime.platform,
-            DisplayOwner::DefaultDashboard,
-            DisplayCommand::UpdateBootProgress { stage: 3 },
-        );
-    }
-
     let enabled_channel =
         beetle::normalize_compiled_enabled_channel(assembly.config.enabled_channel.as_str());
     log::info!(
@@ -4136,15 +4171,6 @@ fn start_communication_planes(assembly: &mut PreparedRuntimeAssembly) -> beetle:
 fn start_agent_plane(
     assembly: &mut PreparedRuntimeAssembly,
 ) -> beetle::Result<Option<beetle::util::TaskHandle>> {
-    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32", target_os = "linux"))]
-    if assembly.runtime.platform.display_available() {
-        let _ = display_command_with_owner(
-            &assembly.runtime.platform,
-            DisplayOwner::DefaultDashboard,
-            DisplayCommand::UpdateBootProgress { stage: 4 },
-        );
-    }
-
     let worker_llm: Arc<dyn beetle::LlmClient + Send + Sync> = Arc::from(
         beetle::build_llm_clients(&assembly.config, Arc::clone(&assembly.resolve_locale_ui)),
     );

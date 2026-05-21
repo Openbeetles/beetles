@@ -75,7 +75,7 @@ pub fn load_config(platform: &Arc<dyn Platform>) -> Arc<AppConfig> {
     config
 }
 
-/// 共享：加载配置、校验、WiFi 连接；ESP 侧含启动进度条与 display 初始化（与 Linux 同路径，无重复 main 逻辑）。
+/// 共享：加载配置、校验、WiFi 连接；ESP 侧含 display 初始化（与 Linux 同路径，无重复 main 逻辑）。
 pub fn bootstrap_config_and_wifi(platform: &Arc<dyn Platform>) -> (Arc<AppConfig>, bool) {
     let config = load_config(platform);
 
@@ -83,12 +83,6 @@ pub fn bootstrap_config_and_wifi(platform: &Arc<dyn Platform>) -> (Arc<AppConfig
         if let Err(e) = config.validate_for_wifi() {
             log::warn!("[{}] config validate_for_wifi: {}", TAG, e);
         }
-    }
-    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-    if platform.display_available() {
-        let _ = crate::display::with_display_lease(DisplayOwner::DefaultDashboard, || {
-            platform.display_command(DisplayCommand::UpdateBootProgress { stage: 1 })
-        });
     }
     let wifi_init_ok = match platform.connect_wifi(config.as_ref()) {
         Ok(()) => {
@@ -102,12 +96,6 @@ pub fn bootstrap_config_and_wifi(platform: &Arc<dyn Platform>) -> (Arc<AppConfig
                 "[{}] WiFi stack ready (SoftAP + scan; STA may still be negotiating)",
                 TAG
             );
-            #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-            if platform.display_available() {
-                let _ = crate::display::with_display_lease(DisplayOwner::DefaultDashboard, || {
-                    platform.display_command(DisplayCommand::UpdateBootProgress { stage: 2 })
-                });
-            }
             #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
             crate::orchestrator::log_startup_memory_checkpoint("wifi_stack_ready");
             true

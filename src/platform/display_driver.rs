@@ -496,7 +496,7 @@ where
             messages_in,
             messages_out,
             last_active_epoch_secs,
-            uptime_secs,
+            uptime_secs: _,
             busy_phase,
             llm_last_ms,
             error_flash,
@@ -516,7 +516,6 @@ where
                     messages_in: *messages_in,
                     messages_out: *messages_out,
                     last_active_epoch_secs: *last_active_epoch_secs,
-                    uptime_secs: *uptime_secs,
                     busy_phase: *busy_phase,
                     llm_last_ms: *llm_last_ms,
                     error_flash: *error_flash,
@@ -527,48 +526,41 @@ where
         DisplayCommand::UpdateIp {
             ip,
             presence_subtitle,
-            uptime_secs,
+            uptime_secs: _,
         } => {
             render_ip_partial(
                 backend,
                 ip.as_str(),
                 presence_subtitle.as_deref(),
-                *uptime_secs,
                 config.width,
+                config.height,
                 layout,
             );
-            let flush_h = subtitle_ip_flush_rows(config.width, *uptime_secs);
-            backend.flush_rows(
-                config.offset_x,
-                config.offset_y,
-                layout.subtitle_top,
-                flush_h,
-            )?;
+            let flush_h = hud_top_bar_rows(config.height);
+            backend.flush_rows(config.offset_x, config.offset_y, 0, flush_h)?;
         }
         DisplayCommand::UpdateStateHeader {
             state,
-            presence_subtitle,
-            ip_address,
-            uptime_secs,
+            presence_subtitle: _,
+            ip_address: _,
+            uptime_secs: _,
             busy_phase,
         } => {
             render_state_header_partial(
                 backend,
                 *state,
                 StateHeaderSnapshot {
-                    presence_subtitle: presence_subtitle.as_deref(),
-                    ip_address: ip_address.as_deref(),
-                    uptime_secs: *uptime_secs,
                     busy_phase: *busy_phase,
                 },
                 config.width,
+                config.height,
                 layout,
             );
             backend.flush_rows(
                 config.offset_x,
                 config.offset_y,
-                0,
-                header_flush_rows(layout),
+                hud_status_top(config.height),
+                hud_status_rows(config.height),
             )?;
         }
         DisplayCommand::UpdatePressure {
@@ -580,6 +572,7 @@ where
             llm_last_ms,
             error_flash,
         } => {
+            render_resource_partial(backend, config.width, config.height, level, *heap_percent);
             render_pressure_partial(
                 backend,
                 level,
@@ -595,28 +588,26 @@ where
                     error_flash: *error_flash,
                 },
             );
-            let footer_h = config.height.saturating_sub(layout.footer_top);
             backend.flush_rows(
                 config.offset_x,
                 config.offset_y,
-                layout.footer_top,
-                footer_h,
+                8,
+                hud_top_bar_rows(config.height).saturating_add(4),
+            )?;
+            backend.flush_rows(
+                config.offset_x,
+                config.offset_y,
+                hud_metrics_top(config.height),
+                hud_metrics_rows(config.height),
             )?;
         }
         DisplayCommand::UpdateChannels { channels } => {
-            render_channels_partial(backend, channels, config.width, layout);
-            let ch_h = layout_middle_panel_height(layout) as u16;
-            backend.flush_rows(config.offset_x, config.offset_y, layout.middle_top, ch_h)?;
-        }
-        DisplayCommand::UpdateBootProgress { stage } => {
-            let bg = DISPLAY_BG;
-            render_boot_progress(backend, *stage, config.width, config.height, bg, layout);
-            let footer_h = config.height.saturating_sub(layout.footer_top);
+            render_channels_partial(backend, channels, config.width, config.height, layout);
             backend.flush_rows(
                 config.offset_x,
                 config.offset_y,
-                layout.footer_top,
-                footer_h,
+                hud_channels_top(config.height),
+                hud_channels_rows(config.height),
             )?;
         }
     }
@@ -1028,7 +1019,7 @@ fn sysfs_write_brightness(bl_path: &str, percent: u8) {
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 use embedded_graphics::{
-    mono_font::{ascii::FONT_6X13, ascii::FONT_9X18_BOLD, MonoTextStyle},
+    mono_font::{ascii::FONT_6X10, MonoTextStyle},
     prelude::*,
     primitives::{Circle, Ellipse, Line, PrimitiveStyle, Rectangle},
     text::Text,
@@ -1054,6 +1045,13 @@ fn darken(c: Rgb565, amt: u8) -> Rgb565 {
     let r = c.r().saturating_sub(amt >> 3);
     let g = c.g().saturating_sub(amt >> 2);
     let b = c.b().saturating_sub(amt >> 3);
+    Rgb565::new(r, g, b)
+}
+
+fn lighten(c: Rgb565, amt: u8) -> Rgb565 {
+    let r = c.r().saturating_add(amt >> 3).min(31);
+    let g = c.g().saturating_add(amt >> 2).min(63);
+    let b = c.b().saturating_add(amt >> 3).min(31);
     Rgb565::new(r, g, b)
 }
 
@@ -1222,6 +1220,15 @@ fn draw_beetle<D: DrawTarget<Color = Rgb565>>(
     .into_styled(body_fill)
     .draw(target);
 
+    let body_highlight = lighten(color, 40);
+    let body_outline = PrimitiveStyle::with_stroke(body_highlight, 1);
+    let _ = Ellipse::new(
+        Point::new(cx - body_rx, body_cy - body_ry),
+        Size::new((body_rx * 2) as u32, (body_ry * 2) as u32),
+    )
+    .into_styled(body_outline)
+    .draw(target);
+
     // --- Elytra seam (center line) ---
     let seam_color = darken(color, 50);
     let seam_style = PrimitiveStyle::with_stroke(seam_color, 1);
@@ -1246,6 +1253,13 @@ fn draw_beetle<D: DrawTarget<Color = Rgb565>>(
     let _ = Line::new(Point::new(cx + 3, core_y), Point::new(cx, core_y - 3))
         .into_styled(seam_style)
         .draw(target);
+
+    let glint_style = PrimitiveStyle::with_stroke(body_highlight, 1);
+    for &sx in &[-1i32, 1] {
+        let top = Point::new(cx + sx * body_rx * 24 / 100, body_cy - body_ry * 66 / 100);
+        let bottom = Point::new(cx + sx * body_rx * 43 / 100, body_cy - body_ry * 14 / 100);
+        let _ = Line::new(top, bottom).into_styled(glint_style).draw(target);
+    }
 
     // --- Elytra ridges (Mecha panel lines) ---
     let ridge_color = darken(color, 30);
@@ -1286,35 +1300,43 @@ fn draw_beetle<D: DrawTarget<Color = Rgb565>>(
     .into_styled(head_fill)
     .draw(target);
 
-    // --- Eyes (Sensor visors on sides of head) ---
-    let eye_w = (head_rx * 5 / 10).max(3) as u32;
-    let eye_h = (head_ry * 4 / 10).max(2) as u32;
+    let _ = Ellipse::new(
+        Point::new(cx - head_rx, head_cy - head_ry),
+        Size::new((head_rx * 2) as u32, (head_ry * 2) as u32),
+    )
+    .into_styled(PrimitiveStyle::with_stroke(lighten(head_color, 34), 1))
+    .draw(target);
+
+    // --- Eyes (round sensor optics on sides of head) ---
+    let eye_r = (head_ry * 38 / 100).clamp(2, 4);
     let eye_spread = head_rx * 7 / 10;
-    let eye_y = head_cy - (eye_h as i32 / 2);
 
     if opts.x_eyes {
         // X eyes (fault state)
         let x_style = PrimitiveStyle::with_stroke(Rgb565::WHITE, 2);
         for &sx in &[-1i32, 1] {
             let ex = cx + sx * eye_spread;
-            let _ = Line::new(Point::new(ex - 2, eye_y - 1), Point::new(ex + 2, eye_y + 3))
-                .into_styled(x_style)
-                .draw(target);
-            let _ = Line::new(Point::new(ex + 2, eye_y - 1), Point::new(ex - 2, eye_y + 3))
-                .into_styled(x_style)
-                .draw(target);
+            let _ = Line::new(
+                Point::new(ex - eye_r, head_cy - eye_r),
+                Point::new(ex + eye_r, head_cy + eye_r),
+            )
+            .into_styled(x_style)
+            .draw(target);
+            let _ = Line::new(
+                Point::new(ex + eye_r, head_cy - eye_r),
+                Point::new(ex - eye_r, head_cy + eye_r),
+            )
+            .into_styled(x_style)
+            .draw(target);
         }
     } else {
-        // Sensor visors (glowing rectangles)
+        // Round optics; keep as filled circles for cheap, readable pixels on ST7789.
         let eye_fill = PrimitiveStyle::with_fill(Rgb565::WHITE);
         for &sx in &[-1i32, 1] {
             let ex = cx + sx * eye_spread;
-            let _ = Rectangle::new(
-                Point::new(ex - (eye_w as i32 / 2), eye_y),
-                Size::new(eye_w, eye_h),
-            )
-            .into_styled(eye_fill)
-            .draw(target);
+            let _ = Circle::new(Point::new(ex - eye_r, head_cy - eye_r), (eye_r * 2) as u32)
+                .into_styled(eye_fill)
+                .draw(target);
         }
     }
 
@@ -1435,8 +1457,6 @@ struct DashboardParams<'a> {
     messages_in: u32,
     messages_out: u32,
     last_active_epoch_secs: u32,
-    /// F3: 系统运行时间（秒）。
-    uptime_secs: u64,
     /// F4: Busy 呼吸动画相位。
     busy_phase: bool,
     /// F6: 最近一次 LLM 调用延迟（毫秒）。
@@ -1448,32 +1468,461 @@ struct DashboardParams<'a> {
 struct StateHeaderParams<'a> {
     layout: &'a DisplayLayout,
     state: DisplaySystemState,
-    presence_subtitle: Option<&'a str>,
-    ip_address: Option<&'a str>,
     width: u16,
-    uptime_secs: u64,
+    height: u16,
     busy_phase: bool,
 }
 
-/// Title column strip: only covers the state title row (ends above `subtitle_top`).
-/// 标题区窄背景；不覆盖副标题行，与 `UpdateIp` 局部刷新兼容。
-fn draw_title_strip<D: DrawTarget<Color = Rgb565>>(
+fn hud_top_bar_rows(height: u16) -> u16 {
+    (height as i32 * 28 / DISPLAY_LAYOUT_REF_PX as i32).clamp(24, 34) as u16
+}
+
+fn hud_beetle_box(width: u16, height: u16, layout: &DisplayLayout) -> (i32, i32, i32) {
+    let _ = layout;
+    let size = (width.min(height) as i32 * 40 / 100).clamp(72, 100);
+    let center_y = height as i32 / 2 - 1;
+    let x = (width as i32 - size) / 2;
+    let y = center_y - size / 2;
+    (x, y, size)
+}
+
+fn hud_resource_segments(heap_percent: u8) -> u8 {
+    let pct = heap_percent.min(100) as u16;
+    (pct * 13).div_ceil(100) as u8
+}
+
+fn pressure_label(level: &DisplayPressureLevel) -> &'static str {
+    match level {
+        DisplayPressureLevel::Normal => "NORMAL",
+        DisplayPressureLevel::Cautious => "CAUTIOUS",
+        DisplayPressureLevel::Critical => "CRITICAL",
+    }
+}
+
+fn hud_resource_bar_y(height: u16) -> i32 {
+    (height as i32 * 16 / DISPLAY_LAYOUT_REF_PX as i32).clamp(10, 18)
+}
+
+fn hud_top_text_baseline(height: u16) -> i32 {
+    hud_resource_bar_y(height) + 8
+}
+
+fn hud_channels_top(height: u16) -> u16 {
+    (height as i32 * 48 / DISPLAY_LAYOUT_REF_PX as i32).clamp(40, 56) as u16
+}
+
+fn hud_channels_rows(height: u16) -> u16 {
+    (height as i32 * 102 / DISPLAY_LAYOUT_REF_PX as i32).clamp(86, 120) as u16
+}
+
+fn hud_metrics_top(height: u16) -> u16 {
+    (height as i32 * 48 / DISPLAY_LAYOUT_REF_PX as i32).clamp(40, 56) as u16
+}
+
+fn hud_metrics_rows(height: u16) -> u16 {
+    (height as i32 * 130 / DISPLAY_LAYOUT_REF_PX as i32).clamp(104, 145) as u16
+}
+
+fn hud_status_top(height: u16) -> u16 {
+    (height as i32 * 36 / DISPLAY_LAYOUT_REF_PX as i32).clamp(30, 44) as u16
+}
+
+fn hud_status_rows(height: u16) -> u16 {
+    height.saturating_sub(hud_status_top(height))
+}
+
+fn draw_hud_grid<D: DrawTarget<Color = Rgb565>>(target: &mut D, width: u16, height: u16) {
+    draw_hud_grid_region(target, width, height, 0, 0, width as i32, height as i32);
+}
+
+fn draw_hud_grid_region<D: DrawTarget<Color = Rgb565>>(
     target: &mut D,
-    layout: &DisplayLayout,
     width: u16,
-    fill: Rgb565,
+    height: u16,
+    x0: i32,
+    y0: i32,
+    x1: i32,
+    y1: i32,
 ) {
-    let x = layout.title_left.saturating_sub(6) as i32;
-    let y = layout.title_top as i32;
-    let inner = layout.subtitle_top.saturating_sub(layout.title_top);
-    let h_strip = inner.saturating_sub(3).max(10) as u32;
-    let w_strip = (width as i32 - x).max(0) as u32;
-    if w_strip == 0 {
+    let h_style = PrimitiveStyle::with_stroke(rgb565(4, 24, 28), 1);
+    let v_style = PrimitiveStyle::with_stroke(rgb565(3, 18, 22), 1);
+    let left = (width as i32 * 44 / 1000).max(8);
+    let right = width as i32 - left;
+    let top = (height as i32 * 50 / 1000).max(8);
+    let bottom = height as i32 - top;
+    let rx0 = x0.max(left);
+    let rx1 = x1.min(right);
+    let ry0 = y0.max(top);
+    let ry1 = y1.min(bottom);
+
+    let mut y = (height as i32 * 84 / 1000).max(14);
+    let y_step = (height as i32 * 42 / 1000).max(8);
+    while y < bottom {
+        if y >= y0 && y < y1 && rx0 <= rx1 {
+            let _ = Line::new(Point::new(rx0, y), Point::new(rx1, y))
+                .into_styled(h_style)
+                .draw(target);
+        }
+        y += y_step;
+    }
+
+    let mut x = (width as i32 * 62 / 1000).max(12);
+    let x_step = (width as i32 * 44 / 1000).max(10);
+    while x < right {
+        if x >= x0 && x < x1 && ry0 <= ry1 {
+            let _ = Line::new(Point::new(x, ry0), Point::new(x, ry1))
+                .into_styled(v_style)
+                .draw(target);
+        }
+        x += x_step;
+    }
+}
+
+fn clear_rect_with_hud_grid<D: DrawTarget<Color = Rgb565>>(
+    target: &mut D,
+    width: u16,
+    height: u16,
+    x: i32,
+    y: i32,
+    w: u32,
+    h: u32,
+) {
+    if w == 0 || h == 0 {
         return;
     }
-    let _ = Rectangle::new(Point::new(x, y), Size::new(w_strip, h_strip))
-        .into_styled(PrimitiveStyle::with_fill(fill))
+    let _ = Rectangle::new(Point::new(x, y), Size::new(w, h))
+        .into_styled(PrimitiveStyle::with_fill(DISPLAY_BG))
         .draw(target);
+    draw_hud_grid_region(target, width, height, x, y, x + w as i32, y + h as i32);
+}
+
+fn draw_hud_frame<D: DrawTarget<Color = Rgb565>>(
+    target: &mut D,
+    width: u16,
+    height: u16,
+    accent: Rgb565,
+) {
+    let w = width as i32;
+    let h = height as i32;
+    if w < 28 || h < 28 {
+        return;
+    }
+    let style = PrimitiveStyle::with_stroke(darken(accent, 32), 1);
+    let m = 8;
+    let cut = 7;
+    let points = [
+        (m + cut, m),
+        (w - m - cut, m),
+        (w - m, m + cut),
+        (w - m, h - m - cut),
+        (w - m - cut, h - m),
+        (m + cut, h - m),
+        (m, h - m - cut),
+        (m, m + cut),
+        (m + cut, m),
+    ];
+    for pair in points.windows(2) {
+        let _ = Line::new(
+            Point::new(pair[0].0, pair[0].1),
+            Point::new(pair[1].0, pair[1].1),
+        )
+        .into_styled(style)
+        .draw(target);
+    }
+}
+
+fn draw_hud_cyber_chrome<D: DrawTarget<Color = Rgb565>>(
+    target: &mut D,
+    width: u16,
+    height: u16,
+    accent: Rgb565,
+) {
+    let w = width as i32;
+    let h = height as i32;
+    if w < 120 || h < 120 {
+        return;
+    }
+
+    let cyan = PrimitiveStyle::with_stroke(darken(accent, 18), 1);
+    let magenta = PrimitiveStyle::with_stroke(CYBER_MAGENTA, 1);
+    let amber = PrimitiveStyle::with_stroke(STATUS_WARNING, 1);
+
+    for idx in 0..4 {
+        let y = 29 + idx * 4;
+        let len = 8 + (idx % 2) * 7;
+        let style = if idx == 2 { amber } else { cyan };
+        let _ = Line::new(Point::new(19, y), Point::new(19 + len, y))
+            .into_styled(style)
+            .draw(target);
+    }
+
+    for idx in 0..5 {
+        let y = 48 + idx * 20;
+        let style = if idx == 1 || idx == 4 { magenta } else { cyan };
+        let _ = Line::new(Point::new(w - 13, y), Point::new(w - 13, y + 8))
+            .into_styled(style)
+            .draw(target);
+    }
+
+    for idx in 0..7 {
+        let x = 23 + idx * 8;
+        let style = if idx == 3 { magenta } else { cyan };
+        let _ = Line::new(Point::new(x, h - 14), Point::new(x + 3, h - 14))
+            .into_styled(style)
+            .draw(target);
+    }
+}
+
+fn draw_hud_top_ip<D: DrawTarget<Color = Rgb565>>(
+    target: &mut D,
+    width: u16,
+    height: u16,
+    layout: &DisplayLayout,
+    ip_address: Option<&str>,
+    presence_subtitle: Option<&str>,
+) {
+    let y = hud_top_text_baseline(height);
+    let x = layout.margin_x as i32 + 10;
+    let label_style = MonoTextStyle::new(&FONT_6X10, TEXT_SECONDARY);
+    let value_style = MonoTextStyle::new(&FONT_6X10, TEXT_PRIMARY);
+    let value = ip_address
+        .or(presence_subtitle)
+        .unwrap_or("---.---.---.---");
+    let _ = Text::new("IP", Point::new(x, y), label_style).draw(target);
+    let max_chars = ((width as usize / 2).saturating_sub(22) / 6).clamp(1, 24);
+    let bytes = value.as_bytes();
+    let mut buf = [0u8; 24];
+    let n = bytes.len().min(max_chars).min(buf.len());
+    buf[..n].copy_from_slice(&bytes[..n]);
+    let value = core::str::from_utf8(&buf[..n]).unwrap_or("---");
+    let _ = Text::new(value, Point::new(x + 18, y), value_style).draw(target);
+
+    let rail_y = (y + 2).min(height as i32 - 2);
+    let rail_end = (x + 112).min(width as i32 / 2 - 8);
+    if rail_end > x + 26 {
+        let _ = Line::new(Point::new(x, rail_y), Point::new(rail_end, rail_y))
+            .into_styled(PrimitiveStyle::with_stroke(HUD_RAIL, 1))
+            .draw(target);
+    }
+}
+
+fn draw_hud_resource_bar<D: DrawTarget<Color = Rgb565>>(
+    target: &mut D,
+    width: u16,
+    height: u16,
+    pressure: &DisplayPressureLevel,
+    heap_percent: u8,
+) {
+    let y = hud_resource_bar_y(height);
+    let seg_w = 6;
+    let seg_h = 10;
+    let gap = 2;
+    let count = 13;
+    let total_w = count * seg_w + (count - 1) * gap;
+    let x = (width as i32 * 54 / 100)
+        .min(width as i32 - total_w - 34)
+        .max(width as i32 / 2 + 8);
+    let active = hud_resource_segments(heap_percent);
+    let color = pressure_accent_color(pressure);
+    let inactive = PrimitiveStyle::with_fill(rgb565(5, 24, 29));
+    let active_style = PrimitiveStyle::with_fill(color);
+    let label_style = MonoTextStyle::new(&FONT_6X10, color);
+    let _ = Text::new(
+        pressure_label(pressure),
+        Point::new(x - 50, hud_top_text_baseline(height)),
+        label_style,
+    )
+    .draw(target);
+
+    let rail_y = y + seg_h + 1;
+    let _ = Line::new(Point::new(x, rail_y), Point::new(x + total_w, rail_y))
+        .into_styled(PrimitiveStyle::with_stroke(HUD_RAIL, 1))
+        .draw(target);
+
+    for idx in 0..count {
+        let sx = x + idx * (seg_w + gap);
+        let style = if (idx as u8) < active {
+            active_style
+        } else {
+            inactive
+        };
+        let _ = Rectangle::new(Point::new(sx, y), Size::new(seg_w as u32, seg_h as u32))
+            .into_styled(style)
+            .draw(target);
+    }
+
+    let mut pct_buf = [0u8; 5];
+    let pct_str = format_pct(heap_percent, &mut pct_buf);
+    let _ = Text::new(
+        pct_str,
+        Point::new(
+            (x + total_w + 7).min(width as i32 - 24),
+            hud_top_text_baseline(height),
+        ),
+        MonoTextStyle::new(&FONT_6X10, TEXT_PRIMARY),
+    )
+    .draw(target);
+}
+
+fn clear_hud_top_ip<D: DrawTarget<Color = Rgb565>>(
+    target: &mut D,
+    width: u16,
+    height: u16,
+    layout: &DisplayLayout,
+) {
+    let clear_w = (width as u32 / 2).max(48);
+    let y = hud_top_text_baseline(height).saturating_sub(10);
+    clear_rect_with_hud_grid(
+        target,
+        width,
+        height,
+        layout.margin_x as i32 + 8,
+        y,
+        clear_w,
+        13,
+    );
+}
+
+fn clear_hud_resource_bar<D: DrawTarget<Color = Rgb565>>(target: &mut D, width: u16, height: u16) {
+    let clear_x = (width as i32 / 2 - 14).max(0);
+    let clear_w = (width as i32 - clear_x).max(0) as u32;
+    let y = hud_top_text_baseline(height).saturating_sub(10);
+    clear_rect_with_hud_grid(target, width, height, clear_x, y, clear_w, 13);
+}
+
+fn draw_mic_icon<D: DrawTarget<Color = Rgb565>>(
+    target: &mut D,
+    x: i32,
+    y: i32,
+    color: Rgb565,
+    active: bool,
+) {
+    let stroke = PrimitiveStyle::with_stroke(color, 1);
+    let fill = PrimitiveStyle::with_fill(if active { color } else { TEXT_WEAK });
+    let _ = Rectangle::new(Point::new(x + 5, y), Size::new(8, 15))
+        .into_styled(stroke)
+        .draw(target);
+    let _ = Line::new(Point::new(x + 1, y + 9), Point::new(x + 1, y + 14))
+        .into_styled(stroke)
+        .draw(target);
+    let _ = Line::new(Point::new(x + 17, y + 9), Point::new(x + 17, y + 14))
+        .into_styled(stroke)
+        .draw(target);
+    let _ = Line::new(Point::new(x + 1, y + 14), Point::new(x + 9, y + 20))
+        .into_styled(stroke)
+        .draw(target);
+    let _ = Line::new(Point::new(x + 17, y + 14), Point::new(x + 9, y + 20))
+        .into_styled(stroke)
+        .draw(target);
+    let _ = Line::new(Point::new(x + 9, y + 20), Point::new(x + 9, y + 24))
+        .into_styled(stroke)
+        .draw(target);
+    let _ = Line::new(Point::new(x + 4, y + 24), Point::new(x + 14, y + 24))
+        .into_styled(stroke)
+        .draw(target);
+    if active {
+        for idx in 0..3 {
+            let sx = x + 23 + idx * 6;
+            let h = 4 + idx * 2;
+            let _ = Rectangle::new(Point::new(sx, y + 19 - h), Size::new(3, h as u32))
+                .into_styled(fill)
+                .draw(target);
+        }
+    }
+}
+
+fn draw_speaker_icon<D: DrawTarget<Color = Rgb565>>(
+    target: &mut D,
+    x: i32,
+    y: i32,
+    color: Rgb565,
+    active: bool,
+) {
+    let stroke = PrimitiveStyle::with_stroke(color, 1);
+    let _ = Rectangle::new(Point::new(x, y + 9), Size::new(6, 10))
+        .into_styled(stroke)
+        .draw(target);
+    let _ = Line::new(Point::new(x + 6, y + 9), Point::new(x + 16, y + 2))
+        .into_styled(stroke)
+        .draw(target);
+    let _ = Line::new(Point::new(x + 16, y + 2), Point::new(x + 16, y + 26))
+        .into_styled(stroke)
+        .draw(target);
+    let _ = Line::new(Point::new(x + 16, y + 26), Point::new(x + 6, y + 19))
+        .into_styled(stroke)
+        .draw(target);
+    if active {
+        let _ = Line::new(Point::new(x + 22, y + 9), Point::new(x + 25, y + 14))
+            .into_styled(stroke)
+            .draw(target);
+        let _ = Line::new(Point::new(x + 25, y + 14), Point::new(x + 22, y + 19))
+            .into_styled(stroke)
+            .draw(target);
+        let _ = Line::new(Point::new(x + 29, y + 6), Point::new(x + 35, y + 14))
+            .into_styled(stroke)
+            .draw(target);
+        let _ = Line::new(Point::new(x + 35, y + 14), Point::new(x + 29, y + 22))
+            .into_styled(stroke)
+            .draw(target);
+    }
+}
+
+fn draw_audio_status<D: DrawTarget<Color = Rgb565>>(
+    target: &mut D,
+    width: u16,
+    height: u16,
+    layout: &DisplayLayout,
+    state: DisplaySystemState,
+) {
+    let _ = layout;
+    let y = (height as i32 - 46).max(160);
+    let mic_active = matches!(state, DisplaySystemState::Recording);
+    let speaker_active = matches!(state, DisplaySystemState::Playing);
+    let mic_color = if mic_active {
+        STATUS_SUCCESS
+    } else {
+        AUDIO_INACTIVE
+    };
+    let speaker_color = if speaker_active {
+        STATUS_INFO
+    } else {
+        AUDIO_INACTIVE
+    };
+    let inactive_bar = rgb565(8, 42, 50);
+    let active_bar = pressure_accent_color(&DisplayPressureLevel::Normal);
+    let bar_style = PrimitiveStyle::with_fill(if mic_active { active_bar } else { inactive_bar });
+    draw_mic_icon(
+        target,
+        (width as i32 * 97 / 1000).max(24),
+        y,
+        mic_color,
+        mic_active,
+    );
+    let mic_bar_x = (width as i32 * 172 / 1000).max(48);
+    for idx in 0..7 {
+        let _ = Rectangle::new(Point::new(mic_bar_x + idx * 6, y + 12), Size::new(4, 7))
+            .into_styled(bar_style)
+            .draw(target);
+    }
+
+    draw_speaker_icon(
+        target,
+        (width as i32 - 132).max(width as i32 / 2 + 12),
+        y,
+        speaker_color,
+        speaker_active,
+    );
+    let speaker_bar_style = PrimitiveStyle::with_fill(if speaker_active {
+        STATUS_INFO
+    } else {
+        inactive_bar
+    });
+    let speaker_bar_x = (width as i32 - 87).max(width as i32 / 2 + 56);
+    for idx in 0..7 {
+        let _ = Rectangle::new(Point::new(speaker_bar_x + idx * 6, y + 12), Size::new(4, 7))
+            .into_styled(speaker_bar_style)
+            .draw(target);
+    }
 }
 
 /// Render the full dashboard UI.
@@ -1488,82 +1937,31 @@ fn render_dashboard<D: DrawTarget<Color = Rgb565>>(target: &mut D, p: &Dashboard
 
     let beetle_color = state_accent_color(p.state);
 
-    // --- Top accent stripe (state color) ---
-    let _ = Rectangle::new(Point::new(0, 0), Size::new(p.width as u32, 3))
-        .into_styled(PrimitiveStyle::with_fill(beetle_color))
-        .draw(target);
-
-    // --- Section dividers ---
-    let div_style = PrimitiveStyle::with_stroke(DIVIDER, 1);
-    let mid_div_y = layout.middle_top.saturating_sub(6) as i32;
-    let foot_div_y = layout.footer_top.saturating_sub(6) as i32;
-    let div_margin = layout.margin_x as i32;
-    let _ = Line::new(
-        Point::new(div_margin, mid_div_y),
-        Point::new(p.width as i32 - div_margin, mid_div_y),
-    )
-    .into_styled(div_style)
-    .draw(target);
-    let _ = Line::new(
-        Point::new(div_margin, foot_div_y),
-        Point::new(p.width as i32 - div_margin, foot_div_y),
-    )
-    .into_styled(div_style)
-    .draw(target);
-
-    // Header / middle / footer panels.
-    let head_y = (layout.header_top as i32).saturating_sub(8).max(4);
-    let middle_y = layout.middle_top as i32;
-    let footer_y = layout.footer_top as i32;
-    let head_h = (mid_div_y - head_y).max(24) as u32;
-    let middle_h = layout_middle_panel_height(layout) as u32;
-    let footer_h = (p.height as i32 - footer_y).max(1) as u32;
-    draw_panel_fill(
+    draw_hud_grid(target, p.width, p.height);
+    draw_hud_frame(target, p.width, p.height, beetle_color);
+    draw_hud_cyber_chrome(target, p.width, p.height, beetle_color);
+    draw_hud_top_ip(
         target,
-        0,
-        head_y,
-        p.width as u32,
-        head_h,
-        PANEL_BG,
-        PANEL_BORDER,
+        p.width,
+        p.height,
+        layout,
+        p.ip_address,
+        p.presence_subtitle,
     );
-    draw_panel_fill(
-        target,
-        0,
-        middle_y,
-        p.width as u32,
-        middle_h,
-        PANEL_BG,
-        PANEL_BORDER,
-    );
-    draw_panel_fill(
-        target,
-        0,
-        footer_y,
-        p.width as u32,
-        footer_h,
-        PANEL_BG,
-        PANEL_BORDER,
-    );
+    draw_hud_resource_bar(target, p.width, p.height, p.pressure, p.heap_percent);
 
     render_state_header_content(
         target,
         &StateHeaderParams {
             layout,
             state: p.state,
-            presence_subtitle: p.presence_subtitle,
-            ip_address: p.ip_address,
             width: p.width,
-            uptime_secs: p.uptime_secs,
+            height: p.height,
             busy_phase: p.busy_phase,
         },
     );
-
-    // --- Channel status (middle section) with F5 failure count ---
     render_channels_inner(target, p.channels, p.width, layout);
-
-    // --- Footer: pressure level + heap progress bar ---
-    render_footer(
+    render_hud_metrics(
         target,
         layout,
         p.pressure,
@@ -1584,9 +1982,8 @@ fn render_state_header_content<D: DrawTarget<Color = Rgb565>>(
 ) {
     let layout = p.layout;
     let beetle_color = state_accent_color(p.state);
-    draw_title_strip(target, layout, p.width, TITLE_STRIP_BG);
 
-    let icon_size = layout.icon_size as i32;
+    let (icon_x, icon_y, icon_size) = hud_beetle_box(p.width, p.height, layout);
     let opts = match p.state {
         DisplaySystemState::Busy => BeetleOpts {
             wings: true,
@@ -1607,14 +2004,8 @@ fn render_state_header_content<D: DrawTarget<Color = Rgb565>>(
         },
         _ => BeetleOpts::default(),
     };
-    let (cx, body_cy, body_r, head_cy, head_r) = draw_beetle(
-        target,
-        layout.icon_left as i32,
-        layout.header_top as i32,
-        icon_size,
-        beetle_color,
-        &opts,
-    );
+    let (cx, body_cy, body_r, head_cy, head_r) =
+        draw_beetle(target, icon_x, icon_y, icon_size, beetle_color, &opts);
 
     match p.state {
         DisplaySystemState::Booting => {
@@ -1653,22 +2044,7 @@ fn render_state_header_content<D: DrawTarget<Color = Rgb565>>(
             .into_styled(x_style)
             .draw(target);
         }
-        DisplaySystemState::Idle => {
-            let check_style = PrimitiveStyle::with_stroke(Rgb565::WHITE, 3);
-            let m = 8i32;
-            let _ = Line::new(
-                Point::new(cx - m, body_cy),
-                Point::new(cx - 2, body_cy + m * 7 / 10),
-            )
-            .into_styled(check_style)
-            .draw(target);
-            let _ = Line::new(
-                Point::new(cx - 2, body_cy + m * 7 / 10),
-                Point::new(cx + m, body_cy - m / 2),
-            )
-            .into_styled(check_style)
-            .draw(target);
-        }
+        DisplaySystemState::Idle => {}
         DisplaySystemState::Pairing => {
             let pair_style = PrimitiveStyle::with_stroke(beetle_color, 2);
             let dot_style = PrimitiveStyle::with_fill(Rgb565::WHITE);
@@ -1828,147 +2204,43 @@ fn render_state_header_content<D: DrawTarget<Color = Rgb565>>(
             }
         }
     }
-
-    let title_style = MonoTextStyle::new(&FONT_9X18_BOLD, beetle_color);
-    let state_name = match p.state {
-        DisplaySystemState::Booting => "BOOTING",
-        DisplaySystemState::Pairing => "PAIRING",
-        DisplaySystemState::Recovery => "RECOVERY",
-        DisplaySystemState::NoWifi => "NO WIFI",
-        DisplaySystemState::Idle => "IDLE",
-        DisplaySystemState::Busy => "BUSY",
-        DisplaySystemState::Fault => "FAULT",
-        DisplaySystemState::Recording => "LISTEN",
-        DisplaySystemState::Playing => "SPEAK",
-    };
-    let _ = Text::new(
-        state_name,
-        Point::new(layout.title_left as i32, layout.title_top as i32 + 14),
-        title_style,
-    )
-    .draw(target);
-    render_status_badge(
-        target,
-        layout.title_left as i32,
-        layout.title_top as i32 - 16,
-        state_name,
-        beetle_color,
-    );
-
-    let subtitle_style = MonoTextStyle::new(&FONT_6X13, TEXT_SECONDARY);
-    if let Some(subtitle) = p.presence_subtitle {
-        let _ = Text::new(
-            subtitle,
-            Point::new(layout.title_left as i32, layout.subtitle_top as i32 + 11),
-            subtitle_style,
-        )
-        .draw(target);
-    } else if p.state == DisplaySystemState::Booting {
-        let ip_text = p
-            .ip_address
-            .unwrap_or(concat!("beetle v", env!("CARGO_PKG_VERSION")));
-        let _ = Text::new(
-            ip_text,
-            Point::new(layout.title_left as i32, layout.subtitle_top as i32 + 11),
-            subtitle_style,
-        )
-        .draw(target);
-    } else {
-        let ip = p.ip_address.unwrap_or("---.---.---.---");
-        let sx = layout.title_left as i32;
-        let y0 = layout.subtitle_top as i32 + 11;
-        if p.width >= DISPLAY_WIDE_LAYOUT_MIN_PX {
-            let mut ip_line = [0u8; 40];
-            let max_px = (p.width as usize).saturating_sub(layout.title_left as usize);
-            let max_chars = (max_px / 6).clamp(1, 40);
-            let ip_b = ip.as_bytes();
-            let n = ip_b.len().min(max_chars);
-            ip_line[..n].copy_from_slice(&ip_b[..n]);
-            let ip_str = core::str::from_utf8(&ip_line[..n]).unwrap_or("---");
-            let _ = Text::new(ip_str, Point::new(sx, y0), subtitle_style).draw(target);
-            if p.uptime_secs > 0 {
-                let mut up_buf = [0u8; 24];
-                let up_str = format_uptime_line(p.uptime_secs, &mut up_buf);
-                if !up_str.is_empty() {
-                    let _ = Text::new(up_str, Point::new(sx, y0 + 13), subtitle_style).draw(target);
-                }
-            }
-        } else {
-            let mut sub_buf = [0u8; 30];
-            let sub_str = format_subtitle_with_uptime(ip, p.uptime_secs, &mut sub_buf);
-            let _ = Text::new(sub_str, Point::new(sx, y0), subtitle_style).draw(target);
-        }
-    }
+    draw_audio_status(target, p.width, p.height, layout, p.state);
 }
 
 /// Dashboard base background.
 /// 仪表盘主背景色。
-const DISPLAY_BG: Rgb565 = rgb565(11, 14, 20); // #0B0E14
-/// Panel surface color (header/channels/footer cards).
-/// 面板背景色（头部/通道/底部卡片）。
-const PANEL_BG: Rgb565 = rgb565(21, 26, 34); // #151A22
-/// Thin border color for panels.
-/// 面板细边框色。
-const PANEL_BORDER: Rgb565 = rgb565(42, 50, 65); // #2A3241
-/// Section divider color.
-/// 分区分割线颜色。
-const DIVIDER: Rgb565 = rgb565(30, 37, 50); // #1E2532
-/// Subtle title strip in header panel.
-/// 头部标题条背景色。
-const TITLE_STRIP_BG: Rgb565 = rgb565(26, 33, 45); // #1A212D
+const DISPLAY_BG: Rgb565 = rgb565(3, 7, 10); // #03070A
+const HUD_RAIL: Rgb565 = rgb565(9, 48, 56);
 /// Primary text color.
 /// 主文本色。
-const TEXT_PRIMARY: Rgb565 = rgb565(226, 232, 240); // #E2E8F0
+const TEXT_PRIMARY: Rgb565 = rgb565(183, 255, 255); // #B7FFFF
 /// Secondary text color.
 /// 次文本色。
-const TEXT_SECONDARY: Rgb565 = rgb565(148, 163, 184); // #94A3B8
+const TEXT_SECONDARY: Rgb565 = rgb565(104, 247, 255); // #68F7FF
 /// Weak text color.
 /// 弱文本色。
-const TEXT_WEAK: Rgb565 = rgb565(71, 85, 105); // #475569
+const TEXT_WEAK: Rgb565 = rgb565(49, 96, 108); // #31606C
 /// Status colors.
 /// 状态强调色。
-const STATUS_SUCCESS: Rgb565 = rgb565(16, 185, 129); // #10B981
-const STATUS_WARNING: Rgb565 = rgb565(245, 158, 11); // #F59E0B
-const STATUS_DANGER: Rgb565 = rgb565(239, 68, 68); // #EF4444
-const STATUS_INFO: Rgb565 = rgb565(59, 130, 246); // #3B82F6
-const STATUS_OFF: Rgb565 = rgb565(51, 65, 85); // #334155
-/// 宽屏阈值（px）：通道三列、副标题 IP 与 `Up:` 分两行，避免窄屏单行截断。
-const DISPLAY_WIDE_LAYOUT_MIN_PX: u16 = 200;
-
-/// 中间通道区像素高度：与 `render_dashboard` 里 `draw_panel_fill(..., middle_y, middle_h, ...)` 一致
-///（`footer_top` 上方 6px 留给分隔线，不得用满 `footer_top - middle_top`，否则行内容会画出面板边框）。
-fn layout_middle_panel_height(layout: &DisplayLayout) -> i32 {
-    let foot_div_y = layout.footer_top.saturating_sub(6) as i32;
-    let middle_y = layout.middle_top as i32;
-    (foot_div_y - middle_y).max(20)
-}
-
-/// `UpdateIp` / 副标题区 `flush_rows` 高度：宽屏且显示 `Up:` 时为双行。
-fn subtitle_ip_flush_rows(width: u16, uptime_secs: u64) -> u16 {
-    if width >= DISPLAY_WIDE_LAYOUT_MIN_PX && uptime_secs > 0 {
-        30
-    } else {
-        16
-    }
-}
-
-/// `UpdateStateHeader` 局刷高度：覆盖顶栏、头部 panel 与中间分割线，避免 steady-state 状态切换重刷中下半屏。
-fn header_flush_rows(layout: &DisplayLayout) -> u16 {
-    layout.middle_top
-}
-
+const STATUS_SUCCESS: Rgb565 = rgb565(49, 246, 163); // #31F6A3
+const STATUS_WARNING: Rgb565 = rgb565(244, 184, 74); // #F4B84A
+const STATUS_DANGER: Rgb565 = rgb565(255, 82, 82); // #FF5252
+const STATUS_INFO: Rgb565 = rgb565(69, 191, 255); // #45BFFF
+const STATUS_OFF: Rgb565 = rgb565(32, 50, 58); // #20323A
+const AUDIO_INACTIVE: Rgb565 = rgb565(76, 170, 190); // #4CAABE
+const CYBER_MAGENTA: Rgb565 = rgb565(245, 78, 210); // #F54ED2
 #[inline]
 fn state_accent_color(state: DisplaySystemState) -> Rgb565 {
     match state {
         DisplaySystemState::Booting => STATUS_WARNING,
-        DisplaySystemState::Pairing => rgb565(245, 158, 11), // #F59E0B
-        DisplaySystemState::Recovery => rgb565(249, 115, 22), // #F97316
-        DisplaySystemState::NoWifi => rgb565(100, 116, 139), // #64748B
+        DisplaySystemState::Pairing => STATUS_WARNING,
+        DisplaySystemState::Recovery => rgb565(255, 130, 54), // #FF8236
+        DisplaySystemState::NoWifi => rgb565(104, 128, 140),  // #68808C
         DisplaySystemState::Idle => STATUS_SUCCESS,
         DisplaySystemState::Busy => STATUS_INFO,
         DisplaySystemState::Fault => STATUS_DANGER,
-        DisplaySystemState::Recording => rgb565(34, 197, 94), // #22C55E
-        DisplaySystemState::Playing => rgb565(14, 165, 233),  // #0EA5E9
+        DisplaySystemState::Recording => STATUS_SUCCESS,
+        DisplaySystemState::Playing => STATUS_INFO,
     }
 }
 
@@ -1981,146 +2253,6 @@ fn pressure_accent_color(level: &DisplayPressureLevel) -> Rgb565 {
     }
 }
 
-fn draw_panel_fill<D: DrawTarget<Color = Rgb565>>(
-    target: &mut D,
-    x: i32,
-    y: i32,
-    w: u32,
-    h: u32,
-    fill: Rgb565,
-    border: Rgb565,
-) {
-    if w == 0 || h == 0 {
-        return;
-    }
-    let _ = Rectangle::new(Point::new(x, y), Size::new(w, h))
-        .into_styled(PrimitiveStyle::with_fill(fill))
-        .draw(target);
-    let _ = Rectangle::new(Point::new(x, y), Size::new(w, h))
-        .into_styled(PrimitiveStyle::with_stroke(border, 1))
-        .draw(target);
-
-    // Add a subtle top highlight for 3D HUD effect
-    if h > 2 && w > 2 {
-        let highlight = rgb565(35, 43, 56); // slightly brighter than PANEL_BG
-        let _ = Line::new(
-            Point::new(x + 1, y + 1),
-            Point::new(x + w as i32 - 2, y + 1),
-        )
-        .into_styled(PrimitiveStyle::with_stroke(highlight, 1))
-        .draw(target);
-    }
-}
-
-fn render_status_badge<D: DrawTarget<Color = Rgb565>>(
-    target: &mut D,
-    x: i32,
-    y: i32,
-    label: &str,
-    accent: Rgb565,
-) {
-    let text_w = label.len() as i32 * 6;
-    let badge_w = (text_w + 10).max(30) as u32;
-    let badge_h = 14u32;
-    draw_panel_fill(target, x, y, badge_w, badge_h, PANEL_BG, accent);
-    let style = MonoTextStyle::new(&FONT_6X13, accent);
-    let _ = Text::new(label, Point::new(x + 5, y + 11), style).draw(target);
-}
-
-/// F3: 窄屏单行副标题 "IP Up:XdYh"（IP 截断为给 uptime 留位）。
-fn format_subtitle_with_uptime<'a>(ip: &'a str, secs: u64, buf: &'a mut [u8; 30]) -> &'a str {
-    let mut pos = 0usize;
-    // 写入 IP（截断到留空间给 uptime）
-    let ip_bytes = ip.as_bytes();
-    let ip_max = ip_bytes.len().min(16);
-    buf[pos..pos + ip_max].copy_from_slice(&ip_bytes[..ip_max]);
-    pos += ip_max;
-
-    if secs > 0 {
-        let tag = b" Up:";
-        let tag_len = tag.len().min(buf.len() - pos);
-        buf[pos..pos + tag_len].copy_from_slice(&tag[..tag_len]);
-        pos += tag_len;
-        pos = append_uptime_duration(secs, buf, pos);
-    }
-
-    core::str::from_utf8(&buf[..pos]).unwrap_or(ip)
-}
-
-/// 第二行 `Up:1d2h` / `Up:3h45m`（`secs == 0` 时返回空串）。
-fn format_uptime_line(secs: u64, buf: &mut [u8; 24]) -> &str {
-    if secs == 0 {
-        return "";
-    }
-    let mut pos = 0usize;
-    for &b in b"Up:".iter() {
-        if pos < buf.len() {
-            buf[pos] = b;
-            pos += 1;
-        }
-    }
-    pos = append_uptime_duration(secs, buf, pos);
-    core::str::from_utf8(&buf[..pos]).unwrap_or("")
-}
-
-/// 将运行时长写入 `buf[pos..]`（`XdYh` / `XhYm`），返回新 pos。
-fn append_uptime_duration(secs: u64, buf: &mut [u8], mut pos: usize) -> usize {
-    let days = secs / 86400;
-    let hours = (secs % 86400) / 3600;
-    let mins = (secs % 3600) / 60;
-
-    if days > 0 {
-        pos = write_u64_to_buf(days, buf, pos);
-        if pos < buf.len() {
-            buf[pos] = b'd';
-            pos += 1;
-        }
-        pos = write_u64_to_buf(hours, buf, pos);
-        if pos < buf.len() {
-            buf[pos] = b'h';
-            pos += 1;
-        }
-    } else {
-        pos = write_u64_to_buf(hours, buf, pos);
-        if pos < buf.len() {
-            buf[pos] = b'h';
-            pos += 1;
-        }
-        pos = write_u64_to_buf(mins, buf, pos);
-        if pos < buf.len() {
-            buf[pos] = b'm';
-            pos += 1;
-        }
-    }
-    pos
-}
-
-/// Write a u64 value into a byte buffer at `pos`, return new pos (generic version).
-fn write_u64_to_buf(val: u64, buf: &mut [u8], mut pos: usize) -> usize {
-    if val == 0 {
-        if pos < buf.len() {
-            buf[pos] = b'0';
-            pos += 1;
-        }
-        return pos;
-    }
-    let mut tmp = [0u8; 20];
-    let mut n = val;
-    let mut i = 0;
-    while n > 0 && i < 20 {
-        tmp[i] = b'0' + (n % 10) as u8;
-        n /= 10;
-        i += 1;
-    }
-    for j in (0..i).rev() {
-        if pos < buf.len() {
-            buf[pos] = tmp[j];
-            pos += 1;
-        }
-    }
-    pos
-}
-
 /// Shared channel rendering logic (used by full dashboard and partial update).
 fn render_channels_inner<D: DrawTarget<Color = Rgb565>>(
     target: &mut D,
@@ -2128,51 +2260,20 @@ fn render_channels_inner<D: DrawTarget<Color = Rgb565>>(
     width: u16,
     layout: &DisplayLayout,
 ) {
-    let middle_y = layout.middle_top as i32;
-    let margin_x = layout.margin_x as i32;
-    let text_style = MonoTextStyle::new(&FONT_6X13, TEXT_PRIMARY);
-    let weak_style = MonoTextStyle::new(&FONT_6X13, TEXT_WEAK);
-    let middle_h = layout_middle_panel_height(layout);
-    let cols: usize = if width >= DISPLAY_WIDE_LAYOUT_MIN_PX {
-        3
-    } else {
-        2
-    };
-    let visible_channels = channels
-        .iter()
-        .filter(|channel| channel.visible)
-        .count()
-        .max(1);
-    let rows_needed = visible_channels.div_ceil(cols);
-    // 行高不得超过 middle_h / rows，避免 `clamp(14,24)` 在矮中间区把行画出面板底边。
-    let row_step = (middle_h / rows_needed as i32).clamp(8, 24);
-    let row_h = (row_step - 4).clamp(6, 18).min(row_step.saturating_sub(2));
-    let row_pad = ((row_step - row_h) / 2).max(1);
-    let dot_d = (row_h.saturating_sub(2) / 2).clamp(4, 10) as u32;
-    let text_base_dy = (row_h - 2).clamp(7, 13);
+    let _ = layout;
+    let x = (width as i32 * 78 / 1000).max(24);
+    let text_style = MonoTextStyle::new(&FONT_6X10, TEXT_PRIMARY);
+    let weak_style = MonoTextStyle::new(&FONT_6X10, TEXT_WEAK);
 
-    let col_width = width as i32 / cols as i32;
-    let mut col = 0i32;
-    let mut row = 0i32;
+    let mut row = 0usize;
     for ch in channels.iter() {
         if !ch.visible {
             continue;
         }
-        let px = margin_x + col * col_width;
-        let row_y = middle_y + row * row_step + row_pad;
-        let py = row_y + row_h / 2;
-        let row_x = px - 2;
-        let row_w = (col_width - margin_x + 2).max(26) as u32;
-        draw_panel_fill(
-            target,
-            row_x,
-            row_y,
-            row_w,
-            row_h.max(1) as u32,
-            DISPLAY_BG,
-            DIVIDER,
-        );
-
+        if row >= 5 {
+            break;
+        }
+        let cy = 58 + row as i32 * 20;
         let dot_color = match ch.runtime_status {
             crate::DisplayChannelRuntimeStatus::Disabled => STATUS_OFF,
             crate::DisplayChannelRuntimeStatus::Online => STATUS_SUCCESS,
@@ -2184,24 +2285,9 @@ fn render_channels_inner<D: DrawTarget<Color = Rgb565>>(
             | crate::DisplayChannelRuntimeStatus::CoolingDown => STATUS_WARNING,
             crate::DisplayChannelRuntimeStatus::Failed => STATUS_DANGER,
         };
-        let dot_y = py - (dot_d as i32 / 2);
-
-        // Bullseye style: hollow outer circle, solid inner dot
-        let _ = Circle::new(Point::new(px, dot_y), dot_d)
-            .into_styled(PrimitiveStyle::with_stroke(dot_color, 1))
+        let _ = Circle::new(Point::new(x - 3, cy - 3), 6)
+            .into_styled(PrimitiveStyle::with_fill(dot_color))
             .draw(target);
-
-        if dot_d > 4 {
-            let inner_d = dot_d - 4;
-            let _ = Circle::new(Point::new(px + 2, dot_y + 2), inner_d)
-                .into_styled(PrimitiveStyle::with_fill(dot_color))
-                .draw(target);
-        } else if dot_d > 2 {
-            let inner_d = dot_d - 2;
-            let _ = Circle::new(Point::new(px + 1, dot_y + 1), inner_d)
-                .into_styled(PrimitiveStyle::with_fill(dot_color))
-                .draw(target);
-        }
 
         let name_style = if ch.enabled { text_style } else { weak_style };
         let label = if ch.display_label.is_empty() {
@@ -2209,79 +2295,13 @@ fn render_channels_inner<D: DrawTarget<Color = Rgb565>>(
         } else {
             ch.display_label
         };
-        let _ =
-            Text::new(label, Point::new(px + 14, row_y + text_base_dy), name_style).draw(target);
+        let line_end = (x + 42 - (row as i32 % 3) * 4).min(width as i32 / 2 - 38);
+        let _ = Line::new(Point::new(x + 8, cy), Point::new(line_end, cy))
+            .into_styled(PrimitiveStyle::with_stroke(dot_color, 1))
+            .draw(target);
+        let _ = Text::new(label, Point::new(x + 52, cy + 4), name_style).draw(target);
 
-        let mut token_buf = [0u8; 8];
-        let (token, token_color) = match ch.runtime_status {
-            crate::DisplayChannelRuntimeStatus::Disabled => ("OFF", STATUS_OFF),
-            crate::DisplayChannelRuntimeStatus::Configured => ("CFG", STATUS_WARNING),
-            crate::DisplayChannelRuntimeStatus::Waiting => ("WAIT", STATUS_WARNING),
-            crate::DisplayChannelRuntimeStatus::WaitingWallClock => ("CLOCK", STATUS_WARNING),
-            crate::DisplayChannelRuntimeStatus::Suspended => ("SUSP", STATUS_WARNING),
-            crate::DisplayChannelRuntimeStatus::Connecting => ("CONN", STATUS_WARNING),
-            crate::DisplayChannelRuntimeStatus::Online => ("ON", STATUS_SUCCESS),
-            crate::DisplayChannelRuntimeStatus::CoolingDown if ch.consecutive_failures > 0 => {
-                token_buf[0] = b'x';
-                let mut pos = 1;
-                let mut tmp = [0u8; 10];
-                let mut n = ch.consecutive_failures;
-                let mut i = 0usize;
-                while n > 0 && i < tmp.len() {
-                    tmp[i] = b'0' + (n % 10) as u8;
-                    n /= 10;
-                    i += 1;
-                }
-                for j in (0..i).rev() {
-                    if pos < token_buf.len() {
-                        token_buf[pos] = tmp[j];
-                        pos += 1;
-                    }
-                }
-                (
-                    core::str::from_utf8(&token_buf[..pos]).unwrap_or("COOL"),
-                    STATUS_WARNING,
-                )
-            }
-            crate::DisplayChannelRuntimeStatus::CoolingDown => ("COOL", STATUS_WARNING),
-            crate::DisplayChannelRuntimeStatus::Failed if ch.consecutive_failures > 0 => {
-                token_buf[0] = b'x';
-                let mut pos = 1;
-                let mut tmp = [0u8; 10];
-                let mut n = ch.consecutive_failures;
-                let mut i = 0usize;
-                while n > 0 && i < tmp.len() {
-                    tmp[i] = b'0' + (n % 10) as u8;
-                    n /= 10;
-                    i += 1;
-                }
-                for j in (0..i).rev() {
-                    if pos < token_buf.len() {
-                        token_buf[pos] = tmp[j];
-                        pos += 1;
-                    }
-                }
-                (
-                    core::str::from_utf8(&token_buf[..pos]).unwrap_or("DOWN"),
-                    STATUS_DANGER,
-                )
-            }
-            crate::DisplayChannelRuntimeStatus::Failed => ("DOWN", STATUS_DANGER),
-        };
-        let token_style = MonoTextStyle::new(&FONT_6X13, token_color);
-        let token_x = px + col_width - margin_x - (token.len() as i32 * 6);
-        let _ = Text::new(
-            token,
-            Point::new(token_x, row_y + text_base_dy),
-            token_style,
-        )
-        .draw(target);
-
-        col += 1;
-        if col >= cols as i32 {
-            col = 0;
-            row += 1;
-        }
+        row += 1;
     }
 }
 
@@ -2290,101 +2310,60 @@ fn render_ip_partial<D: DrawTarget<Color = Rgb565>>(
     target: &mut D,
     ip: &str,
     presence_subtitle: Option<&str>,
-    uptime_secs: u64,
     width: u16,
+    height: u16,
     layout: &DisplayLayout,
 ) {
-    let y = layout.subtitle_top as i32;
-    let x = layout.title_left as i32;
-    let clear_w = (width as i32 - x).max(0) as u32;
-    let clear_h = subtitle_ip_flush_rows(width, uptime_secs) as u32;
-    let _ = Rectangle::new(Point::new(x, y), Size::new(clear_w, clear_h))
-        .into_styled(PrimitiveStyle::with_fill(TITLE_STRIP_BG))
-        .draw(target);
-
-    let subtitle_style = MonoTextStyle::new(&FONT_6X13, TEXT_SECONDARY);
-    let y0 = y + 11;
-    if let Some(subtitle) = presence_subtitle {
-        let _ = Text::new(subtitle, Point::new(x, y0), subtitle_style).draw(target);
-    } else if width >= DISPLAY_WIDE_LAYOUT_MIN_PX {
-        let mut ip_line = [0u8; 40];
-        let max_px = (width as usize).saturating_sub(layout.title_left as usize);
-        let max_chars = (max_px / 6).clamp(1, 40);
-        let ip_b = ip.as_bytes();
-        let n = ip_b.len().min(max_chars);
-        ip_line[..n].copy_from_slice(&ip_b[..n]);
-        let ip_str = core::str::from_utf8(&ip_line[..n]).unwrap_or("---");
-        let _ = Text::new(ip_str, Point::new(x, y0), subtitle_style).draw(target);
-        if uptime_secs > 0 {
-            let mut up_buf = [0u8; 24];
-            let up_str = format_uptime_line(uptime_secs, &mut up_buf);
-            if !up_str.is_empty() {
-                let _ = Text::new(up_str, Point::new(x, y0 + 13), subtitle_style).draw(target);
-            }
-        }
-    } else {
-        let _ = Text::new(ip, Point::new(x, y0), subtitle_style).draw(target);
-    }
+    clear_hud_top_ip(target, width, height, layout);
+    draw_hud_top_ip(target, width, height, layout, Some(ip), presence_subtitle);
 }
 
 /// Partial update: repaint only the state header region used by steady-state status flips.
-struct StateHeaderSnapshot<'a> {
-    presence_subtitle: Option<&'a str>,
-    ip_address: Option<&'a str>,
-    uptime_secs: u64,
+struct StateHeaderSnapshot {
     busy_phase: bool,
 }
 
 fn render_state_header_partial<D: DrawTarget<Color = Rgb565>>(
     target: &mut D,
     state: DisplaySystemState,
-    snapshot: StateHeaderSnapshot<'_>,
+    snapshot: StateHeaderSnapshot,
     width: u16,
+    height: u16,
     layout: &DisplayLayout,
 ) {
-    let flush_h = header_flush_rows(layout);
-    let _ = Rectangle::new(Point::new(0, 0), Size::new(width as u32, flush_h as u32))
-        .into_styled(PrimitiveStyle::with_fill(DISPLAY_BG))
-        .draw(target);
-
-    let accent = state_accent_color(state);
-    let _ = Rectangle::new(Point::new(0, 0), Size::new(width as u32, 3))
-        .into_styled(PrimitiveStyle::with_fill(accent))
-        .draw(target);
-
-    let head_y = (layout.header_top as i32).saturating_sub(8).max(4);
-    let mid_div_y = layout.middle_top.saturating_sub(6) as i32;
-    let div_margin = layout.margin_x as i32;
-    let head_h = (mid_div_y - head_y).max(24) as u32;
-    let div_style = PrimitiveStyle::with_stroke(DIVIDER, 1);
-    draw_panel_fill(
+    let (beetle_x, beetle_y, beetle_size) = hud_beetle_box(width, height, layout);
+    let beetle_pad = 18;
+    clear_rect_with_hud_grid(
         target,
-        0,
-        head_y,
-        width as u32,
-        head_h,
-        PANEL_BG,
-        PANEL_BORDER,
+        width,
+        height,
+        beetle_x - beetle_pad,
+        beetle_y - beetle_pad,
+        (beetle_size + beetle_pad * 2) as u32,
+        (beetle_size + beetle_pad * 2) as u32,
     );
-    let _ = Line::new(
-        Point::new(div_margin, mid_div_y),
-        Point::new(width as i32 - div_margin, mid_div_y),
-    )
-    .into_styled(div_style)
-    .draw(target);
+    let audio_y = (height as i32 - 54).max(hud_status_top(height) as i32);
+    clear_rect_with_hud_grid(
+        target,
+        width,
+        height,
+        12,
+        audio_y,
+        width.saturating_sub(24) as u32,
+        (height as i32 - audio_y).max(1) as u32,
+    );
 
     render_state_header_content(
         target,
         &StateHeaderParams {
             layout,
             state,
-            presence_subtitle: snapshot.presence_subtitle,
-            ip_address: snapshot.ip_address,
             width,
-            uptime_secs: snapshot.uptime_secs,
+            height,
             busy_phase: snapshot.busy_phase,
         },
     );
+    draw_hud_cyber_chrome(target, width, height, state_accent_color(state));
 }
 
 /// Partial update: repaint only the channel status (middle) region.
@@ -2392,23 +2371,17 @@ fn render_channels_partial<D: DrawTarget<Color = Rgb565>>(
     target: &mut D,
     channels: &[DisplayChannelStatus; crate::DISPLAY_CHANNEL_CAPACITY],
     width: u16,
+    height: u16,
     layout: &DisplayLayout,
 ) {
-    let middle_y = layout.middle_top as i32;
-    let ch_h = layout_middle_panel_height(layout) as u32;
-
-    draw_panel_fill(
-        target,
-        0,
-        middle_y,
-        width as u32,
-        ch_h,
-        PANEL_BG,
-        PANEL_BORDER,
-    );
-
-    // F5: 使用共享渲染逻辑（含失败计数）
+    let top = hud_channels_top(height);
+    let rows = hud_channels_rows(height);
+    let (beetle_x, _, _) = hud_beetle_box(width, height, layout);
+    let clear_right = (beetle_x - 8).max(13);
+    let clear_w = (clear_right - 12).max(1) as u32;
+    clear_rect_with_hud_grid(target, width, height, 12, top as i32, clear_w, rows as u32);
     render_channels_inner(target, channels, width, layout);
+    draw_hud_cyber_chrome(target, width, height, TEXT_SECONDARY);
 }
 
 /// Footer partial-update parameters (avoids clippy::too_many_arguments).
@@ -2425,6 +2398,136 @@ struct FooterPartialParams {
     error_flash: bool,
 }
 
+fn format_compact_ms(ms: u32, buf: &mut [u8; 10]) -> &str {
+    if ms == 0 {
+        return "--";
+    }
+    let mut pos = 0usize;
+    if ms >= 1000 {
+        pos = write_u32_to_buf(ms / 1000, buf, pos);
+        if pos + 2 < buf.len() {
+            buf[pos] = b'.';
+            buf[pos + 1] = b'0' + ((ms % 1000) / 100) as u8;
+            buf[pos + 2] = b's';
+            pos += 3;
+        }
+    } else {
+        pos = write_u32_to_buf(ms, buf, pos);
+        if pos + 1 < buf.len() {
+            buf[pos] = b'm';
+            buf[pos + 1] = b's';
+            pos += 2;
+        }
+    }
+    utf8_ascii_digits_or_fallback(&buf[..pos])
+}
+
+fn format_epoch_hhmm(epoch_secs: u32, buf: &mut [u8; 5]) -> &str {
+    if epoch_secs == 0 {
+        buf.copy_from_slice(b"--:--");
+        return utf8_ascii_digits_or_fallback(buf);
+    }
+    let secs_of_day = epoch_secs % 86400;
+    let h = ((secs_of_day / 3600) % 24) as u8;
+    let m = ((secs_of_day % 3600) / 60) as u8;
+    buf[0] = b'0' + h / 10;
+    buf[1] = b'0' + h % 10;
+    buf[2] = b':';
+    buf[3] = b'0' + m / 10;
+    buf[4] = b'0' + m % 10;
+    utf8_ascii_digits_or_fallback(buf)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_hud_metrics<D: DrawTarget<Color = Rgb565>>(
+    target: &mut D,
+    layout: &DisplayLayout,
+    level: &DisplayPressureLevel,
+    heap_percent: u8,
+    width: u16,
+    _height: u16,
+    messages_in: u32,
+    messages_out: u32,
+    last_active_epoch_secs: u32,
+    llm_last_ms: u32,
+    error_flash: bool,
+) {
+    let _ = layout;
+    let x = (width as i32 * 713 / 1000)
+        .min(width as i32 - 92)
+        .max(width as i32 / 2 + 48);
+    let label_style = MonoTextStyle::new(&FONT_6X10, TEXT_SECONDARY);
+    let value_style = MonoTextStyle::new(&FONT_6X10, TEXT_PRIMARY);
+    let accent = if error_flash {
+        STATUS_DANGER
+    } else {
+        pressure_accent_color(level)
+    };
+    let rail_x = x - 10;
+    let rail_style = PrimitiveStyle::with_stroke(HUD_RAIL, 1);
+    let _ = Line::new(Point::new(rail_x, 51), Point::new(rail_x, 169))
+        .into_styled(rail_style)
+        .draw(target);
+    for y in [55, 73, 89, 118, 136, 166] {
+        let _ = Line::new(Point::new(rail_x, y), Point::new(rail_x + 4, y))
+            .into_styled(rail_style)
+            .draw(target);
+    }
+
+    let _ = Text::new("IO", Point::new(x, 55), label_style).draw(target);
+
+    let mut in_buf = [0u8; 10];
+    let in_len = write_u32_to_buf(messages_in, &mut in_buf, 0);
+    let _ = Text::new("IN", Point::new(x, 73), label_style).draw(target);
+    let _ = Text::new(
+        utf8_ascii_digits_or_fallback(&in_buf[..in_len]),
+        Point::new(x + 18, 73),
+        value_style,
+    )
+    .draw(target);
+
+    let mut out_buf = [0u8; 10];
+    let out_len = write_u32_to_buf(messages_out, &mut out_buf, 0);
+    let _ = Text::new("OUT", Point::new(x, 89), label_style).draw(target);
+    let _ = Text::new(
+        utf8_ascii_digits_or_fallback(&out_buf[..out_len]),
+        Point::new(x + 24, 89),
+        value_style,
+    )
+    .draw(target);
+
+    let mut llm_buf = [0u8; 10];
+    let llm_str = format_compact_ms(llm_last_ms, &mut llm_buf);
+    let _ = Text::new("COST", Point::new(x, 118), label_style).draw(target);
+    let _ = Text::new(
+        llm_str,
+        Point::new(x + 34, 118),
+        MonoTextStyle::new(&FONT_6X10, accent),
+    )
+    .draw(target);
+
+    let mut t_buf = [0u8; 5];
+    let time_str = format_epoch_hhmm(last_active_epoch_secs, &mut t_buf);
+    let _ = Text::new("LAST", Point::new(x, 136), label_style).draw(target);
+    let _ = Text::new(time_str, Point::new(x + 34, 136), value_style).draw(target);
+
+    let _ = Text::new("LOAD", Point::new(x, 166), label_style).draw(target);
+    let load_active = (heap_percent.min(100) as u16 * 6).div_ceil(100) as u8;
+    let inactive = PrimitiveStyle::with_fill(rgb565(5, 24, 29));
+    let active = PrimitiveStyle::with_fill(accent);
+    let load_x = x + 34;
+    for idx in 0..6 {
+        let style = if (idx as u8) < load_active {
+            active
+        } else {
+            inactive
+        };
+        let _ = Rectangle::new(Point::new(load_x + idx * 7, 157), Size::new(5, 10))
+            .into_styled(style)
+            .draw(target);
+    }
+}
+
 /// Partial update: repaint only the footer pressure + progress bar region.
 fn render_pressure_partial<D: DrawTarget<Color = Rgb565>>(
     target: &mut D,
@@ -2432,7 +2535,17 @@ fn render_pressure_partial<D: DrawTarget<Color = Rgb565>>(
     layout: &DisplayLayout,
     fp: &FooterPartialParams,
 ) {
-    render_footer(
+    let x = (fp.width as i32 * 70 / 100).max(fp.width as i32 / 2 + 36);
+    clear_rect_with_hud_grid(
+        target,
+        fp.width,
+        fp.height,
+        x - 8,
+        hud_metrics_top(fp.height) as i32,
+        (fp.width as i32 - x + 8).max(1) as u32,
+        hud_metrics_rows(fp.height) as u32,
+    );
+    render_hud_metrics(
         target,
         layout,
         level,
@@ -2445,181 +2558,18 @@ fn render_pressure_partial<D: DrawTarget<Color = Rgb565>>(
         fp.llm_last_ms,
         fp.error_flash,
     );
+    draw_hud_cyber_chrome(target, fp.width, fp.height, pressure_accent_color(level));
 }
 
-/// Shared footer rendering: pressure label + progress bar + percentage text + message stats.
-#[allow(clippy::too_many_arguments)]
-fn render_footer<D: DrawTarget<Color = Rgb565>>(
+fn render_resource_partial<D: DrawTarget<Color = Rgb565>>(
     target: &mut D,
-    layout: &DisplayLayout,
+    width: u16,
+    height: u16,
     level: &DisplayPressureLevel,
     heap_percent: u8,
-    width: u16,
-    height: u16,
-    messages_in: u32,
-    messages_out: u32,
-    last_active_epoch_secs: u32,
-    llm_last_ms: u32,
-    error_flash: bool,
 ) {
-    let footer_y = layout.footer_top as i32;
-    let margin_x = layout.margin_x as i32;
-    let footer_h = (height as i32 - footer_y).max(1) as u32;
-    draw_panel_fill(
-        target,
-        0,
-        footer_y,
-        width as u32,
-        footer_h,
-        PANEL_BG,
-        PANEL_BORDER,
-    );
-    let pressure_text = match level {
-        DisplayPressureLevel::Normal => "NORMAL",
-        DisplayPressureLevel::Cautious => "CAUTIOUS",
-        DisplayPressureLevel::Critical => "CRITICAL",
-    };
-    let pressure_color = pressure_accent_color(level);
-
-    // Summary badge.
-    if error_flash {
-        let text_w = pressure_text.len() as u32 * 6 + 4; // FONT_6X13 + padding
-        let _ = Rectangle::new(Point::new(margin_x - 2, footer_y), Size::new(text_w, 14))
-            .into_styled(PrimitiveStyle::with_fill(pressure_color))
-            .draw(target);
-        let flash_style = MonoTextStyle::new(&FONT_6X13, Rgb565::WHITE);
-        let _ = Text::new(
-            pressure_text,
-            Point::new(margin_x, footer_y + 11),
-            flash_style,
-        )
-        .draw(target);
-    } else {
-        render_status_badge(target, margin_x, footer_y, pressure_text, pressure_color);
-    }
-
-    let dim_min = width.min(height) as i32;
-    let bar_top_pad = (dim_min * 18 / DISPLAY_LAYOUT_REF_PX as i32).clamp(14, 22);
-    let stats_gap = (dim_min * 12 / DISPLAY_LAYOUT_REF_PX as i32).clamp(9, 14);
-    let bar_h = (dim_min * 8 / DISPLAY_LAYOUT_REF_PX as i32).clamp(6, 10) as u32;
-
-    let bar_x = margin_x;
-    let bar_y = footer_y + bar_top_pad;
-    let bar_w = (width as i32 - 56).max(40) as u32;
-
-    let bar_border = PrimitiveStyle::with_stroke(PANEL_BORDER, 1);
-    let _ = Rectangle::new(Point::new(bar_x, bar_y), Size::new(bar_w, bar_h))
-        .into_styled(bar_border)
-        .draw(target);
-
-    let fill_w = ((heap_percent as u32).min(100) * (bar_w - 2)) / 100;
-    if fill_w > 0 {
-        // Heap bar color based on percentage, not orchestrator pressure level.
-        let heap_bar_color = if heap_percent < 70 {
-            STATUS_SUCCESS // green: 0-69%
-        } else if heap_percent < 85 {
-            STATUS_WARNING // yellow: 70-84%
-        } else {
-            STATUS_DANGER // red: 85-100%
-        };
-        let _ = Rectangle::new(
-            Point::new(bar_x + 1, bar_y + 1),
-            Size::new(fill_w, bar_h - 2),
-        )
-        .into_styled(PrimitiveStyle::with_fill(heap_bar_color))
-        .draw(target);
-
-        // HUD Segmented effect: draw vertical background lines to cut the bar
-        let seg_style = PrimitiveStyle::with_stroke(PANEL_BG, 1);
-        let mut sx = bar_x + 4;
-        while sx < bar_x + 1 + fill_w as i32 {
-            let _ = Line::new(
-                Point::new(sx, bar_y + 1),
-                Point::new(sx, bar_y + bar_h as i32 - 2),
-            )
-            .into_styled(seg_style)
-            .draw(target);
-            sx += 4;
-        }
-    }
-
-    let text_style = MonoTextStyle::new(&FONT_6X13, TEXT_PRIMARY);
-    let mut pct_buf = [0u8; 5];
-    let pct_str = format_pct(heap_percent, &mut pct_buf);
-    let _ = Text::new(
-        pct_str,
-        Point::new(
-            bar_x + bar_w as i32 + 4,
-            bar_y + (bar_h as i32 - 1).clamp(6, 10),
-        ),
-        text_style,
-    )
-    .draw(target);
-
-    // Stats line.
-    let stats_y = bar_y + bar_h as i32 + stats_gap;
-    draw_stats_line(
-        target,
-        margin_x,
-        stats_y,
-        messages_in,
-        messages_out,
-        last_active_epoch_secs,
-        llm_last_ms,
-    );
-}
-
-/// F8: 启动进度条渲染。4 段：WiFi → SNTP → Channels → Agent。
-fn render_boot_progress<D: DrawTarget<Color = Rgb565>>(
-    target: &mut D,
-    stage: u8,
-    width: u16,
-    height: u16,
-    bg: Rgb565,
-    layout: &DisplayLayout,
-) {
-    let footer_y = layout.footer_top as i32;
-    let margin_x = layout.margin_x as i32;
-    let footer_h = (height as i32 - footer_y).max(1) as u32;
-
-    // Clear footer
-    let _ = Rectangle::new(Point::new(0, footer_y), Size::new(width as u32, footer_h))
-        .into_styled(PrimitiveStyle::with_fill(bg))
-        .draw(target);
-
-    let stage = stage.min(4);
-    let bar_x = margin_x;
-    let bar_y = footer_y + 18;
-    let total_w = (width as i32 - 2 * margin_x).max(40);
-    let seg_w = total_w / 4;
-    let bar_h = 10u32;
-
-    let filled_color = STATUS_SUCCESS;
-    let empty_color = DISPLAY_BG;
-    let border_color = PANEL_BORDER;
-
-    render_status_badge(target, margin_x, footer_y, "BOOTING", STATUS_INFO);
-
-    // 4 segments
-    for i in 0..4u8 {
-        let sx = bar_x + i as i32 * seg_w;
-        let color = if i < stage { filled_color } else { empty_color };
-        let _ = Rectangle::new(Point::new(sx, bar_y), Size::new(seg_w as u32, bar_h))
-            .into_styled(PrimitiveStyle::with_fill(color))
-            .draw(target);
-        let _ = Rectangle::new(Point::new(sx, bar_y), Size::new(seg_w as u32, bar_h))
-            .into_styled(PrimitiveStyle::with_stroke(border_color, 1))
-            .draw(target);
-    }
-
-    // Labels below bar
-    let label_y = bar_y + bar_h as i32 + 11;
-    let label_style = MonoTextStyle::new(&FONT_6X13, TEXT_SECONDARY);
-    let labels = ["WiFi", "SNTP", "Chan", "Agent"];
-    for (i, lbl) in labels.iter().enumerate() {
-        let lx = bar_x + i as i32 * seg_w + (seg_w - lbl.len() as i32 * 6) / 2;
-        let _ = Text::new(lbl, Point::new(lx, label_y), label_style).draw(target);
-    }
+    clear_hud_resource_bar(target, width, height);
+    draw_hud_resource_bar(target, width, height, level, heap_percent);
 }
 
 /// 将仅含 ASCII 数字/标点的缓冲区转为 `&str`；异常时回退为 `"?"`（release 不 panic）。
@@ -2627,96 +2577,6 @@ fn utf8_ascii_digits_or_fallback(buf: &[u8]) -> &str {
     match std::str::from_utf8(buf) {
         Ok(s) => s,
         Err(_) => "?",
-    }
-}
-
-/// Draw message stats line with separated label and value colors for better typography.
-fn draw_stats_line<D: DrawTarget<Color = Rgb565>>(
-    target: &mut D,
-    x: i32,
-    y: i32,
-    msg_in: u32,
-    msg_out: u32,
-    epoch_secs: u32,
-    llm_ms: u32,
-) {
-    let label_style = MonoTextStyle::new(&FONT_6X13, TEXT_WEAK);
-    let value_style = MonoTextStyle::new(&FONT_6X13, TEXT_PRIMARY);
-    let mut cx = x;
-
-    let mut draw_part = |label: &str, val: &str| {
-        if !label.is_empty() {
-            let _ = Text::new(label, Point::new(cx, y), label_style).draw(target);
-            cx += label.len() as i32 * 6;
-        }
-        let _ = Text::new(val, Point::new(cx, y), value_style).draw(target);
-        cx += val.len() as i32 * 6;
-        cx += 6; // space
-    };
-
-    // In
-    let mut buf_in = [0u8; 10];
-    let len_in = write_u32_to_buf(msg_in, &mut buf_in, 0);
-    draw_part("In:", utf8_ascii_digits_or_fallback(&buf_in[..len_in]));
-
-    // Out
-    let mut buf_out = [0u8; 10];
-    let len_out = write_u32_to_buf(msg_out, &mut buf_out, 0);
-    draw_part("Out:", utf8_ascii_digits_or_fallback(&buf_out[..len_out]));
-
-    // L
-    if llm_ms > 0 {
-        let mut buf_l = [0u8; 10];
-        let mut pos = 0;
-        if llm_ms >= 1000 {
-            let secs = llm_ms / 1000;
-            let tenths = (llm_ms % 1000) / 100;
-            pos = write_u32_to_buf(secs, &mut buf_l, pos);
-            buf_l[pos] = b'.';
-            buf_l[pos + 1] = b'0' + tenths as u8;
-            buf_l[pos + 2] = b's';
-            pos += 3;
-        } else {
-            pos = write_u32_to_buf(llm_ms, &mut buf_l, pos);
-            buf_l[pos] = b'm';
-            buf_l[pos + 1] = b's';
-            pos += 2;
-        }
-        draw_part("L:", utf8_ascii_digits_or_fallback(&buf_l[..pos]));
-    }
-
-    // Time
-    let mut buf_t = [0u8; 5];
-    if epoch_secs == 0 {
-        buf_t.copy_from_slice(b"--:--");
-        draw_part("", "--:--");
-    } else {
-        #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-        {
-            use esp_idf_svc::sys::{localtime_r, time_t};
-            let time_val: time_t = epoch_secs as time_t;
-            let mut tm = unsafe { core::mem::zeroed::<esp_idf_svc::sys::tm>() };
-            unsafe { localtime_r(&time_val, &mut tm) };
-            let h = (tm.tm_hour as u8).min(23);
-            let m = (tm.tm_min as u8).min(59);
-            buf_t[0] = b'0' + h / 10;
-            buf_t[1] = b'0' + h % 10;
-            buf_t[2] = b':';
-            buf_t[3] = b'0' + m / 10;
-            buf_t[4] = b'0' + m % 10;
-        }
-        #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
-        {
-            let secs_of_day = epoch_secs % 86400;
-            let h = ((secs_of_day / 3600) % 24) as u8;
-            let m = ((secs_of_day % 3600) / 60) as u8;
-            buf_t[0] = b'0' + h / 10;
-            buf_t[1] = b'0' + h % 10;
-            buf_t[2] = b':';
-            buf_t[3] = b'0' + m / 10;
-            buf_t[4] = b'0' + m % 10;
-        }
-        draw_part("", utf8_ascii_digits_or_fallback(&buf_t));
     }
 }
 
@@ -2780,7 +2640,7 @@ mod tests {
     use embedded_graphics_core::{
         draw_target::DrawTarget,
         geometry::{OriginDimensions, Size},
-        pixelcolor::Rgb565,
+        pixelcolor::{Rgb565, RgbColor},
         Pixel,
     };
 
@@ -2788,6 +2648,120 @@ mod tests {
     struct FakeBackend {
         flush_calls: usize,
         flush_rows_calls: Vec<(u16, u16)>,
+    }
+
+    struct PixelProbeBackend {
+        width: u32,
+        height: u32,
+        pixels: Vec<Pixel<Rgb565>>,
+        flush_calls: usize,
+        flush_rows_calls: Vec<(u16, u16)>,
+    }
+
+    struct FrameProbeBackend {
+        width: u32,
+        height: u32,
+        pixels: Vec<Rgb565>,
+        flush_calls: usize,
+        flush_rows_calls: Vec<(u16, u16)>,
+    }
+
+    impl PixelProbeBackend {
+        fn new(width: u16, height: u16) -> Self {
+            Self {
+                width: width as u32,
+                height: height as u32,
+                pixels: Vec::new(),
+                flush_calls: 0,
+                flush_rows_calls: Vec::new(),
+            }
+        }
+
+        fn count_color_in_rect(&self, color: Rgb565, x0: i32, y0: i32, x1: i32, y1: i32) -> usize {
+            self.pixels
+                .iter()
+                .filter(|Pixel(point, pixel_color)| {
+                    *pixel_color == color
+                        && point.x >= x0
+                        && point.x < x1
+                        && point.y >= y0
+                        && point.y < y1
+                })
+                .count()
+        }
+    }
+
+    impl FrameProbeBackend {
+        fn new(width: u16, height: u16) -> Self {
+            Self {
+                width: width as u32,
+                height: height as u32,
+                pixels: vec![DISPLAY_BG; width as usize * height as usize],
+                flush_calls: 0,
+                flush_rows_calls: Vec::new(),
+            }
+        }
+
+        fn index(&self, x: i32, y: i32) -> Option<usize> {
+            if x < 0 || y < 0 || x as u32 >= self.width || y as u32 >= self.height {
+                return None;
+            }
+            Some(y as usize * self.width as usize + x as usize)
+        }
+
+        fn count_color_in_rect(&self, color: Rgb565, x0: i32, y0: i32, x1: i32, y1: i32) -> usize {
+            let x0 = x0.max(0);
+            let y0 = y0.max(0);
+            let x1 = x1.min(self.width as i32).max(x0);
+            let y1 = y1.min(self.height as i32).max(y0);
+            let mut count = 0usize;
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    if self.pixels[self.index(x, y).expect("bounded pixel index")] == color {
+                        count += 1;
+                    }
+                }
+            }
+            count
+        }
+
+        fn write_bmp(&self, path: &std::path::Path) -> std::io::Result<()> {
+            use std::io::Write;
+
+            let row_stride = (self.width as usize * 3).div_ceil(4) * 4;
+            let pixel_bytes = row_stride * self.height as usize;
+            let file_size = 54 + pixel_bytes;
+            let mut file = std::fs::File::create(path)?;
+
+            file.write_all(b"BM")?;
+            file.write_all(&(file_size as u32).to_le_bytes())?;
+            file.write_all(&[0u8; 4])?;
+            file.write_all(&(54u32).to_le_bytes())?;
+            file.write_all(&(40u32).to_le_bytes())?;
+            file.write_all(&(self.width as i32).to_le_bytes())?;
+            file.write_all(&(self.height as i32).to_le_bytes())?;
+            file.write_all(&(1u16).to_le_bytes())?;
+            file.write_all(&(24u16).to_le_bytes())?;
+            file.write_all(&(0u32).to_le_bytes())?;
+            file.write_all(&(pixel_bytes as u32).to_le_bytes())?;
+            file.write_all(&(2835i32).to_le_bytes())?;
+            file.write_all(&(2835i32).to_le_bytes())?;
+            file.write_all(&(0u32).to_le_bytes())?;
+            file.write_all(&(0u32).to_le_bytes())?;
+
+            let padding = vec![0u8; row_stride - self.width as usize * 3];
+            for y in (0..self.height as usize).rev() {
+                for x in 0..self.width as usize {
+                    let color = self.pixels[y * self.width as usize + x];
+                    let r = (color.r() as u16 * 255 / 31) as u8;
+                    let g = (color.g() as u16 * 255 / 63) as u8;
+                    let b = (color.b() as u16 * 255 / 31) as u8;
+                    file.write_all(&[b, g, r])?;
+                }
+                file.write_all(&padding)?;
+            }
+            Ok(())
+        }
     }
 
     impl OriginDimensions for FakeBackend {
@@ -2808,6 +2782,48 @@ mod tests {
         }
     }
 
+    impl OriginDimensions for PixelProbeBackend {
+        fn size(&self) -> Size {
+            Size::new(self.width, self.height)
+        }
+    }
+
+    impl OriginDimensions for FrameProbeBackend {
+        fn size(&self) -> Size {
+            Size::new(self.width, self.height)
+        }
+    }
+
+    impl DrawTarget for PixelProbeBackend {
+        type Color = Rgb565;
+        type Error = Infallible;
+
+        fn draw_iter<I>(&mut self, pixels: I) -> core::result::Result<(), Self::Error>
+        where
+            I: IntoIterator<Item = Pixel<Self::Color>>,
+        {
+            self.pixels.extend(pixels);
+            Ok(())
+        }
+    }
+
+    impl DrawTarget for FrameProbeBackend {
+        type Color = Rgb565;
+        type Error = Infallible;
+
+        fn draw_iter<I>(&mut self, pixels: I) -> core::result::Result<(), Self::Error>
+        where
+            I: IntoIterator<Item = Pixel<Self::Color>>,
+        {
+            for Pixel(point, color) in pixels {
+                if let Some(index) = self.index(point.x, point.y) {
+                    self.pixels[index] = color;
+                }
+            }
+            Ok(())
+        }
+    }
+
     impl FlushRgb565 for FakeBackend {
         fn flush(&mut self, _offset_x: i16, _offset_y: i16) -> Result<()> {
             self.flush_calls += 1;
@@ -2818,6 +2834,121 @@ mod tests {
             self.flush_rows_calls.push((ry, rh));
             Ok(())
         }
+    }
+
+    impl FlushRgb565 for PixelProbeBackend {
+        fn flush(&mut self, _offset_x: i16, _offset_y: i16) -> Result<()> {
+            self.flush_calls += 1;
+            Ok(())
+        }
+
+        fn flush_rows(&mut self, _offset_x: i16, _offset_y: i16, ry: u16, rh: u16) -> Result<()> {
+            self.flush_rows_calls.push((ry, rh));
+            Ok(())
+        }
+    }
+
+    impl FlushRgb565 for FrameProbeBackend {
+        fn flush(&mut self, _offset_x: i16, _offset_y: i16) -> Result<()> {
+            self.flush_calls += 1;
+            Ok(())
+        }
+
+        fn flush_rows(&mut self, _offset_x: i16, _offset_y: i16, ry: u16, rh: u16) -> Result<()> {
+            self.flush_rows_calls.push((ry, rh));
+            Ok(())
+        }
+    }
+
+    fn sample_channels() -> [DisplayChannelStatus; crate::DISPLAY_CHANNEL_CAPACITY] {
+        [
+            DisplayChannelStatus {
+                name: "qq",
+                display_label: "QQ",
+                enabled: true,
+                healthy: true,
+                visible: true,
+                runtime_status: crate::DisplayChannelRuntimeStatus::Online,
+                consecutive_failures: 0,
+            },
+            DisplayChannelStatus {
+                name: "telegram",
+                display_label: "TG",
+                enabled: true,
+                healthy: true,
+                visible: true,
+                runtime_status: crate::DisplayChannelRuntimeStatus::Connecting,
+                consecutive_failures: 0,
+            },
+            DisplayChannelStatus {
+                name: "web",
+                display_label: "WEB",
+                enabled: true,
+                healthy: false,
+                visible: true,
+                runtime_status: crate::DisplayChannelRuntimeStatus::Failed,
+                consecutive_failures: 2,
+            },
+            DisplayChannelStatus {
+                name: "feishu",
+                display_label: "FS",
+                enabled: false,
+                healthy: false,
+                visible: true,
+                runtime_status: crate::DisplayChannelRuntimeStatus::Disabled,
+                consecutive_failures: 0,
+            },
+            DisplayChannelStatus {
+                name: "system",
+                display_label: "SYS",
+                enabled: true,
+                healthy: true,
+                visible: true,
+                runtime_status: crate::DisplayChannelRuntimeStatus::Online,
+                consecutive_failures: 0,
+            },
+        ]
+    }
+
+    fn wide_display_config() -> DisplayConfig {
+        let mut config = default_disabled_display_config();
+        config.width = 320;
+        config.height = 240;
+        config
+    }
+
+    fn render_preview_frame(
+        state: DisplaySystemState,
+        pressure: DisplayPressureLevel,
+        heap_percent: u8,
+    ) -> FrameProbeBackend {
+        let config = wide_display_config();
+        let layout = compute_layout(config.width, config.height);
+        let mut backend = FrameProbeBackend::new(config.width, config.height);
+
+        dispatch_display_command(
+            &mut backend,
+            &config,
+            &layout,
+            &DisplayCommand::RefreshDashboard {
+                state,
+                presence_subtitle: None,
+                ip_address: Some("192.168.4.1".to_string()),
+                channels: sample_channels(),
+                pressure,
+                heap_percent,
+                messages_in: 128,
+                messages_out: 122,
+                last_active_epoch_secs: 52320,
+                uptime_secs: 86,
+                busy_phase: matches!(state, DisplaySystemState::Busy),
+                llm_last_ms: 842,
+                error_flash: false,
+            },
+        )
+        .unwrap();
+
+        backend
     }
 
     #[test]
@@ -2842,7 +2973,502 @@ mod tests {
 
         assert_eq!(backend.flush_calls, 0);
         assert_eq!(backend.flush_rows_calls.len(), 1);
-        assert_eq!(backend.flush_rows_calls[0].0, 0);
+        assert_eq!(
+            backend.flush_rows_calls[0],
+            (
+                hud_status_top(config.height),
+                hud_status_rows(config.height)
+            )
+        );
+    }
+
+    #[test]
+    fn ip_update_flushes_top_hud_bar_without_full_dashboard_flush() {
+        let config = default_disabled_display_config();
+        let layout = compute_layout(config.width, config.height);
+        let mut backend = FakeBackend::default();
+
+        dispatch_display_command(
+            &mut backend,
+            &config,
+            &layout,
+            &DisplayCommand::UpdateIp {
+                ip: "10.0.0.42".to_string(),
+                presence_subtitle: None,
+                uptime_secs: 3600,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(backend.flush_calls, 0);
+        assert_eq!(
+            backend.flush_rows_calls,
+            vec![(0, hud_top_bar_rows(config.height))]
+        );
+    }
+
+    #[test]
+    fn top_partial_updates_preserve_grid_backdrop() {
+        let config = wide_display_config();
+        let layout = compute_layout(config.width, config.height);
+        let grid_color = rgb565(4, 24, 28);
+
+        let mut ip_backend =
+            render_preview_frame(DisplaySystemState::Idle, DisplayPressureLevel::Normal, 42);
+        let left_grid_before = ip_backend.count_color_in_rect(grid_color, 120, 20, 160, 21);
+        assert!(
+            left_grid_before > 20,
+            "full HUD render must have subtle top-left grid evidence"
+        );
+        dispatch_display_command(
+            &mut ip_backend,
+            &config,
+            &layout,
+            &DisplayCommand::UpdateIp {
+                ip: "192.168.1.86".to_string(),
+                presence_subtitle: None,
+                uptime_secs: 3600,
+            },
+        )
+        .unwrap();
+        let left_grid_after = ip_backend.count_color_in_rect(grid_color, 120, 20, 160, 21);
+        assert!(
+            left_grid_after >= left_grid_before,
+            "IP partial refresh must not leave a solid black top-left patch"
+        );
+
+        let mut pressure_backend =
+            render_preview_frame(DisplaySystemState::Idle, DisplayPressureLevel::Normal, 42);
+        let right_grid_before = pressure_backend.count_color_in_rect(grid_color, 300, 20, 306, 21);
+        assert!(
+            right_grid_before > 0,
+            "full HUD render must have subtle top-right grid evidence"
+        );
+        dispatch_display_command(
+            &mut pressure_backend,
+            &config,
+            &layout,
+            &DisplayCommand::UpdatePressure {
+                level: DisplayPressureLevel::Normal,
+                heap_percent: 14,
+                messages_in: 0,
+                messages_out: 0,
+                last_active_epoch_secs: 0,
+                llm_last_ms: 0,
+                error_flash: false,
+            },
+        )
+        .unwrap();
+        let right_grid_after = pressure_backend.count_color_in_rect(grid_color, 300, 20, 306, 21);
+        assert!(
+            right_grid_after >= right_grid_before,
+            "resource partial refresh must not leave a solid black top-right patch"
+        );
+    }
+
+    #[test]
+    fn side_partial_updates_do_not_erase_center_beetle() {
+        let config = wide_display_config();
+        let layout = compute_layout(config.width, config.height);
+        let (beetle_x, beetle_y, beetle_size) =
+            hud_beetle_box(config.width, config.height, &layout);
+
+        let mut channel_backend =
+            render_preview_frame(DisplaySystemState::Idle, DisplayPressureLevel::Normal, 42);
+        let channel_center_before = channel_backend.count_color_in_rect(
+            STATUS_SUCCESS,
+            beetle_x,
+            beetle_y,
+            beetle_x + beetle_size,
+            beetle_y + beetle_size,
+        );
+        assert!(channel_center_before > 300);
+        dispatch_display_command(
+            &mut channel_backend,
+            &config,
+            &layout,
+            &DisplayCommand::UpdateChannels {
+                channels: sample_channels(),
+            },
+        )
+        .unwrap();
+        let channel_center_after = channel_backend.count_color_in_rect(
+            STATUS_SUCCESS,
+            beetle_x,
+            beetle_y,
+            beetle_x + beetle_size,
+            beetle_y + beetle_size,
+        );
+        assert_eq!(
+            channel_center_after, channel_center_before,
+            "channel partial refresh must not erase the centered beetle"
+        );
+
+        let mut pressure_backend =
+            render_preview_frame(DisplaySystemState::Idle, DisplayPressureLevel::Normal, 42);
+        let pressure_center_before = pressure_backend.count_color_in_rect(
+            STATUS_SUCCESS,
+            beetle_x,
+            beetle_y,
+            beetle_x + beetle_size,
+            beetle_y + beetle_size,
+        );
+        dispatch_display_command(
+            &mut pressure_backend,
+            &config,
+            &layout,
+            &DisplayCommand::UpdatePressure {
+                level: DisplayPressureLevel::Normal,
+                heap_percent: 14,
+                messages_in: 0,
+                messages_out: 0,
+                last_active_epoch_secs: 0,
+                llm_last_ms: 0,
+                error_flash: false,
+            },
+        )
+        .unwrap();
+        let pressure_center_after = pressure_backend.count_color_in_rect(
+            STATUS_SUCCESS,
+            beetle_x,
+            beetle_y,
+            beetle_x + beetle_size,
+            beetle_y + beetle_size,
+        );
+        assert_eq!(
+            pressure_center_after, pressure_center_before,
+            "pressure partial refresh must not erase the centered beetle"
+        );
+    }
+
+    #[test]
+    fn idle_beetle_has_round_eyes_and_no_body_check_mark() {
+        let config = wide_display_config();
+        let layout = compute_layout(config.width, config.height);
+        let backend =
+            render_preview_frame(DisplaySystemState::Idle, DisplayPressureLevel::Normal, 42);
+        let (beetle_x, beetle_y, beetle_size) =
+            hud_beetle_box(config.width, config.height, &layout);
+        let cx = beetle_x + beetle_size / 2;
+        let head_rx = beetle_size * 16 / 100;
+        let head_ry = beetle_size * 11 / 100;
+        let head_cy = beetle_y + beetle_size * 30 / 100;
+        let eye_r = (head_ry * 38 / 100).clamp(2, 4);
+        let eye_spread = head_rx * 7 / 10;
+
+        for sx in [-1i32, 1] {
+            let ex = cx + sx * eye_spread;
+            let center_pixels =
+                backend.count_color_in_rect(Rgb565::WHITE, ex, head_cy, ex + 1, head_cy + 1);
+            assert_eq!(center_pixels, 1, "round eye center must be lit");
+
+            for (corner_x, corner_y) in [
+                (ex - eye_r, head_cy - eye_r),
+                (ex + eye_r - 1, head_cy - eye_r),
+                (ex - eye_r, head_cy + eye_r - 1),
+                (ex + eye_r - 1, head_cy + eye_r - 1),
+            ] {
+                assert_eq!(
+                    backend.count_color_in_rect(
+                        Rgb565::WHITE,
+                        corner_x,
+                        corner_y,
+                        corner_x + 1,
+                        corner_y + 1
+                    ),
+                    0,
+                    "round eye bounding-box corners must stay unfilled"
+                );
+            }
+        }
+
+        let body_cy = beetle_y + beetle_size * 62 / 100;
+        let body_check_pixels = backend.count_color_in_rect(
+            Rgb565::WHITE,
+            cx - 18,
+            body_cy - 10,
+            cx + 18,
+            body_cy + 14,
+        );
+        assert_eq!(
+            body_check_pixels, 0,
+            "idle beetle body must not carry the old white check mark"
+        );
+    }
+
+    #[test]
+    fn release_hud_surface_has_material_highlights_and_data_rails() {
+        let backend =
+            render_preview_frame(DisplaySystemState::Idle, DisplayPressureLevel::Normal, 42);
+        let beetle_material_highlight = Rgb565::new(11, 63, 25);
+        let hud_rail = rgb565(9, 48, 56);
+
+        let material_pixels =
+            backend.count_color_in_rect(beetle_material_highlight, 112, 56, 208, 172);
+        assert!(
+            material_pixels > 18,
+            "release HUD beetle needs visible material highlights, not flat demo fill"
+        );
+
+        let rail_pixels = backend.count_color_in_rect(hud_rail, 0, 0, 320, 240);
+        assert!(
+            rail_pixels > 48,
+            "release HUD needs restrained data rails to feel like a product surface"
+        );
+    }
+
+    #[test]
+    fn pressure_update_flushes_resource_bar_and_footer_without_full_dashboard_flush() {
+        let config = default_disabled_display_config();
+        let layout = compute_layout(config.width, config.height);
+        let mut backend = FakeBackend::default();
+
+        dispatch_display_command(
+            &mut backend,
+            &config,
+            &layout,
+            &DisplayCommand::UpdatePressure {
+                level: DisplayPressureLevel::Critical,
+                heap_percent: 91,
+                messages_in: 21,
+                messages_out: 18,
+                last_active_epoch_secs: 3720,
+                llm_last_ms: 5200,
+                error_flash: true,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(backend.flush_calls, 0);
+        assert_eq!(backend.flush_rows_calls.len(), 2);
+        assert_eq!(
+            backend.flush_rows_calls[0],
+            (8, hud_top_bar_rows(config.height).saturating_add(4))
+        );
+        assert_eq!(
+            backend.flush_rows_calls[1],
+            (
+                hud_metrics_top(config.height),
+                hud_metrics_rows(config.height)
+            )
+        );
+    }
+
+    #[test]
+    fn refresh_dashboard_places_status_beetle_in_center_hud_region() {
+        let config = default_disabled_display_config();
+        let layout = compute_layout(config.width, config.height);
+        let mut backend = PixelProbeBackend::new(config.width, config.height);
+
+        dispatch_display_command(
+            &mut backend,
+            &config,
+            &layout,
+            &DisplayCommand::RefreshDashboard {
+                state: DisplaySystemState::Idle,
+                presence_subtitle: None,
+                ip_address: Some("192.168.4.1".to_string()),
+                channels: sample_channels(),
+                pressure: DisplayPressureLevel::Normal,
+                heap_percent: 42,
+                messages_in: 7,
+                messages_out: 5,
+                last_active_epoch_secs: 3600,
+                uptime_secs: 86,
+                busy_phase: false,
+                llm_last_ms: 842,
+                error_flash: false,
+            },
+        )
+        .unwrap();
+
+        let center_accent_pixels = backend.count_color_in_rect(
+            STATUS_SUCCESS,
+            config.width as i32 / 2 - 14,
+            layout.header_top as i32 + 28,
+            config.width as i32 / 2 + 14,
+            layout.middle_top as i32,
+        );
+
+        assert!(
+            center_accent_pixels > 40,
+            "HUD V2 keeps the beetle as the centered state object"
+        );
+        assert_eq!(backend.flush_calls, 1);
+        assert!(backend.flush_rows_calls.is_empty());
+    }
+
+    #[test]
+    fn refresh_dashboard_renders_top_resource_segments_from_heap_pressure() {
+        let config = wide_display_config();
+        let layout = compute_layout(config.width, config.height);
+        let mut backend = PixelProbeBackend::new(config.width, config.height);
+
+        dispatch_display_command(
+            &mut backend,
+            &config,
+            &layout,
+            &DisplayCommand::RefreshDashboard {
+                state: DisplaySystemState::Busy,
+                presence_subtitle: None,
+                ip_address: Some("10.0.0.42".to_string()),
+                channels: sample_channels(),
+                pressure: DisplayPressureLevel::Cautious,
+                heap_percent: 78,
+                messages_in: 19,
+                messages_out: 13,
+                last_active_epoch_secs: 3720,
+                uptime_secs: 7200,
+                busy_phase: true,
+                llm_last_ms: 1800,
+                error_flash: false,
+            },
+        )
+        .unwrap();
+
+        let top_resource_pixels = backend.count_color_in_rect(STATUS_WARNING, 172, 16, 276, 26);
+
+        assert!(
+            top_resource_pixels > 80,
+            "HUD V2 shows the confirmed 13-slot top resource strip"
+        );
+
+        let pressure_label_pixels = backend.count_color_in_rect(STATUS_WARNING, 118, 8, 170, 24);
+        assert!(
+            pressure_label_pixels > 24,
+            "top resource heading should be the pressure status word, not a generic RESOURCE title"
+        );
+        let generic_title_pixels = backend.count_color_in_rect(TEXT_SECONDARY, 118, 8, 170, 24);
+        assert_eq!(
+            generic_title_pixels, 0,
+            "top resource area must not render the old RESOURCE title color"
+        );
+    }
+
+    #[test]
+    fn wide_dashboard_matches_confirmed_hud_v2_coordinate_surface() {
+        let config = wide_display_config();
+        let layout = compute_layout(config.width, config.height);
+        let mut backend = PixelProbeBackend::new(config.width, config.height);
+
+        dispatch_display_command(
+            &mut backend,
+            &config,
+            &layout,
+            &DisplayCommand::RefreshDashboard {
+                state: DisplaySystemState::Idle,
+                presence_subtitle: None,
+                ip_address: Some("192.168.4.1".to_string()),
+                channels: sample_channels(),
+                pressure: DisplayPressureLevel::Normal,
+                heap_percent: 42,
+                messages_in: 128,
+                messages_out: 122,
+                last_active_epoch_secs: 52320,
+                uptime_secs: 86,
+                busy_phase: false,
+                llm_last_ms: 842,
+                error_flash: false,
+            },
+        )
+        .unwrap();
+
+        let center_body = backend.count_color_in_rect(STATUS_SUCCESS, 102, 47, 218, 179);
+        assert!(
+            center_body > 400,
+            "confirmed HUD V2 keeps the beetle as the large center object"
+        );
+        let lower_body = backend.count_color_in_rect(STATUS_SUCCESS, 122, 120, 198, 179);
+        assert!(
+            lower_body > 120,
+            "the beetle must not collapse back into the old top header"
+        );
+
+        let left_channels = backend.count_color_in_rect(STATUS_SUCCESS, 25, 60, 95, 145);
+        assert!(
+            left_channels > 30,
+            "confirmed HUD V2 uses the left radar-line channel column"
+        );
+
+        let right_metrics = backend.count_color_in_rect(STATUS_SUCCESS, 228, 100, 304, 164);
+        assert!(
+            right_metrics > 10,
+            "confirmed HUD V2 uses the right IO/LLM/DONE/LOAD metric column"
+        );
+
+        let mic_bottom = backend.count_color_in_rect(AUDIO_INACTIVE, 27, 194, 95, 224);
+        let speaker_bottom = backend.count_color_in_rect(AUDIO_INACTIVE, 188, 197, 273, 221);
+        assert!(
+            mic_bottom > 10 && speaker_bottom > 10,
+            "mic and speaker status belong in the bottom audio strip"
+        );
+
+        let stale_top_audio = backend.count_color_in_rect(AUDIO_INACTIVE, 24, 60, 95, 90);
+        assert_eq!(stale_top_audio, 0, "old upper audio icons must not return");
+    }
+
+    #[test]
+    fn display_hud_v2_code_preview_has_subtle_grid_and_can_emit_bmp() {
+        let backend =
+            render_preview_frame(DisplaySystemState::Idle, DisplayPressureLevel::Normal, 42);
+
+        assert_eq!(
+            backend.count_color_in_rect(rgb565(10, 56, 65), 0, 0, 320, 240),
+            0,
+            "the old bright grid color must not survive in HUD V2"
+        );
+        assert!(
+            backend.count_color_in_rect(DISPLAY_BG, 0, 0, 320, 240) > 52_000,
+            "the confirmed HUD keeps the grid as a background texture, not the first visual layer"
+        );
+        assert!(
+            backend.count_color_in_rect(AUDIO_INACTIVE, 27, 194, 95, 224) > 10,
+            "inactive mic icon must remain visible before hardware flashing"
+        );
+        assert!(
+            backend.count_color_in_rect(AUDIO_INACTIVE, 188, 197, 273, 221) > 10,
+            "inactive speaker icon must remain visible before hardware flashing"
+        );
+
+        let Ok(dir) = std::env::var("BEETLE_DISPLAY_PREVIEW_DIR") else {
+            return;
+        };
+        let dir = std::path::Path::new(&dir);
+        std::fs::create_dir_all(dir).expect("create preview dir");
+
+        let previews = [
+            (
+                "idle-v2-code.bmp",
+                DisplaySystemState::Idle,
+                DisplayPressureLevel::Normal,
+                42,
+            ),
+            (
+                "busy-v2-code.bmp",
+                DisplaySystemState::Busy,
+                DisplayPressureLevel::Cautious,
+                78,
+            ),
+            (
+                "voice-v2-code.bmp",
+                DisplaySystemState::Recording,
+                DisplayPressureLevel::Normal,
+                57,
+            ),
+            (
+                "critical-v2-code.bmp",
+                DisplaySystemState::Fault,
+                DisplayPressureLevel::Critical,
+                96,
+            ),
+        ];
+
+        for (name, state, pressure, heap_percent) in previews {
+            let frame = render_preview_frame(state, pressure, heap_percent);
+            let path = dir.join(name);
+            frame.write_bmp(&path).expect("write preview bmp");
+            println!("display HUD V2 code preview: {}", path.display());
+        }
     }
 
     #[test]
