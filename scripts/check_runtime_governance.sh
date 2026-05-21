@@ -558,6 +558,18 @@ check_no_prod_timed_wait_before_tests \
   src/runtime/write_back.rs \
   '\.wait_timeout\s*\(|recv_timeout\s*\(' \
   "write_back"
+
+if rg -n 'STORAGE_WRITE_BACK_THREAD_NAMES: \&\[&str\] = \&\[\]' src/runtime/plane.rs >/dev/null; then
+  echo "FAIL: ESP write_back worker must not be hidden from the static runtime plane thread map" >&2
+  rg -n 'STORAGE_WRITE_BACK_THREAD_NAMES' src/runtime/plane.rs >&2
+  exit 1
+fi
+if ! rg -n 'STORAGE_WRITE_BACK_THREAD_NAMES: \&\[&str\] = \&\["write_back"\]' src/runtime/plane.rs >/dev/null; then
+  echo "FAIL: ESP write_back worker must be registered in the static runtime plane thread map" >&2
+  rg -n 'STORAGE_WRITE_BACK_THREAD_NAMES' src/runtime/plane.rs >&2 || true
+  exit 1
+fi
+
 check_no_prod_timed_wait_before_tests \
   src/audio/voice_session.rs \
   'recv_timeout\s*\(' \

@@ -150,9 +150,6 @@ const MODES_VOICE: &[RuntimeMode] = &[RuntimeMode::Normal, RuntimeMode::VoiceExc
 
 const MODES_BOOT_ONLY: &[RuntimeMode] = &[RuntimeMode::Booting];
 
-#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-const STORAGE_WRITE_BACK_THREAD_NAMES: &[&str] = &[];
-#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 const STORAGE_WRITE_BACK_THREAD_NAMES: &[&str] = &["write_back"];
 
 const MODES_RECOVERY: &[RuntimeMode] = &[

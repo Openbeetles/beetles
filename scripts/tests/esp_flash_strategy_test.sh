@@ -153,6 +153,22 @@ assert_file_contains \
   'python3 -m serial.tools.miniterm "$CHOSEN_PORT" "$monitor_baud"' \
   "build.sh should use a raw serial monitor after flashing instead of re-entering the bootloader through espflash monitor"
 assert_file_contains \
+  "$ROOT_DIR/scripts/esp_live_test_flow.sh" \
+  'assert_device_flash_handshake "$selected_port" "$preflight_board_info" "$preflight_board_info_stderr"' \
+  "ESP live flow should hard-gate bootloader handshake before building or flashing"
+assert_file_contains \
+  "$ROOT_DIR/scripts/esp_live_test_flow.sh" \
+  'beetle_espflash_connection_profiles "$chip" board-info' \
+  "ESP live flow preflight should use the same chip-specific board-info connection profiles as flashing"
+assert_file_contains \
+  "$ROOT_DIR/scripts/esp_live_test_flow.sh" \
+  'espflash board-info "${profile_args[@]}" --port "$selected" --chip "$chip"' \
+  "ESP live flow preflight should execute board-info directly instead of depending on build.sh-local helpers"
+assert_file_contains \
+  "$ROOT_DIR/scripts/esp_live_test_flow.sh" \
+  'device did not complete ESP bootloader/board-info handshake' \
+  "ESP live flow should classify serial handshake failures as host/device precondition failures"
+assert_file_contains \
   "$ROOT_DIR/build.sh" \
   'ESPFLASH_SKIP_UPDATE_CHECK=true espflash save-image --chip "$FLASH_CHIP"' \
   "build.sh should generate app images through espflash save-image so build-only runs do not depend on Python esptool modules"

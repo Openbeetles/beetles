@@ -304,6 +304,47 @@ assert_port_free() {
   rm -f /tmp/beetle-esp-live-lsof.$$
 }
 
+assert_device_flash_handshake() {
+  local selected="$1"
+  local stdout_file="$2"
+  local stderr_file="$3"
+  local profile
+  local attempt=0
+  local status=1
+  local profile_args=()
+
+  command -v espflash >/dev/null 2>&1 || {
+    echo "Error: espflash is required for ESP live-flow serial preflight." >&2
+    exit 1
+  }
+
+  : >"$stdout_file"
+  : >"$stderr_file"
+  while IFS= read -r profile; do
+    [[ -n "$profile" ]] || continue
+    attempt=$((attempt + 1))
+    read -r -a profile_args <<< "$profile"
+    if [[ $attempt -gt 1 ]]; then
+      echo "Retrying board-info preflight..." >>"$stderr_file"
+    fi
+    if espflash board-info "${profile_args[@]}" --port "$selected" --chip "$chip" >>"$stdout_file" 2>>"$stderr_file"; then
+      echo "  board-info preflight OK."
+      return
+    fi
+    status=$?
+  done < <(beetle_espflash_connection_profiles "$chip" board-info)
+
+  echo "Error: serial port exists and is free, but device did not complete ESP bootloader/board-info handshake." >&2
+  echo "  port: $selected" >&2
+  echo "  stdout: $stdout_file" >&2
+  echo "  stderr: $stderr_file" >&2
+  echo "  espflash status: $status" >&2
+  echo "  This is a host/device flashing precondition failure, not a firmware runtime result." >&2
+  echo "  Put the board into download mode, then rerun the live flow:" >&2
+  echo "    hold BOOT, tap RESET, wait one second, release BOOT." >&2
+  exit 1
+}
+
 wait_for_port() {
   local selected="$1"
   local i
@@ -624,6 +665,8 @@ run_dir="$output_dir/$run_id"
 log_file="$run_dir/serial.log"
 monitor_stderr="$run_dir/monitor.stderr"
 monitor_unexpected_stderr="$run_dir/monitor.unexpected.stderr"
+preflight_board_info="$run_dir/board_info.preflight.txt"
+preflight_board_info_stderr="$run_dir/board_info.preflight.stderr"
 if [[ "$scenario" == "qq_text" && -z "$qq_acceptance_file" ]]; then
   qq_acceptance_file="$run_dir/qq_acceptance.env"
 fi
@@ -639,6 +682,8 @@ mkdir -p "$run_dir"
   echo "expected_messages=$expected_messages"
   echo "flash_mode=$flash_mode"
   echo "selected_port=$selected_port"
+  echo "preflight_board_info=$preflight_board_info"
+  echo "preflight_board_info_stderr=$preflight_board_info_stderr"
   echo "monitor_stderr=$monitor_stderr"
   echo "monitor_unexpected_stderr=$monitor_unexpected_stderr"
   if [[ "$scenario" == "chat_stream" ]]; then
@@ -691,7 +736,8 @@ echo "  port: $selected_port"
 echo "  log: $log_file"
 
 echo
-echo "Step 1/5: serial port selected and free."
+echo "Step 1/5: serial port selected, free, and bootloader handshake verified."
+assert_device_flash_handshake "$selected_port" "$preflight_board_info" "$preflight_board_info_stderr"
 
 echo
 echo "Step 2/5: flashing with ./build.sh ($flash_mode)."
