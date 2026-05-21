@@ -1,80 +1,122 @@
-<svg width="1200" height="300" viewBox="0 0 1200 300" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
-  <title id="title">Beetles OS hardware matrix</title>
-  <desc id="desc">A minimal diagram showing Beetles OS connecting Linux, ESP32, language models, channels, and tools.</desc>
+<svg width="1280" height="460" viewBox="0 0 1280 460" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">Beetles OS 中文首图</title>
+  <desc id="desc">Beetles OS 连接硬件平台、通信通道、模型服务、工具、记忆和运维能力的中文 README 首图。</desc>
   <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="1200" y2="300" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#F2FFFB"/>
-      <stop offset=".55" stop-color="#FFFFFF"/>
+    <linearGradient id="bg" x1="0" y1="0" x2="1280" y2="460" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F0FFFA"/>
+      <stop offset=".48" stop-color="#FFFFFF"/>
       <stop offset="1" stop-color="#EEF7FF"/>
     </linearGradient>
-    <linearGradient id="hub" x1="430" y1="96" x2="770" y2="208" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#13AA98"/>
-      <stop offset="1" stop-color="#0A6076"/>
+    <linearGradient id="hub" x1="416" y1="108" x2="864" y2="282" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#16B6A2"/>
+      <stop offset=".55" stop-color="#0E8C8D"/>
+      <stop offset="1" stop-color="#095C76"/>
     </linearGradient>
-    <filter id="shadow" x="-12%" y="-24%" width="124%" height="148%" color-interpolation-filters="sRGB">
-      <feDropShadow dx="0" dy="14" stdDeviation="16" flood-color="#0B5F76" flood-opacity=".13"/>
+    <linearGradient id="chip" x1="400" y1="316" x2="880" y2="374" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#F7FFFD"/>
+    </linearGradient>
+    <filter id="shadow" x="-12%" y="-22%" width="124%" height="150%" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="16" stdDeviation="18" flood-color="#0B5F76" flood-opacity=".14"/>
+    </filter>
+    <filter id="softShadow" x="-10%" y="-18%" width="120%" height="140%" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="10" stdDeviation="12" flood-color="#0B5F76" flood-opacity=".10"/>
     </filter>
     <style>
-      .hub { font: 800 40px ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #fff; letter-spacing: -.02em; }
-      .hubMeta { font: 650 18px ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #DDFCF6; }
-      .node { font: 750 24px ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #183B38; }
-      .meta { font: 600 14px ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #6B817E; }
+      .hubTitle { font-family: Arial, Helvetica, sans-serif; font-size: 44px; font-weight: 800; fill: #FFFFFF; letter-spacing: -0.2px; }
+      .hubMeta { font-family: Arial, Helvetica, sans-serif; font-size: 18px; font-weight: 650; fill: #DDFCF6; }
+      .nodeTitle { font-family: Arial, Helvetica, sans-serif; font-size: 25px; font-weight: 760; fill: #183B38; }
+      .nodeMeta { font-family: Arial, Helvetica, sans-serif; font-size: 14px; font-weight: 610; fill: #647B7D; }
+      .pillTitle { font-family: Arial, Helvetica, sans-serif; font-size: 17px; font-weight: 740; fill: #FFFFFF; }
+      .pillMeta { font-family: Arial, Helvetica, sans-serif; font-size: 13px; font-weight: 570; fill: #DDFCF6; }
+      .chipText { font-family: Arial, Helvetica, sans-serif; font-size: 15px; font-weight: 680; fill: #245F64; }
       .line { stroke: #10A695; stroke-width: 3; stroke-linecap: round; }
+      .thinLine { stroke: #A9D3D5; stroke-width: 2; stroke-linecap: round; }
     </style>
   </defs>
 
-  <rect x="1" y="1" width="1198" height="298" rx="34" fill="url(#bg)" stroke="#D8F0EA" stroke-width="2"/>
-  <circle cx="1040" cy="36" r="120" fill="#D8F6EF" opacity=".42"/>
-  <circle cx="156" cy="286" r="132" fill="#DDEFFF" opacity=".38"/>
+  <rect x="1" y="1" width="1278" height="458" rx="34" fill="url(#bg)" stroke="#D8F0EA" stroke-width="2"/>
 
-  <path class="line" d="M352 106H430"/>
-  <path class="line" d="M770 106H848"/>
-  <path class="line" d="M352 194H430"/>
-  <path class="line" d="M770 194H848"/>
-  <path class="line" d="M546 220V248"/>
-  <path class="line" d="M654 220V248"/>
-
-  <g filter="url(#shadow)">
-    <rect x="430" y="82" width="340" height="136" rx="36" fill="url(#hub)"/>
-    <text x="506" y="142" class="hub">Beetles OS</text>
-    <text x="510" y="178" class="hubMeta">Memory · Tools · Policy</text>
+  <circle cx="1112" cy="42" r="138" fill="#D8F6EF" opacity=".42"/>
+  <circle cx="142" cy="420" r="160" fill="#DDEFFF" opacity=".38"/>
+  <circle cx="1018" cy="368" r="112" fill="#ECFBF8" opacity=".58"/>
+  <path d="M96 260C184 206 274 206 362 260" stroke="#DAF1ED" stroke-width="2" stroke-linecap="round" opacity=".75"/>
+  <path d="M914 182C1008 126 1100 126 1194 182" stroke="#DDEFFF" stroke-width="2" stroke-linecap="round" opacity=".8"/>
+  <g opacity=".28" fill="#87CFC8">
+    <circle cx="250" cy="68" r="3"/>
+    <circle cx="278" cy="68" r="3"/>
+    <circle cx="306" cy="68" r="3"/>
+    <circle cx="984" cy="268" r="3"/>
+    <circle cx="1012" cy="268" r="3"/>
+    <circle cx="1040" cy="268" r="3"/>
   </g>
 
-  <g filter="url(#shadow)">
-    <rect x="120" y="68" width="232" height="76" rx="24" fill="#FFFFFF" stroke="#C7EAE4" stroke-width="2"/>
-    <text x="176" y="108" class="node">Linux</text>
-    <text x="176" y="130" class="meta">长任务 / 本地工具</text>
-    <circle cx="148" cy="106" r="17" fill="#0EA5E9"/>
-  </g>
+  <path class="line" d="M370 128H416"/>
+  <path class="line" d="M370 232H416"/>
+  <path class="line" d="M864 128H910"/>
+  <path class="line" d="M864 232H910"/>
+  <path class="thinLine" d="M544 284V318"/>
+  <path class="thinLine" d="M640 284V318"/>
+  <path class="thinLine" d="M736 284V318"/>
 
   <g filter="url(#shadow)">
-    <rect x="120" y="156" width="232" height="76" rx="24" fill="#FFFFFF" stroke="#C7EAE4" stroke-width="2"/>
-    <text x="176" y="196" class="node">ESP32</text>
-    <text x="176" y="218" class="meta">现场控制 / 外设</text>
-    <circle cx="148" cy="194" r="17" fill="#10B981"/>
+    <rect x="416" y="86" width="448" height="198" rx="38" fill="url(#hub)"/>
+    <text x="532" y="148" class="hubTitle">Beetles OS</text>
+    <text x="520" y="184" class="hubMeta">边缘设备 Agent Runtime</text>
+
+    <rect x="458" y="212" width="128" height="44" rx="14" fill="#FFFFFF" fill-opacity=".16" stroke="#BDF4EB" stroke-opacity=".38"/>
+    <text x="522" y="239" text-anchor="middle" class="pillTitle">记忆</text>
+
+    <rect x="604" y="212" width="128" height="44" rx="14" fill="#FFFFFF" fill-opacity=".16" stroke="#BDF4EB" stroke-opacity=".38"/>
+    <text x="668" y="239" text-anchor="middle" class="pillTitle">工具</text>
+
+    <rect x="750" y="212" width="72" height="44" rx="14" fill="#FFFFFF" fill-opacity=".16" stroke="#BDF4EB" stroke-opacity=".38"/>
+    <text x="786" y="239" text-anchor="middle" class="pillTitle">边界</text>
   </g>
 
-  <g filter="url(#shadow)">
-    <rect x="848" y="68" width="232" height="76" rx="24" fill="#FFFFFF" stroke="#C7EAE4" stroke-width="2"/>
-    <text x="904" y="108" class="node">LLM</text>
-    <text x="904" y="130" class="meta">云端 / 本地模型</text>
-    <circle cx="876" cy="106" r="17" fill="#6366F1"/>
+  <g filter="url(#softShadow)">
+    <rect x="70" y="84" width="300" height="88" rx="24" fill="#FFFFFF" stroke="#C7EAE4" stroke-width="2"/>
+    <rect x="96" y="108" width="38" height="38" rx="12" fill="#DDF8F2"/>
+    <path d="M106 127H124M115 118V136" stroke="#0FA99B" stroke-width="3" stroke-linecap="round"/>
+    <text x="156" y="137" class="nodeTitle">通信通道</text>
   </g>
 
-  <g filter="url(#shadow)">
-    <rect x="848" y="156" width="232" height="76" rx="24" fill="#FFFFFF" stroke="#C7EAE4" stroke-width="2"/>
-    <text x="904" y="196" class="node">Channels</text>
-    <text x="904" y="218" class="meta">企业 IM / Webhook</text>
-    <circle cx="876" cy="194" r="17" fill="#38BDF8"/>
+  <g filter="url(#softShadow)">
+    <rect x="70" y="188" width="300" height="88" rx="24" fill="#FFFFFF" stroke="#C7EAE4" stroke-width="2"/>
+    <rect x="96" y="212" width="38" height="38" rx="12" fill="#EAF3FF"/>
+    <path d="M106 231H124M110 222H120M110 240H120" stroke="#2563EB" stroke-width="3" stroke-linecap="round"/>
+    <text x="156" y="241" class="nodeTitle">硬件平台</text>
   </g>
 
-  <g filter="url(#shadow)">
-    <rect x="422" y="248" width="248" height="36" rx="18" fill="#FFFFFF" stroke="#C7EAE4" stroke-width="2"/>
-    <text x="492" y="272" class="meta">状态同步</text>
+  <g filter="url(#softShadow)">
+    <rect x="910" y="84" width="300" height="88" rx="24" fill="#FFFFFF" stroke="#C7EAE4" stroke-width="2"/>
+    <rect x="936" y="108" width="38" height="38" rx="12" fill="#EEF2FF"/>
+    <path d="M946 129C950 119 962 119 966 129C972 130 974 138 968 142H944C938 138 940 130 946 129Z" stroke="#6366F1" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="996" y="137" class="nodeTitle">模型服务</text>
   </g>
 
-  <g filter="url(#shadow)">
-    <rect x="704" y="248" width="248" height="36" rx="18" fill="#FFFFFF" stroke="#C7EAE4" stroke-width="2"/>
-    <text x="774" y="272" class="meta">工具调用</text>
+  <g filter="url(#softShadow)">
+    <rect x="910" y="188" width="300" height="88" rx="24" fill="#FFFFFF" stroke="#C7EAE4" stroke-width="2"/>
+    <rect x="936" y="212" width="38" height="38" rx="12" fill="#FFF7E6"/>
+    <path d="M946 231H964M955 222V240M949 242H961" stroke="#D97706" stroke-width="3" stroke-linecap="round"/>
+    <text x="996" y="241" class="nodeTitle">输出与动作</text>
+  </g>
+
+  <g filter="url(#softShadow)">
+    <rect x="400" y="318" width="480" height="56" rx="20" fill="url(#chip)" stroke="#C7EAE4" stroke-width="2"/>
+    <text x="494" y="352" text-anchor="middle" class="chipText">入站队列</text>
+    <text x="598" y="352" text-anchor="middle" class="chipText">上下文</text>
+    <text x="700" y="352" text-anchor="middle" class="chipText">权限边界</text>
+    <text x="806" y="352" text-anchor="middle" class="chipText">出站队列</text>
+    <path d="M534 346H548M628 346H642M754 346H768" stroke="#94C6CB" stroke-width="2" stroke-linecap="round"/>
+  </g>
+
+  <g opacity=".86">
+    <rect x="462" y="402" width="112" height="24" rx="12" fill="#E6FBF6" stroke="#BCEBE3"/>
+    <text x="485" y="419" class="nodeMeta">分层记忆</text>
+    <rect x="588" y="402" width="112" height="24" rx="12" fill="#E6FBF6" stroke="#BCEBE3"/>
+    <text x="611" y="419" class="nodeMeta">工具注册</text>
+    <rect x="714" y="402" width="112" height="24" rx="12" fill="#E6FBF6" stroke="#BCEBE3"/>
+    <text x="737" y="419" class="nodeMeta">运维诊断</text>
   </g>
 </svg>
