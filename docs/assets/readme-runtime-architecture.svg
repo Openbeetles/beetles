@@ -1,0 +1,117 @@
+<svg width="1280" height="560" viewBox="0 0 1280 560" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">Beetles OS 运行时架构</title>
+  <desc id="desc">中文运行时架构图，展示消息从输入通道进入队列，经上下文、模型、工具、记忆和权限边界处理后输出动作。</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1280" y2="560" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F2FFFB"/>
+      <stop offset=".52" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#EEF7FF"/>
+    </linearGradient>
+    <linearGradient id="runtime" x1="432" y1="142" x2="848" y2="342" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#16B6A2"/>
+      <stop offset=".58" stop-color="#0E8C8D"/>
+      <stop offset="1" stop-color="#095C76"/>
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-18%" width="120%" height="140%" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="14" stdDeviation="16" flood-color="#0B5F76" flood-opacity=".13"/>
+    </filter>
+    <filter id="softShadow" x="-10%" y="-18%" width="120%" height="140%" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="9" stdDeviation="11" flood-color="#0B5F76" flood-opacity=".09"/>
+    </filter>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="9" refY="6" orient="auto" markerUnits="strokeWidth">
+      <path d="M2 2L10 6L2 10" fill="none" stroke="#0F8D8C" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+    <style>
+      .title { font-family: Arial, Helvetica, sans-serif; font-size: 38px; font-weight: 800; fill: #123B42; letter-spacing: -0.2px; }
+      .subtitle { font-family: Arial, Helvetica, sans-serif; font-size: 17px; font-weight: 620; fill: #60777C; }
+      .nodeTitle { font-family: Arial, Helvetica, sans-serif; font-size: 22px; font-weight: 760; fill: #173C42; }
+      .nodeMeta { font-family: Arial, Helvetica, sans-serif; font-size: 14px; font-weight: 610; fill: #647B7D; }
+      .runtimeTitle { font-family: Arial, Helvetica, sans-serif; font-size: 36px; font-weight: 820; fill: #FFFFFF; }
+      .runtimeMeta { font-family: Arial, Helvetica, sans-serif; font-size: 17px; font-weight: 650; fill: #DDFCF6; }
+      .pillTitle { font-family: Arial, Helvetica, sans-serif; font-size: 17px; font-weight: 740; fill: #FFFFFF; }
+      .chipText { font-family: Arial, Helvetica, sans-serif; font-size: 15px; font-weight: 680; fill: #245F64; }
+      .line { stroke: #0F8D8C; stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; marker-end: url(#arrow); }
+      .softLine { stroke: #A9D3D5; stroke-width: 2; stroke-linecap: round; }
+    </style>
+  </defs>
+
+  <rect x="1" y="1" width="1278" height="558" rx="34" fill="url(#bg)" stroke="#D8F0EA" stroke-width="2"/>
+  <circle cx="1088" cy="52" r="148" fill="#D8F6EF" opacity=".42"/>
+  <circle cx="156" cy="526" r="172" fill="#DDEFFF" opacity=".36"/>
+  <circle cx="998" cy="430" r="118" fill="#ECFBF8" opacity=".58"/>
+  <g opacity=".28" fill="#87CFC8">
+    <circle cx="180" cy="74" r="3"/>
+    <circle cx="208" cy="74" r="3"/>
+    <circle cx="236" cy="74" r="3"/>
+    <circle cx="1010" cy="306" r="3"/>
+    <circle cx="1038" cy="306" r="3"/>
+    <circle cx="1066" cy="306" r="3"/>
+  </g>
+
+  <text x="640" y="72" text-anchor="middle" class="title">Beetles OS 运行时架构</text>
+  <text x="640" y="102" text-anchor="middle" class="subtitle">从消息进入、上下文装配、模型决策到工具执行和结果反馈</text>
+
+  <g filter="url(#softShadow)">
+    <rect x="72" y="182" width="220" height="88" rx="24" fill="#FFFFFF" stroke="#C7EAE4" stroke-width="2"/>
+    <rect x="98" y="207" width="38" height="38" rx="12" fill="#DDF8F2"/>
+    <path d="M108 226H126M117 217V235" stroke="#0FA99B" stroke-width="3" stroke-linecap="round"/>
+    <text x="154" y="224" class="nodeTitle">输入通道</text>
+    <text x="154" y="248" class="nodeMeta">聊天 / 定时 / 语音</text>
+  </g>
+
+  <g filter="url(#softShadow)">
+    <rect x="328" y="182" width="188" height="88" rx="22" fill="#FFFFFF" stroke="#C7EAE4" stroke-width="2"/>
+    <text x="422" y="224" text-anchor="middle" class="nodeTitle">入站队列</text>
+    <text x="422" y="248" text-anchor="middle" class="nodeMeta">削峰 / 排队</text>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="554" y="140" width="316" height="172" rx="34" fill="url(#runtime)"/>
+    <text x="712" y="198" text-anchor="middle" class="runtimeTitle">Agent 主循环</text>
+    <text x="712" y="229" text-anchor="middle" class="runtimeMeta">上下文 · 模型 · 工具 · 记忆</text>
+    <rect x="596" y="256" width="92" height="34" rx="12" fill="#FFFFFF" fill-opacity=".16" stroke="#BDF4EB" stroke-opacity=".38"/>
+    <text x="642" y="278" text-anchor="middle" class="pillTitle">上下文</text>
+    <rect x="704" y="256" width="92" height="34" rx="12" fill="#FFFFFF" fill-opacity=".16" stroke="#BDF4EB" stroke-opacity=".38"/>
+    <text x="750" y="278" text-anchor="middle" class="pillTitle">决策</text>
+  </g>
+
+  <g filter="url(#softShadow)">
+    <rect x="906" y="182" width="188" height="88" rx="22" fill="#FFFFFF" stroke="#C7EAE4" stroke-width="2"/>
+    <text x="1000" y="224" text-anchor="middle" class="nodeTitle">出站队列</text>
+    <text x="1000" y="248" text-anchor="middle" class="nodeMeta">分发 / 重试</text>
+  </g>
+
+  <g filter="url(#softShadow)">
+    <rect x="1128" y="182" width="108" height="88" rx="22" fill="#FFFFFF" stroke="#C7EAE4" stroke-width="2"/>
+    <text x="1182" y="224" text-anchor="middle" class="nodeTitle">反馈</text>
+    <text x="1182" y="248" text-anchor="middle" class="nodeMeta">回复 / 动作</text>
+  </g>
+
+  <path class="line" d="M292 226H328"/>
+  <path class="line" d="M516 226H554"/>
+  <path class="line" d="M870 226H906"/>
+  <path class="line" d="M1094 226H1128"/>
+
+  <path class="softLine" d="M626 312V350"/>
+  <path class="softLine" d="M712 312V350"/>
+  <path class="softLine" d="M798 312V350"/>
+
+  <g filter="url(#softShadow)">
+    <rect x="300" y="350" width="680" height="76" rx="22" fill="#FFFFFF" stroke="#C7EAE4" stroke-width="2"/>
+    <text x="396" y="395" text-anchor="middle" class="chipText">模型服务</text>
+    <text x="518" y="395" text-anchor="middle" class="chipText">工具注册</text>
+    <text x="640" y="395" text-anchor="middle" class="chipText">分层记忆</text>
+    <text x="762" y="395" text-anchor="middle" class="chipText">权限边界</text>
+    <text x="884" y="395" text-anchor="middle" class="chipText">运维诊断</text>
+    <path d="M454 388H468M576 388H590M698 388H712M820 388H834" stroke="#94C6CB" stroke-width="2" stroke-linecap="round"/>
+  </g>
+
+  <g opacity=".86">
+    <rect x="350" y="458" width="150" height="30" rx="15" fill="#E6FBF6" stroke="#BCEBE3"/>
+    <text x="425" y="478" text-anchor="middle" class="nodeMeta">身份与范围</text>
+    <rect x="520" y="458" width="150" height="30" rx="15" fill="#E6FBF6" stroke="#BCEBE3"/>
+    <text x="595" y="478" text-anchor="middle" class="nodeMeta">配置与状态</text>
+    <rect x="690" y="458" width="150" height="30" rx="15" fill="#E6FBF6" stroke="#BCEBE3"/>
+    <text x="765" y="478" text-anchor="middle" class="nodeMeta">工具调用结果</text>
+  </g>
+</svg>
