@@ -500,6 +500,8 @@ where
             busy_phase,
             llm_last_ms,
             error_flash,
+            audio_recording,
+            audio_playing,
         } => {
             render_dashboard(
                 backend,
@@ -519,6 +521,8 @@ where
                     busy_phase: *busy_phase,
                     llm_last_ms: *llm_last_ms,
                     error_flash: *error_flash,
+                    audio_recording: *audio_recording,
+                    audio_playing: *audio_playing,
                 },
             );
             backend.flush(config.offset_x, config.offset_y)?;
@@ -545,12 +549,16 @@ where
             ip_address: _,
             uptime_secs: _,
             busy_phase,
+            audio_recording,
+            audio_playing,
         } => {
             render_state_header_partial(
                 backend,
                 *state,
                 StateHeaderSnapshot {
                     busy_phase: *busy_phase,
+                    audio_recording: *audio_recording,
+                    audio_playing: *audio_playing,
                 },
                 config.width,
                 config.height,
@@ -1463,6 +1471,8 @@ struct DashboardParams<'a> {
     llm_last_ms: u32,
     /// F7: 错误闪烁标志。
     error_flash: bool,
+    audio_recording: bool,
+    audio_playing: bool,
 }
 
 struct StateHeaderParams<'a> {
@@ -1471,6 +1481,8 @@ struct StateHeaderParams<'a> {
     width: u16,
     height: u16,
     busy_phase: bool,
+    audio_recording: bool,
+    audio_playing: bool,
 }
 
 fn hud_top_bar_rows(height: u16) -> u16 {
@@ -1872,12 +1884,13 @@ fn draw_audio_status<D: DrawTarget<Color = Rgb565>>(
     width: u16,
     height: u16,
     layout: &DisplayLayout,
-    state: DisplaySystemState,
+    audio_recording: bool,
+    audio_playing: bool,
 ) {
     let _ = layout;
     let y = (height as i32 - 46).max(160);
-    let mic_active = matches!(state, DisplaySystemState::Recording);
-    let speaker_active = matches!(state, DisplaySystemState::Playing);
+    let mic_active = audio_recording;
+    let speaker_active = audio_playing;
     let mic_color = if mic_active {
         STATUS_SUCCESS
     } else {
@@ -1958,6 +1971,8 @@ fn render_dashboard<D: DrawTarget<Color = Rgb565>>(target: &mut D, p: &Dashboard
             width: p.width,
             height: p.height,
             busy_phase: p.busy_phase,
+            audio_recording: p.audio_recording,
+            audio_playing: p.audio_playing,
         },
     );
     render_channels_inner(target, p.channels, p.width, layout);
@@ -2204,7 +2219,14 @@ fn render_state_header_content<D: DrawTarget<Color = Rgb565>>(
             }
         }
     }
-    draw_audio_status(target, p.width, p.height, layout, p.state);
+    draw_audio_status(
+        target,
+        p.width,
+        p.height,
+        layout,
+        p.audio_recording,
+        p.audio_playing,
+    );
 }
 
 /// Dashboard base background.
@@ -2321,6 +2343,8 @@ fn render_ip_partial<D: DrawTarget<Color = Rgb565>>(
 /// Partial update: repaint only the state header region used by steady-state status flips.
 struct StateHeaderSnapshot {
     busy_phase: bool,
+    audio_recording: bool,
+    audio_playing: bool,
 }
 
 fn render_state_header_partial<D: DrawTarget<Color = Rgb565>>(
@@ -2361,6 +2385,8 @@ fn render_state_header_partial<D: DrawTarget<Color = Rgb565>>(
             width,
             height,
             busy_phase: snapshot.busy_phase,
+            audio_recording: snapshot.audio_recording,
+            audio_playing: snapshot.audio_playing,
         },
     );
     draw_hud_cyber_chrome(target, width, height, state_accent_color(state));
@@ -2944,6 +2970,8 @@ mod tests {
                 busy_phase: matches!(state, DisplaySystemState::Busy),
                 llm_last_ms: 842,
                 error_flash: false,
+                audio_recording: matches!(state, DisplaySystemState::Recording),
+                audio_playing: matches!(state, DisplaySystemState::Playing),
             },
         )
         .unwrap();
@@ -2967,6 +2995,8 @@ mod tests {
                 ip_address: Some("192.168.2.101".to_string()),
                 uptime_secs: 42,
                 busy_phase: true,
+                audio_recording: false,
+                audio_playing: false,
             },
         )
         .unwrap();
@@ -3278,6 +3308,8 @@ mod tests {
                 busy_phase: false,
                 llm_last_ms: 842,
                 error_flash: false,
+                audio_recording: false,
+                audio_playing: false,
             },
         )
         .unwrap();
@@ -3322,6 +3354,8 @@ mod tests {
                 busy_phase: true,
                 llm_last_ms: 1800,
                 error_flash: false,
+                audio_recording: false,
+                audio_playing: false,
             },
         )
         .unwrap();
@@ -3369,6 +3403,8 @@ mod tests {
                 busy_phase: false,
                 llm_last_ms: 842,
                 error_flash: false,
+                audio_recording: false,
+                audio_playing: false,
             },
         )
         .unwrap();
@@ -3405,6 +3441,48 @@ mod tests {
 
         let stale_top_audio = backend.count_color_in_rect(AUDIO_INACTIVE, 24, 60, 95, 90);
         assert_eq!(stale_top_audio, 0, "old upper audio icons must not return");
+    }
+
+    #[test]
+    fn audio_status_icons_follow_real_audio_flags_independently() {
+        let config = wide_display_config();
+        let layout = compute_layout(config.width, config.height);
+        let mut backend = PixelProbeBackend::new(config.width, config.height);
+
+        dispatch_display_command(
+            &mut backend,
+            &config,
+            &layout,
+            &DisplayCommand::RefreshDashboard {
+                state: DisplaySystemState::Recording,
+                presence_subtitle: None,
+                ip_address: Some("192.168.1.86".to_string()),
+                channels: sample_channels(),
+                pressure: DisplayPressureLevel::Normal,
+                heap_percent: 42,
+                messages_in: 128,
+                messages_out: 122,
+                last_active_epoch_secs: 52320,
+                uptime_secs: 86,
+                busy_phase: false,
+                llm_last_ms: 842,
+                error_flash: false,
+                audio_recording: true,
+                audio_playing: true,
+            },
+        )
+        .unwrap();
+
+        let active_mic = backend.count_color_in_rect(STATUS_SUCCESS, 27, 194, 95, 224);
+        let active_speaker = backend.count_color_in_rect(STATUS_INFO, 188, 197, 273, 221);
+        assert!(
+            active_mic > 10,
+            "mic icon must light from the real audio_recording flag"
+        );
+        assert!(
+            active_speaker > 10,
+            "speaker icon must light from the real audio_playing flag even while the beetle is in Recording state"
+        );
     }
 
     #[test]

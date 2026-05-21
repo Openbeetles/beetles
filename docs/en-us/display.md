@@ -137,7 +137,7 @@ The screen mainly shows:
 - microphone status
 - speaker status
 
-The default status surface uses a sci-fi HUD layout: device IP, resource pressure word, and resource strip at the top, the material-highlighted state beetle in the center, channel state on the left, message and latency data on the right, and microphone/speaker state at the bottom.
+The default status surface uses a sci-fi HUD layout: device IP, resource pressure word, and resource strip at the top, the material-highlighted state beetle in the center, channel state on the left, message and latency data on the right, and microphone/speaker state at the bottom. The microphone and speaker indicators use the real capture/playback flags and can light independently.
 
 ## Read Next
 

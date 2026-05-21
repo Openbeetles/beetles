@@ -193,6 +193,8 @@ fn post_wifi_display_bootstrap(
                         busy_phase: false,
                         llm_last_ms: 0,
                         error_flash: false,
+                        audio_recording: false,
+                        audio_playing: false,
                     })
                 });
                 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]

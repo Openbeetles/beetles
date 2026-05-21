@@ -343,6 +343,10 @@ pub enum DisplayCommand {
         llm_last_ms: u32,
         /// F7: 错误闪烁标志（本轮有新错误时为 true）。
         error_flash: bool,
+        /// 麦克风真实采集状态。
+        audio_recording: bool,
+        /// 喇叭真实播放状态。
+        audio_playing: bool,
     },
     /// 仅副标题 IP 行局部刷新；`uptime_secs` 与宽屏双行 `Up:` 对齐。
     UpdateIp {
@@ -360,6 +364,8 @@ pub enum DisplayCommand {
         ip_address: Option<String>,
         uptime_secs: u64,
         busy_phase: bool,
+        audio_recording: bool,
+        audio_playing: bool,
     },
     UpdatePressure {
         level: DisplayPressureLevel,

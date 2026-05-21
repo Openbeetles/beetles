@@ -1049,6 +1049,8 @@ mod tests {
             DisplayLoopCacheUpdate {
                 presence_subtitle: Some(&subtitle),
                 ip: Some(ip.as_str()),
+                audio_recording: Some(true),
+                audio_playing: Some(false),
                 channels: &channels,
                 pressure: Some(DisplayPressureLevel::Cautious),
                 heap_percent: Some(42),
@@ -1060,6 +1062,8 @@ mod tests {
 
         assert_eq!(state.last_presence_subtitle, subtitle);
         assert_eq!(state.last_ip, ip);
+        assert!(state.last_audio_recording);
+        assert!(!state.last_audio_playing);
         assert_eq!(
             state.last_channels[0],
             (true, true, DisplayChannelRuntimeStatus::Configured, 0)
@@ -1098,6 +1102,8 @@ mod tests {
             DisplayLoopCacheUpdate {
                 presence_subtitle: None,
                 ip: None,
+                audio_recording: None,
+                audio_playing: None,
                 channels: &channels,
                 pressure: Some(DisplayPressureLevel::Normal),
                 heap_percent: Some(11),
@@ -1413,6 +1419,7 @@ mod tests {
             state_changed: true,
             subtitle_changed: false,
             ip_changed: false,
+            audio_changed: false,
             channels_changed: true,
             footer_changed: true,
         };
@@ -1436,6 +1443,7 @@ mod tests {
             state_changed: true,
             subtitle_changed: false,
             ip_changed: true,
+            audio_changed: false,
             channels_changed: false,
             footer_changed: false,
         };
@@ -1449,6 +1457,31 @@ mod tests {
                 footer: false,
             },
             "STA IP changes must not be hidden behind a state-header-only partial refresh"
+        );
+    }
+
+    #[test]
+    fn display_refresh_plan_keeps_state_header_when_only_audio_flags_change() {
+        use beetle::DisplaySystemState;
+
+        let deltas = super::DisplayRefreshDeltas {
+            state_changed: false,
+            subtitle_changed: false,
+            ip_changed: false,
+            audio_changed: true,
+            channels_changed: false,
+            footer_changed: false,
+        };
+
+        assert_eq!(
+            super::plan_display_refresh(Some(DisplaySystemState::Recording), deltas),
+            super::DisplayRefreshPlan {
+                header: Some(super::StateChangeDisplayRefreshMode::StateHeaderOnly),
+                ip: false,
+                channels: false,
+                footer: false,
+            },
+            "speaker/mic flag changes must refresh the bottom audio strip even when display state stays Recording"
         );
     }
 
@@ -1471,6 +1504,7 @@ mod tests {
             state_changed: true,
             subtitle_changed: true,
             ip_changed: true,
+            audio_changed: true,
             channels_changed: true,
             footer_changed: true,
         };
@@ -1492,6 +1526,7 @@ mod tests {
             state_changed: true,
             subtitle_changed: true,
             ip_changed: true,
+            audio_changed: true,
             channels_changed: true,
             footer_changed: true,
         };
@@ -1570,6 +1605,8 @@ struct DisplayLoopState {
     last_state: Option<DisplaySystemState>,
     last_presence_subtitle: Option<String>,
     last_ip: String,
+    last_audio_recording: bool,
+    last_audio_playing: bool,
     last_channels: [(bool, bool, DisplayChannelRuntimeStatus, u32); DISPLAY_CHANNEL_CAPACITY],
     last_pressure: Option<DisplayPressureLevel>,
     last_heap: u8,
@@ -1609,6 +1646,8 @@ impl Default for DisplayLoopState {
             last_state: None,
             last_presence_subtitle: None,
             last_ip: String::new(),
+            last_audio_recording: false,
+            last_audio_playing: false,
             last_channels: [(false, false, DisplayChannelRuntimeStatus::Disabled, 0);
                 DISPLAY_CHANNEL_CAPACITY],
             last_pressure: None,
@@ -1666,6 +1705,7 @@ struct DisplayRefreshDeltas {
     state_changed: bool,
     subtitle_changed: bool,
     ip_changed: bool,
+    audio_changed: bool,
     channels_changed: bool,
     footer_changed: bool,
 }
@@ -1696,9 +1736,13 @@ fn plan_display_refresh(
     last_state: Option<DisplaySystemState>,
     deltas: DisplayRefreshDeltas,
 ) -> DisplayRefreshPlan {
-    let header = deltas
-        .state_changed
-        .then(|| state_change_display_refresh_mode(last_state));
+    let header = if deltas.state_changed {
+        Some(state_change_display_refresh_mode(last_state))
+    } else if deltas.audio_changed {
+        Some(StateChangeDisplayRefreshMode::StateHeaderOnly)
+    } else {
+        None
+    };
     if header == Some(StateChangeDisplayRefreshMode::FullDashboard) {
         return DisplayRefreshPlan {
             header,
@@ -1726,7 +1770,11 @@ fn degrade_display_heavy_refresh_plan(
     plan: DisplayRefreshPlan,
     deltas: DisplayRefreshDeltas,
 ) -> DisplayRefreshPlan {
-    let header = if plan.header.is_some() || deltas.state_changed || deltas.subtitle_changed {
+    let header = if plan.header.is_some()
+        || deltas.state_changed
+        || deltas.audio_changed
+        || deltas.subtitle_changed
+    {
         Some(StateChangeDisplayRefreshMode::StateHeaderOnly)
     } else {
         None
@@ -1764,6 +1812,8 @@ fn invalidate_display_cache_after_backlight_wake(loop_state: &mut DisplayLoopSta
     loop_state.last_state = None;
     loop_state.last_presence_subtitle = None;
     loop_state.last_ip.clear();
+    loop_state.last_audio_recording = false;
+    loop_state.last_audio_playing = false;
     loop_state.last_channels =
         [(false, false, DisplayChannelRuntimeStatus::Disabled, 0); DISPLAY_CHANNEL_CAPACITY];
     loop_state.last_pressure = None;
@@ -1860,6 +1910,8 @@ fn resume_display_refresh_after_suppression(loop_state: &mut DisplayLoopState) -
 struct DisplayLoopCacheUpdate<'a> {
     presence_subtitle: Option<&'a Option<String>>,
     ip: Option<&'a str>,
+    audio_recording: Option<bool>,
+    audio_playing: Option<bool>,
     channels: &'a [DisplayChannelStatus; DISPLAY_CHANNEL_CAPACITY],
     pressure: Option<DisplayPressureLevel>,
     heap_percent: Option<u8>,
@@ -1882,6 +1934,8 @@ fn update_display_loop_cache(
     let DisplayLoopCacheUpdate {
         presence_subtitle,
         ip,
+        audio_recording,
+        audio_playing,
         channels,
         pressure,
         heap_percent,
@@ -1897,6 +1951,12 @@ fn update_display_loop_cache(
     if let Some(ip) = ip {
         loop_state.last_ip.clear();
         loop_state.last_ip.push_str(ip);
+    }
+    if let Some(audio_recording) = audio_recording {
+        loop_state.last_audio_recording = audio_recording;
+    }
+    if let Some(audio_playing) = audio_playing {
+        loop_state.last_audio_playing = audio_playing;
     }
     for (i, ch) in channels.iter().enumerate() {
         loop_state.last_channels[i] = (
@@ -2315,6 +2375,8 @@ fn run_display_loop(platform: Arc<dyn Platform>, config: Arc<AppConfig>) {
             Some(ip_hint),
         );
         let state = display_projection.state;
+        let audio_recording = snapshot.audio_recording;
+        let audio_playing = snapshot.audio_playing;
         let channels = build_display_channels(enabled, &snapshot);
         let heap_percent = heap_used_percent(&snapshot);
 
@@ -2336,6 +2398,8 @@ fn run_display_loop(platform: Arc<dyn Platform>, config: Arc<AppConfig>) {
         let subtitle_changed =
             loop_state.last_presence_subtitle != display_projection.subtitle_override;
         let ip_changed = loop_state.last_ip.as_str() != ip_hint;
+        let audio_changed = loop_state.last_audio_recording != audio_recording
+            || loop_state.last_audio_playing != audio_playing;
         let channels_changed = channels.iter().enumerate().any(|(i, ch)| {
             loop_state.last_channels[i]
                 != (
@@ -2356,6 +2420,7 @@ fn run_display_loop(platform: Arc<dyn Platform>, config: Arc<AppConfig>) {
             || flash_update != DisplayErrorFlashUpdate::NoChange;
         let any_change = state_changed
             || ip_changed
+            || audio_changed
             || channels_changed
             || footer_changed
             || subtitle_changed
@@ -2384,6 +2449,7 @@ fn run_display_loop(platform: Arc<dyn Platform>, config: Arc<AppConfig>) {
             state_changed,
             subtitle_changed,
             ip_changed,
+            audio_changed,
             channels_changed,
             footer_changed,
         };
@@ -2417,6 +2483,8 @@ fn run_display_loop(platform: Arc<dyn Platform>, config: Arc<AppConfig>) {
                     busy_phase: loop_state.busy_toggle,
                     llm_last_ms: llm_ms,
                     error_flash: show_flash,
+                    audio_recording,
+                    audio_playing,
                 },
                 StateChangeDisplayRefreshMode::StateHeaderOnly => {
                     DisplayCommand::UpdateStateHeader {
@@ -2425,18 +2493,24 @@ fn run_display_loop(platform: Arc<dyn Platform>, config: Arc<AppConfig>) {
                         ip_address: Some(ip_owned.clone()),
                         uptime_secs,
                         busy_phase: loop_state.busy_toggle,
+                        audio_recording,
+                        audio_playing,
                     }
                 }
             };
             match display_command_with_owner(&platform, DisplayOwner::DefaultDashboard, cmd) {
                 Some(Ok(())) => {
                     loop_state.last_state = Some(state);
+                    loop_state.last_audio_recording = audio_recording;
+                    loop_state.last_audio_playing = audio_playing;
                     if header_refresh_paints_top_cache_fields(header_mode) {
                         update_display_loop_cache(
                             &mut loop_state,
                             DisplayLoopCacheUpdate {
                                 presence_subtitle: Some(&display_projection.subtitle_override),
                                 ip: Some(ip_owned.as_str()),
+                                audio_recording: Some(audio_recording),
+                                audio_playing: Some(audio_playing),
                                 channels: &channels,
                                 pressure: Some(pressure),
                                 heap_percent: Some(heap_percent),
@@ -2478,6 +2552,8 @@ fn run_display_loop(platform: Arc<dyn Platform>, config: Arc<AppConfig>) {
                         DisplayLoopCacheUpdate {
                             presence_subtitle: Some(&display_projection.subtitle_override),
                             ip: Some(ip_owned.as_str()),
+                            audio_recording: None,
+                            audio_playing: None,
                             channels: &channels,
                             pressure: None,
                             heap_percent: None,
@@ -2503,6 +2579,8 @@ fn run_display_loop(platform: Arc<dyn Platform>, config: Arc<AppConfig>) {
                         DisplayLoopCacheUpdate {
                             presence_subtitle: None,
                             ip: None,
+                            audio_recording: None,
+                            audio_playing: None,
                             channels: &channels,
                             pressure: None,
                             heap_percent: None,
@@ -2536,6 +2614,8 @@ fn run_display_loop(platform: Arc<dyn Platform>, config: Arc<AppConfig>) {
                         DisplayLoopCacheUpdate {
                             presence_subtitle: None,
                             ip: None,
+                            audio_recording: None,
+                            audio_playing: None,
                             channels: &channels,
                             pressure: Some(pressure),
                             heap_percent: Some(heap_percent),
