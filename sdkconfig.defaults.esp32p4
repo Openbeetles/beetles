@@ -61,5 +61,5 @@ CONFIG_ESP_MAIN_TASK_STACK_SIZE=12288
 CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=4096
 CONFIG_ESP_TASK_WDT_TIMEOUT_S=60
 
-# ESP-SR WakeNet uses the same fixed Beetle product phrase as S3.
-CONFIG_SR_WN_WN9_HIESP=y
+# ESP-SR WakeNet uses the same fixed Hi Lexin product phrase as S3.
+CONFIG_SR_WN_WN9_HILEXIN=y

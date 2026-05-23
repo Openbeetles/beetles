@@ -160,18 +160,17 @@ pub(crate) fn runtime_startup_readiness_from_parts(
         resource.tls_fragmentation_risk,
         TlsFragmentationRisk::Healthy | TlsFragmentationRisk::NotApplicable
     );
-    let outbound_ready = network_reason == RuntimeStartupNetworkReason::None
-        && config_worker_floor_available
+    let network_tls_ready = network_reason == RuntimeStartupNetworkReason::None
         && resource.pressure != PressureLevel::Critical
         && tls_floor_available;
     let steady_ready = local_runtime_assembled
-        && outbound_ready
+        && network_tls_ready
         && resource.pressure == PressureLevel::Normal
         && tls_steady;
 
     let phase = if steady_ready {
         RuntimeStartupPhase::SteadyRuntime
-    } else if outbound_ready {
+    } else if network_tls_ready {
         RuntimeStartupPhase::OutboundNetworkReady
     } else if local_runtime_assembled {
         RuntimeStartupPhase::LocalRuntimeAssembled
@@ -200,19 +199,14 @@ pub(crate) fn runtime_startup_readiness_from_parts(
 
     RuntimeStartupReadiness {
         phase,
-        reason: startup_reason(
-            phase,
-            network_reason,
-            config_worker_floor_available,
-            resource,
-        ),
+        reason: startup_reason(phase, network_reason, resource),
         network_reason,
         allow_config_recovery_routes,
         allow_default_status_routes,
-        allow_external_wss_worker: outbound_ready && mode_allows_external_wss,
-        allow_agent_heavy_execution: outbound_ready && mode_allows_non_voice,
-        allow_channel_outbound_worker: outbound_ready && mode_allows_non_voice,
-        allow_voice_realtime_connect: outbound_ready && mode_allows_voice,
+        allow_external_wss_worker: network_tls_ready && mode_allows_external_wss,
+        allow_agent_heavy_execution: network_tls_ready && mode_allows_non_voice,
+        allow_channel_outbound_worker: network_tls_ready && mode_allows_non_voice,
+        allow_voice_realtime_connect: network_tls_ready && mode_allows_voice,
         allow_write_back_worker: local_write_back_ready,
         allow_display_status_surface: !matches!(phase, RuntimeStartupPhase::BootKernel),
         allow_display_heavy_refresh: !matches!(phase, RuntimeStartupPhase::BootKernel)
@@ -252,14 +246,10 @@ fn boot_phase_clear_reason(readiness: RuntimeStartupReadiness) -> Option<&'stati
 fn startup_reason(
     phase: RuntimeStartupPhase,
     network_reason: RuntimeStartupNetworkReason,
-    config_worker_floor_available: bool,
     resource: &ResourceLightSnapshot,
 ) -> &'static str {
     if network_reason != RuntimeStartupNetworkReason::None {
         return network_reason.as_str();
-    }
-    if !config_worker_floor_available {
-        return "config_worker_floor_low";
     }
     if resource.pressure != PressureLevel::Normal {
         return "resource_pressure";
@@ -479,24 +469,24 @@ mod tests {
     }
 
     #[test]
-    fn startup_readiness_blocks_steady_when_config_worker_floor_is_missing() {
+    fn startup_readiness_keeps_tls_planes_ready_when_only_config_worker_floor_is_missing() {
         let readiness = runtime_startup_readiness_from_parts(
             &network(true, true, true, true, true),
             &mode(true, RuntimeMode::Normal),
             &resource(
                 PressureLevel::Normal,
                 TlsFragmentationRisk::Healthy,
-                CONFIG_WORKER_LARGEST_BLOCK_FLOOR_BYTES - 1,
+                (crate::constants::TLS_ADMISSION_MIN_LARGEST_BLOCK_BYTES as u32) + 6 * 1024,
             ),
         );
 
-        assert_eq!(readiness.phase, RuntimeStartupPhase::LocalRuntimeAssembled);
-        assert_eq!(readiness.reason, "config_worker_floor_low");
+        assert_eq!(readiness.phase, RuntimeStartupPhase::SteadyRuntime);
+        assert_eq!(readiness.reason, "ready");
         assert!(!readiness.config_worker_floor_available);
-        assert!(!readiness.allow_external_wss_worker);
-        assert!(!readiness.allow_agent_heavy_execution);
-        assert!(!readiness.allow_channel_outbound_worker);
-        assert!(!readiness.allow_voice_realtime_connect);
+        assert!(readiness.allow_external_wss_worker);
+        assert!(readiness.allow_agent_heavy_execution);
+        assert!(readiness.allow_channel_outbound_worker);
+        assert!(readiness.allow_voice_realtime_connect);
         assert!(!readiness.allow_write_back_worker);
     }
 

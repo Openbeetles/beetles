@@ -97,9 +97,10 @@ CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=4096
 CONFIG_ESP_TASK_WDT_TIMEOUT_S=60
 
 # ─── ESP-SR WakeNet ────────────────────────────────────────────────────────────
-# ESP 产品态固定使用官方 WakeNet9 Hi,ESP 模型；只打包这一组模型以控制 flash 成本。
-# Official WakeNet9 Hi,ESP model only; keep the packaged model set narrow.
-CONFIG_SR_WN_WN9_HIESP=y
+# ESP 产品态当前 A/B 固定使用 ESP-BOX 官方中文 WakeNet9 Hi 乐鑫模型；
+# 只打包这一组模型以控制 flash 成本。
+# Official WakeNet9 Hi Lexin model only; keep the packaged model set narrow.
+CONFIG_SR_WN_WN9_HILEXIN=y
 
 # ESP-IDF v6.0.1 不再暴露旧 FreeRTOS flash-placement Kconfig 符号；
 # 继续写 "# CONFIG_... is not set" 会变成 unknown-symbol warning。

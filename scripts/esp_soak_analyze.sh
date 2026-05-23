@@ -142,6 +142,59 @@ BEGIN {
   wakenet_slow_feed_count = 0;
   wakenet_afe_empty_blocker_threshold = 20;
   wakenet_feed_slow_threshold_us = 1000000;
+  realtime_downlink_dropped_count = 0;
+  realtime_direct_speaker_write_count = 0;
+  audio_speaker_underrun_count = 0;
+  response_overlap_count = 0;
+  server_vad_half_duplex_suppression_count = 0;
+  server_vad_half_duplex_churn_count = 0;
+  server_vad_half_duplex_churn_threshold = 3;
+  response_audio_done_without_summary_count = 0;
+  realtime_local_speech_window_forced_close_count = 0;
+  pending_audio_done_line = 0;
+  pending_audio_done_event = "";
+  realtime_server_event_count = 0;
+  realtime_response_created_count = 0;
+  realtime_response_done_count = 0;
+  realtime_audio_done_count = 0;
+  realtime_downlink_summary_count = 0;
+  realtime_server_speech_started_count = 0;
+  realtime_server_speech_stopped_count = 0;
+  realtime_fragmented_turn_count = 0;
+  realtime_fragmented_turn_churn_count = 0;
+  realtime_fragmented_turn_threshold = 2;
+  server_vad_last_start_ms = -1;
+  realtime_heartbeat_count = 0;
+  realtime_heartbeat_stale_samples = 0;
+  realtime_heartbeat_stale_first_line = 0;
+  realtime_heartbeat_counters_stale_count = 0;
+  output_pending = 0;
+  output_pending_line = 0;
+  output_pending_until_ms = -1;
+  local_interrupt_accepted_since_output = 0;
+  last_audio_speaker_underrun = -1;
+  barge_in_enabled_without_aec_count = 0;
+  wakenet_path_seen = 0;
+  wakenet_probe_seen = 0;
+  wakenet_probe_attempts = 0;
+  wakenet_probe_triggers = 0;
+  wakenet_probe_false_wakes = 0;
+  wakenet_low_sensitivity_probe_missing_count = 0;
+  wakenet_low_recall_rate_count = 0;
+  wakenet_false_wake_count = 0;
+  wakenet_threshold_contract_seen = 0;
+  wakenet_threshold_logged = 0;
+  wakenet_threshold_contract_missing_count = 0;
+  wakenet_threshold_not_logged_count = 0;
+  wakenet_threshold_apply_failed_count = 0;
+  storage_reset_format_count = 0;
+  storage_reset_first_line = 0;
+  nvs_read_failed_count = 0;
+  config_unset_count = 0;
+  enabled_channel_none_count = 0;
+  network_ap_only_unconfigured_count = 0;
+  runtime_pairing_count = 0;
+  voice_validation_invalid_reset_count = 0;
   wifi_sta_ready_seen = 0;
   recent_voice_session_spawn_line = -1;
   display_heavy_degrade_seen = 0;
@@ -194,6 +247,24 @@ function log_timestamp_ms(line,    captured) {
   return captured + 0;
 }
 
+function clear_output_pending() {
+  output_pending = 0;
+  output_pending_line = 0;
+  output_pending_until_ms = -1;
+  local_interrupt_accepted_since_output = 0;
+}
+
+function output_pending_active_at(ms) {
+  if (ms != "" && output_pending_until_ms >= 0) {
+    if (ms + 0 <= output_pending_until_ms) {
+      return 1;
+    }
+    clear_output_pending();
+    return 0;
+  }
+  return output_pending;
+}
+
 function is_boot_startup_checkpoint_stage(stage) {
   return stage ~ /^(memory_provider_registered|config_loaded|wifi_stack_ready|csrf_initialized|display_initialized|display_boot_dashboard|boot_memory_reads|audio_init_phase_done|voice_event_channel_ready|startup_self_check_ok|config_api_spawned|bg_timer_spawn|bg_timer_started|communication_plane_ready|orchestrator_initialized|display_thread_spawned|qq_ws_spawn|os_outbound_spawn|agent_loop_deferred|agent_loop_spawn)$/;
 }
@@ -237,9 +308,227 @@ function storage_contention_from_metrics(wait_last, hold_last, ops, hold_stage, 
   return "Healthy";
 }
 
+function record_pending_audio_done_without_summary(reason) {
+  if (pending_audio_done_line <= 0) {
+    return;
+  }
+  response_audio_done_without_summary_count++;
+  record_issue(pending_audio_done_line, "response_audio_done_without_downlink_summary", "blocker", "event=" pending_audio_done_event " reason=" reason);
+  pending_audio_done_line = 0;
+  pending_audio_done_event = "";
+}
+
 {
   line = $0;
   lower_line = tolower(line);
+  if (lower_line ~ /(corrupted dir pair|mount failed.*formatting)/) {
+    storage_reset_format_count++;
+    if (storage_reset_first_line == 0) {
+      storage_reset_first_line = NR;
+    }
+  }
+  if (lower_line ~ /\[config\] nvs read_strings failed/) {
+    nvs_read_failed_count++;
+  }
+  if (lower_line ~ /config loaded/ && lower_line ~ /wifi_ssid set: false/) {
+    config_unset_count++;
+  }
+  if (lower_line ~ /enabled_channel=.*[(]none[)]/) {
+    enabled_channel_none_count++;
+  }
+  if (lower_line ~ /network stage=aponly/ && lower_line ~ /sta_configured=false/) {
+    network_ap_only_unconfigured_count++;
+  }
+  if (lower_line ~ /runtime_mode/ && lower_line ~ /current_mode=pairing/) {
+    runtime_pairing_count++;
+  }
+  event_type = "";
+  if (lower_line ~ /realtime server event type=/) {
+    event_type = value_after(line, "type");
+    realtime_server_event_count++;
+    if (pending_audio_done_line > 0 &&
+        event_type != "" &&
+        event_type != "response.audio.done" &&
+        event_type != "response.output_audio.done") {
+      record_pending_audio_done_without_summary("next_event=" event_type);
+    }
+    if (event_type == "response.created") {
+      realtime_response_created_count++;
+      current_event_ms = log_timestamp_ms(line);
+      if (output_pending_active_at(current_event_ms) && !local_interrupt_accepted_since_output) {
+        response_overlap_count++;
+        record_issue(NR, "response_overlap_without_accepted_interrupt", "blocker", "event=response.created pending_output_line=" output_pending_line);
+      }
+    } else if (event_type == "response.done") {
+      realtime_response_done_count++;
+    } else if (event_type == "response.audio.done" || event_type == "response.output_audio.done") {
+      realtime_audio_done_count++;
+      pending_audio_done_line = NR;
+      pending_audio_done_event = event_type;
+    } else if (event_type == "input_audio_buffer.speech_started") {
+      realtime_server_speech_started_count++;
+      current_event_ms = log_timestamp_ms(line);
+      server_vad_last_start_ms = current_event_ms == "" ? -1 : current_event_ms + 0;
+      if (output_pending_active_at(current_event_ms) && !local_interrupt_accepted_since_output) {
+        response_overlap_count++;
+        record_issue(NR, "response_overlap_without_accepted_interrupt", "blocker", "event=input_audio_buffer.speech_started pending_output_line=" output_pending_line);
+      }
+    } else if (event_type == "input_audio_buffer.speech_stopped") {
+      realtime_server_speech_stopped_count++;
+      current_event_ms = log_timestamp_ms(line);
+      if (server_vad_last_start_ms >= 0 && current_event_ms != "" &&
+          current_event_ms + 0 >= server_vad_last_start_ms &&
+          current_event_ms + 0 - server_vad_last_start_ms <= 250) {
+        realtime_fragmented_turn_count++;
+      }
+    }
+  }
+  if (lower_line ~ /local interrupt accepted; playback aborted/) {
+    local_interrupt_accepted_since_output = 1;
+    clear_output_pending();
+  }
+  if (lower_line ~ /suppressing server vad turn during half-duplex playback/) {
+    server_vad_half_duplex_suppression_count++;
+    if (server_vad_half_duplex_suppression_count == server_vad_half_duplex_churn_threshold) {
+      server_vad_half_duplex_churn_count++;
+      record_issue(NR, "server_vad_during_half_duplex_output_churn", "blocker", "suppression_count=" server_vad_half_duplex_suppression_count " threshold=" server_vad_half_duplex_churn_threshold);
+    }
+  }
+  if (lower_line ~ /force closing long local speech window/) {
+    realtime_local_speech_window_forced_close_count++;
+    record_issue(NR, "realtime_local_speech_window_forced_close", "blocker", trim(line));
+  }
+  if (lower_line ~ /realtime audio downlink summary/) {
+    realtime_downlink_summary_count++;
+    summary_event = value_after(line, "event");
+    if ((summary_event == "response.audio.done" || summary_event == "response.output_audio.done") &&
+        pending_audio_done_line > 0) {
+      pending_audio_done_line = 0;
+      pending_audio_done_event = "";
+    }
+    downlink_dropped = numeric_after(line, "dropped");
+    downlink_accepted = numeric_after(line, "accepted");
+    downlink_direct_written = numeric_after(line, "direct_written");
+    downlink_peak_staging = numeric_after(line, "peak_staging");
+    downlink_peak_speaker = numeric_after(line, "peak_speaker");
+    downlink_audio_ms = numeric_after(line, "audio_ms");
+    downlink_elapsed_ms = numeric_after(line, "elapsed_ms");
+    if (downlink_dropped != "" && downlink_dropped + 0 > 0) {
+      realtime_downlink_dropped_count++;
+      record_issue(NR, "realtime_downlink_dropped_nonzero", "blocker", "dropped=" downlink_dropped " event=" summary_event);
+    }
+    if (downlink_direct_written != "" && downlink_direct_written + 0 > 0) {
+      realtime_direct_speaker_write_count++;
+      record_issue(NR, "realtime_direct_speaker_write_nonzero", "blocker", "direct_written=" downlink_direct_written " event=" summary_event);
+    }
+    if ((downlink_accepted != "" && downlink_accepted + 0 > 0) ||
+        (downlink_peak_staging != "" && downlink_peak_staging + 0 > 0) ||
+        (downlink_peak_speaker != "" && downlink_peak_speaker + 0 > 0) ||
+        (downlink_audio_ms != "" && downlink_audio_ms + 0 > 0)) {
+      output_pending = 1;
+      output_pending_line = NR;
+      local_interrupt_accepted_since_output = 0;
+      current_event_ms = log_timestamp_ms(line);
+      if (current_event_ms != "" && downlink_audio_ms != "") {
+        pending_tail_ms = downlink_audio_ms + 0;
+        if (downlink_elapsed_ms != "") {
+          pending_tail_ms -= downlink_elapsed_ms + 0;
+        }
+        if (pending_tail_ms < 0) {
+          pending_tail_ms = 0;
+        }
+        output_pending_until_ms = current_event_ms + pending_tail_ms;
+      }
+    }
+  }
+  if (lower_line ~ /audio_speaker/) {
+    speaker_underrun = numeric_after(line, "underrun");
+    speaker_queue_last = numeric_after(line, "queue_last");
+    speaker_queue_min = numeric_after(line, "queue_min");
+    if (speaker_underrun != "") {
+      if (speaker_underrun + 0 > 0 &&
+          (last_audio_speaker_underrun < 0 || speaker_underrun + 0 > last_audio_speaker_underrun)) {
+        audio_speaker_underrun_count++;
+        record_issue(NR, "audio_speaker_underrun_nonzero", "blocker", "underrun=" speaker_underrun);
+      }
+      last_audio_speaker_underrun = speaker_underrun + 0;
+    }
+    if (speaker_queue_last != "" && speaker_queue_min != "" &&
+        speaker_queue_last + 0 == 0 && speaker_queue_min + 0 == 0) {
+      current_event_ms = log_timestamp_ms(line);
+      if (output_pending_until_ms < 0 || current_event_ms == "" || current_event_ms + 0 > output_pending_until_ms) {
+        clear_output_pending();
+      }
+    }
+  }
+  if (lower_line ~ /voice_realtime handoff_ms=/) {
+    realtime_heartbeat_count++;
+    voice_rt_local_commit = numeric_after(line, "local_commit_total");
+    voice_rt_server_speech = numeric_after(line, "server_speech_total");
+    voice_rt_turn_completed = numeric_after(line, "turn_completed_total");
+    if (((realtime_server_speech_started_count > 0 && voice_rt_server_speech == "0") ||
+         (realtime_response_done_count > 0 && voice_rt_turn_completed == "0")) &&
+        (voice_rt_local_commit == "0" || voice_rt_local_commit == "")) {
+      realtime_heartbeat_stale_samples++;
+      if (realtime_heartbeat_stale_first_line == 0) {
+        realtime_heartbeat_stale_first_line = NR;
+      }
+    }
+  }
+  if (lower_line ~ /audio contract/ && lower_line ~ /barge_in=true/ &&
+      (lower_line ~ /aec=none/ || lower_line ~ /reference=inputreference/)) {
+    barge_in_enabled_without_aec_count++;
+    record_issue(NR, "barge_in_enabled_without_aec", "blocker", trim(line));
+  }
+  if (lower_line ~ /esp-sr afe wakenet init|wakenet triggered|beetle_wakenet.*feed window|set wakenet model/) {
+    wakenet_path_seen = 1;
+  }
+  if (lower_line ~ /audio_wake/ &&
+      numeric_after(line, "feed_calls") != "" &&
+      numeric_after(line, "feed_calls") + 0 > 0) {
+    wakenet_path_seen = 1;
+  }
+  if (lower_line ~ /wakenet.*threshold|set_wakenet_threshold/) {
+    wakenet_threshold_contract_seen = 1;
+    if (lower_line ~ /threshold=[0-9.]+/) {
+      wakenet_threshold_logged = 1;
+    }
+    if (lower_line ~ /(fail|failed|error|rc=-)/) {
+      wakenet_threshold_apply_failed_count++;
+      record_issue(NR, "wakenet_threshold_apply_failed", "blocker", trim(line));
+    }
+  }
+  if (lower_line ~ /((wakenet|wake).*(probe|attempt)|manual_wake_attempt|wake_test_attempt)/) {
+    wakenet_path_seen = 1;
+    wakenet_probe_seen = 1;
+    marker_attempts = numeric_after(line, "attempts");
+    marker_triggers = numeric_after(line, "triggers");
+    marker_false_wakes = numeric_after(line, "false_wakes");
+    if (marker_false_wakes == "") {
+      marker_false_wakes = numeric_after(line, "false_wake");
+    }
+    if (marker_attempts != "") {
+      if (marker_attempts + 0 > wakenet_probe_attempts) {
+        wakenet_probe_attempts = marker_attempts + 0;
+      }
+    } else if (value_after(line, "attempt") != "") {
+      wakenet_probe_attempts++;
+    }
+    if (marker_triggers != "") {
+      if (marker_triggers + 0 > wakenet_probe_triggers) {
+        wakenet_probe_triggers = marker_triggers + 0;
+      }
+    } else if (lower_line ~ /(triggered=true|detected=true|success=true|result=triggered)/) {
+      wakenet_probe_triggers++;
+    }
+    if (marker_false_wakes != "") {
+      if (marker_false_wakes + 0 > wakenet_probe_false_wakes) {
+        wakenet_probe_false_wakes = marker_false_wakes + 0;
+      }
+    } else if (lower_line ~ /(false_wake=true|result=false_wake)/) {
+      wakenet_probe_false_wakes++;
+    }
+  }
   if (line ~ /Ringbuffer of AFE is empty, Please use feed\(\) to write data/) {
     wakenet_afe_empty_count++;
     if (wakenet_afe_empty_first_line == 0) {
@@ -706,6 +995,36 @@ function storage_contention_from_metrics(wait_last, hold_last, ops, hold_stage, 
 }
 
 END {
+  record_pending_audio_done_without_summary("end_of_log");
+  if (realtime_heartbeat_stale_samples >= 2) {
+    realtime_heartbeat_counters_stale_count++;
+    record_issue(realtime_heartbeat_stale_first_line, "realtime_heartbeat_counters_stale", "blocker", "stale_samples=" realtime_heartbeat_stale_samples " server_speech_events=" realtime_server_speech_started_count " response_created=" realtime_response_created_count " response_done=" realtime_response_done_count);
+  }
+  if (realtime_fragmented_turn_count >= realtime_fragmented_turn_threshold) {
+    realtime_fragmented_turn_churn_count++;
+    record_issue(NR, "server_vad_fragmented_turn_churn", "blocker", "speech_started=" realtime_server_speech_started_count " speech_stopped=" realtime_server_speech_stopped_count " response_created=" realtime_response_created_count " tiny_turns=" realtime_fragmented_turn_count);
+  }
+  if (wakenet_path_seen) {
+    if (!wakenet_probe_seen || wakenet_probe_attempts < 20) {
+      wakenet_low_sensitivity_probe_missing_count++;
+      record_issue(NR, "wakenet_low_sensitivity_probe_missing", "risk", "attempts=" wakenet_probe_attempts " required=20");
+    } else if (wakenet_probe_attempts >= 20 &&
+               wakenet_probe_triggers * 100 < wakenet_probe_attempts * 90) {
+      wakenet_low_recall_rate_count++;
+      record_issue(NR, "wakenet_low_recall_rate", "blocker", "attempts=" wakenet_probe_attempts " triggers=" wakenet_probe_triggers " required_rate=0.90");
+    }
+    if (wakenet_probe_false_wakes > 0) {
+      wakenet_false_wake_count++;
+      record_issue(NR, "wakenet_false_wake", "blocker", "false_wakes=" wakenet_probe_false_wakes);
+    }
+    if (!wakenet_threshold_contract_seen) {
+      wakenet_threshold_contract_missing_count++;
+      record_issue(NR, "wakenet_threshold_contract_missing", "blocker", "WakeNet path observed without threshold contract evidence");
+    } else if (!wakenet_threshold_logged) {
+      wakenet_threshold_not_logged_count++;
+      record_issue(NR, "wakenet_threshold_not_logged", "blocker", "WakeNet threshold contract observed without threshold=<value>");
+    }
+  }
   if (scheduler_contract_seen && foreground_primary_final_seen && !foreground_primary_delivered_seen) {
     primary_delivery_missing_count++;
     record_issue(NR, "primary_generated_but_not_delivered", "blocker", "scheduler foreground log has chat_stream final without primary_delivery delivered=true");
@@ -715,7 +1034,7 @@ END {
     record_issue(NR, "display_status_missing_during_degrade", "blocker", "display heavy refresh degraded without display_status_surface retained=true evidence");
   }
   for (scheduler_resume_class in scheduler_pending_resume) {
-    if (scheduler_pending_resume[scheduler_resume_class]) {
+    if (scheduler_pending_resume[scheduler_resume_class] && !scheduler_foreground_open) {
       scheduler_resume_missing_count++;
       record_issue(NR, "scheduler_resume_missing", "blocker", "class=" scheduler_resume_class " had defer/degrade without later decision=proceed");
     }
@@ -725,6 +1044,15 @@ END {
   }
   if (wakenet_afe_empty_count >= wakenet_afe_empty_blocker_threshold) {
     record_issue(wakenet_afe_empty_first_line, "wakenet_afe_empty_spam", "blocker", "lines=" wakenet_afe_empty_count " threshold=" wakenet_afe_empty_blocker_threshold);
+  }
+  if ((storage_reset_format_count > 0 || nvs_read_failed_count > 0) &&
+      config_unset_count > 0 &&
+      enabled_channel_none_count > 0 &&
+      network_ap_only_unconfigured_count > 0 &&
+      runtime_pairing_count > 0) {
+    voice_validation_invalid_reset_count++;
+    invalid_line = storage_reset_first_line > 0 ? storage_reset_first_line : NR;
+    record_issue(invalid_line, "voice_validation_invalid_after_flash_reset", "blocker", "storage_reset_format=" storage_reset_format_count " nvs_read_failed=" nvs_read_failed_count " config_unset=" config_unset_count " enabled_channel_none=" enabled_channel_none_count " ap_only_unconfigured=" network_ap_only_unconfigured_count " pairing=" runtime_pairing_count);
   }
 
   print "# ESP soak analysis summary" > summary;
@@ -766,6 +1094,24 @@ END {
   print "- Voice session stack overflow lines: " voice_session_stack_overflow_count >> summary;
   print "- WakeNet AFE empty lines: " wakenet_afe_empty_count >> summary;
   print "- WakeNet slow feed lines: " wakenet_slow_feed_count >> summary;
+  print "- Realtime downlink dropped lines: " realtime_downlink_dropped_count >> summary;
+  print "- Realtime direct speaker write lines: " realtime_direct_speaker_write_count >> summary;
+  print "- Audio speaker underrun lines: " audio_speaker_underrun_count >> summary;
+  print "- Realtime response overlap lines: " response_overlap_count >> summary;
+  print "- Half-duplex server-VAD suppression lines: " server_vad_half_duplex_suppression_count >> summary;
+  print "- Half-duplex server-VAD churn lines: " server_vad_half_duplex_churn_count >> summary;
+  print "- Response audio.done without downlink summary lines: " response_audio_done_without_summary_count >> summary;
+  print "- Realtime local speech window forced-close lines: " realtime_local_speech_window_forced_close_count >> summary;
+  print "- Realtime heartbeat stale counter lines: " realtime_heartbeat_counters_stale_count >> summary;
+  print "- Server-VAD fragmented turn churn lines: " realtime_fragmented_turn_churn_count >> summary;
+  print "- Barge-in without AEC lines: " barge_in_enabled_without_aec_count >> summary;
+  print "- WakeNet low-sensitivity probe missing lines: " wakenet_low_sensitivity_probe_missing_count >> summary;
+  print "- WakeNet low-recall lines: " wakenet_low_recall_rate_count >> summary;
+  print "- WakeNet false wake lines: " wakenet_false_wake_count >> summary;
+  print "- WakeNet threshold contract missing lines: " wakenet_threshold_contract_missing_count >> summary;
+  print "- WakeNet threshold not logged lines: " wakenet_threshold_not_logged_count >> summary;
+  print "- WakeNet threshold apply failed lines: " wakenet_threshold_apply_failed_count >> summary;
+  print "- Voice validation invalid after flash reset lines: " voice_validation_invalid_reset_count >> summary;
   if (saw_critical) {
     print "- Critical pressure observed: yes" >> summary;
   } else {

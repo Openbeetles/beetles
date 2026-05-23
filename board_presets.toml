@@ -1,6 +1,6 @@
 # 板型预设：BOARD=xxx 时 build.sh / build.ps1 据此选择 target、分区表与 sdkconfig 覆盖。
-# package profile 真源统一收口在 Cargo.toml；板级预设不再定义默认能力包。
-# 仅支持带 PSRAM 的 ESP32-S3（N8R8 / N16R8 / N32R16）。
+# package profile 真源统一收口在 Cargo.toml；板级预设不定义音频/语音能力边界。
+# 这里列出当前发布打包与实机验收矩阵；任意板型接入由 config/profile/capability 描述。
 
 [boards.esp32-s3-8mb]
 target = "xtensa-esp32s3-espidf"

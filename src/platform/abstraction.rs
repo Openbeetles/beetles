@@ -88,6 +88,8 @@ pub enum AudioReferenceCapability {
 #[serde(rename_all = "snake_case")]
 pub enum AudioEchoCancellationCapability {
     None,
+    /// 平台已产出 AEC-clean near-end mic，可安全用于播放期间上传和 barge-in。
+    /// The platform owns a real AEC-clean near-end mic stream, not just a reference ring.
     Platform,
 }
 
@@ -203,7 +205,7 @@ impl AudioDuplexCapabilities {
             microphone_input: true,
             speaker_output: true,
             concurrent_capture_playback: true,
-            barge_in: true,
+            barge_in: false,
             reference_capture: AudioReferenceCapability::None,
             echo_cancellation: AudioEchoCancellationCapability::None,
         }
@@ -214,7 +216,7 @@ impl AudioDuplexCapabilities {
             microphone_input: true,
             speaker_output: true,
             concurrent_capture_playback: true,
-            barge_in: true,
+            barge_in: false,
             reference_capture: AudioReferenceCapability::PlaybackMonitor,
             echo_cancellation: AudioEchoCancellationCapability::None,
         }
@@ -225,7 +227,7 @@ impl AudioDuplexCapabilities {
             microphone_input: true,
             speaker_output: true,
             concurrent_capture_playback: true,
-            barge_in: true,
+            barge_in: false,
             reference_capture: AudioReferenceCapability::InputReference,
             echo_cancellation: AudioEchoCancellationCapability::None,
         }
@@ -259,6 +261,9 @@ impl AudioDuplexCapabilities {
         if !caps.concurrent_capture_playback {
             caps.barge_in = false;
         }
+        if caps.echo_cancellation == AudioEchoCancellationCapability::None {
+            caps.barge_in = false;
+        }
         if caps.echo_cancellation == AudioEchoCancellationCapability::Platform {
             caps.microphone_input = true;
             caps.speaker_output = true;
@@ -288,7 +293,7 @@ impl AudioDuplexCapabilities {
     }
 
     pub const fn supports_barge_in(self) -> bool {
-        self.barge_in && self.concurrent_capture_playback
+        self.barge_in && self.concurrent_capture_playback && self.has_platform_aec()
     }
 
     pub const fn has_platform_aec(self) -> bool {
@@ -298,8 +303,12 @@ impl AudioDuplexCapabilities {
         )
     }
 
+    pub const fn supports_capture_upload_during_playback(self) -> bool {
+        self.concurrent_capture_playback && self.has_platform_aec()
+    }
+
     pub const fn requires_capture_upload_suspend_during_playback(self) -> bool {
-        self.concurrent_capture_playback && self.has_reference_capture() && !self.has_platform_aec()
+        self.concurrent_capture_playback && !self.supports_capture_upload_during_playback()
     }
 
     pub const fn can_run_realtime_session(self) -> bool {
@@ -1039,6 +1048,8 @@ mod tests {
             caps.reference_capture,
             AudioReferenceCapability::InputReference
         );
+        assert!(caps.supports_capture_upload_during_playback());
+        assert!(!caps.requires_capture_upload_suspend_during_playback());
     }
 
     #[test]
@@ -1047,5 +1058,47 @@ mod tests {
         assert_eq!(caps.profile(), AudioDuplexProfile::SpeakerOnly);
         assert!(!caps.has_reference_capture());
         assert!(!caps.has_platform_aec());
+    }
+
+    #[test]
+    fn input_reference_without_platform_aec_does_not_claim_barge_in() {
+        let caps = AudioDuplexCapabilities::duplex_with_input_reference().normalized();
+        assert_eq!(caps.profile(), AudioDuplexProfile::DuplexInputReference);
+        assert!(caps.requires_capture_upload_suspend_during_playback());
+        assert!(!caps.has_platform_aec());
+        assert!(!caps.supports_barge_in());
+    }
+
+    #[test]
+    fn barge_in_flag_is_ignored_without_platform_aec() {
+        let caps = AudioDuplexCapabilities {
+            microphone_input: true,
+            speaker_output: true,
+            concurrent_capture_playback: true,
+            barge_in: true,
+            reference_capture: AudioReferenceCapability::PlaybackMonitor,
+            echo_cancellation: AudioEchoCancellationCapability::None,
+        }
+        .normalized();
+        assert_eq!(caps.profile(), AudioDuplexProfile::DuplexPlaybackReference);
+        assert!(!caps.barge_in);
+        assert!(caps.requires_capture_upload_suspend_during_playback());
+        assert!(!caps.supports_capture_upload_during_playback());
+        assert!(!caps.supports_barge_in());
+    }
+
+    #[test]
+    fn no_aec_duplex_profiles_suspend_capture_upload_during_playback() {
+        for caps in [
+            AudioDuplexCapabilities::duplex_without_aec(),
+            AudioDuplexCapabilities::duplex_with_playback_reference(),
+            AudioDuplexCapabilities::duplex_with_input_reference(),
+        ] {
+            let caps = caps.normalized();
+            assert!(caps.can_run_realtime_session());
+            assert!(caps.requires_capture_upload_suspend_during_playback());
+            assert!(!caps.supports_capture_upload_during_playback());
+            assert!(!caps.supports_barge_in());
+        }
     }
 }

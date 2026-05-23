@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  AUDIO_FIXED_WAKE_MODEL,
+  AUDIO_FIXED_WAKE_PHRASE,
   defaultAudioConfig,
   normalizeAudioConfigForSave,
   normalizeAudioConfigFromDevice,
@@ -58,4 +60,12 @@ test("default codec topology keeps mic and speaker sample rates aligned", () => 
 
   assert.equal(config.topology, "discrete_i2s");
   assert.equal(config.microphone.sample_rate, config.speaker.sample_rate);
+});
+
+test("default wake keyword mirrors current fixed ESP-SR model while remaining hidden", () => {
+  const config = defaultAudioConfig();
+
+  assert.equal(config.wake_word.keyword, AUDIO_FIXED_WAKE_MODEL);
+  assert.equal(AUDIO_FIXED_WAKE_MODEL, "wn9_hilexin");
+  assert.equal(AUDIO_FIXED_WAKE_PHRASE, "Hi 乐鑫");
 });

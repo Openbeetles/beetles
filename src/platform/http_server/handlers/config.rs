@@ -1126,7 +1126,7 @@ mod tests {
                 "input_reference": true
             },
             "vad": { "threshold": 0.5, "silence_duration_ms": 1000 },
-            "wake_word": { "enabled": false, "keyword": "hiesp", "wake_prompt": "你好，我在听，请说。" },
+            "wake_word": { "enabled": false, "keyword": "wn9_hilexin", "wake_prompt": "你好，我在听，请说。" },
             "speech": { "api_url": "https://vop.baidu.com/server_api", "api_key": "", "api_secret": "", "model": "1537", "language": "zh" },
             "tts": { "voice": "0", "rate": "+0%", "pitch": "+0Hz" },
             "realtime": {

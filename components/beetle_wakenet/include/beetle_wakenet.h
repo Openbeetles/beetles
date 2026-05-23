@@ -18,6 +18,8 @@ typedef enum {
     BEETLE_WN_ERR_MODEL = -1,
     BEETLE_WN_ERR_NOMEM = -2,
     BEETLE_WN_ERR_STATE = -3,
+    BEETLE_WN_ERR_ARG = -4,
+    BEETLE_WN_ERR_UNSUPPORTED = -5,
 } beetle_wn_err_t;
 
 typedef enum {
@@ -44,6 +46,20 @@ beetle_wn_result_t beetle_wakenet_feed(const int16_t *mic, const int16_t *refere
  * Non-blockingly consume one pending WakeNet detection from the detection task.
  */
 beetle_wn_result_t beetle_wakenet_take_event(void);
+
+/**
+ * Apply the ESP-SR AFE WakeNet threshold for the selected model index.
+ *
+ * The threshold range follows the official ESP-SR AFE ABI: 0.4..0.9999.
+ * This controls the WakeNet detector inside AFE; it is not the Linux/host
+ * acoustic wake fallback threshold.
+ */
+beetle_wn_err_t beetle_wakenet_set_threshold(int index, float threshold);
+
+/**
+ * Reset the ESP-SR AFE WakeNet threshold for the selected model index.
+ */
+beetle_wn_err_t beetle_wakenet_reset_threshold(int index);
 
 /**
  * Reset the internal chunk and resampling accumulators without destroying the model.

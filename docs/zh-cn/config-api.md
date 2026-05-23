@@ -463,20 +463,22 @@
 - `speaker`
 - `codec`
 - `vad`
-- `wake_word`（语音唤醒开关与唤醒后提示语；ESP32-S3 / ESP32-P4 的唤醒短语固定为 `Hi,ESP`）
+- `wake_word`（语音唤醒开关与唤醒后提示语；ESP-SR 当前固定模型为 `wn9_hilexin`，唤醒短语为 `Hi 乐鑫`）
 - `speech`
 - `tts`
 - `realtime`
 - `ambient_listening`
 - `led_indicator`
 
-`wake_word` 保持现有配置面不扩展。`enabled` 控制是否启用本地语音唤醒；`wake_prompt` 是唤醒后播报的提示语，不会改变唤醒短语。
+`wake_word` 保持现有配置面不扩展。`enabled` 控制是否启用本地语音唤醒；`wake_prompt` 是唤醒后播报的提示语，不会改变 ESP-SR 唤醒模型或唤醒短语。
 
-ESP32-S3 / ESP32-P4 的固定唤醒短语为 `Hi,ESP`。该短语不可自定义，configure-ui 与 API 均不提供唤醒词配置字段。
+ESP-SR 当前产品口径固定为 `wn9_hilexin` / `Hi 乐鑫`。该模型和短语不可自定义，Configure UI 与 API 均不提供唤醒词配置字段。`wake_word.keyword` 是保留的隐藏 legacy 字段，旧值会被兼容读取，但不作为 ESP-SR runtime 真源。
 
-`topology` 当前支持 `discrete_i2s` 与 `i2s_codec`。在 `i2s_codec` 模式下，`codec` 包含 `input_codec`、`output_codec`、`input_addr`、`output_addr`、`pa_pin` 和 `input_reference`。当前 ESP-BOX-3 codec 路径支持 ES7210 输入与 ES8311 输出。
+`topology` 当前支持 `discrete_i2s` 与 `i2s_codec`，用于选择音频接入模式，而不是选择固定板型。在 `i2s_codec` 模式下，`codec` 包含 `input_codec`、`output_codec`、`input_addr`、`output_addr`、`pa_pin` 和 `input_reference`。当前已发布的 codec profile 支持 ES7210 输入与 ES8311 输出；新增板型应扩展设备/profile 校验和平台实现，不新增 board 专用配置字段。
 
-当 `audio.topology = "i2s_codec"` 且启用 ES7210 input reference 时，设备端会在内部自动选择板级麦克风 / secondary 输入对进入语音链路；用户无需手动配置 TDM 通道序号。
+当 `audio.topology = "i2s_codec"` 且启用 ES7210 input reference 时，设备端会按 codec profile 自动选择 primary/secondary 输入对进入语音链路；用户无需手动配置 TDM 通道序号。I2C/I2S 总线与 pin 真源在 `hardware.i2c_bus`、`hardware.i2s_bus`，而不是 board preset。
+
+`board_presets.toml` 中的 ESP32-S3 / ESP32-P4 Nano 条目，以及 ESP-BOX-3 实机证据，只代表当前固件打包、烧录与验收矩阵，不是配置 API 的能力边界。
 
 可选查询参数：`restart=1`
 

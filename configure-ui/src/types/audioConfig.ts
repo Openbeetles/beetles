@@ -162,6 +162,8 @@ export const DEFAULT_WAKE_MIN_SPEECH_BAND_RATIO = 0.45
 export const DEFAULT_WAKE_MIN_ACTIVE_MS = 240
 export const DEFAULT_WAKE_HANGOVER_MS = 500
 export const DEFAULT_WAKE_COOLDOWN_MS = 1000
+export const AUDIO_FIXED_WAKE_MODEL = 'wn9_hilexin'
+export const AUDIO_FIXED_WAKE_PHRASE = 'Hi 乐鑫'
 
 export const AUDIO_SPEECH_PROVIDERS = ['baidu', 'whisper', 'xunfei'] as const
 export const AUDIO_SPEECH_LANGUAGES = ['zh', 'en', 'ja', 'ko'] as const
@@ -529,7 +531,7 @@ export function defaultAudioConfig(): AudioConfig {
       min_active_ms: DEFAULT_WAKE_MIN_ACTIVE_MS,
       hangover_ms: DEFAULT_WAKE_HANGOVER_MS,
       cooldown_ms: DEFAULT_WAKE_COOLDOWN_MS,
-      keyword: 'hiesp',
+      keyword: AUDIO_FIXED_WAKE_MODEL,
       wake_prompt: '你好，我在听，请说。',
     },
     speech: {

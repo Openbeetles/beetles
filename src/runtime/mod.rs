@@ -41,8 +41,8 @@ pub use acceptance::{
     BeetleOsPlane, BeetleOsPlaneReport,
 };
 pub use agent_supervision::{
-    register_agent_loop_guard, register_deferred_agent_loop_guard, service_agent_loop_guard,
-    AgentLoopSpawner,
+    register_agent_loop_guard, register_deferred_agent_loop_guard,
+    request_deferred_agent_loop_start, service_agent_loop_guard, AgentLoopSpawner,
 };
 pub use channel_wss_supervision::{
     channel_wss_worker_start_defer_reason, next_channel_wss_supervisor_retry_at,

@@ -8,16 +8,36 @@ LOG="$TMP_DIR/serial.log"
 HEALTHY_LOG="$TMP_DIR/healthy-write-back.log"
 SPACED_LOG="$TMP_DIR/spaced-write-back.log"
 SCHEDULER_HEALTHY_LOG="$TMP_DIR/healthy-scheduler.log"
+SCHEDULER_ACTIVE_LOG="$TMP_DIR/active-scheduler.log"
 SCHEDULER_BAD_LOG="$TMP_DIR/bad-scheduler.log"
 PROTECTED_WRITE_BACK_LOG="$TMP_DIR/protected-write-back.log"
 WAKENET_BAD_LOG="$TMP_DIR/wakenet-bad.log"
+REALTIME_BAD_LOG="$TMP_DIR/realtime-bad.log"
+REALTIME_PENDING_EXPIRED_LOG="$TMP_DIR/realtime-pending-expired.log"
+REALTIME_LOCAL_WINDOW_BAD_LOG="$TMP_DIR/realtime-local-window-bad.log"
+VOICE_RESET_INVALID_LOG="$TMP_DIR/voice-reset-invalid.log"
+PAIRING_ONLY_LOG="$TMP_DIR/pairing-only.log"
+WAKENET_THRESHOLD_NOT_LOGGED_LOG="$TMP_DIR/wakenet-threshold-not-logged.log"
+WAKENET_THRESHOLD_FAIL_LOG="$TMP_DIR/wakenet-threshold-fail.log"
+WAKENET_PROBE_BAD_LOG="$TMP_DIR/wakenet-probe-bad.log"
+WAKENET_PROBE_GOOD_LOG="$TMP_DIR/wakenet-probe-good.log"
 OUT="$TMP_DIR/out"
 HEALTHY_OUT="$TMP_DIR/healthy-out"
 SPACED_OUT="$TMP_DIR/spaced-out"
 SCHEDULER_HEALTHY_OUT="$TMP_DIR/scheduler-healthy-out"
+SCHEDULER_ACTIVE_OUT="$TMP_DIR/scheduler-active-out"
 SCHEDULER_BAD_OUT="$TMP_DIR/scheduler-bad-out"
 PROTECTED_WRITE_BACK_OUT="$TMP_DIR/protected-write-back-out"
 WAKENET_BAD_OUT="$TMP_DIR/wakenet-bad-out"
+REALTIME_BAD_OUT="$TMP_DIR/realtime-bad-out"
+REALTIME_PENDING_EXPIRED_OUT="$TMP_DIR/realtime-pending-expired-out"
+REALTIME_LOCAL_WINDOW_BAD_OUT="$TMP_DIR/realtime-local-window-bad-out"
+VOICE_RESET_INVALID_OUT="$TMP_DIR/voice-reset-invalid-out"
+PAIRING_ONLY_OUT="$TMP_DIR/pairing-only-out"
+WAKENET_THRESHOLD_NOT_LOGGED_OUT="$TMP_DIR/wakenet-threshold-not-logged-out"
+WAKENET_THRESHOLD_FAIL_OUT="$TMP_DIR/wakenet-threshold-fail-out"
+WAKENET_PROBE_BAD_OUT="$TMP_DIR/wakenet-probe-bad-out"
+WAKENET_PROBE_GOOD_OUT="$TMP_DIR/wakenet-probe-good-out"
 
 cat >"$LOG" <<'LOGEOF'
 I (900) beetle::orchestrator: [orchestrator] startup memory checkpoint stage=agent_loop_deferred internal_free=45807 internal_min=45807 largest_block=31744 pressure=Cautious tls_fragmentation=Healthy
@@ -147,6 +167,22 @@ grep -q 'Post-foreground recovery violations: 0' "$SCHEDULER_HEALTHY_SUMMARY"
 ! grep -q 'display_status_missing_during_degrade' "$SCHEDULER_HEALTHY_REGRESSIONS"
 ! grep -q 'post_foreground_recovery_violation' "$SCHEDULER_HEALTHY_REGRESSIONS"
 
+cat >"$SCHEDULER_ACTIVE_LOG" <<'LOGEOF'
+I (1000) beetle::heartbeat: [heartbeat] runtime_scheduler active_foreground=true source=realtime_voice_session age_ms=15000 resume_after_ms=25000 foreground_recovery_active=false recovery_source=none recovery_age_ms=none recovery_resume_after_ms=none active_work=1 profile=esp_compact permits=1 defers=0 degrades=0 suspends=0 drains=0 rejects=0 last_class=realtime_voice_session last_source=background last_decision=proceed last_reason=none last_retry_after_ms=none
+I (1001) beetle::runtime: [runtime_scheduler] runtime_scheduler_decision class=display_heavy_refresh source=background decision=degrade reason=foreground_active retry_after_ms=none foreground_active=true foreground_source=realtime_voice_session resume_after_ms=25000 foreground_recovery_active=false foreground_recovery_source=none recovery_resume_after_ms=none profile=esp_compact pressure=Normal
+I (1002) beetle::runtime: [runtime_scheduler] runtime_scheduler_decision class=durable_write_back source=background decision=defer reason=foreground_active retry_after_ms=25000 foreground_active=true foreground_source=realtime_voice_session resume_after_ms=25000 foreground_recovery_active=false foreground_recovery_source=none recovery_resume_after_ms=none profile=esp_compact pressure=Normal
+I (1003) beetle::main: [main] display_status_surface retained=true heavy_refresh_degraded=true header=true ip=false footer=true
+I (2000) beetle::heartbeat: [heartbeat] runtime_scheduler active_foreground=true source=realtime_voice_session age_ms=16000 resume_after_ms=24000 foreground_recovery_active=false recovery_source=none recovery_age_ms=none recovery_resume_after_ms=none active_work=1 profile=esp_compact permits=1 defers=1 degrades=1 suspends=0 drains=0 rejects=0 last_class=durable_write_back last_source=background last_decision=defer last_reason=foreground_active last_retry_after_ms=25000
+LOGEOF
+
+"$ROOT/scripts/esp_soak_analyze.sh" --output-dir "$SCHEDULER_ACTIVE_OUT" "$SCHEDULER_ACTIVE_LOG" >/dev/null
+SCHEDULER_ACTIVE_SUMMARY="$(find "$SCHEDULER_ACTIVE_OUT" -name summary.md -print -quit)"
+SCHEDULER_ACTIVE_REGRESSIONS="$(find "$SCHEDULER_ACTIVE_OUT" -name regressions.csv -print -quit)"
+
+grep -q 'Scheduler foreground samples: 2' "$SCHEDULER_ACTIVE_SUMMARY"
+grep -q 'Scheduler resume missing lines: 0' "$SCHEDULER_ACTIVE_SUMMARY"
+! grep -q 'scheduler_resume_missing' "$SCHEDULER_ACTIVE_REGRESSIONS"
+
 cat >"$PROTECTED_WRITE_BACK_LOG" <<'LOGEOF'
 I (1000) beetle::heartbeat: [heartbeat] runtime_scheduler active_foreground=false source=none age_ms=none resume_after_ms=none foreground_recovery_active=true recovery_source=external_user_message recovery_age_ms=100 recovery_resume_after_ms=9900 active_work=0 profile=esp_compact permits=1 defers=1 degrades=0 suspends=0 drains=0 rejects=0 last_class=durable_write_back last_source=background last_decision=defer last_reason=foreground_recovery last_retry_after_ms=9900
 I (1010) beetle::heartbeat: [heartbeat] write_back queued=4 worker_started=false deferred_total=10 dropped_total=0 coalesced_total=0 worker_starts_total=1
@@ -184,6 +220,158 @@ grep -q 'wakenet_afe_empty_spam' "$WAKENET_BAD_REGRESSIONS"
 grep -q 'wakenet_feed_hot_path_slow' "$WAKENET_BAD_REGRESSIONS"
 grep -q 'WakeNet AFE empty lines: 25' "$WAKENET_BAD_SUMMARY"
 grep -q 'WakeNet slow feed lines: 1' "$WAKENET_BAD_SUMMARY"
+grep -q '"wakenet_low_sensitivity_probe_missing","risk"' "$WAKENET_BAD_REGRESSIONS"
+grep -q 'wakenet_threshold_contract_missing' "$WAKENET_BAD_REGRESSIONS"
+
+cat >"$REALTIME_BAD_LOG" <<'LOGEOF'
+I (1000) beetle::platform::esp32: [platform::esp32] audio contract profile=duplex_input_reference mic=codec speaker=codec duplex=true barge_in=true reference=InputReference aec=None
+I (1100) beetle::audio::realtime: [voice_realtime] realtime server event type=response.created
+I (1110) beetle::audio::realtime: [voice_realtime] realtime server event type=response.audio.done
+I (1120) beetle::audio::realtime: [voice_realtime] realtime server event type=response.done
+I (1130) beetle::heartbeat: [heartbeat] voice_realtime handoff_ms=0 local_commit_total=0 server_speech_total=0 turn_completed_total=0 no_speech_reason=none
+I (1140) beetle::heartbeat: [heartbeat] voice_realtime handoff_ms=0 local_commit_total=0 server_speech_total=0 turn_completed_total=0 no_speech_reason=none
+I (2000) beetle::audio::realtime: [voice_realtime] realtime audio downlink summary event=response.done chunks=2 samples=1000 accepted=900 dropped=100 staging_written=780 direct_written=120 peak_staging=480 peak_speaker=480 audio_ms=5000 elapsed_ms=1000
+I (2010) beetle::heartbeat: [heartbeat] audio_speaker write_us=100 queue_last=0 queue_min=0 underrun=1
+I (2020) beetle::audio::realtime: [voice_realtime] realtime server event type=input_audio_buffer.speech_started
+I (2030) beetle::audio::realtime: [voice_realtime] realtime server event type=input_audio_buffer.speech_stopped
+I (2040) beetle::audio::realtime: [voice_realtime] realtime server event type=input_audio_buffer.speech_started
+I (2050) beetle::audio::realtime: [voice_realtime] realtime server event type=input_audio_buffer.speech_stopped
+I (2060) beetle::audio::realtime: [voice_realtime] suppressing server VAD turn during half-duplex playback
+I (2070) beetle::audio::realtime: [voice_realtime] suppressing server VAD turn during half-duplex playback
+I (2080) beetle::audio::realtime: [voice_realtime] suppressing server VAD turn during half-duplex playback
+I (2090) beetle::audio::realtime: [voice_realtime] realtime server event type=response.created
+LOGEOF
+
+"$ROOT/scripts/esp_soak_analyze.sh" --output-dir "$REALTIME_BAD_OUT" "$REALTIME_BAD_LOG" >/dev/null
+REALTIME_BAD_SUMMARY="$(find "$REALTIME_BAD_OUT" -name summary.md -print -quit)"
+REALTIME_BAD_REGRESSIONS="$(find "$REALTIME_BAD_OUT" -name regressions.csv -print -quit)"
+
+grep -q 'realtime_downlink_dropped_nonzero' "$REALTIME_BAD_REGRESSIONS"
+grep -q 'realtime_direct_speaker_write_nonzero' "$REALTIME_BAD_REGRESSIONS"
+grep -q 'audio_speaker_underrun_nonzero' "$REALTIME_BAD_REGRESSIONS"
+grep -q 'response_overlap_without_accepted_interrupt' "$REALTIME_BAD_REGRESSIONS"
+grep -q 'server_vad_during_half_duplex_output_churn' "$REALTIME_BAD_REGRESSIONS"
+grep -q 'response_audio_done_without_downlink_summary' "$REALTIME_BAD_REGRESSIONS"
+grep -q 'realtime_heartbeat_counters_stale' "$REALTIME_BAD_REGRESSIONS"
+grep -q 'server_vad_fragmented_turn_churn' "$REALTIME_BAD_REGRESSIONS"
+grep -q 'barge_in_enabled_without_aec' "$REALTIME_BAD_REGRESSIONS"
+grep -q 'Realtime downlink dropped lines: 1' "$REALTIME_BAD_SUMMARY"
+grep -q 'Realtime direct speaker write lines: 1' "$REALTIME_BAD_SUMMARY"
+grep -q 'Audio speaker underrun lines: 1' "$REALTIME_BAD_SUMMARY"
+
+cat >"$REALTIME_PENDING_EXPIRED_LOG" <<'LOGEOF'
+I (1000) beetle::audio::realtime: [voice_realtime] realtime server event type=input_audio_buffer.speech_started
+I (1500) beetle::audio::realtime: [voice_realtime] realtime server event type=input_audio_buffer.speech_stopped
+I (1700) beetle::audio::realtime: [voice_realtime] realtime server event type=response.created
+I (2000) beetle::audio::realtime: [voice_realtime] realtime audio downlink summary event=response.audio.done chunks=2 samples=24000 accepted=24000 dropped=0 staging_written=24000 direct_written=0 peak_staging=24000 peak_speaker=0 audio_ms=1000 elapsed_ms=700
+I (2050) beetle::audio::realtime: [voice_realtime] realtime server event type=response.done
+I (2401) beetle::audio::realtime: [voice_realtime] realtime server event type=input_audio_buffer.speech_started
+I (2800) beetle::audio::realtime: [voice_realtime] realtime server event type=input_audio_buffer.speech_stopped
+I (3000) beetle::audio::realtime: [voice_realtime] realtime server event type=response.created
+LOGEOF
+
+"$ROOT/scripts/esp_soak_analyze.sh" --output-dir "$REALTIME_PENDING_EXPIRED_OUT" "$REALTIME_PENDING_EXPIRED_LOG" >/dev/null
+REALTIME_PENDING_EXPIRED_SUMMARY="$(find "$REALTIME_PENDING_EXPIRED_OUT" -name summary.md -print -quit)"
+REALTIME_PENDING_EXPIRED_REGRESSIONS="$(find "$REALTIME_PENDING_EXPIRED_OUT" -name regressions.csv -print -quit)"
+
+grep -q 'Realtime response overlap lines: 0' "$REALTIME_PENDING_EXPIRED_SUMMARY"
+! grep -q 'response_overlap_without_accepted_interrupt' "$REALTIME_PENDING_EXPIRED_REGRESSIONS"
+
+cat >"$REALTIME_LOCAL_WINDOW_BAD_LOG" <<'LOGEOF'
+I (1000) beetle::audio::realtime: [voice_realtime] realtime server event type=input_audio_buffer.speech_started
+I (13012) beetle::audio::realtime: [voice_realtime] force closing long local speech window at 12012ms without endpoint release
+I (13100) beetle::audio::realtime: [voice_realtime] realtime server event type=input_audio_buffer.speech_stopped
+LOGEOF
+
+"$ROOT/scripts/esp_soak_analyze.sh" --output-dir "$REALTIME_LOCAL_WINDOW_BAD_OUT" "$REALTIME_LOCAL_WINDOW_BAD_LOG" >/dev/null
+REALTIME_LOCAL_WINDOW_BAD_SUMMARY="$(find "$REALTIME_LOCAL_WINDOW_BAD_OUT" -name summary.md -print -quit)"
+REALTIME_LOCAL_WINDOW_BAD_REGRESSIONS="$(find "$REALTIME_LOCAL_WINDOW_BAD_OUT" -name regressions.csv -print -quit)"
+
+grep -q 'realtime_local_speech_window_forced_close' "$REALTIME_LOCAL_WINDOW_BAD_REGRESSIONS"
+grep -q 'Realtime local speech window forced-close lines: 1' "$REALTIME_LOCAL_WINDOW_BAD_SUMMARY"
+
+cat >"$VOICE_RESET_INVALID_LOG" <<'LOGEOF'
+E (1201) esp_littlefs: ./managed_components/joltwallet__littlefs/src/littlefs/lfs.c:1383:error: Corrupted dir pair at {0x0, 0x1}
+W (1201) esp_littlefs: mount failed,  (-84). formatting...
+W (1821) beetle::config: [config] NVS read_strings failed
+I (1841) beetle::bootstrap: [bootstrap] config loaded (wifi_ssid set: false, proxy set: false)
+I (2591) beetle: [beetle] enabled_channel='(none)'
+I (32661) beetle::heartbeat: [heartbeat] runtime_capabilities offline=8 degraded=0 active_calls=0 draining=none drain_denied_total=0 offline_ids=audio_output,audio_input,network.outbound_http,display.output,hardware.gpio,hardware.i2c,sensor,camera.frame degraded_ids=none
+I (32681) beetle::heartbeat: [heartbeat] network stage=ApOnly sta_expected=false sta_configured=false l2=false ip=false outbound_settled=false wall_clock=true reason_code=none
+I (32841) beetle::heartbeat: [heartbeat] runtime_mode current_mode=pairing wifi_sta=false booting=false pairing_known=true pairing_required=true voice_exclusive=false bg_maintenance=false recovery_safe_mode=false config_plane=true config_active=false config_phase=idle channel_plane=false voice_plane=false agent_plane=false foreground_active=false foreground_source=none foreground_age_ms=none foreground_resume_after_ms=none foreground_recovery_active=false foreground_recovery_source=none foreground_recovery_age_ms=none foreground_recovery_resume_after_ms=none ext_wss_connecting=0 timers=false periodic_maintenance=false non_voice_outbound=false realtime_voice=false ext_wss_connect=false ext_wss_suspend=false
+LOGEOF
+
+"$ROOT/scripts/esp_soak_analyze.sh" --output-dir "$VOICE_RESET_INVALID_OUT" "$VOICE_RESET_INVALID_LOG" >/dev/null
+VOICE_RESET_INVALID_SUMMARY="$(find "$VOICE_RESET_INVALID_OUT" -name summary.md -print -quit)"
+VOICE_RESET_INVALID_REGRESSIONS="$(find "$VOICE_RESET_INVALID_OUT" -name regressions.csv -print -quit)"
+
+grep -q 'voice_validation_invalid_after_flash_reset' "$VOICE_RESET_INVALID_REGRESSIONS"
+grep -q 'Voice validation invalid after flash reset lines: 1' "$VOICE_RESET_INVALID_SUMMARY"
+
+cat >"$PAIRING_ONLY_LOG" <<'LOGEOF'
+I (1841) beetle::bootstrap: [bootstrap] config loaded (wifi_ssid set: false, proxy set: false)
+I (2591) beetle: [beetle] enabled_channel='(none)'
+I (32681) beetle::heartbeat: [heartbeat] network stage=ApOnly sta_expected=false sta_configured=false l2=false ip=false outbound_settled=false wall_clock=true reason_code=none
+I (32841) beetle::heartbeat: [heartbeat] runtime_mode current_mode=pairing wifi_sta=false booting=false pairing_known=true pairing_required=true voice_exclusive=false bg_maintenance=false recovery_safe_mode=false config_plane=true config_active=false config_phase=idle channel_plane=false voice_plane=false agent_plane=false foreground_active=false foreground_source=none foreground_age_ms=none foreground_resume_after_ms=none foreground_recovery_active=false foreground_recovery_source=none foreground_recovery_age_ms=none foreground_resume_after_ms=none ext_wss_connecting=0 timers=false periodic_maintenance=false non_voice_outbound=false realtime_voice=false ext_wss_connect=false ext_wss_suspend=false
+LOGEOF
+
+"$ROOT/scripts/esp_soak_analyze.sh" --output-dir "$PAIRING_ONLY_OUT" "$PAIRING_ONLY_LOG" >/dev/null
+PAIRING_ONLY_SUMMARY="$(find "$PAIRING_ONLY_OUT" -name summary.md -print -quit)"
+PAIRING_ONLY_REGRESSIONS="$(find "$PAIRING_ONLY_OUT" -name regressions.csv -print -quit)"
+
+! grep -q 'voice_validation_invalid_after_flash_reset' "$PAIRING_ONLY_REGRESSIONS"
+grep -q 'Voice validation invalid after flash reset lines: 0' "$PAIRING_ONLY_SUMMARY"
+
+cat >"$WAKENET_THRESHOLD_NOT_LOGGED_LOG" <<'LOGEOF'
+I (1000) beetle::wake::esp_sr: [wake] ESP-SR AFE WakeNet init ok model=wn9_hilexin phrase=Hi 乐鑫 input=24000Hz reference=true
+I (1010) beetle_wakenet: wakenet threshold contract index=1 mode=DET_MODE_95 rc=0
+I (1020) beetle::wake_probe: wakenet_probe attempts=20 triggers=20 false_wakes=0
+LOGEOF
+
+"$ROOT/scripts/esp_soak_analyze.sh" --output-dir "$WAKENET_THRESHOLD_NOT_LOGGED_OUT" "$WAKENET_THRESHOLD_NOT_LOGGED_LOG" >/dev/null
+WAKENET_THRESHOLD_NOT_LOGGED_REGRESSIONS="$(find "$WAKENET_THRESHOLD_NOT_LOGGED_OUT" -name regressions.csv -print -quit)"
+
+grep -q 'wakenet_threshold_not_logged' "$WAKENET_THRESHOLD_NOT_LOGGED_REGRESSIONS"
+! grep -q 'wakenet_threshold_contract_missing' "$WAKENET_THRESHOLD_NOT_LOGGED_REGRESSIONS"
+
+cat >"$WAKENET_THRESHOLD_FAIL_LOG" <<'LOGEOF'
+I (1000) beetle::wake::esp_sr: [wake] ESP-SR AFE WakeNet init ok model=wn9_hilexin phrase=Hi 乐鑫 input=24000Hz reference=true
+E (1010) beetle_wakenet: wakenet threshold apply failed index=1 threshold=0.550 rc=-3
+I (1020) beetle::wake_probe: wakenet_probe attempts=20 triggers=20 false_wakes=0
+LOGEOF
+
+"$ROOT/scripts/esp_soak_analyze.sh" --output-dir "$WAKENET_THRESHOLD_FAIL_OUT" "$WAKENET_THRESHOLD_FAIL_LOG" >/dev/null
+WAKENET_THRESHOLD_FAIL_REGRESSIONS="$(find "$WAKENET_THRESHOLD_FAIL_OUT" -name regressions.csv -print -quit)"
+
+grep -q 'wakenet_threshold_apply_failed' "$WAKENET_THRESHOLD_FAIL_REGRESSIONS"
+
+cat >"$WAKENET_PROBE_BAD_LOG" <<'LOGEOF'
+I (1000) beetle::wake::esp_sr: [wake] ESP-SR AFE WakeNet init ok model=wn9_hilexin phrase=Hi 乐鑫 input=24000Hz reference=true
+I (1010) beetle_wakenet: wakenet threshold configured index=1 threshold=0.550 mode=DET_MODE_95 rc=0
+I (1020) beetle::wake_probe: wakenet_probe attempts=20 triggers=1 false_wakes=1
+LOGEOF
+
+"$ROOT/scripts/esp_soak_analyze.sh" --output-dir "$WAKENET_PROBE_BAD_OUT" "$WAKENET_PROBE_BAD_LOG" >/dev/null
+WAKENET_PROBE_BAD_REGRESSIONS="$(find "$WAKENET_PROBE_BAD_OUT" -name regressions.csv -print -quit)"
+
+grep -q 'wakenet_low_recall_rate' "$WAKENET_PROBE_BAD_REGRESSIONS"
+grep -q 'wakenet_false_wake' "$WAKENET_PROBE_BAD_REGRESSIONS"
+! grep -q 'wakenet_low_sensitivity_probe_missing' "$WAKENET_PROBE_BAD_REGRESSIONS"
+
+cat >"$WAKENET_PROBE_GOOD_LOG" <<'LOGEOF'
+I (1000) beetle::wake::esp_sr: [wake] ESP-SR AFE WakeNet init ok model=wn9_hilexin phrase=Hi 乐鑫 input=24000Hz reference=true
+I (1010) beetle_wakenet: wakenet threshold configured index=1 threshold=0.550 mode=DET_MODE_95 rc=0
+I (1020) beetle::wake_probe: wakenet_probe attempts=20 triggers=19 false_wakes=0
+LOGEOF
+
+"$ROOT/scripts/esp_soak_analyze.sh" --output-dir "$WAKENET_PROBE_GOOD_OUT" "$WAKENET_PROBE_GOOD_LOG" >/dev/null
+WAKENET_PROBE_GOOD_REGRESSIONS="$(find "$WAKENET_PROBE_GOOD_OUT" -name regressions.csv -print -quit)"
+
+! grep -q 'wakenet_low_sensitivity_probe_missing' "$WAKENET_PROBE_GOOD_REGRESSIONS"
+! grep -q 'wakenet_low_recall_rate' "$WAKENET_PROBE_GOOD_REGRESSIONS"
+! grep -q 'wakenet_false_wake' "$WAKENET_PROBE_GOOD_REGRESSIONS"
+! grep -q 'wakenet_threshold_contract_missing' "$WAKENET_PROBE_GOOD_REGRESSIONS"
+! grep -q 'wakenet_threshold_not_logged' "$WAKENET_PROBE_GOOD_REGRESSIONS"
 
 cat >"$SCHEDULER_BAD_LOG" <<'LOGEOF'
 I (1000) beetle::heartbeat: [heartbeat] runtime_scheduler active_foreground=true source=external_user_message age_ms=500 resume_after_ms=29500 active_work=1 profile=esp_compact permits=1 defers=0 degrades=0 suspends=0 drains=0 rejects=0 last_class=external_user_message last_source=user_facing last_decision=proceed last_reason=none last_retry_after_ms=none
@@ -203,6 +391,7 @@ I (1007) beetle::orchestrator: [orchestrator] startup memory checkpoint stage=vo
 ***ERROR*** A stack overflow in task pthread has been detected.
 I (1010) beetle::chat_stream: [chat_stream] event=final stream_id=chat_stream_2 session_appended=false message_id_present=false
 I (1011) beetle::runtime: [runtime_scheduler] runtime_scheduler_decision class=durable_write_back source=background decision=defer reason=foreground_active retry_after_ms=29500 foreground_active=true foreground_source=external_user_message resume_after_ms=29500 profile=esp_compact pressure=Normal
+I (40000) beetle::heartbeat: [heartbeat] runtime_scheduler active_foreground=false source=none age_ms=none resume_after_ms=none foreground_recovery_active=false recovery_source=none recovery_age_ms=none recovery_resume_after_ms=none active_work=0 profile=esp_compact permits=2 defers=1 degrades=1 suspends=0 drains=0 rejects=0 last_class=durable_write_back last_source=background last_decision=defer last_reason=foreground_active last_retry_after_ms=29500
 LOGEOF
 
 "$ROOT/scripts/esp_soak_analyze.sh" --output-dir "$SCHEDULER_BAD_OUT" "$SCHEDULER_BAD_LOG" >/dev/null

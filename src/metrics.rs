@@ -940,6 +940,41 @@ pub fn format_audio_wake_baseline_line() -> String {
     )
 }
 
+/// Low-level speaker queue diagnostics for heartbeat logs only.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AudioSpeakerSnapshot {
+    pub speaker_write_last_us: u64,
+    pub speaker_queue_depth_last_samples: u64,
+    pub speaker_queue_depth_min_samples: u64,
+    pub speaker_underrun_total: u64,
+}
+
+pub fn audio_speaker_snapshot() -> AudioSpeakerSnapshot {
+    let min_samples = AUDIO_SPEAKER_QUEUE_DEPTH_MIN_SAMPLES.load(Ordering::Relaxed);
+    AudioSpeakerSnapshot {
+        speaker_write_last_us: AUDIO_SPEAKER_WRITE_LAST_US.load(Ordering::Relaxed) as u64,
+        speaker_queue_depth_last_samples: AUDIO_SPEAKER_QUEUE_DEPTH_LAST_SAMPLES
+            .load(Ordering::Relaxed) as u64,
+        speaker_queue_depth_min_samples: if min_samples == u32::MAX {
+            0
+        } else {
+            min_samples as u64
+        },
+        speaker_underrun_total: AUDIO_SPEAKER_UNDERRUN_TOTAL.load(Ordering::Relaxed) as u64,
+    }
+}
+
+pub fn format_audio_speaker_baseline_line() -> String {
+    let snap = audio_speaker_snapshot();
+    format!(
+        "audio_speaker write_us={} queue_last={} queue_min={} underrun={}",
+        snap.speaker_write_last_us,
+        snap.speaker_queue_depth_last_samples,
+        snap.speaker_queue_depth_min_samples,
+        snap.speaker_underrun_total,
+    )
+}
+
 pub fn format_voice_realtime_baseline_line() -> String {
     let snap = snapshot();
     format!(
@@ -1058,6 +1093,32 @@ mod tests {
         assert!(line.contains("feed_detect="));
         assert!(line.contains("speech_like=true"));
         assert!(line.contains("ref_ok=false"));
+    }
+
+    #[test]
+    fn audio_speaker_baseline_records_queue_and_underrun_diagnostics() {
+        let before = audio_speaker_snapshot();
+        record_audio_speaker_write_us(789);
+        record_audio_speaker_queue_depth_last_samples(480);
+        reset_audio_speaker_queue_depth_min_samples();
+        record_audio_speaker_queue_depth_min_candidate(240);
+        record_audio_speaker_queue_depth_min_candidate(320);
+        record_audio_speaker_underrun();
+
+        let snap = audio_speaker_snapshot();
+        assert_eq!(snap.speaker_write_last_us, 789);
+        assert_eq!(snap.speaker_queue_depth_last_samples, 480);
+        assert_eq!(snap.speaker_queue_depth_min_samples, 240);
+        assert_eq!(
+            snap.speaker_underrun_total,
+            before.speaker_underrun_total + 1
+        );
+
+        let line = format_audio_speaker_baseline_line();
+        assert!(line.contains("audio_speaker "));
+        assert!(line.contains("write_us=789"));
+        assert!(line.contains("queue_last=480"));
+        assert!(line.contains("queue_min=240"));
     }
 
     #[test]

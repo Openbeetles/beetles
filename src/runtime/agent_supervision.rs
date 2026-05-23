@@ -12,6 +12,8 @@ struct AgentLoopGuardState {
     handle: Option<crate::util::TaskHandle>,
     spawner: Option<Arc<AgentLoopSpawner>>,
     restart_requested: bool,
+    eager_start: bool,
+    start_requested: bool,
 }
 
 fn guard_state() -> &'static Mutex<AgentLoopGuardState> {
@@ -22,6 +24,8 @@ fn guard_state() -> &'static Mutex<AgentLoopGuardState> {
             handle: None,
             spawner: None,
             restart_requested: false,
+            eager_start: false,
+            start_requested: false,
         })
     })
 }
@@ -40,18 +44,23 @@ pub fn register_agent_loop_guard(
         state.handle = None;
     }
     state.restart_requested = false;
+    state.eager_start = false;
+    state.start_requested = false;
 }
 
 /// Register the logical agent plane and defer the heavy agent_loop thread until startup readiness allows it.
 pub fn register_deferred_agent_loop_guard(
     platform: Arc<dyn Platform>,
     spawner: Arc<AgentLoopSpawner>,
+    eager_start: bool,
 ) {
     let mut state = guard_state().lock().unwrap_or_else(|e| e.into_inner());
     state.platform = Some(platform);
     state.handle = None;
     state.spawner = Some(spawner);
     state.restart_requested = false;
+    state.eager_start = eager_start;
+    state.start_requested = false;
     let _ = crate::runtime::plane_lifecycle::mark(
         crate::runtime::PlaneId::AgentMain,
         "agent_loop",
@@ -59,6 +68,28 @@ pub fn register_deferred_agent_loop_guard(
         "logical_owner_registered",
     );
     crate::bg_timer::notify_deadline_changed();
+}
+
+/// Request the deferred ESP agent loop to start because real inbound work exists.
+pub fn request_deferred_agent_loop_start(reason: &'static str) {
+    let should_notify = {
+        let mut state = guard_state().lock().unwrap_or_else(|e| e.into_inner());
+        if state.restart_requested || state.handle.is_some() || state.spawner.is_none() {
+            false
+        } else {
+            state.start_requested = true;
+            true
+        }
+    };
+    if should_notify {
+        let _ = crate::runtime::plane_lifecycle::mark(
+            crate::runtime::PlaneId::AgentMain,
+            "agent_loop",
+            crate::runtime::PlaneLifecycleState::Registered,
+            reason,
+        );
+        crate::bg_timer::notify_deadline_changed();
+    }
 }
 
 /// Poll the registered agent loop handle and request a restart if it has exited.
@@ -115,6 +146,16 @@ fn service_deferred_agent_loop_start(tag: &str) -> bool {
             );
             return false;
         }
+        if !state.eager_start && !state.start_requested {
+            drop(state);
+            let _ = crate::runtime::plane_lifecycle::mark(
+                crate::runtime::PlaneId::AgentMain,
+                "agent_loop",
+                crate::runtime::PlaneLifecycleState::Suspended,
+                "waiting_for_agent_work",
+            );
+            return false;
+        }
         spawner
     };
 
@@ -129,6 +170,7 @@ fn service_deferred_agent_loop_start(tag: &str) -> bool {
             let mut state = guard_state().lock().unwrap_or_else(|e| e.into_inner());
             state.handle = Some(handle);
             state.spawner = None;
+            state.start_requested = false;
             let _ = crate::runtime::plane_lifecycle::mark(
                 crate::runtime::PlaneId::AgentMain,
                 "agent_loop",

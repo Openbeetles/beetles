@@ -1045,9 +1045,9 @@ pub fn is_private_url(url: &str) -> bool {
 // | write_back                            | runtime local          | 24 KB | 24 KB | ← governed lazy storage/serde flush worker; separate from bg_timer
 // | sntp                                  | STACK_SNTP_WORKER      | 8 KB  | 96 KB | ← default guarded worker, no direct TLS call
 // | cli_repl                              | STACK_CLI_REPL         | 8 KB  | 8 KB  | ← no TLS
-// | voice_session                         | STACK_VOICE_CONTROL    | 8 KB  | 8 KB  | ← scheduler only; realtime WSS moved off this always-on thread
+// | voice_session                         | STACK_VOICE_CONTROL    | 10 KB | 8 KB  | ← scheduler/control only; ESP-BOX3 voice turn high-water hit 1960B low-margin at 8KB
 // | voice_session_worker                  | STACK_VOICE_SESSION    | 16 KB | 96 KB | ← STT + TTS HTTPS
-// | voice_realtime_connect                | STACK_VOICE_REALTIME_CONNECT | 12 KB | 96 KB | ← transient realtime WSS/TLS connect budget
+// | voice_realtime_connect                | STACK_VOICE_REALTIME_CONNECT | 9 KB  | 96 KB | ← transient realtime WSS/TLS connect budget
 // | voice_realtime                        | STACK_VOICE_REALTIME   | 16 KB | 96 KB | ← steady-state realtime session owner after connect handoff
 // ---------------------------------------------------------------------------
 
@@ -1082,10 +1082,12 @@ pub const STACK_CHANNEL_WS: usize = 9 * 1024;
 pub const STACK_CHANNEL_WS: usize = LINUX_RUSTLS_THREAD_STACK;
 
 /// 语音 realtime 建连是瞬时 TLS/WSS 连接面，不跟外部长连常驻 WSS 一起压栈。
-/// 这保留实时语音能力的连接峰值余量，同时让常驻消息通道按自己的 high-water
-/// 证据收窄。
+/// 2026-05-23 ESP-BOX3 hard-reset 实测显示，QQ/WSS 均未启用时 12KB 预算会先把
+/// `heap_largest_internal` 从约 31KB 压到 22.5KB，随后被 24KB TLS floor 自拒；
+/// 同轮 high-water 仍有约 8.7KB free。这里收敛到与常驻 WSS 同级的 9KB，
+/// 保留 TLS floor，不通过降低 admission 门槛换取建连。
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-pub const STACK_VOICE_REALTIME_CONNECT: usize = 12 * 1024;
+pub const STACK_VOICE_REALTIME_CONNECT: usize = 9 * 1024;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub const STACK_VOICE_REALTIME_CONNECT: usize = LINUX_RUSTLS_THREAD_STACK;
 
@@ -1153,7 +1155,7 @@ pub const STACK_AUDIO_IO_STD_COMPAT: usize = 8 * 1024;
 /// `voice_session`：语音会话调度线程。
 /// 常驻线程只做事件 intake / 合并 / worker 拉起；realtime WSS 已迁移到独立 transient worker。
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-pub const STACK_VOICE_CONTROL: usize = 8 * 1024;
+pub const STACK_VOICE_CONTROL: usize = 10 * 1024;
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub const STACK_VOICE_CONTROL: usize = 8192;
 

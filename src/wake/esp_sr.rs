@@ -6,13 +6,35 @@ use std::ffi::CString;
 use std::os::raw::{c_char, c_int};
 use std::time::Instant;
 
-/// Fixed ESP product wake phrase.
-pub const ESP_SR_WAKE_PHRASE: &str = "Hi,ESP";
-/// Fixed ESP-SR WakeNet model for the product wake phrase.
-pub const ESP_SR_WAKENET_MODEL_HIESP: &str = "wn9_hiesp";
+/// Fixed ESP product wake phrase for the current WakeNet A/B firmware.
+pub const ESP_SR_WAKE_PHRASE: &str = "Hi 乐鑫";
+/// Fixed ESP-SR WakeNet model for the current WakeNet A/B firmware.
+pub const ESP_SR_WAKENET_MODEL: &str = "wn9_hilexin";
+/// Fixed ESP-SR AFE WakeNet detection mode used by the current wake profile.
+pub const ESP_SR_WAKENET_DETECTION_MODE: &str = "DET_MODE_95";
+/// WakeNet model index passed to ESP-SR AFE threshold APIs.
+pub const ESP_SR_WAKENET_THRESHOLD_INDEX: i32 = 1;
+
+/// ESP-SR WakeNet threshold profile.
+#[derive(Clone, Copy, Debug)]
+pub struct EspSrWakeThresholdProfile {
+    pub index: i32,
+    pub threshold: Option<f32>,
+}
+
+/// Current ESP-SR threshold profile.
+///
+/// This is an explicit ESP-SR WakeNet threshold, not the host acoustic fallback
+/// threshold. Keep changes to this value as single-variable live-test profiles.
+pub const ESP_SR_WAKENET_THRESHOLD_PROFILE: EspSrWakeThresholdProfile = EspSrWakeThresholdProfile {
+    index: ESP_SR_WAKENET_THRESHOLD_INDEX,
+    threshold: Some(0.40),
+};
 
 const BEETLE_WN_OK: c_int = 0;
 const BEETLE_WN_DETECTED: c_int = 1;
+const ESP_SR_WAKENET_THRESHOLD_MIN: f32 = 0.4;
+const ESP_SR_WAKENET_THRESHOLD_MAX: f32 = 0.9999;
 
 extern "C" {
     fn beetle_wakenet_init(
@@ -22,6 +44,8 @@ extern "C" {
     ) -> c_int;
     fn beetle_wakenet_feed(mic: *const i16, reference: *const i16, samples: c_int) -> c_int;
     fn beetle_wakenet_take_event() -> c_int;
+    fn beetle_wakenet_set_threshold(index: c_int, threshold: f32) -> c_int;
+    fn beetle_wakenet_reset_threshold(index: c_int) -> c_int;
     fn beetle_wakenet_reset();
     fn beetle_wakenet_destroy();
 }
@@ -46,8 +70,7 @@ impl EspSrWakeBackend {
         if input_sample_rate_hz != 16_000 && input_sample_rate_hz != 24_000 {
             return Err("unsupported_wakenet_input_sample_rate");
         }
-        let c_model =
-            CString::new(ESP_SR_WAKENET_MODEL_HIESP).map_err(|_| "invalid_wakenet_model")?;
+        let c_model = CString::new(ESP_SR_WAKENET_MODEL).map_err(|_| "invalid_wakenet_model")?;
         let rc = unsafe {
             beetle_wakenet_init(
                 c_model.as_ptr(),
@@ -59,22 +82,29 @@ impl EspSrWakeBackend {
             log::error!(
                 "[wake] ESP-SR AFE WakeNet init failed rc={} model={} phrase={} input={}Hz reference={}",
                 rc,
-                ESP_SR_WAKENET_MODEL_HIESP,
+                ESP_SR_WAKENET_MODEL,
                 ESP_SR_WAKE_PHRASE,
                 input_sample_rate_hz,
                 use_reference
             );
             return Err("wakenet_init_failed");
         }
+        if let Err(error) = apply_threshold_profile(ESP_SR_WAKENET_THRESHOLD_PROFILE) {
+            unsafe { beetle_wakenet_destroy() };
+            return Err(error);
+        }
         log::info!(
-            "[wake] ESP-SR AFE WakeNet init ok model={} phrase={} input={}Hz reference={}",
-            ESP_SR_WAKENET_MODEL_HIESP,
+            "[wake] ESP-SR AFE WakeNet init ok model={} phrase={} input={}Hz reference={} mode={} threshold_index={} threshold={}",
+            ESP_SR_WAKENET_MODEL,
             ESP_SR_WAKE_PHRASE,
             input_sample_rate_hz,
-            use_reference
+            use_reference,
+            ESP_SR_WAKENET_DETECTION_MODE,
+            ESP_SR_WAKENET_THRESHOLD_PROFILE.index,
+            threshold_label(ESP_SR_WAKENET_THRESHOLD_PROFILE.threshold)
         );
         Ok(Self {
-            model_name: ESP_SR_WAKENET_MODEL_HIESP,
+            model_name: ESP_SR_WAKENET_MODEL,
             input_sample_rate_hz,
             use_reference,
             last_snapshot: WakeAcousticSnapshot::default(),
@@ -155,6 +185,91 @@ impl EspSrWakeBackend {
     pub fn snapshot(&self) -> WakeAcousticSnapshot {
         self.last_snapshot
     }
+}
+
+fn apply_threshold_profile(profile: EspSrWakeThresholdProfile) -> Result<(), &'static str> {
+    match profile.threshold {
+        Some(threshold) => {
+            if !threshold.is_finite()
+                || !(ESP_SR_WAKENET_THRESHOLD_MIN..=ESP_SR_WAKENET_THRESHOLD_MAX)
+                    .contains(&threshold)
+            {
+                log::error!(
+                    "[wake] ESP-SR AFE WakeNet threshold invalid model={} phrase={} mode={} threshold_index={} threshold={:.4} allowed=0.4..0.9999",
+                    ESP_SR_WAKENET_MODEL,
+                    ESP_SR_WAKE_PHRASE,
+                    ESP_SR_WAKENET_DETECTION_MODE,
+                    profile.index,
+                    threshold
+                );
+                return Err("wakenet_threshold_invalid");
+            }
+            let rc = unsafe { beetle_wakenet_set_threshold(profile.index as c_int, threshold) };
+            if rc != BEETLE_WN_OK {
+                log::error!(
+                    "[wake] ESP-SR AFE WakeNet threshold apply failed rc={} model={} phrase={} mode={} threshold_index={} threshold={:.4}",
+                    rc,
+                    ESP_SR_WAKENET_MODEL,
+                    ESP_SR_WAKE_PHRASE,
+                    ESP_SR_WAKENET_DETECTION_MODE,
+                    profile.index,
+                    threshold
+                );
+                return Err("wakenet_threshold_apply_failed");
+            }
+            log::info!(
+                "[wake] ESP-SR AFE WakeNet threshold apply ok model={} phrase={} mode={} threshold_index={} threshold={:.4}",
+                ESP_SR_WAKENET_MODEL,
+                ESP_SR_WAKE_PHRASE,
+                ESP_SR_WAKENET_DETECTION_MODE,
+                profile.index,
+                threshold
+            );
+        }
+        None => {
+            log::info!(
+                "[wake] ESP-SR AFE WakeNet threshold profile model={} phrase={} mode={} threshold_index={} threshold=default source=esp_sr_default",
+                ESP_SR_WAKENET_MODEL,
+                ESP_SR_WAKE_PHRASE,
+                ESP_SR_WAKENET_DETECTION_MODE,
+                profile.index
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Reset the active ESP-SR WakeNet threshold to the model default.
+///
+/// This is a diagnostic/profile-control hook for controlled live tests. It
+/// requires an initialized ESP-SR AFE instance.
+pub fn reset_threshold_to_model_default() -> Result<(), &'static str> {
+    let rc = unsafe { beetle_wakenet_reset_threshold(ESP_SR_WAKENET_THRESHOLD_INDEX as c_int) };
+    if rc != BEETLE_WN_OK {
+        log::error!(
+            "[wake] ESP-SR AFE WakeNet threshold reset failed rc={} model={} phrase={} mode={} threshold_index={} threshold=default",
+            rc,
+            ESP_SR_WAKENET_MODEL,
+            ESP_SR_WAKE_PHRASE,
+            ESP_SR_WAKENET_DETECTION_MODE,
+            ESP_SR_WAKENET_THRESHOLD_INDEX
+        );
+        return Err("wakenet_threshold_reset_failed");
+    }
+    log::info!(
+        "[wake] ESP-SR AFE WakeNet threshold reset ok model={} phrase={} mode={} threshold_index={} threshold=default",
+        ESP_SR_WAKENET_MODEL,
+        ESP_SR_WAKE_PHRASE,
+        ESP_SR_WAKENET_DETECTION_MODE,
+        ESP_SR_WAKENET_THRESHOLD_INDEX
+    );
+    Ok(())
+}
+
+fn threshold_label(threshold: Option<f32>) -> String {
+    threshold
+        .map(|value| format!("{value:.4}"))
+        .unwrap_or_else(|| "default".to_string())
 }
 
 impl Drop for EspSrWakeBackend {

@@ -169,6 +169,51 @@ assert_file_contains \
   'device did not complete ESP bootloader/board-info handshake' \
   "ESP live flow should classify serial handshake failures as host/device precondition failures"
 assert_file_contains \
+  "$ROOT_DIR/scripts/esp_live_test_flow.sh" \
+  '--confirm-full-erase' \
+  "ESP live flow should require an explicit full-erase confirmation argument"
+assert_file_contains \
+  "$ROOT_DIR/scripts/build_flash_strategy.sh" \
+  'I AUTHORIZE FULL ERASE %s %s' \
+  "full erase confirmation should include the chip and serial port"
+assert_file_contains \
+  "$ROOT_DIR/scripts/esp_live_test_flow.sh" \
+  'assert_live_full_erase_confirmed' \
+  "ESP live flow should hard-gate destructive full erase before selecting or touching a device"
+assert_file_contains \
+  "$ROOT_DIR/build.sh" \
+  'beetle_require_full_erase_confirmation "$@"' \
+  "build.sh should not allow BEETLE_FLASH_MODE=full-erase without explicit confirmation"
+assert_file_contains \
+  "$ROOT_DIR/scripts/build_flash_strategy.sh" \
+  'beetle_require_full_erase_confirmation()' \
+  "build.sh full erase gate should be backed by a testable helper"
+assert_file_contains \
+  "$ROOT_DIR/build.sh" \
+  'require_full_erase_confirmation "$port" "$FLASH_CHIP" "BEETLE_FLASH_MODE=full-erase"' \
+  "build.sh should gate env-forced full erase before erasing flash"
+assert_file_not_contains \
+  "$ROOT_DIR/build.sh" \
+  "Type 'yes' to confirm full erase and flash" \
+  "build.sh full erase confirmation must not accept a generic yes"
+assert_file_contains \
+  "$ROOT_DIR/scripts/esp_live_test_flow.sh" \
+  '--flash-mode full-erase requires an explicit --port' \
+  "ESP live flow should require an explicit target port for destructive full erase"
+assert_file_contains \
+  "$ROOT_DIR/scripts/esp_live_test_flow.sh" \
+  'BEETLE_FULL_ERASE_CONFIRM="$full_erase_build_confirm"' \
+  "ESP live flow should propagate destructive confirmation into build.sh"
+assert_file_contains \
+  "$ROOT_DIR/scripts/esp_live_test_flow.sh" \
+  "BEETLE_FULL_ERASE_CONFIRM='<explicit authorization required>'" \
+  "ESP live flow commands.md should redact destructive confirmation tokens"
+leaked_confirm_pattern="BEETLE_FULL_ERASE_CONFIRM='\$full_erase_build_confirm'"
+assert_file_not_contains \
+  "$ROOT_DIR/scripts/esp_live_test_flow.sh" \
+  "$leaked_confirm_pattern" \
+  "ESP live flow commands.md must not persist reusable destructive confirmation tokens"
+assert_file_contains \
   "$ROOT_DIR/build.sh" \
   'ESPFLASH_SKIP_UPDATE_CHECK=true espflash save-image --chip "$FLASH_CHIP"' \
   "build.sh should generate app images through espflash save-image so build-only runs do not depend on Python esptool modules"
@@ -187,6 +232,38 @@ assert_file_not_contains \
 
 tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/beetle-flash-strategy.XXXXXX")"
 trap 'rm -rf "$tmp_dir"' EXIT
+live_flow_no_confirm_stderr="$tmp_dir/live-flow-no-confirm.stderr"
+build_gate_missing_confirm_stderr="$tmp_dir/build-gate-missing-confirm.stderr"
+build_gate_expected_confirm="$(bash -c "source '$ROOT_DIR/scripts/build_flash_strategy.sh'; beetle_full_erase_confirmation_phrase esp32s3 /dev/cu.usbmodemTEST")"
+if bash -c "source '$ROOT_DIR/scripts/build_flash_strategy.sh'; beetle_require_full_erase_confirmation /dev/cu.usbmodemTEST esp32s3 BEETLE_FLASH_MODE=full-erase" \
+  >/dev/null 2>"$build_gate_missing_confirm_stderr"; then
+  echo "FAIL: build full-erase helper should reject missing BEETLE_FULL_ERASE_CONFIRM" >&2
+  exit 1
+fi
+assert_file_contains \
+  "$build_gate_missing_confirm_stderr" \
+  'destructive full erase requested by BEETLE_FLASH_MODE=full-erase without explicit confirmation' \
+  "build full-erase helper should explain the missing destructive confirmation"
+BEETLE_FULL_ERASE_CONFIRM="$build_gate_expected_confirm" \
+  bash -c "source '$ROOT_DIR/scripts/build_flash_strategy.sh'; beetle_require_full_erase_confirmation /dev/cu.usbmodemTEST esp32s3 BEETLE_FLASH_MODE=full-erase"
+if "$ROOT_DIR/scripts/esp_live_test_flow.sh" \
+  --scenario boot_idle \
+  --port /dev/cu.usbmodemTEST \
+  --board esp32-s3-16mb \
+  --flash-mode full-erase \
+  --duration 1 \
+  >/dev/null 2>"$live_flow_no_confirm_stderr"; then
+  echo "FAIL: ESP live flow should reject full-erase without explicit confirmation" >&2
+  exit 1
+fi
+assert_file_contains \
+  "$live_flow_no_confirm_stderr" \
+  '--flash-mode full-erase is destructive and requires explicit confirmation' \
+  "ESP live flow should explain the missing destructive confirmation"
+assert_file_not_contains \
+  "$live_flow_no_confirm_stderr" \
+  'serial port not found' \
+  "ESP live flow should reject unconfirmed full erase before touching the serial port"
 cat >"$tmp_dir/p4_flasher_args.json" <<'JSON'
 {
   "bootloader": { "offset": "0x2000", "file": "bootloader/bootloader.bin" },

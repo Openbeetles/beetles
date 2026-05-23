@@ -19,6 +19,7 @@ Options:
   --duration SECONDS         Capture duration. Default: 180. Use 0 for manual Ctrl-C.
   --expected-messages COUNT  Required inbound count for qq_text. Default: 10.
   --flash-mode MODE          update or full-erase. Default: update.
+  --confirm-full-erase TEXT  Required exact confirmation for --flash-mode full-erase.
   --qq-acceptance-file FILE  Required semantic acceptance evidence for qq_text.
   --device-url URL           Required for chat_stream. Defaults to BEETLE_DEVICE_URL.
   --pairing-code CODE        Required for chat_stream. Defaults to BEETLE_PAIRING_CODE.
@@ -74,6 +75,7 @@ baud="115200"
 duration="180"
 expected_messages="10"
 flash_mode="update"
+full_erase_confirmation=""
 qq_acceptance_file=""
 device_url="${BEETLE_DEVICE_URL:-}"
 pairing_code="${BEETLE_PAIRING_CODE:-}"
@@ -123,6 +125,11 @@ while [[ $# -gt 0 ]]; do
       shift
       [[ $# -gt 0 ]] || { echo "Error: --flash-mode requires a value." >&2; exit 2; }
       flash_mode="$1"
+      ;;
+    --confirm-full-erase)
+      shift
+      [[ $# -gt 0 ]] || { echo "Error: --confirm-full-erase requires a value." >&2; exit 2; }
+      full_erase_confirmation="$1"
       ;;
     --qq-acceptance-file)
       shift
@@ -207,6 +214,31 @@ case "$flash_mode" in
     exit 2
     ;;
 esac
+
+full_erase_confirmation_phrase() {
+  local chip_name="$1" port_path="$2"
+  beetle_full_erase_confirmation_phrase "$chip_name" "$port_path"
+}
+
+assert_live_full_erase_confirmed() {
+  [[ "$flash_mode" == "full-erase" ]] || return 0
+  if [[ -z "$port" ]]; then
+    echo "Error: --flash-mode full-erase requires an explicit --port." >&2
+    echo "  Destructive erase cannot auto-select a target device." >&2
+    exit 2
+  fi
+  local expected
+  expected="$(full_erase_confirmation_phrase "$chip" "$port")"
+  if [[ "$full_erase_confirmation" == "$expected" ]]; then
+    return 0
+  fi
+  echo "Error: --flash-mode full-erase is destructive and requires explicit confirmation." >&2
+  echo "  Full erase wipes NVS, storage, WiFi/channel configuration, and all flash partitions." >&2
+  echo "  Rerun only after explicit user authorization, with:" >&2
+  echo "    --confirm-full-erase '$expected'" >&2
+  exit 2
+}
+
 chip_for_board() {
   local board_name="$1"
   case "$board_name" in
@@ -227,6 +259,8 @@ elif [[ "$chip_explicit" -eq 1 && "$chip" != "$board_chip" ]]; then
   echo "Error: --board $board requires --chip $board_chip, got $chip." >&2
   exit 2
 fi
+
+assert_live_full_erase_confirmed
 
 add_existing_ports() {
   local pattern port_path
@@ -681,6 +715,9 @@ mkdir -p "$run_dir"
   echo "duration_seconds=$duration"
   echo "expected_messages=$expected_messages"
   echo "flash_mode=$flash_mode"
+  if [[ "$flash_mode" == "full-erase" ]]; then
+    echo "full_erase_confirmation=explicit"
+  fi
   echo "selected_port=$selected_port"
   echo "preflight_board_info=$preflight_board_info"
   echo "preflight_board_info_stderr=$preflight_board_info_stderr"
@@ -703,12 +740,13 @@ cat > "$run_dir/commands.md" <<EOF
 
 EOF
 board_prefix=""
+full_erase_build_confirm=""
 if [[ -n "$board" ]]; then
   board_prefix="BOARD=$board "
 fi
 if [[ "$flash_mode" == "full-erase" ]]; then
   cat >> "$run_dir/commands.md" <<EOF
-${board_prefix}BEETLE_FLASH_MODE=full-erase TARGET=esp ESPFLASH_PORT=$selected_port ./build.sh --flash --no-monitor
+${board_prefix}BEETLE_FLASH_MODE=full-erase BEETLE_FULL_ERASE_CONFIRM='<explicit authorization required>' TARGET=esp ESPFLASH_PORT=$selected_port ./build.sh --flash --no-monitor
 EOF
 else
   cat >> "$run_dir/commands.md" <<EOF
@@ -742,10 +780,11 @@ assert_device_flash_handshake "$selected_port" "$preflight_board_info" "$preflig
 echo
 echo "Step 2/5: flashing with ./build.sh ($flash_mode)."
 if [[ "$flash_mode" == "full-erase" ]]; then
+  full_erase_build_confirm="$(full_erase_confirmation_phrase "$chip" "$selected_port")"
   if [[ -n "$board" ]]; then
-    BOARD="$board" BEETLE_FLASH_MODE=full-erase TARGET=esp ESPFLASH_PORT="$selected_port" "$REPO_ROOT/build.sh" --flash --no-monitor
+    BOARD="$board" BEETLE_FLASH_MODE=full-erase BEETLE_FULL_ERASE_CONFIRM="$full_erase_build_confirm" TARGET=esp ESPFLASH_PORT="$selected_port" "$REPO_ROOT/build.sh" --flash --no-monitor
   else
-    BEETLE_FLASH_MODE=full-erase TARGET=esp ESPFLASH_PORT="$selected_port" "$REPO_ROOT/build.sh" --flash --no-monitor
+    BEETLE_FLASH_MODE=full-erase BEETLE_FULL_ERASE_CONFIRM="$full_erase_build_confirm" TARGET=esp ESPFLASH_PORT="$selected_port" "$REPO_ROOT/build.sh" --flash --no-monitor
   fi
 else
   if [[ -n "$board" ]]; then

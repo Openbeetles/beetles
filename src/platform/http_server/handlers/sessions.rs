@@ -299,6 +299,8 @@ mod tests {
     static RESOURCE_TEST_MUTEX: Mutex<()> = Mutex::new(());
 
     fn apply_resource_snapshot(internal: u32, largest: u32) {
+        crate::orchestrator::update_queue_depth(0, 0);
+        crate::orchestrator::update_session_storage(0, 0, 1024);
         crate::orchestrator::apply_memory_snapshot(crate::platform::MemorySnapshot {
             heap_free_internal: internal,
             heap_min_free_internal: internal,
@@ -326,6 +328,7 @@ mod tests {
         let _resource_guard = RESOURCE_TEST_MUTEX
             .lock()
             .unwrap_or_else(|e| e.into_inner());
+        let _lifecycle_guard = crate::runtime::plane_lifecycle::plane_lifecycle_test_guard();
         let _foreground_guard = crate::runtime::foreground::runtime_foreground_test_guard();
         crate::runtime::foreground::reset_runtime_foreground_for_tests();
         apply_resource_snapshot(128_000, 64_000);
@@ -356,6 +359,7 @@ mod tests {
         let _guard = RESOURCE_TEST_MUTEX
             .lock()
             .unwrap_or_else(|e| e.into_inner());
+        let _lifecycle_guard = crate::runtime::plane_lifecycle::plane_lifecycle_test_guard();
         apply_resource_snapshot(12_000, 12_000);
         let ctx = build_default_test_handler_context();
         let (inbound_tx, inbound_rx, _) = new_user_inbound_channel(4);

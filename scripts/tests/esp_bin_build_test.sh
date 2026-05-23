@@ -137,12 +137,20 @@ assert_file_contains \
   "WakeNet component should apply the ESP-DSP IDF6 C++ compile shim without patching managed sources"
 assert_file_contains \
   "$ROOT_DIR/sdkconfig.defaults.esp32s3" \
-  "CONFIG_SR_WN_WN9_HIESP=y" \
-  "ESP32-S3 sdkconfig should select the official WakeNet9 Hi,ESP model"
+  "CONFIG_SR_WN_WN9_HILEXIN=y" \
+  "ESP32-S3 sdkconfig should select the official WakeNet9 Hi Lexin model for the A/B firmware"
 assert_file_contains \
   "$ROOT_DIR/sdkconfig.defaults.esp32p4" \
-  "CONFIG_SR_WN_WN9_HIESP=y" \
-  "ESP32-P4 sdkconfig should select the same fixed WakeNet9 Hi,ESP model"
+  "CONFIG_SR_WN_WN9_HILEXIN=y" \
+  "ESP32-P4 sdkconfig should select the same WakeNet9 Hi Lexin model for the A/B firmware"
+assert_file_not_contains \
+  "$ROOT_DIR/sdkconfig.defaults.esp32s3" \
+  "CONFIG_SR_WN_WN9_XIAOAITONGXUE" \
+  "ESP32-S3 sdkconfig should not keep the previous XiaoAiTongXue A/B model"
+assert_file_not_contains \
+  "$ROOT_DIR/sdkconfig.defaults.esp32p4" \
+  "CONFIG_SR_WN_WN9_XIAOAITONGXUE" \
+  "ESP32-P4 sdkconfig should not keep the previous XiaoAiTongXue A/B model"
 assert_file_not_contains \
   "$ROOT_DIR/sdkconfig.defaults.esp32s3" \
   "CONFIG_USE_WAKENET" \

@@ -104,6 +104,22 @@ impl VoiceForegroundTicketGuard {
             ticket: Some(ticket),
         }
     }
+
+    fn renew_now(&mut self) {
+        if let Some(ticket) = self.ticket {
+            self.ticket = Some(crate::runtime::renew_runtime_foreground_now(ticket.source));
+        }
+    }
+
+    #[cfg(test)]
+    fn renew_at_for_test(&mut self, now_ms: u64) {
+        if let Some(ticket) = self.ticket {
+            self.ticket = Some(crate::runtime::renew_runtime_foreground(
+                ticket.source,
+                now_ms,
+            ));
+        }
+    }
 }
 
 impl Drop for VoiceForegroundTicketGuard {
@@ -284,6 +300,11 @@ fn spawn_voice_session_worker(
             ) {
                 return Ok(VoiceWorkerStartResult::Deferred { retry_after_ms });
             }
+            if let Some(retry_after_ms) =
+                voice_realtime_connect_spawn_reserve_defer_ms(cfg.platform.as_ref())
+            {
+                return Ok(VoiceWorkerStartResult::Deferred { retry_after_ms });
+            }
             spawn_guarded_with_profile_handle(
                 "voice_realtime_connect",
                 STACK_VOICE_REALTIME_CONNECT,
@@ -294,6 +315,43 @@ fn spawn_voice_session_worker(
             .map(VoiceWorkerStartResult::Started)
             .map_err(|error| crate::Error::io("voice_realtime_connect_spawn", error))
         }
+    }
+}
+
+fn voice_realtime_connect_spawn_reserve_defer_ms(platform: &dyn Platform) -> Option<u64> {
+    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+    {
+        let snap = platform.memory_snapshot();
+        let min_internal = if snap.heap_free_spiram > 0 {
+            crate::constants::TLS_ADMISSION_MIN_INTERNAL_BYTES
+        } else {
+            crate::constants::TLS_ADMISSION_NO_PSRAM_MIN_BYTES
+        }
+        .saturating_add(STACK_VOICE_REALTIME_CONNECT);
+        let min_largest = crate::constants::TLS_ADMISSION_MIN_LARGEST_BLOCK_BYTES
+            .saturating_add(STACK_VOICE_REALTIME_CONNECT);
+        let enough_internal = snap.heap_free_internal >= min_internal as u32;
+        let enough_largest =
+            snap.heap_free_spiram == 0 || snap.heap_largest_block >= min_largest as u32;
+        if enough_internal && enough_largest {
+            return None;
+        }
+        log::warn!(
+            "[{}] defer realtime voice connect spawn: free={} free_min={} largest={} largest_min={} spiram={} connect_stack={}",
+            TAG,
+            snap.heap_free_internal,
+            min_internal,
+            snap.heap_largest_block,
+            min_largest,
+            snap.heap_free_spiram,
+            STACK_VOICE_REALTIME_CONNECT
+        );
+        Some(1_000)
+    }
+    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+    {
+        let _ = platform;
+        None
     }
 }
 
@@ -563,12 +621,21 @@ fn run_prepared_realtime_session(cfg: &VoiceSessionConfig, prepared: PreparedRea
     let PreparedRealtimeSession {
         connected,
         handoff,
-        mut _ownership,
+        _ownership: mut ownership,
     } = prepared;
-    match run_connected_realtime_session(cfg.platform.as_ref(), &cfg.audio_cfg, connected, handoff)
-    {
+    let result = {
+        let foreground_ticket = &mut ownership._foreground_ticket;
+        run_connected_realtime_session(
+            cfg.platform.as_ref(),
+            &cfg.audio_cfg,
+            connected,
+            handoff,
+            || foreground_ticket.renew_now(),
+        )
+    };
+    match result {
         Ok(session) => {
-            record_realtime_conversation_success(&mut _ownership.conversation, &session);
+            record_realtime_conversation_success(&mut ownership.conversation, &session);
             log::info!(
                 "[{}] realtime session finished turns={} input_ms={} output_ms={} duration_ms={}",
                 TAG,
@@ -577,17 +644,17 @@ fn run_prepared_realtime_session(cfg: &VoiceSessionConfig, prepared: PreparedRea
                 session.output_audio_ms,
                 session.session_ms
             );
-            log_realtime_turn_summary(&_ownership.conversation);
+            log_realtime_turn_summary(&ownership.conversation);
             if session.output_audio_ms > 0 {
                 crate::metrics::record_voice_output_play_ms(session.output_audio_ms);
             }
         }
         Err(error) => {
-            _ownership
+            ownership
                 .conversation
                 .finish_no_speech(NoSpeechExitReason::ProviderNoTurnEvents);
-            record_realtime_conversation_summary(&_ownership.conversation);
-            log_realtime_turn_summary(&_ownership.conversation);
+            record_realtime_conversation_summary(&ownership.conversation);
+            log_realtime_turn_summary(&ownership.conversation);
             log::warn!("[{}] realtime voice session failed: {}", TAG, error);
             crate::metrics::record_voice_tool_failure("voice_session_realtime");
         }
@@ -599,12 +666,8 @@ fn record_realtime_conversation_success(
     session: &crate::audio::realtime::RealtimeSessionResult,
 ) {
     conversation.record_input_audio_ms(session.input_audio_ms);
-    if session.input_audio_ms > 0 {
-        crate::metrics::record_voice_realtime_local_commit();
-    }
     if session.server_speech_started {
         conversation.mark_server_speech_started();
-        crate::metrics::record_voice_realtime_server_speech();
     }
     if session.server_speech_stopped {
         conversation.mark_server_speech_stopped();
@@ -618,7 +681,6 @@ fn record_realtime_conversation_success(
     if session.turns_completed > 0 {
         for _ in 0..session.turns_completed {
             conversation.mark_turn_completed();
-            crate::metrics::record_voice_realtime_turn_completed();
         }
         conversation.finish_completed();
     } else {
@@ -1058,6 +1120,26 @@ mod tests {
             snapshot.records[0].state,
             crate::runtime::foreground::RuntimeForegroundTicketState::Finished
         );
+    }
+
+    #[test]
+    fn voice_foreground_ticket_guard_renews_long_realtime_sessions() {
+        let _guard = crate::runtime::foreground::runtime_foreground_test_guard();
+        crate::runtime::foreground::reset_runtime_foreground_for_tests();
+        let ticket = crate::runtime::foreground::renew_runtime_foreground(
+            crate::runtime::RuntimeForegroundSource::RealtimeVoiceSession,
+            1_000,
+        );
+        let mut ticket_guard = VoiceForegroundTicketGuard::new(ticket);
+
+        ticket_guard.renew_at_for_test(25_000);
+
+        let snapshot = crate::runtime::foreground::runtime_foreground_snapshot_at(30_500);
+        assert!(snapshot.active);
+        assert_eq!(snapshot.active_count, 1);
+        assert_eq!(snapshot.records[0].ticket, ticket);
+        assert_eq!(snapshot.records[0].renewed_at_ms, 25_000);
+        assert_eq!(snapshot.records[0].expires_at_ms, 55_000);
     }
 
     #[test]

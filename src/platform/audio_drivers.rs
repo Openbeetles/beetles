@@ -952,6 +952,8 @@ fn duplex_capabilities_for_runtime(
     speaker_enabled: bool,
     input_reference: bool,
 ) -> crate::platform::AudioDuplexCapabilities {
+    // This platform audio pipeline exposes raw mic plus playback/reference rings only.
+    // It must not advertise Platform AEC until an AEC-clean near-end mic stream exists.
     match (mic_enabled, speaker_enabled) {
         (true, true) => {
             if input_reference {
@@ -1104,12 +1106,15 @@ impl AudioPipelineState {
         );
         mark_audio_io_lifecycle(crate::runtime::PlaneLifecycleState::Starting, "spawn");
         log::info!(
-            "[audio] worker starting name=audio_io_worker surface={:?} stack={} mic={} speaker={} reference={} cap_mic={} cap_speaker={} cap_staging={} cap_reference={}",
+            "[audio] worker starting name=audio_io_worker surface={:?} stack={} mic={} speaker={} reference={} aec={:?} barge_in={} full_duplex_upload={} cap_mic={} cap_speaker={} cap_staging={} cap_reference={}",
             worker_surface,
             STACK_AUDIO_IO_STD_COMPAT,
             mic_enabled,
             speaker_enabled,
             mic_enabled && speaker_enabled,
+            duplex_capabilities.echo_cancellation,
+            duplex_capabilities.supports_barge_in(),
+            duplex_capabilities.supports_capture_upload_during_playback(),
             capacities.mic,
             capacities.speaker,
             capacities.staging,
@@ -1153,20 +1158,22 @@ impl AudioPipelineState {
                         // staging has data — including the pre-playback buffering phase.
                         // This decouples WSS data arrival from I2S consumption.
                         {
-                            let staging_popped = {
-                                let mut sg = worker_shared
-                                    .staging
-                                    .lock()
-                                    .unwrap_or_else(|e| e.into_inner());
-                                sg.pop_into(&mut speaker_frame)
-                            };
-                            if staging_popped > 0 {
-                                let mut spk = worker_shared
-                                    .speaker
-                                    .lock()
-                                    .unwrap_or_else(|e| e.into_inner());
+                            let mut sg = worker_shared
+                                .staging
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner());
+                            let mut spk = worker_shared
+                                .speaker
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner());
+                            let transfer_limit =
+                                sg.len().min(spk.available()).min(speaker_frame.len());
+                            if transfer_limit > 0 {
+                                let staging_popped =
+                                    sg.pop_into(&mut speaker_frame[..transfer_limit]);
                                 let pushed =
                                     spk.push_slice_blocking(&speaker_frame[..staging_popped]);
+                                debug_assert_eq!(pushed, staging_popped);
                                 if pushed > 0 {
                                     crate::metrics::record_audio_speaker_queue_depth_last_samples(
                                         spk.len(),
@@ -1600,11 +1607,15 @@ mod tests {
     fn codec_duplex_with_input_reference_reports_input_reference_capability() {
         let caps = duplex_capabilities_for_runtime(true, true, true);
         assert_eq!(caps.profile().as_str(), "duplex_input_reference");
+        assert!(!caps.supports_barge_in());
+        assert!(caps.requires_capture_upload_suspend_during_playback());
     }
 
     #[test]
     fn duplex_without_input_reference_reports_playback_monitor_capability() {
         let caps = duplex_capabilities_for_runtime(true, true, false);
         assert_eq!(caps.profile().as_str(), "duplex_playback_reference");
+        assert!(!caps.supports_barge_in());
+        assert!(caps.requires_capture_upload_suspend_during_playback());
     }
 }

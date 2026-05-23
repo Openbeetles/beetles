@@ -463,20 +463,22 @@ Top-level fields:
 - `speaker`
 - `codec`
 - `vad`
-- `wake_word` (voice wake enablement and post-wake prompt; ESP32-S3 / ESP32-P4 use the fixed wake phrase `Hi,ESP`)
+- `wake_word` (voice wake enablement and post-wake prompt; the current ESP-SR model is fixed to `wn9_hilexin`, phrase `Hi 乐鑫`)
 - `speech`
 - `tts`
 - `realtime`
 - `ambient_listening`
 - `led_indicator`
 
-`wake_word` keeps the existing configuration surface unchanged. `enabled` controls whether local voice wake is enabled; `wake_prompt` is the prompt played after wake and does not change the wake phrase.
+`wake_word` keeps the existing configuration surface unchanged. `enabled` controls whether local voice wake is enabled; `wake_prompt` is the prompt played after wake and does not change the ESP-SR wake model or phrase.
 
-ESP32-S3 / ESP32-P4 use the fixed wake phrase `Hi,ESP`. This phrase is not customizable, and neither configure-ui nor the API exposes a wake-phrase configuration field.
+The current ESP-SR product contract is fixed to `wn9_hilexin` / `Hi 乐鑫`. This model and phrase are not customizable, and neither Configure UI nor the API exposes a wake-phrase configuration field. `wake_word.keyword` is a hidden legacy field: old values are still accepted, but it is not the ESP-SR runtime source of truth.
 
-`topology` currently supports `discrete_i2s` and `i2s_codec`. In `i2s_codec` mode, `codec` contains `input_codec`, `output_codec`, `input_addr`, `output_addr`, `pa_pin`, and `input_reference`. The current ESP-BOX-3 codec path supports ES7210 input and ES8311 output.
+`topology` currently supports `discrete_i2s` and `i2s_codec`. It selects the audio access mode, not a fixed board. In `i2s_codec` mode, `codec` contains `input_codec`, `output_codec`, `input_addr`, `output_addr`, `pa_pin`, and `input_reference`. The currently shipped codec profile supports ES7210 input and ES8311 output; new boards should extend device/profile validation and platform support, not add board-specific config fields.
 
-For `audio.topology = "i2s_codec"` with ES7210 input reference enabled, the device chooses the board mic/secondary input pair internally for the voice path. Users do not need to configure a TDM channel index manually.
+For `audio.topology = "i2s_codec"` with ES7210 input reference enabled, the device chooses the primary/secondary codec input pair through the codec profile. Users do not need to configure a TDM channel index manually. I2C/I2S buses and pins live in `hardware.i2c_bus` and `hardware.i2s_bus`, not in board presets.
+
+The ESP32-S3 / ESP32-P4 Nano entries in `board_presets.toml`, plus ESP-BOX-3 live evidence, are the current firmware packaging, flashing, and validation matrix. They are not the configuration API capability boundary.
 
 Optional query parameter: `restart=1`
 

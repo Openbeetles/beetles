@@ -3113,6 +3113,14 @@ EOF
 
 # --- Flash mode: numbered menu (same style as Linux deploy mode menu; sets ERASE_BEFORE_FLASH; may exit) ---
 # FLASH_NO_ERASE=1 (--flash-update): skip menu, never erase.
+full_erase_confirmation_phrase() {
+  beetle_full_erase_confirmation_phrase "$@"
+}
+
+require_full_erase_confirmation() {
+  beetle_require_full_erase_confirmation "$@"
+}
+
 select_flash_mode() {
   local port="$1" triple="$2"
   ERASE_BEFORE_FLASH=0
@@ -3124,6 +3132,7 @@ select_flash_mode() {
     return 0
   fi
   if [[ "${BEETLE_FLASH_MODE:-}" == "full-erase" ]]; then
+    require_full_erase_confirmation "$port" "$FLASH_CHIP" "BEETLE_FLASH_MODE=full-erase"
     ERASE_BEFORE_FLASH=1
     echo -e "${YELLOW}! Flash mode: full chip erase forced by BEETLE_FLASH_MODE=full-erase.${NC}"
     echo ""
@@ -3146,9 +3155,12 @@ select_flash_mode() {
         return 0
         ;;
       2)
+        local expected
+        expected="$(full_erase_confirmation_phrase "$FLASH_CHIP" "$port")"
         echo -e "${YELLOW}⚠ Entire flash will be erased on ${port}; firmware target: ${triple}${NC}"
-        read -r -p "Type 'yes' to confirm full erase and flash: " confirm
-        if [[ "$confirm" != "yes" ]]; then
+        echo "This wipes NVS, storage, WiFi/channel configuration, and all flash partitions."
+        read -r -p "Type exactly '$expected' to confirm full erase and flash: " confirm
+        if [[ "$confirm" != "$expected" ]]; then
           echo "Aborted."
           exit 0
         fi

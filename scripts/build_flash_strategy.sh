@@ -59,6 +59,25 @@ beetle_full_erase_transport_for_chip() {
   esac
 }
 
+beetle_full_erase_confirmation_phrase() {
+  local chip="$1" port="$2"
+  printf 'I AUTHORIZE FULL ERASE %s %s\n' "$chip" "$port"
+}
+
+beetle_require_full_erase_confirmation() {
+  local port="$1" chip="$2" source="$3"
+  local expected
+  expected="$(beetle_full_erase_confirmation_phrase "$chip" "$port")"
+  if [[ "${BEETLE_FULL_ERASE_CONFIRM:-}" == "$expected" ]]; then
+    return 0
+  fi
+  echo "Error: destructive full erase requested by $source without explicit confirmation." >&2
+  echo "  Full erase wipes NVS, storage, WiFi/channel configuration, and all flash partitions." >&2
+  echo "  If this destructive action is explicitly authorized, set:" >&2
+  echo "    BEETLE_FULL_ERASE_CONFIRM='$expected'" >&2
+  return 1
+}
+
 beetle_espflash_connection_profiles() {
   local chip="${1:-}"
   local subcommand="${2:-}"

@@ -1102,6 +1102,13 @@ impl UserInboundTx {
             .unwrap_or_else(|error| error.into_inner()) = Some(Arc::new(hook));
     }
 
+    pub fn set_after_successful_send_hook<F>(&self, hook: F)
+    where
+        F: Fn() + Send + Sync + 'static,
+    {
+        self.inner.set_after_successful_send_hook(Arc::new(hook));
+    }
+
     fn accepted_user_ingress_hook(&self) -> Option<AcceptedUserIngressHook> {
         self.after_accepted_user_ingress
             .lock()
@@ -1235,6 +1242,13 @@ pub struct SystemInboundTx {
 impl SystemInboundTx {
     pub fn new(inner: InboundTx) -> Self {
         Self { inner }
+    }
+
+    pub fn set_after_successful_send_hook<F>(&self, hook: F)
+    where
+        F: Fn() + Send + Sync + 'static,
+    {
+        self.inner.set_after_successful_send_hook(Arc::new(hook));
     }
 
     #[allow(clippy::result_large_err)]
@@ -1438,6 +1452,38 @@ mod tests {
             2,
             "failed sends must not wake lazy outbound execution"
         );
+    }
+
+    #[test]
+    fn user_and_system_inbound_success_hooks_run() {
+        let (user_tx, user_rx, _) = new_user_inbound_channel(2);
+        let user_calls = Arc::new(AtomicUsize::new(0));
+        let user_hook_calls = Arc::clone(&user_calls);
+        user_tx.set_after_successful_send_hook(move || {
+            user_hook_calls.fetch_add(1, Ordering::Relaxed);
+        });
+
+        user_tx
+            .try_submit_user(
+                PcMsg::new_inbound("voice", "device", "hi", false).expect("user msg"),
+                crate::runtime::RuntimeForegroundSource::VoiceFallbackInteraction,
+            )
+            .expect("user enqueue");
+        assert_eq!(user_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(user_rx.try_recv().expect("user recv").content, "hi");
+
+        let (system_tx, system_rx, _) = new_system_inbound_channel(2);
+        let system_calls = Arc::new(AtomicUsize::new(0));
+        let system_hook_calls = Arc::clone(&system_calls);
+        system_tx.set_after_successful_send_hook(move || {
+            system_hook_calls.fetch_add(1, Ordering::Relaxed);
+        });
+
+        system_tx
+            .try_send(PcMsg::new("system", "device", "tick").expect("system msg"))
+            .expect("system enqueue");
+        assert_eq!(system_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(system_rx.try_recv().expect("system recv").content, "tick");
     }
 
     #[test]

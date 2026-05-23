@@ -109,6 +109,15 @@ fn agent_http_open_failure_action(error: &beetle::Error) -> AgentHttpOpenFailure
     }
 }
 
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+fn agent_loop_eager_start(config: &AppConfig, pending_agent_work: bool) -> bool {
+    if pending_agent_work {
+        return true;
+    }
+    let enabled_channel = beetle::normalize_compiled_enabled_channel(&config.enabled_channel);
+    !enabled_channel.is_empty() && config.validate_for_channels().is_ok()
+}
+
 struct VoiceEventChannel {
     speak_capable: bool,
     tx: std::sync::mpsc::SyncSender<beetle::audio::voice_session::VoiceEvent>,
@@ -1391,8 +1400,8 @@ mod tests {
                 "ESP external WSS stack budget should stay at the validated 9KB steady-channel budget"
             );
             assert!(
-                beetle::util::STACK_VOICE_REALTIME_CONNECT == 12 * 1024,
-                "ESP realtime voice WSS connect keeps a separate transient 12KB budget"
+                beetle::util::STACK_VOICE_REALTIME_CONNECT == 9 * 1024,
+                "ESP realtime voice WSS connect keeps the measured WSS-class 9KB budget"
             );
         }
 
@@ -4485,10 +4494,36 @@ fn start_agent_plane(
 
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
     {
+        let pending_agent_work = assembly
+            .bus
+            .user_inbound_depth
+            .load(std::sync::atomic::Ordering::Relaxed)
+            > 0
+            || assembly
+                .bus
+                .system_inbound_depth
+                .load(std::sync::atomic::Ordering::Relaxed)
+                > 0;
+        let eager_start = agent_loop_eager_start(assembly.config.as_ref(), pending_agent_work);
         beetle::runtime::register_deferred_agent_loop_guard(
             Arc::clone(&assembly.runtime.platform),
             spawn_agent_loop,
+            eager_start,
         );
+        assembly
+            .bus
+            .user_inbound_tx
+            .set_after_successful_send_hook(|| {
+                beetle::runtime::request_deferred_agent_loop_start("user_inbound_enqueued");
+                beetle::runtime::service_agent_loop_guard(TAG);
+            });
+        assembly
+            .bus
+            .system_inbound_tx
+            .set_after_successful_send_hook(|| {
+                beetle::runtime::request_deferred_agent_loop_start("system_inbound_enqueued");
+                beetle::runtime::service_agent_loop_guard(TAG);
+            });
         beetle::orchestrator::log_startup_memory_checkpoint("agent_loop_deferred");
         return Ok(None);
     }

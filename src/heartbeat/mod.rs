@@ -114,6 +114,11 @@ pub(crate) fn heartbeat_tick(
     log::info!(
         "[{}] {}",
         TAG,
+        crate::metrics::format_audio_speaker_baseline_line()
+    );
+    log::info!(
+        "[{}] {}",
+        TAG,
         crate::metrics::format_voice_realtime_baseline_line()
     );
     log::info!(

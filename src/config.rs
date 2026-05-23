@@ -1099,6 +1099,8 @@ const AUDIO_WAKE_PROMPT_MAX_LEN: usize = 256;
 const AUDIO_MIC_DEVICE_PDM: &str = "pdm";
 const AUDIO_SPEAKER_DEVICE_I2S_MAX98357A: &str = "i2s_max98357a";
 const AUDIO_SPEAKER_DEVICE_USB: &str = "usb";
+pub const AUDIO_WAKE_WORD_FIXED_MODEL: &str = "wn9_hilexin";
+pub const AUDIO_WAKE_WORD_FIXED_PHRASE: &str = "Hi 乐鑫";
 pub const AUDIO_TOPOLOGY_DISCRETE_I2S: &str = "discrete_i2s";
 pub const AUDIO_TOPOLOGY_I2S_CODEC: &str = "i2s_codec";
 pub const AUDIO_CODEC_INPUT_ES7210: &str = "es7210";
@@ -1190,7 +1192,7 @@ pub struct AudioWakeWordConfig {
     #[serde(default)]
     pub enabled: bool,
     /// Legacy hidden field kept for config compatibility.
-    #[serde(default)]
+    #[serde(default = "default_wake_keyword")]
     pub keyword: String,
     #[serde(default = "default_wake_enter_threshold")]
     pub enter_threshold: f32,
@@ -1254,6 +1256,10 @@ fn default_wake_hangover_ms() -> u32 {
 
 fn default_wake_cooldown_ms() -> u32 {
     1000
+}
+
+fn default_wake_keyword() -> String {
+    AUDIO_WAKE_WORD_FIXED_MODEL.to_string()
 }
 
 const ES7210_WAKE_ENTER_THRESHOLD: f32 = 0.01;
@@ -1496,7 +1502,7 @@ pub fn default_disabled_audio_segment() -> AudioSegment {
         },
         wake_word: AudioWakeWordConfig {
             enabled: false,
-            keyword: "hiesp".to_string(),
+            keyword: default_wake_keyword(),
             enter_threshold: default_wake_enter_threshold(),
             leave_threshold: default_wake_leave_threshold(),
             reference_suppress_ratio: default_wake_reference_suppress_ratio(),
@@ -1547,6 +1553,10 @@ pub fn default_disabled_audio_segment() -> AudioSegment {
 }
 
 pub const AUDIO_REALTIME_PCM16_SAMPLE_RATE: u32 = 24_000;
+/// Qwen realtime upload PCM target. This is not the codec hardware/playback rate:
+/// ES7210/ES8311 full-duplex keeps the runtime bus at 24kHz and the realtime
+/// upload encoder downsamples mic PCM to Qwen's 16kHz input contract.
+pub const AUDIO_REALTIME_QWEN_PCM_SAMPLE_RATE: u32 = 16_000;
 pub fn audio_realtime_required_sample_rate(provider: &str) -> u32 {
     let _ = provider;
     AUDIO_REALTIME_PCM16_SAMPLE_RATE
@@ -1931,6 +1941,7 @@ pub(crate) fn normalize_audio_segment(seg: &mut AudioSegment) {
     trim_optional_nonempty(&mut seg.codec.input_codec);
     trim_optional_nonempty(&mut seg.codec.output_codec);
     normalize_es7210_codec_wake_defaults(seg);
+    normalize_es7210_qwen_sample_rate(seg);
 }
 
 fn trim_optional_nonempty(field: &mut Option<String>) {
@@ -2012,6 +2023,21 @@ fn normalize_es7210_codec_wake_defaults(seg: &mut AudioSegment) {
     seg.wake_word.zcr_max = ES7210_WAKE_ZCR_MAX;
     seg.wake_word.min_speech_band_ratio = ES7210_WAKE_MIN_SPEECH_BAND_RATIO;
     seg.wake_word.min_active_ms = ES7210_WAKE_MIN_ACTIVE_MS;
+}
+
+fn normalize_es7210_qwen_sample_rate(seg: &mut AudioSegment) {
+    if !seg.enabled
+        || !seg.wake_word.enabled
+        || !audio_uses_es7210_codec_input(seg)
+        || !audio_realtime_enabled(seg)
+        || seg.realtime.provider.trim() != AUDIO_REALTIME_PROVIDER_QWEN
+    {
+        return;
+    }
+
+    let sample_rate = audio_realtime_required_sample_rate(AUDIO_REALTIME_PROVIDER_QWEN);
+    seg.microphone.sample_rate = sample_rate;
+    seg.speaker.sample_rate = sample_rate;
 }
 
 pub(crate) fn audio_wake_word_config_for_runtime(audio: &AudioSegment) -> AudioWakeWordConfig {
@@ -4050,6 +4076,22 @@ mod tests {
     }
 
     #[test]
+    fn audio_realtime_required_sample_rate_is_runtime_hardware_rate() {
+        assert_eq!(
+            audio_realtime_required_sample_rate(AUDIO_REALTIME_PROVIDER_QWEN),
+            AUDIO_REALTIME_PCM16_SAMPLE_RATE
+        );
+        assert_eq!(
+            audio_realtime_required_sample_rate(AUDIO_REALTIME_PROVIDER_OPENAI_COMPATIBLE),
+            AUDIO_REALTIME_PCM16_SAMPLE_RATE
+        );
+        assert_eq!(
+            audio_realtime_required_sample_rate(AUDIO_REALTIME_PROVIDER_DOUBAO),
+            AUDIO_REALTIME_PCM16_SAMPLE_RATE
+        );
+    }
+
+    #[test]
     fn audio_validation_allows_acoustic_wake_without_keyword_model() {
         let mut seg = default_disabled_audio_segment();
         seg.enabled = true;
@@ -4061,6 +4103,14 @@ mod tests {
         seg.speech.api_secret = "test-secret".to_string();
 
         assert!(validate_audio_segment(&seg).is_ok());
+    }
+
+    #[test]
+    fn default_audio_wake_keyword_tracks_current_fixed_esp_sr_model() {
+        let seg = default_disabled_audio_segment();
+
+        assert_eq!(seg.wake_word.keyword, AUDIO_WAKE_WORD_FIXED_MODEL);
+        assert_eq!(AUDIO_WAKE_WORD_FIXED_PHRASE, "Hi 乐鑫");
     }
 
     #[test]
@@ -4264,6 +4314,11 @@ mod tests {
         assert_eq!(saved.wake_word.zcr_max, 0.65);
         assert_eq!(saved.wake_word.min_speech_band_ratio, 0.35);
         assert_eq!(saved.wake_word.min_active_ms, 120);
+        assert_eq!(
+            saved.microphone.sample_rate,
+            AUDIO_REALTIME_PCM16_SAMPLE_RATE
+        );
+        assert_eq!(saved.speaker.sample_rate, AUDIO_REALTIME_PCM16_SAMPLE_RATE);
     }
 
     #[test]
@@ -4320,6 +4375,11 @@ mod tests {
             default_wake_enter_threshold()
         );
         assert_eq!(saved.wake_word.zcr_min, 0.09);
+        assert_eq!(
+            saved.microphone.sample_rate,
+            AUDIO_REALTIME_PCM16_SAMPLE_RATE
+        );
+        assert_eq!(saved.speaker.sample_rate, AUDIO_REALTIME_PCM16_SAMPLE_RATE);
     }
 
     #[test]
@@ -4344,7 +4404,7 @@ mod tests {
                   "sample_rate": 16000
                 },
                 "vad": { "threshold": 0.5, "silence_duration_ms": 1000 },
-                "wake_word": { "enabled": false, "keyword": "hiesp", "wake_prompt": "你好，我在听，请说。" },
+                "wake_word": { "enabled": false, "keyword": "wn9_hilexin", "wake_prompt": "你好，我在听，请说。" },
                 "speech": { "api_url": "https://vop.baidu.com/server_api", "api_key": "", "api_secret": "", "model": "1537", "language": "zh" },
                 "tts": { "voice": "0", "rate": "+0%", "pitch": "+0Hz" },
                 "realtime": {
@@ -4516,7 +4576,7 @@ mod tests {
                   "input_reference": true
                 },
                 "vad": { "threshold": 0.5, "silence_duration_ms": 1000 },
-                "wake_word": { "enabled": false, "keyword": "hiesp", "wake_prompt": "你好，我在听，请说。" },
+                "wake_word": { "enabled": false, "keyword": "wn9_hilexin", "wake_prompt": "你好，我在听，请说。" },
                 "speech": { "api_url": "https://vop.baidu.com/server_api", "api_key": "", "api_secret": "", "model": "1537", "language": "zh" },
                 "tts": { "voice": "0", "rate": "+0%", "pitch": "+0Hz" },
                 "realtime": {
@@ -4585,7 +4645,7 @@ mod tests {
               "sample_rate": 16000
             },
             "vad": { "threshold": 0.5, "silence_duration_ms": 1000 },
-            "wake_word": { "enabled": false, "keyword": "hiesp", "wake_prompt": "你好，我在听，请说。" },
+            "wake_word": { "enabled": false, "keyword": "wn9_hilexin", "wake_prompt": "你好，我在听，请说。" },
             "speech": { "api_url": "https://vop.baidu.com/server_api", "api_key": "", "api_secret": "", "model": "1537", "language": "zh" },
             "tts": { "voice": "0", "rate": "+0%", "pitch": "+0Hz" },
             "realtime": {

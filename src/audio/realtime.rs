@@ -8,8 +8,8 @@ use crate::audio::input_profile::AudioInputHardwareProfile;
 use crate::audio::realtime_provider::RealtimeProvider;
 use crate::audio::wake_handoff::WakeAudioHandoff;
 use crate::channels::{WssCloseInfo, WssConnection, WssEvent};
-use crate::config::audio_realtime_enabled;
 use crate::config::AudioSegment;
+use crate::config::{audio_realtime_enabled, AUDIO_REALTIME_QWEN_PCM_SAMPLE_RATE};
 use crate::constants::{AUDIO_CAPTURE_FRAME_SAMPLES, AUDIO_TTS_WRITE_CHUNK_SAMPLES};
 use crate::error::{Error, Result};
 use crate::platform::AudioDuplexCapabilities;
@@ -32,14 +32,22 @@ const REALTIME_SERVER_VAD_PREFIX_PADDING_MS: u32 = 300;
 const REALTIME_NO_SPEECH_TIMEOUT_MS: u64 = 4_000;
 const REALTIME_POST_RESPONSE_IDLE_TIMEOUT_MS: u64 = 5_000;
 const REALTIME_RESPONSE_WAIT_TIMEOUT_MS: u64 = 8_000;
+const REALTIME_SERVER_VAD_POST_RESPONSE_IDLE_TIMEOUT_MS: u64 = 20_000;
+const REALTIME_FOREGROUND_KEEPALIVE_MS: u64 = 5_000;
 // Realtime downlink is raw PCM over WSS, so ESP keeps a modest software buffer
 // to absorb normal Wi-Fi jitter before releasing audio to the speaker.
 const REALTIME_PLAYBACK_TARGET_BUFFER_MS: u32 = 800;
+const REALTIME_OUTPUT_STAGING_WAIT_MS: u64 = 30_000;
+const REALTIME_OUTPUT_STAGING_RETRY_MS: u64 = 10;
 const REALTIME_INTERRUPT_BASELINE_MS: u64 = 180;
 const REALTIME_INTERRUPT_SPEECH_MIN_MS: u32 = 180;
 const REALTIME_INTERRUPT_THRESHOLD_MIN: f32 = 0.18;
 const REALTIME_INTERRUPT_THRESHOLD_MARGIN: f32 = 0.08;
 const REALTIME_INTERRUPT_THRESHOLD_MULTIPLIER: f32 = 2.0;
+const REALTIME_INTERRUPT_LOW_SNR_SPEECH_MIN_MS: u32 = 120;
+const REALTIME_INTERRUPT_LOW_SNR_THRESHOLD_MIN: f32 = 0.006;
+const REALTIME_INTERRUPT_LOW_SNR_THRESHOLD_MARGIN: f32 = 0.003;
+const REALTIME_INTERRUPT_LOW_SNR_THRESHOLD_MULTIPLIER: f32 = 0.85;
 const REALTIME_INTERRUPT_REFERENCE_ACTIVE_MIN: f32 = 0.06;
 const REALTIME_INTERRUPT_REFERENCE_SUBTRACT_SCALE: f32 = 0.65;
 const REALTIME_LOCAL_SPEECH_WINDOW_MAX_MS: u32 = 12_000;
@@ -71,6 +79,108 @@ enum NoSpeechExitReason {
     PostPlaybackIdle,
 }
 
+impl NoSpeechExitReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::NoLocalSpeechAfterSessionReady => "no_local_speech_after_session_ready",
+            Self::ResponseWait => "response_wait",
+            Self::PostPlaybackIdle => "post_playback_idle",
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct RealtimeOutputTurn {
+    response_id: Option<String>,
+    item_id: Option<String>,
+    generation: u32,
+    audio_started: bool,
+    accepted_samples: usize,
+    played_or_queued_samples: usize,
+    not_before_drained_at: Option<Instant>,
+    audio_done_seen: bool,
+    response_done_seen: bool,
+    cancelled: bool,
+    ended: bool,
+}
+
+impl RealtimeOutputTurn {
+    fn new(generation: u32, response_id: Option<String>, item_id: Option<String>) -> Self {
+        Self {
+            response_id,
+            item_id,
+            generation,
+            audio_started: false,
+            accepted_samples: 0,
+            played_or_queued_samples: 0,
+            not_before_drained_at: None,
+            audio_done_seen: false,
+            response_done_seen: false,
+            cancelled: false,
+            ended: false,
+        }
+    }
+
+    fn record_audio_write(&mut self, now: Instant, accepted_samples: usize, sample_rate_hz: u32) {
+        if accepted_samples == 0 {
+            return;
+        }
+        self.audio_started = true;
+        self.accepted_samples = self.accepted_samples.saturating_add(accepted_samples);
+        self.played_or_queued_samples = self
+            .played_or_queued_samples
+            .saturating_add(accepted_samples);
+        let pending_base = self
+            .not_before_drained_at
+            .filter(|drain_at| *drain_at > now)
+            .unwrap_or(now);
+        self.not_before_drained_at =
+            Some(pending_base + samples_to_duration(accepted_samples, sample_rate_hz));
+    }
+
+    fn mark_audio_done(&mut self) {
+        self.audio_done_seen = true;
+    }
+
+    fn mark_response_done(&mut self) {
+        self.response_done_seen = true;
+    }
+
+    fn mark_cancelled(&mut self) {
+        self.cancelled = true;
+        self.ended = true;
+    }
+
+    fn audio_duration_pending(&self, now: Instant) -> bool {
+        self.not_before_drained_at
+            .map(|drain_at| drain_at > now)
+            .unwrap_or(false)
+    }
+
+    fn mark_drained(&mut self, now: Instant) {
+        if (self.response_done_seen || self.cancelled) && !self.audio_duration_pending(now) {
+            self.ended = true;
+        }
+    }
+
+    fn accepts_event(&self, response_id: Option<&str>, item_id: Option<&str>) -> bool {
+        if self.cancelled || self.ended {
+            return false;
+        }
+        if let (Some(expected), Some(actual)) = (self.response_id.as_deref(), response_id) {
+            if expected != actual {
+                return false;
+            }
+        }
+        if let (Some(expected), Some(actual)) = (self.item_id.as_deref(), item_id) {
+            if expected != actual {
+                return false;
+            }
+        }
+        true
+    }
+}
+
 struct RealtimeLoopState {
     duplex_caps: AudioDuplexCapabilities,
     awaiting_response: bool,
@@ -95,7 +205,18 @@ struct RealtimeLoopState {
     current_local_turn_committed: bool,
     local_turn_generation: u32,
     server_response_generation: u32,
+    output_generation: u32,
+    active_output_turn: Option<RealtimeOutputTurn>,
+    stale_server_audio_drop_total: u32,
     output_pcm_decode_buf: Vec<i16>,
+    downlink_delta_chunks: u32,
+    downlink_delta_samples: usize,
+    downlink_staging_written_samples: usize,
+    downlink_direct_written_samples: usize,
+    downlink_dropped_samples: usize,
+    downlink_peak_staging_samples: usize,
+    downlink_peak_speaker_samples: usize,
+    downlink_started_at: Option<Instant>,
     last_activity: Instant,
 }
 
@@ -125,7 +246,18 @@ impl RealtimeLoopState {
             current_local_turn_committed: false,
             local_turn_generation: 0,
             server_response_generation: 0,
+            output_generation: 0,
+            active_output_turn: None,
+            stale_server_audio_drop_total: 0,
             output_pcm_decode_buf: Vec::new(),
+            downlink_delta_chunks: 0,
+            downlink_delta_samples: 0,
+            downlink_staging_written_samples: 0,
+            downlink_direct_written_samples: 0,
+            downlink_dropped_samples: 0,
+            downlink_peak_staging_samples: 0,
+            downlink_peak_speaker_samples: 0,
+            downlink_started_at: None,
             last_activity: Instant::now(),
         }
     }
@@ -167,6 +299,23 @@ impl RealtimeLoopState {
         self.current_local_turn_committed = false;
     }
 
+    fn begin_local_activity_window(&mut self, now: Instant, frame_ms: u32) {
+        self.current_local_speech_ms = frame_ms;
+        self.current_local_turn_committed = false;
+        self.last_activity = now;
+    }
+
+    fn extend_local_activity_window(&mut self, now: Instant, frame_ms: u32) {
+        self.current_local_speech_ms = self.current_local_speech_ms.saturating_add(frame_ms);
+        self.last_activity = now;
+    }
+
+    fn finish_local_activity_window(&mut self, now: Instant) {
+        self.current_local_speech_ms = 0;
+        self.current_local_turn_committed = false;
+        self.last_activity = now;
+    }
+
     fn commit_local_turn(&mut self, now: Instant) {
         if self.current_local_turn_committed {
             self.last_activity = now;
@@ -190,9 +339,20 @@ impl RealtimeLoopState {
         self.last_activity = now;
     }
 
-    fn mark_server_response_created(&mut self, now: Instant) {
+    fn mark_server_response_created_with_ids(
+        &mut self,
+        now: Instant,
+        response_id: Option<String>,
+        item_id: Option<String>,
+    ) {
         self.awaiting_response = true;
         self.server_response_generation = self.local_turn_generation;
+        self.output_generation = next_turn_generation(self.output_generation);
+        self.active_output_turn = Some(RealtimeOutputTurn::new(
+            self.output_generation,
+            response_id,
+            item_id,
+        ));
         self.response_created = true;
         self.mark_server_response_activity(now);
     }
@@ -223,14 +383,99 @@ impl RealtimeLoopState {
         self.last_activity = now;
     }
 
-    fn drop_server_audio_for_stale_turn(&mut self, _now: Instant) {}
+    fn drop_server_audio_for_stale_turn(&mut self, event_type: &str, reason: &str, now: Instant) {
+        self.stale_server_audio_drop_total = self.stale_server_audio_drop_total.saturating_add(1);
+        self.last_activity = now;
+        log::warn!(
+            "[{}] stale realtime server audio dropped event={} reason={} local_generation={} server_generation={} output_generation={} active_output_generation={} stale_server_audio_drop_total={}",
+            REALTIME_TAG,
+            event_type,
+            reason,
+            self.local_turn_generation,
+            self.server_response_generation,
+            self.output_generation,
+            self.active_output_turn
+                .as_ref()
+                .map(|turn| turn.generation)
+                .unwrap_or(0),
+            self.stale_server_audio_drop_total
+        );
+    }
 
     fn should_accept_server_audio(&self) -> bool {
         self.server_response_generation == self.local_turn_generation
+            && self
+                .active_output_turn
+                .as_ref()
+                .map(|turn| {
+                    !turn.cancelled && !turn.ended && turn.generation == self.output_generation
+                })
+                .unwrap_or(false)
     }
 
     fn has_committed_local_turn(&self) -> bool {
         self.local_turn_generation != 0 || self.first_local_speech_at.is_some()
+    }
+
+    fn should_accept_server_audio_event(&self, value: &serde_json::Value) -> bool {
+        let Some(turn) = self.active_output_turn.as_ref() else {
+            return false;
+        };
+        self.should_accept_server_audio()
+            && turn.accepts_event(response_event_id(value), item_event_id(value))
+    }
+
+    fn can_begin_output_turn(&self, platform: &dyn Platform, now: Instant) -> bool {
+        let Some(turn) = self.active_output_turn.as_ref() else {
+            return true;
+        };
+        turn.ended
+            || turn.cancelled
+            || (turn.response_done_seen
+                && !self.audio_playing
+                && platform.speaker_staging_samples() == 0
+                && platform.speaker_buffered_samples() == 0
+                && !turn.audio_duration_pending(now))
+    }
+
+    fn active_output_duration_pending(&self, now: Instant) -> bool {
+        self.active_output_turn
+            .as_ref()
+            .map(|turn| !turn.cancelled && turn.audio_duration_pending(now))
+            .unwrap_or(false)
+    }
+
+    fn has_pending_output_turn(&self, now: Instant) -> bool {
+        self.active_output_turn
+            .as_ref()
+            .map(|turn| !turn.cancelled && (!turn.ended || turn.audio_duration_pending(now)))
+            .unwrap_or(false)
+    }
+
+    fn mark_active_output_audio_done(&mut self, value: &serde_json::Value) -> bool {
+        if !self.should_accept_server_audio_event(value) {
+            return false;
+        }
+        if let Some(turn) = self.active_output_turn.as_mut() {
+            turn.mark_audio_done();
+        }
+        true
+    }
+
+    fn mark_active_output_response_done(&mut self, value: &serde_json::Value) -> bool {
+        if !self.should_accept_server_audio_event(value) {
+            return false;
+        }
+        if let Some(turn) = self.active_output_turn.as_mut() {
+            turn.mark_response_done();
+        }
+        true
+    }
+
+    fn cancel_active_output_turn(&mut self) {
+        if let Some(turn) = self.active_output_turn.as_mut() {
+            turn.mark_cancelled();
+        }
     }
 
     fn start_audio_playback(&mut self, now: Instant) {
@@ -258,6 +503,144 @@ impl RealtimeLoopState {
         self.interrupt_speech_ms = 0;
         crate::orchestrator::set_audio_interrupt_listening(false);
         crate::orchestrator::set_audio_playing(false);
+        self.mark_active_output_drained(now);
+    }
+
+    fn mark_active_output_drained(&mut self, now: Instant) {
+        if let Some(turn) = self.active_output_turn.as_mut() {
+            turn.mark_drained(now);
+        }
+    }
+
+    fn record_downlink_write(
+        &mut self,
+        now: Instant,
+        write: OutputQueueWrite,
+        sample_rate_hz: u32,
+    ) {
+        if self.downlink_started_at.is_none() {
+            self.downlink_started_at = Some(now);
+        }
+        if let Some(turn) = self.active_output_turn.as_mut() {
+            turn.record_audio_write(now, write.accepted_samples(), sample_rate_hz);
+        }
+        self.downlink_delta_chunks = self.downlink_delta_chunks.saturating_add(1);
+        self.downlink_delta_samples = self
+            .downlink_delta_samples
+            .saturating_add(write.input_samples);
+        self.downlink_staging_written_samples = self
+            .downlink_staging_written_samples
+            .saturating_add(write.staging_written);
+        self.downlink_direct_written_samples = self
+            .downlink_direct_written_samples
+            .saturating_add(write.direct_written);
+        self.downlink_dropped_samples = self.downlink_dropped_samples.saturating_add(write.dropped);
+        self.downlink_peak_staging_samples = self
+            .downlink_peak_staging_samples
+            .max(write.staging_buffered_after);
+        self.downlink_peak_speaker_samples = self
+            .downlink_peak_speaker_samples
+            .max(write.speaker_buffered_after);
+    }
+
+    fn log_downlink_summary(
+        &mut self,
+        event: &str,
+        sample_rate_hz: u32,
+        now: Instant,
+        force_empty_summary: bool,
+    ) {
+        if self.downlink_delta_chunks == 0 && !force_empty_summary {
+            return;
+        }
+        let accepted = OutputQueueWrite {
+            staging_written: self.downlink_staging_written_samples,
+            direct_written: self.downlink_direct_written_samples,
+            ..OutputQueueWrite::default()
+        }
+        .accepted_samples();
+        let elapsed_ms = self
+            .downlink_started_at
+            .map(|started| now.duration_since(started).as_millis())
+            .unwrap_or(0);
+        let empty_output = self.downlink_delta_chunks == 0;
+        let (
+            output_generation,
+            response_id,
+            item_id,
+            audio_done_seen,
+            response_done_seen,
+            cancelled,
+            ended,
+            turn_accepted_samples,
+            played_or_queued_samples,
+        ) = self
+            .active_output_turn
+            .as_ref()
+            .map(|turn| {
+                (
+                    turn.generation,
+                    turn.response_id.as_deref().unwrap_or("-").to_string(),
+                    turn.item_id.as_deref().unwrap_or("-").to_string(),
+                    turn.audio_done_seen,
+                    turn.response_done_seen,
+                    turn.cancelled,
+                    turn.ended,
+                    turn.accepted_samples,
+                    turn.played_or_queued_samples,
+                )
+            })
+            .unwrap_or_else(|| {
+                (
+                    0,
+                    "-".to_string(),
+                    "-".to_string(),
+                    false,
+                    false,
+                    false,
+                    false,
+                    0,
+                    0,
+                )
+            });
+        log::info!(
+            "[{}] realtime audio downlink summary event={} chunks={} samples={} accepted={} dropped={} staging_written={} direct_written={} peak_staging={} peak_speaker={} audio_ms={} elapsed_ms={} output_generation={} response_id={} item_id={} empty_output={} audio_done_seen={} response_done_seen={} cancelled={} ended={} turn_accepted_samples={} played_or_queued_samples={} stale_server_audio_drop_total={}",
+            REALTIME_TAG,
+            event,
+            self.downlink_delta_chunks,
+            self.downlink_delta_samples,
+            accepted,
+            self.downlink_dropped_samples,
+            self.downlink_staging_written_samples,
+            self.downlink_direct_written_samples,
+            self.downlink_peak_staging_samples,
+            self.downlink_peak_speaker_samples,
+            samples_to_ms(accepted, sample_rate_hz),
+            elapsed_ms,
+            output_generation,
+            response_id,
+            item_id,
+            empty_output,
+            audio_done_seen,
+            response_done_seen,
+            cancelled,
+            ended,
+            turn_accepted_samples,
+            played_or_queued_samples,
+            self.stale_server_audio_drop_total
+        );
+        self.reset_downlink_window();
+    }
+
+    fn reset_downlink_window(&mut self) {
+        self.downlink_delta_chunks = 0;
+        self.downlink_delta_samples = 0;
+        self.downlink_staging_written_samples = 0;
+        self.downlink_direct_written_samples = 0;
+        self.downlink_dropped_samples = 0;
+        self.downlink_peak_staging_samples = 0;
+        self.downlink_peak_speaker_samples = 0;
+        self.downlink_started_at = None;
     }
 }
 
@@ -292,6 +675,7 @@ fn next_turn_generation(current: u32) -> u32 {
 }
 
 struct RealtimeUploadEncoder {
+    input_sample_rate_hz: u32,
     pcm_bytes: Vec<u8>,
     qwen_pcm16: Vec<i16>,
     audio_b64: String,
@@ -301,10 +685,11 @@ struct RealtimeUploadEncoder {
 }
 
 impl RealtimeUploadEncoder {
-    fn new() -> Self {
+    fn new(input_sample_rate_hz: u32) -> Self {
         let pcm_capacity = AUDIO_CAPTURE_FRAME_SAMPLES * 2;
         let b64_capacity = pcm_capacity.div_ceil(3) * 4;
         Self {
+            input_sample_rate_hz: input_sample_rate_hz.max(8_000),
             pcm_bytes: Vec::with_capacity(pcm_capacity),
             qwen_pcm16: Vec::with_capacity(AUDIO_CAPTURE_FRAME_SAMPLES),
             audio_b64: String::with_capacity(b64_capacity),
@@ -324,11 +709,18 @@ impl RealtimeUploadEncoder {
                 }
             }
             RealtimeProvider::Qwen => {
-                self.downsample_24k_to_16k(pcm);
-                self.pcm_bytes
-                    .reserve(self.qwen_pcm16.len().saturating_mul(2));
-                for sample in &self.qwen_pcm16 {
-                    self.pcm_bytes.extend_from_slice(&sample.to_le_bytes());
+                if self.input_sample_rate_hz == AUDIO_REALTIME_QWEN_PCM_SAMPLE_RATE {
+                    self.pcm_bytes.reserve(pcm.len().saturating_mul(2));
+                    for sample in pcm {
+                        self.pcm_bytes.extend_from_slice(&sample.to_le_bytes());
+                    }
+                } else {
+                    self.downsample_24k_to_16k(pcm);
+                    self.pcm_bytes
+                        .reserve(self.qwen_pcm16.len().saturating_mul(2));
+                    for sample in &self.qwen_pcm16 {
+                        self.pcm_bytes.extend_from_slice(&sample.to_le_bytes());
+                    }
                 }
             }
         }
@@ -347,11 +739,15 @@ impl RealtimeUploadEncoder {
                 self.pcm_bytes.extend_from_slice(pcm_le_bytes);
             }
             RealtimeProvider::Qwen => {
-                self.downsample_24k_le_bytes_to_16k(pcm_le_bytes);
-                self.pcm_bytes
-                    .reserve(self.qwen_pcm16.len().saturating_mul(2));
-                for sample in &self.qwen_pcm16 {
-                    self.pcm_bytes.extend_from_slice(&sample.to_le_bytes());
+                if self.input_sample_rate_hz == AUDIO_REALTIME_QWEN_PCM_SAMPLE_RATE {
+                    self.pcm_bytes.extend_from_slice(pcm_le_bytes);
+                } else {
+                    self.downsample_24k_le_bytes_to_16k(pcm_le_bytes);
+                    self.pcm_bytes
+                        .reserve(self.qwen_pcm16.len().saturating_mul(2));
+                    for sample in &self.qwen_pcm16 {
+                        self.pcm_bytes.extend_from_slice(&sample.to_le_bytes());
+                    }
                 }
             }
         }
@@ -511,6 +907,7 @@ pub(crate) fn run_connected_realtime_session(
     audio_cfg: &AudioSegment,
     connected: ConnectedRealtimeSession,
     handoff: WakeAudioHandoff,
+    mut maintain_foreground: impl FnMut(),
 ) -> Result<RealtimeSessionResult> {
     let _recording_guard = AudioRecordingGuard::new();
     let _cleanup = RealtimeSessionCleanup::new(platform);
@@ -526,7 +923,7 @@ pub(crate) fn run_connected_realtime_session(
     state.mark_session_ready(session_ready_at);
     let mut mic_frame = [0i16; AUDIO_CAPTURE_FRAME_SAMPLES];
     let mut reference_frame = [0i16; AUDIO_CAPTURE_FRAME_SAMPLES];
-    let mut upload_encoder = RealtimeUploadEncoder::new();
+    let mut upload_encoder = RealtimeUploadEncoder::new(audio_cfg.microphone.sample_rate);
     let frame_ms = ((AUDIO_CAPTURE_FRAME_SAMPLES as u64) * 1000
         / (audio_cfg.microphone.sample_rate.max(8_000) as u64))
         .clamp(1, 40) as u32;
@@ -553,6 +950,8 @@ pub(crate) fn run_connected_realtime_session(
     state.input_samples = state.input_samples.saturating_add(handoff_samples);
     let mut endpoint = EndpointState::new();
     let mut local_speech_active = false;
+    let mut foreground_keepalive_at = Instant::now();
+    maintain_foreground();
 
     loop {
         crate::platform::task_wdt::feed_current_task();
@@ -565,12 +964,17 @@ pub(crate) fn run_connected_realtime_session(
             Duration::from_millis(REALTIME_RECV_POLL_MS),
         )?;
         let now = Instant::now();
+        maintain_realtime_foreground_if_due(
+            &mut foreground_keepalive_at,
+            now,
+            &mut maintain_foreground,
+        );
         update_playback_state(platform, &mut state, audio_cfg.speaker.sample_rate, now)?;
         if crate::orchestrator::take_audio_interrupt_request() {
             handle_local_interrupt(conn.as_mut(), platform, &mut state, provider, now)?;
         }
         if timed_out {
-            if let Some(reason) = should_exit_realtime_session(&state, now) {
+            if let Some(reason) = should_exit_realtime_session(provider, &state, now) {
                 match reason {
                     NoSpeechExitReason::NoLocalSpeechAfterSessionReady => {
                         crate::metrics::record_voice_no_speech_timeout()
@@ -582,6 +986,11 @@ pub(crate) fn run_connected_realtime_session(
                         crate::metrics::record_voice_post_playback_timeout()
                     }
                 }
+                log::info!(
+                    "[{}] realtime session local exit reason={}",
+                    REALTIME_TAG,
+                    reason.as_str()
+                );
                 break;
             }
         }
@@ -616,14 +1025,16 @@ pub(crate) fn run_connected_realtime_session(
         let playback_capture_suspended = should_suspend_capture_upload(&state);
         let mut interrupted_this_frame = false;
         if state.audio_playing && playback_capture_suspended {
-            if should_trigger_playback_interrupt(
-                &mut state,
-                audio_cfg,
-                chunk,
-                reference_chunk,
-                frame_ms,
-                now,
-            ) {
+            if state.duplex_caps.supports_barge_in()
+                && should_trigger_playback_interrupt(
+                    &mut state,
+                    &endpoint_profile,
+                    chunk,
+                    reference_chunk,
+                    frame_ms,
+                    now,
+                )
+            {
                 crate::metrics::record_voice_interrupt_requested();
                 handle_local_interrupt(conn.as_mut(), platform, &mut state, provider, now)?;
                 reset_local_endpoint_window(&mut state, &mut endpoint, &mut local_speech_active);
@@ -640,37 +1051,25 @@ pub(crate) fn run_connected_realtime_session(
             }
         }
 
-        match endpoint.update(chunk, frame_ms, &endpoint_cfg) {
-            EndpointEvent::SpeechStart => {
-                local_speech_active = true;
-                state.begin_local_speech_window(now, frame_ms);
-            }
-            EndpointEvent::SpeechEnd => {
-                if local_speech_active {
-                    let should_submit = state.finish_local_speech_window(now);
-                    if should_submit {
-                        submit_local_turn(conn.as_mut(), provider, audio_cfg)?;
-                    }
-                    local_speech_active = false;
-                }
-            }
-            EndpointEvent::None => {
-                if local_speech_active {
-                    state.extend_local_speech_window(now, frame_ms, endpoint_profile.min_active_ms);
-                }
-            }
+        if handle_local_endpoint_event(
+            provider,
+            &mut state,
+            &mut local_speech_active,
+            endpoint.update(chunk, frame_ms, &endpoint_cfg),
+            frame_ms,
+            endpoint_profile.min_active_ms,
+            now,
+        ) {
+            submit_local_turn(conn.as_mut(), provider, audio_cfg)?;
         }
 
-        if local_speech_active
-            && state.current_local_speech_ms >= REALTIME_LOCAL_SPEECH_WINDOW_MAX_MS
-        {
+        if should_force_close_local_speech_window(provider, state.current_local_speech_ms) {
             log::info!(
-                "[{}] force closing long local speech window at {}ms without endpoint release",
+                "[{}] force closing client-commit local speech window at {}ms without endpoint release",
                 REALTIME_TAG,
                 state.current_local_speech_ms
             );
-            let should_submit = state.finish_local_speech_window(now);
-            if should_submit {
+            if state.finish_local_speech_window(now) {
                 submit_local_turn(conn.as_mut(), provider, audio_cfg)?;
             }
             endpoint.reset();
@@ -679,9 +1078,10 @@ pub(crate) fn run_connected_realtime_session(
 
         if local_speech_active
             && state.audio_playing
+            && state.duplex_caps.supports_barge_in()
             && should_trigger_playback_interrupt(
                 &mut state,
-                audio_cfg,
+                &endpoint_profile,
                 chunk,
                 reference_chunk,
                 frame_ms,
@@ -878,7 +1278,9 @@ fn submit_local_turn(
         conn,
         build_response_create_event(provider, audio_cfg).as_str(),
         REALTIME_INITIAL_SEND_RETRY_MAX,
-    )
+    )?;
+    crate::metrics::record_voice_realtime_local_commit();
+    Ok(())
 }
 
 fn send_text_retry(conn: &mut dyn WssConnection, text: &str, attempts: usize) -> Result<()> {
@@ -1004,6 +1406,35 @@ fn parse_server_message(payload: &[u8]) -> Result<serde_json::Value> {
         .map_err(|e| Error::config("realtime_voice_parse", e.to_string()))
 }
 
+fn response_event_id(value: &serde_json::Value) -> Option<&str> {
+    value
+        .get("response_id")
+        .and_then(|v| v.as_str())
+        .or_else(|| {
+            value
+                .get("response")
+                .and_then(|v| v.get("id"))
+                .and_then(|v| v.as_str())
+        })
+}
+
+fn item_event_id(value: &serde_json::Value) -> Option<&str> {
+    value.get("item_id").and_then(|v| v.as_str()).or_else(|| {
+        value
+            .get("item")
+            .and_then(|v| v.get("id"))
+            .and_then(|v| v.as_str())
+    })
+}
+
+fn owned_response_event_id(value: &serde_json::Value) -> Option<String> {
+    response_event_id(value).map(str::to_string)
+}
+
+fn owned_item_event_id(value: &serde_json::Value) -> Option<String> {
+    item_event_id(value).map(str::to_string)
+}
+
 fn server_message_value_marks_session_ready(
     provider: RealtimeProvider,
     value: &serde_json::Value,
@@ -1044,6 +1475,8 @@ fn handle_json_server_message(
         .unwrap_or_default();
     let now = Instant::now();
     let contract = provider.turn_contract();
+    log_realtime_server_event_type(event_type);
+    refresh_output_drain_state(platform, state, now);
 
     match event_type {
         "session.created" | "session.updated" | "input_audio_buffer.committed" => {
@@ -1059,20 +1492,53 @@ fn handle_json_server_message(
         }
         "response.created" => {
             if state.suppress_server_audio_until_turn_end {
-                state.last_activity = now;
+                state.drop_server_audio_for_stale_turn(
+                    event_type,
+                    "suppressed_until_prior_turn_end",
+                    now,
+                );
                 return Ok(());
             }
             if !contract.accepts_response_without_local_commit && !state.has_committed_local_turn()
             {
-                state.drop_server_audio_for_stale_turn(now);
+                state.drop_server_audio_for_stale_turn(event_type, "response_without_commit", now);
                 return Ok(());
             }
-            state.mark_server_response_created(now);
+            if !state.can_begin_output_turn(platform, now) {
+                state.suppress_server_audio_until_turn_end = true;
+                state.drop_server_audio_for_stale_turn(
+                    event_type,
+                    "previous_output_turn_not_drained",
+                    now,
+                );
+                return Ok(());
+            }
+            state.mark_server_response_created_with_ids(
+                now,
+                owned_response_event_id(value),
+                owned_item_event_id(value),
+            );
             Ok(())
         }
         "input_audio_buffer.speech_started" => {
+            if state.suppress_server_audio_until_turn_end
+                || should_suppress_server_turn_during_half_duplex_output(state, now)
+            {
+                state.suppress_server_audio_until_turn_end = true;
+                state.drop_server_audio_for_stale_turn(
+                    event_type,
+                    "half_duplex_output_suppressed_server_turn",
+                    now,
+                );
+                log::info!(
+                    "[{}] suppressing server VAD turn during half-duplex playback",
+                    REALTIME_TAG
+                );
+                return Ok(());
+            }
             if contract.accepts_server_speech_events_without_local_commit {
                 state.begin_server_vad_turn(now);
+                crate::metrics::record_voice_realtime_server_speech();
             } else if state.has_committed_local_turn() {
                 state.awaiting_response = false;
                 state.last_activity = now;
@@ -1082,6 +1548,14 @@ fn handle_json_server_message(
             Ok(())
         }
         "input_audio_buffer.speech_stopped" => {
+            if state.suppress_server_audio_until_turn_end {
+                state.drop_server_audio_for_stale_turn(
+                    event_type,
+                    "suppressed_until_prior_turn_end",
+                    now,
+                );
+                return Ok(());
+            }
             if contract.accepts_server_speech_events_without_local_commit {
                 state.mark_server_vad_speech_stopped(now);
             } else if state.has_committed_local_turn() {
@@ -1093,17 +1567,27 @@ fn handle_json_server_message(
             Ok(())
         }
         "response.output_audio.delta" | "response.audio.delta" => {
-            if state.suppress_server_audio_until_turn_end {
-                state.drop_server_audio_for_stale_turn(now);
+            if state.suppress_server_audio_until_turn_end
+                && !state.should_accept_server_audio_event(value)
+            {
+                state.drop_server_audio_for_stale_turn(
+                    event_type,
+                    "suppressed_until_prior_turn_end",
+                    now,
+                );
                 return Ok(());
             }
             if !contract.accepts_response_without_local_commit && !state.has_committed_local_turn()
             {
-                state.drop_server_audio_for_stale_turn(now);
+                state.drop_server_audio_for_stale_turn(event_type, "audio_without_commit", now);
                 return Ok(());
             }
-            if !state.should_accept_server_audio() {
-                state.drop_server_audio_for_stale_turn(now);
+            if !state.should_accept_server_audio_event(value) {
+                state.drop_server_audio_for_stale_turn(
+                    event_type,
+                    "response_generation_mismatch",
+                    now,
+                );
                 return Ok(());
             }
             let delta = value
@@ -1117,14 +1601,38 @@ fn handle_json_server_message(
             Ok(())
         }
         "response.output_audio.done" | "response.audio.done" => {
+            if state.suppress_server_audio_until_turn_end
+                && !state.should_accept_server_audio_event(value)
+            {
+                state.drop_server_audio_for_stale_turn(
+                    event_type,
+                    "suppressed_until_prior_turn_end",
+                    now,
+                );
+                return Ok(());
+            }
+            if !state.mark_active_output_audio_done(value) {
+                state.drop_server_audio_for_stale_turn(event_type, "audio_done_stale_turn", now);
+                return Ok(());
+            }
             // Data already in staging; worker transfers to speaker autonomously.
+            state.log_downlink_summary(event_type, audio_cfg.speaker.sample_rate, now, true);
             state.last_activity = now;
             Ok(())
         }
         "response.done" => {
-            if state.suppress_server_audio_until_turn_end {
-                state.suppress_server_audio_until_turn_end = false;
-                state.last_activity = now;
+            if state.suppress_server_audio_until_turn_end
+                && !state.should_accept_server_audio_event(value)
+            {
+                state.drop_server_audio_for_stale_turn(
+                    event_type,
+                    "suppressed_until_prior_turn_end",
+                    now,
+                );
+                return Ok(());
+            }
+            if !state.mark_active_output_response_done(value) {
+                state.drop_server_audio_for_stale_turn(event_type, "response_done_stale_turn", now);
                 return Ok(());
             }
             let counted = state.awaiting_response;
@@ -1132,10 +1640,13 @@ fn handle_json_server_message(
             if counted {
                 state.awaiting_response = false;
                 state.turns_completed = state.turns_completed.saturating_add(1);
+                crate::metrics::record_voice_realtime_turn_completed();
             }
             if !state.audio_playing {
                 state.playback_finished_at = Some(now);
             }
+            state.log_downlink_summary("response.done", audio_cfg.speaker.sample_rate, now, false);
+            refresh_output_drain_state(platform, state, now);
             state.last_activity = now;
             Ok(())
         }
@@ -1148,6 +1659,54 @@ fn handle_json_server_message(
             Err(Error::config("realtime_voice_ws", msg))
         }
         _ => Ok(()),
+    }
+}
+
+fn log_realtime_server_event_type(event_type: &str) {
+    match event_type {
+        "session.created"
+        | "session.updated"
+        | "input_audio_buffer.committed"
+        | "input_audio_buffer.speech_started"
+        | "input_audio_buffer.speech_stopped"
+        | "response.created"
+        | "response.output_audio.done"
+        | "response.audio.done"
+        | "response.done"
+        | "error" => {
+            log::info!(
+                "[{}] realtime server event type={}",
+                REALTIME_TAG,
+                event_type
+            );
+        }
+        _ => {}
+    }
+}
+
+fn refresh_output_drain_state(
+    platform: &dyn Platform,
+    state: &mut RealtimeLoopState,
+    now: Instant,
+) {
+    if platform.speaker_staging_samples() != 0 || platform.speaker_buffered_samples() != 0 {
+        return;
+    }
+    if state.active_output_duration_pending(now) {
+        return;
+    }
+    if state.audio_playing {
+        state.finish_audio_playback(now);
+    } else {
+        state.mark_active_output_drained(now);
+    }
+    if state
+        .active_output_turn
+        .as_ref()
+        .map(|turn| turn.ended)
+        .unwrap_or(true)
+    {
+        state.suppress_server_audio_until_turn_end = false;
     }
 }
 
@@ -1263,7 +1822,8 @@ fn queue_pcm16_delta_audio(
         if pcm.is_empty() {
             return Ok(false);
         }
-        queue_output_audio(platform, state, sample_rate_hz, pcm.as_slice())?;
+        let write = queue_output_audio(platform, state, sample_rate_hz, pcm.as_slice())?;
+        state.record_downlink_write(Instant::now(), write, sample_rate_hz);
         Ok(true)
     })();
     pcm.clear();
@@ -1276,38 +1836,96 @@ fn playback_target_buffer_samples(sample_rate_hz: u32) -> usize {
         .max(AUDIO_TTS_WRITE_CHUNK_SAMPLES)
 }
 
+fn maintain_realtime_foreground_if_due(
+    last_keepalive_at: &mut Instant,
+    now: Instant,
+    maintain_foreground: &mut impl FnMut(),
+) {
+    if now.duration_since(*last_keepalive_at)
+        < Duration::from_millis(REALTIME_FOREGROUND_KEEPALIVE_MS)
+    {
+        return;
+    }
+    maintain_foreground();
+    *last_keepalive_at = now;
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct OutputQueueWrite {
+    input_samples: usize,
+    staging_written: usize,
+    direct_written: usize,
+    dropped: usize,
+    speaker_buffered_after: usize,
+    staging_buffered_after: usize,
+}
+
+impl OutputQueueWrite {
+    fn accepted_samples(self) -> usize {
+        self.staging_written.saturating_add(self.direct_written)
+    }
+}
+
 fn queue_output_audio(
     platform: &dyn Platform,
     state: &mut RealtimeLoopState,
     sample_rate_hz: u32,
     pcm: &[i16],
-) -> Result<()> {
+) -> Result<OutputQueueWrite> {
     if pcm.is_empty() {
-        return Ok(());
+        return Ok(OutputQueueWrite::default());
     }
-    state.output_samples = state.output_samples.saturating_add(pcm.len());
 
-    // Push into the staging ring buffer; worker transfers staging → speaker.
-    // On Linux, push_speaker_staging_pcm_i16 writes directly to the speaker
-    // channel (no separate staging), so the fallback below is a second attempt
-    // at the same queue — acceptable since Linux lacks WiFi jitter concerns.
-    let written = platform.push_speaker_staging_pcm_i16(pcm)?;
-    if written < pcm.len() {
-        // Staging full — fallback: write remainder directly to speaker ring buffer.
-        let remaining = &pcm[written..];
-        let _ = platform.try_write_speaker_pcm_i16(remaining)?;
-    }
+    start_realtime_playback_before_queue_write(state, Instant::now());
+
+    let accepted = push_output_staging_with_backpressure(platform, pcm)?;
+    state.output_samples = state.output_samples.saturating_add(accepted);
+    let dropped = pcm.len().saturating_sub(accepted);
 
     // Start playback once enough data is buffered (staging + speaker combined).
+    let speaker_buffered_after = platform.speaker_buffered_samples();
+    let staging_buffered_after = platform.speaker_staging_samples();
     if !state.audio_playing {
-        let total = platform
-            .speaker_buffered_samples()
-            .saturating_add(platform.speaker_staging_samples());
+        let total = speaker_buffered_after.saturating_add(staging_buffered_after);
         if total >= playback_target_buffer_samples(sample_rate_hz) {
             state.start_audio_playback(Instant::now());
         }
     }
-    Ok(())
+    Ok(OutputQueueWrite {
+        input_samples: pcm.len(),
+        staging_written: accepted,
+        direct_written: 0,
+        dropped,
+        speaker_buffered_after,
+        staging_buffered_after,
+    })
+}
+
+fn push_output_staging_with_backpressure(platform: &dyn Platform, pcm: &[i16]) -> Result<usize> {
+    let started = Instant::now();
+    let mut written = 0usize;
+    while written < pcm.len() {
+        crate::platform::task_wdt::feed_current_task();
+        let n = platform.push_speaker_staging_pcm_i16(&pcm[written..])?;
+        if n > 0 {
+            written = written.saturating_add(n).min(pcm.len());
+            continue;
+        }
+        if started.elapsed() >= Duration::from_millis(REALTIME_OUTPUT_STAGING_WAIT_MS) {
+            return Err(Error::config(
+                REALTIME_TAG,
+                "realtime output staging ring blocked",
+            ));
+        }
+        thread::sleep(Duration::from_millis(REALTIME_OUTPUT_STAGING_RETRY_MS));
+    }
+    Ok(written)
+}
+
+fn start_realtime_playback_before_queue_write(state: &mut RealtimeLoopState, now: Instant) {
+    if !state.audio_playing {
+        state.start_audio_playback(now);
+    }
 }
 
 fn update_playback_state(
@@ -1326,8 +1944,13 @@ fn update_playback_state(
         }
         return Ok(());
     }
-    // Playback finished when both staging and speaker are drained.
-    if platform.speaker_staging_samples() == 0 && platform.speaker_buffered_samples() == 0 {
+    // Playback is only finished after both software queues are empty and the
+    // accepted PCM duration has elapsed; the hardware DMA tail is not visible
+    // in the software queue counters.
+    if platform.speaker_staging_samples() == 0
+        && platform.speaker_buffered_samples() == 0
+        && !state.active_output_duration_pending(now)
+    {
         state.finish_audio_playback(now);
     }
     Ok(())
@@ -1341,6 +1964,56 @@ fn reset_local_endpoint_window(
     endpoint.reset();
     *local_speech_active = false;
     state.reset_local_speech_window();
+}
+
+fn handle_local_endpoint_event(
+    provider: RealtimeProvider,
+    state: &mut RealtimeLoopState,
+    local_speech_active: &mut bool,
+    event: EndpointEvent,
+    frame_ms: u32,
+    min_active_ms: u32,
+    now: Instant,
+) -> bool {
+    let client_commit_owner = provider.turn_contract().requires_client_commit;
+    match event {
+        EndpointEvent::SpeechStart => {
+            *local_speech_active = true;
+            if client_commit_owner {
+                state.begin_local_speech_window(now, frame_ms);
+            } else {
+                state.begin_local_activity_window(now, frame_ms);
+            }
+            false
+        }
+        EndpointEvent::SpeechEnd => {
+            if !*local_speech_active {
+                return false;
+            }
+            *local_speech_active = false;
+            if client_commit_owner {
+                state.finish_local_speech_window(now)
+            } else {
+                state.finish_local_activity_window(now);
+                false
+            }
+        }
+        EndpointEvent::None => {
+            if *local_speech_active {
+                if client_commit_owner {
+                    state.extend_local_speech_window(now, frame_ms, min_active_ms);
+                } else {
+                    state.extend_local_activity_window(now, frame_ms);
+                }
+            }
+            false
+        }
+    }
+}
+
+fn should_force_close_local_speech_window(provider: RealtimeProvider, current_ms: u32) -> bool {
+    provider.turn_contract().requires_client_commit
+        && current_ms >= REALTIME_LOCAL_SPEECH_WINDOW_MAX_MS
 }
 
 fn should_suspend_capture_upload(state: &RealtimeLoopState) -> bool {
@@ -1386,7 +2059,7 @@ fn reference_adjusted_interrupt_rms(mic_pcm: &[i16], reference_pcm: &[i16]) -> (
 
 fn should_trigger_playback_interrupt(
     state: &mut RealtimeLoopState,
-    audio_cfg: &AudioSegment,
+    endpoint_profile: &VoiceEndpointProfile,
     pcm: &[i16],
     reference_pcm: &[i16],
     frame_ms: u32,
@@ -1401,18 +2074,50 @@ fn should_trigger_playback_interrupt(
         state.interrupt_baseline_deadline = None;
     }
 
-    let threshold = (audio_cfg.vad.threshold * REALTIME_INTERRUPT_THRESHOLD_MULTIPLIER)
-        .max(state.interrupt_baseline_peak + REALTIME_INTERRUPT_THRESHOLD_MARGIN)
-        .clamp(REALTIME_INTERRUPT_THRESHOLD_MIN, 0.95);
+    let threshold = playback_interrupt_threshold(endpoint_profile, state.interrupt_baseline_peak);
     if rms >= threshold {
         state.interrupt_speech_ms = state.interrupt_speech_ms.saturating_add(frame_ms);
     } else {
         state.interrupt_speech_ms = 0;
     }
-    state.interrupt_speech_ms >= REALTIME_INTERRUPT_SPEECH_MIN_MS
+    state.interrupt_speech_ms >= playback_interrupt_required_ms(endpoint_profile)
+}
+
+fn playback_interrupt_threshold(
+    endpoint_profile: &VoiceEndpointProfile,
+    interrupt_baseline_peak: f32,
+) -> f32 {
+    if endpoint_profile.low_snr_codec_profile {
+        return (endpoint_profile.local_enter_threshold
+            * REALTIME_INTERRUPT_LOW_SNR_THRESHOLD_MULTIPLIER)
+            .max(interrupt_baseline_peak + REALTIME_INTERRUPT_LOW_SNR_THRESHOLD_MARGIN)
+            .clamp(REALTIME_INTERRUPT_LOW_SNR_THRESHOLD_MIN, 0.12);
+    }
+    (endpoint_profile.local_enter_threshold * REALTIME_INTERRUPT_THRESHOLD_MULTIPLIER)
+        .max(interrupt_baseline_peak + REALTIME_INTERRUPT_THRESHOLD_MARGIN)
+        .clamp(REALTIME_INTERRUPT_THRESHOLD_MIN, 0.95)
+}
+
+fn playback_interrupt_required_ms(endpoint_profile: &VoiceEndpointProfile) -> u32 {
+    if endpoint_profile.low_snr_codec_profile {
+        return REALTIME_INTERRUPT_LOW_SNR_SPEECH_MIN_MS;
+    }
+    REALTIME_INTERRUPT_SPEECH_MIN_MS
+}
+
+fn post_response_idle_timeout(provider: RealtimeProvider) -> Duration {
+    match provider.turn_contract().endpoint_owner {
+        crate::audio::endpoint_profile::VoiceEndpointOwner::ServerVad => {
+            Duration::from_millis(REALTIME_SERVER_VAD_POST_RESPONSE_IDLE_TIMEOUT_MS)
+        }
+        crate::audio::endpoint_profile::VoiceEndpointOwner::ClientCommit => {
+            Duration::from_millis(REALTIME_POST_RESPONSE_IDLE_TIMEOUT_MS)
+        }
+    }
 }
 
 fn should_exit_realtime_session(
+    provider: RealtimeProvider,
     state: &RealtimeLoopState,
     now: Instant,
 ) -> Option<NoSpeechExitReason> {
@@ -1448,10 +2153,12 @@ fn should_exit_realtime_session(
     }
 
     if let Some(playback_finished_at) = state.playback_finished_at {
+        let post_response_idle_timeout = post_response_idle_timeout(provider);
         if !state.awaiting_response
             && !state.audio_playing
-            && now.duration_since(playback_finished_at)
-                >= Duration::from_millis(REALTIME_POST_RESPONSE_IDLE_TIMEOUT_MS)
+            && state.current_local_speech_ms == 0
+            && now.duration_since(playback_finished_at) >= post_response_idle_timeout
+            && now.duration_since(state.last_activity) >= post_response_idle_timeout
         {
             return Some(NoSpeechExitReason::PostPlaybackIdle);
         }
@@ -1491,6 +2198,7 @@ fn handle_local_interrupt(
 
     state.local_turn_generation = next_turn_generation(state.local_turn_generation);
     state.server_response_generation = 0;
+    state.cancel_active_output_turn();
     state.suppress_server_audio_until_turn_end = true;
     state.awaiting_response = false;
     state.current_turn_received_server_activity = false;
@@ -1510,8 +2218,25 @@ fn should_hold_local_capture_for_server_response(
     _provider: RealtimeProvider,
     state: &RealtimeLoopState,
 ) -> bool {
-    let _ = state;
-    false
+    state
+        .duplex_caps
+        .requires_capture_upload_suspend_during_playback()
+        && !state.duplex_caps.supports_barge_in()
+        && state.awaiting_response
+        && state.current_turn_received_server_activity
+}
+
+fn should_suppress_server_turn_during_half_duplex_output(
+    state: &RealtimeLoopState,
+    now: Instant,
+) -> bool {
+    state
+        .duplex_caps
+        .requires_capture_upload_suspend_during_playback()
+        && !state.duplex_caps.supports_barge_in()
+        && (state.audio_playing
+            || state.has_pending_output_turn(now)
+            || (state.awaiting_response && state.current_turn_received_server_activity))
 }
 
 fn build_response_cancel_event() -> String {
@@ -1527,6 +2252,14 @@ fn samples_to_ms(samples: usize, sample_rate_hz: u32) -> u128 {
     (samples as u128).saturating_mul(1000) / rate
 }
 
+fn samples_to_duration(samples: usize, sample_rate_hz: u32) -> Duration {
+    let micros = (samples as u128)
+        .saturating_mul(1_000_000)
+        .saturating_div(sample_rate_hz.max(1) as u128)
+        .min(u64::MAX as u128) as u64;
+    Duration::from_micros(micros)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -1536,6 +2269,7 @@ mod tests {
         RealtimeProvider, RealtimeUploadEncoder, REALTIME_OPENAI_BETA,
     };
     use crate::audio::endpoint_profile::VoiceEndpointProfile;
+    use crate::audio::energy::EndpointEvent;
     use crate::audio::input_profile::AudioInputHardwareProfile;
     use crate::config::default_disabled_audio_segment;
     use crate::platform::AudioDuplexCapabilities;
@@ -1604,7 +2338,7 @@ mod tests {
 
     #[test]
     fn qwen_resampler_converts_24k_to_16k_with_tail() {
-        let mut encoder = RealtimeUploadEncoder::new();
+        let mut encoder = RealtimeUploadEncoder::new(24_000);
         let first = encoder.downsample_24k_to_16k(&[1, 2, 3, 4]);
         assert_eq!(first, &[1, 2]);
         let second = encoder.downsample_24k_to_16k(&[5, 6]);
@@ -1657,10 +2391,23 @@ mod tests {
 
     #[test]
     fn qwen_audio_append_contains_event_id() {
-        let mut encoder = RealtimeUploadEncoder::new();
+        let mut encoder =
+            RealtimeUploadEncoder::new(crate::config::AUDIO_REALTIME_QWEN_PCM_SAMPLE_RATE);
         let payload = encoder.build_append_event(RealtimeProvider::Qwen, &[1, 2, 3]);
         assert!(payload.contains("\"event_id\":\"audio_"));
         assert!(payload.contains("\"type\":\"input_audio_buffer.append\""));
+    }
+
+    #[test]
+    fn qwen_audio_append_keeps_16k_pcm_without_downsampling() {
+        let mut encoder =
+            RealtimeUploadEncoder::new(crate::config::AUDIO_REALTIME_QWEN_PCM_SAMPLE_RATE);
+        let pcm = [1u8, 0, 2, 0, 3, 0];
+        let encoded = base64::engine::general_purpose::STANDARD.encode(pcm);
+
+        let payload = encoder.build_append_event_from_pcm_le_bytes(RealtimeProvider::Qwen, &pcm);
+
+        assert!(payload.contains(encoded.as_str()));
     }
 
     #[test]
@@ -1740,7 +2487,7 @@ mod tests {
 
         assert!(!state.has_committed_local_turn());
         state.begin_server_vad_turn(now);
-        state.mark_server_response_created(now + Duration::from_millis(1));
+        state.mark_server_response_created_with_ids(now + Duration::from_millis(1), None, None);
         state.mark_server_response_activity(now + Duration::from_millis(2));
 
         assert!(state.awaiting_response);
@@ -1761,6 +2508,7 @@ mod tests {
         state.mark_session_ready(ready_at);
 
         let reason = super::should_exit_realtime_session(
+            RealtimeProvider::Qwen,
             &state,
             ready_at + Duration::from_millis(super::REALTIME_NO_SPEECH_TIMEOUT_MS),
         );
@@ -1769,6 +2517,326 @@ mod tests {
             reason,
             Some(NoSpeechExitReason::NoLocalSpeechAfterSessionReady)
         );
+    }
+
+    #[test]
+    fn post_playback_idle_does_not_exit_while_local_speech_is_active() {
+        let mut state =
+            RealtimeLoopState::new(AudioDuplexCapabilities::duplex_with_input_reference());
+        let now = Instant::now();
+        state.mark_session_ready(now - Duration::from_millis(20_000));
+        state.first_local_speech_at = Some(now - Duration::from_millis(10_000));
+        state.playback_finished_at =
+            Some(now - Duration::from_millis(super::REALTIME_POST_RESPONSE_IDLE_TIMEOUT_MS));
+        state.current_local_speech_ms = 240;
+        state.last_activity = now;
+
+        assert_eq!(
+            super::should_exit_realtime_session(RealtimeProvider::Qwen, &state, now),
+            None
+        );
+    }
+
+    #[test]
+    fn post_playback_idle_waits_for_last_local_activity() {
+        let mut state =
+            RealtimeLoopState::new(AudioDuplexCapabilities::duplex_with_input_reference());
+        let now = Instant::now();
+        state.mark_session_ready(now - Duration::from_millis(20_000));
+        state.first_local_speech_at = Some(now - Duration::from_millis(10_000));
+        state.playback_finished_at =
+            Some(now - Duration::from_millis(super::REALTIME_POST_RESPONSE_IDLE_TIMEOUT_MS));
+        state.last_activity = now - Duration::from_millis(500);
+
+        assert_eq!(
+            super::should_exit_realtime_session(RealtimeProvider::Doubao, &state, now),
+            None
+        );
+
+        state.last_activity =
+            now - Duration::from_millis(super::REALTIME_POST_RESPONSE_IDLE_TIMEOUT_MS);
+        assert_eq!(
+            super::should_exit_realtime_session(RealtimeProvider::Doubao, &state, now),
+            Some(NoSpeechExitReason::PostPlaybackIdle)
+        );
+    }
+
+    #[test]
+    fn server_vad_post_playback_idle_uses_extended_grace() {
+        let mut state =
+            RealtimeLoopState::new(AudioDuplexCapabilities::duplex_with_input_reference());
+        let now = Instant::now();
+        state.mark_session_ready(now - Duration::from_millis(30_000));
+        state.first_local_speech_at = Some(now - Duration::from_millis(25_000));
+        state.playback_finished_at =
+            Some(now - Duration::from_millis(super::REALTIME_POST_RESPONSE_IDLE_TIMEOUT_MS));
+        state.last_activity =
+            now - Duration::from_millis(super::REALTIME_POST_RESPONSE_IDLE_TIMEOUT_MS);
+
+        assert_eq!(
+            super::should_exit_realtime_session(RealtimeProvider::Qwen, &state, now),
+            None
+        );
+
+        let expired = now
+            + Duration::from_millis(
+                super::REALTIME_SERVER_VAD_POST_RESPONSE_IDLE_TIMEOUT_MS
+                    - super::REALTIME_POST_RESPONSE_IDLE_TIMEOUT_MS,
+            );
+        assert_eq!(
+            super::should_exit_realtime_session(RealtimeProvider::Qwen, &state, expired),
+            Some(NoSpeechExitReason::PostPlaybackIdle)
+        );
+    }
+
+    #[test]
+    fn server_vad_local_endpoint_activity_does_not_arm_response_wait() {
+        let mut state =
+            RealtimeLoopState::new(AudioDuplexCapabilities::duplex_with_input_reference());
+        let now = Instant::now();
+        state.mark_session_ready(now - Duration::from_millis(30_000));
+        state.begin_server_vad_turn(now - Duration::from_millis(10_000));
+        state.mark_server_vad_speech_stopped(now - Duration::from_millis(9_000));
+        state.mark_server_response_created_with_ids(now - Duration::from_millis(8_500), None, None);
+        state.mark_server_response_activity(now - Duration::from_millis(8_000));
+        state.awaiting_response = false;
+        state.turns_completed = 1;
+        state.playback_finished_at = Some(now - Duration::from_millis(1_000));
+        state.last_activity = now - Duration::from_millis(1_000);
+
+        let mut local_speech_active = false;
+        assert!(!super::handle_local_endpoint_event(
+            RealtimeProvider::Qwen,
+            &mut state,
+            &mut local_speech_active,
+            EndpointEvent::SpeechStart,
+            40,
+            120,
+            now,
+        ));
+        assert!(!super::handle_local_endpoint_event(
+            RealtimeProvider::Qwen,
+            &mut state,
+            &mut local_speech_active,
+            EndpointEvent::None,
+            40,
+            120,
+            now + Duration::from_millis(40),
+        ));
+        assert!(!super::handle_local_endpoint_event(
+            RealtimeProvider::Qwen,
+            &mut state,
+            &mut local_speech_active,
+            EndpointEvent::SpeechEnd,
+            40,
+            120,
+            now + Duration::from_millis(80),
+        ));
+
+        assert!(!state.awaiting_response);
+        assert_eq!(
+            super::should_exit_realtime_session(
+                RealtimeProvider::Qwen,
+                &state,
+                now + Duration::from_millis(super::REALTIME_RESPONSE_WAIT_TIMEOUT_MS),
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn server_vad_local_activity_is_not_force_closed_by_client_commit_cap() {
+        assert!(!super::should_force_close_local_speech_window(
+            RealtimeProvider::Qwen,
+            super::REALTIME_LOCAL_SPEECH_WINDOW_MAX_MS
+        ));
+        assert!(!super::should_force_close_local_speech_window(
+            RealtimeProvider::OpenAiCompatible,
+            super::REALTIME_LOCAL_SPEECH_WINDOW_MAX_MS
+        ));
+        assert!(!super::should_force_close_local_speech_window(
+            RealtimeProvider::Doubao,
+            super::REALTIME_LOCAL_SPEECH_WINDOW_MAX_MS - 1
+        ));
+        assert!(super::should_force_close_local_speech_window(
+            RealtimeProvider::Doubao,
+            super::REALTIME_LOCAL_SPEECH_WINDOW_MAX_MS
+        ));
+    }
+
+    #[test]
+    fn half_duplex_response_created_holds_capture_before_first_audio_delta() {
+        let mut state =
+            RealtimeLoopState::new(AudioDuplexCapabilities::duplex_with_input_reference());
+        let now = Instant::now();
+        state.mark_session_ready(now);
+        state.begin_server_vad_turn(now);
+        state.mark_server_vad_speech_stopped(now + Duration::from_millis(40));
+        state.mark_server_response_created_with_ids(now + Duration::from_millis(80), None, None);
+
+        assert!(super::should_hold_local_capture_for_server_response(
+            RealtimeProvider::Qwen,
+            &state
+        ));
+    }
+
+    #[test]
+    fn half_duplex_output_suppresses_stale_server_turn_until_done() {
+        let mut state =
+            RealtimeLoopState::new(AudioDuplexCapabilities::duplex_with_input_reference());
+        let now = Instant::now();
+        state.mark_session_ready(now);
+        state.begin_server_vad_turn(now);
+        state.mark_server_vad_speech_stopped(now + Duration::from_millis(40));
+        state.mark_server_response_created_with_ids(now + Duration::from_millis(80), None, None);
+
+        assert!(super::should_suppress_server_turn_during_half_duplex_output(&state, now));
+
+        state.start_audio_playback(now + Duration::from_millis(120));
+        state.awaiting_response = false;
+        assert!(super::should_suppress_server_turn_during_half_duplex_output(&state, now));
+
+        state.finish_audio_playback(now + Duration::from_millis(1000));
+        assert!(
+            super::should_suppress_server_turn_during_half_duplex_output(
+                &state,
+                now + Duration::from_millis(1000)
+            )
+        );
+
+        state
+            .active_output_turn
+            .as_mut()
+            .unwrap()
+            .mark_response_done();
+        state.mark_active_output_drained(now + Duration::from_millis(1000));
+        assert!(
+            !super::should_suppress_server_turn_during_half_duplex_output(
+                &state,
+                now + Duration::from_millis(1000)
+            )
+        );
+        crate::orchestrator::set_audio_interrupt_listening(false);
+        crate::orchestrator::set_audio_playing(false);
+    }
+
+    #[test]
+    fn half_duplex_output_keeps_turn_pending_until_audio_duration_drained() {
+        let mut state =
+            RealtimeLoopState::new(AudioDuplexCapabilities::duplex_with_input_reference());
+        let now = Instant::now();
+        state.mark_session_ready(now);
+        state.begin_server_vad_turn(now);
+        state.mark_server_vad_speech_stopped(now + Duration::from_millis(40));
+        state.mark_server_response_created_with_ids(now + Duration::from_millis(80), None, None);
+        state.awaiting_response = false;
+        let write = super::OutputQueueWrite {
+            input_samples: 16_000,
+            staging_written: 16_000,
+            direct_written: 0,
+            dropped: 0,
+            speaker_buffered_after: 0,
+            staging_buffered_after: 0,
+        };
+        state.record_downlink_write(now + Duration::from_millis(100), write, 16_000);
+        state
+            .active_output_turn
+            .as_mut()
+            .unwrap()
+            .mark_response_done();
+        state.mark_active_output_drained(now + Duration::from_millis(500));
+
+        assert!(
+            super::should_suppress_server_turn_during_half_duplex_output(
+                &state,
+                now + Duration::from_millis(500)
+            )
+        );
+
+        state.mark_active_output_drained(now + Duration::from_millis(1200));
+        assert!(
+            !super::should_suppress_server_turn_during_half_duplex_output(
+                &state,
+                now + Duration::from_millis(1200)
+            )
+        );
+    }
+
+    #[test]
+    fn realtime_downlink_marks_playback_active_before_output_queueing() {
+        crate::orchestrator::set_audio_playing(false);
+        let mut state =
+            RealtimeLoopState::new(AudioDuplexCapabilities::duplex_with_input_reference());
+
+        super::start_realtime_playback_before_queue_write(&mut state, Instant::now());
+
+        assert!(state.audio_playing);
+        assert!(crate::orchestrator::is_audio_playing());
+        crate::orchestrator::set_audio_interrupt_listening(false);
+        crate::orchestrator::set_audio_playing(false);
+    }
+
+    #[test]
+    fn realtime_foreground_keepalive_runs_before_ticket_expiry() {
+        let start = Instant::now();
+        let mut last_keepalive_at = start;
+        let mut calls = 0usize;
+
+        super::maintain_realtime_foreground_if_due(
+            &mut last_keepalive_at,
+            start + Duration::from_millis(super::REALTIME_FOREGROUND_KEEPALIVE_MS - 1),
+            &mut || calls += 1,
+        );
+        assert_eq!(calls, 0);
+
+        super::maintain_realtime_foreground_if_due(
+            &mut last_keepalive_at,
+            start + Duration::from_millis(super::REALTIME_FOREGROUND_KEEPALIVE_MS),
+            &mut || calls += 1,
+        );
+        assert_eq!(calls, 1);
+    }
+
+    #[test]
+    fn low_snr_playback_interrupt_uses_endpoint_profile_threshold() {
+        let mut cfg = realtime_cfg("qwen");
+        cfg.topology = crate::config::AUDIO_TOPOLOGY_I2S_CODEC.to_string();
+        cfg.codec.input_codec = Some(crate::config::AUDIO_CODEC_INPUT_ES7210.to_string());
+        cfg.codec.input_reference = true;
+        cfg.wake_word.enabled = true;
+        cfg.wake_word.enter_threshold = 0.01;
+        cfg.wake_word.leave_threshold = 0.005;
+        cfg.wake_word.zcr_max = 0.65;
+        cfg.wake_word.min_speech_band_ratio = 0.35;
+        cfg.wake_word.min_active_ms = 120;
+        let profile = endpoint_profile(RealtimeProvider::Qwen, &cfg);
+        assert!(profile.low_snr_codec_profile);
+
+        let mut state =
+            RealtimeLoopState::new(AudioDuplexCapabilities::duplex_with_input_reference());
+        state.interrupt_baseline_deadline = None;
+        let pcm = [1000i16; 320];
+        let now = Instant::now();
+
+        for i in 0..2 {
+            assert!(!super::should_trigger_playback_interrupt(
+                &mut state,
+                &profile,
+                &pcm,
+                &[],
+                40,
+                now + Duration::from_millis(i * 40),
+            ));
+        }
+        assert!(super::should_trigger_playback_interrupt(
+            &mut state,
+            &profile,
+            &pcm,
+            &[],
+            40,
+            now + Duration::from_millis(80),
+        ));
+        assert_eq!(super::playback_interrupt_required_ms(&profile), 120);
     }
 
     #[test]
