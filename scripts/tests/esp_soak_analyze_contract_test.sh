@@ -209,6 +209,8 @@ grep -q 'Write-back defer churn lines: 0' "$PROTECTED_WRITE_BACK_SUMMARY"
   for i in $(seq 1 25); do
     printf 'W (%d) AFE: Ringbuffer of AFE is empty, Please use feed() to write data\n' "$((3000 + i * 10))"
   done
+  printf 'I (32900) beetle_wakenet: feed16k window chunks=16 frames=16384 mic0_avg_pm=24 mic0_peak_pm=640 mic1_avg_pm=22 mic1_peak_pm=620 ref_avg_pm=0 ref_peak_pm=0\n'
+  printf 'I (33000) beetle_wakenet: feed16k window window_id=2 input_profile=dual_mic_zero_ref input_format=MMR aec_init=false fixed_first_channel=true input_hz=24000 feed_channels=3 ch0_role=mic ch1_role=mic ch2_role=reference feed_chunk=1024 chunks=16 frames=16384 raw_frames=24576 frame_pos=0 resample_tail=0 mic0_avg_pm=24 mic0_peak_pm=640 mic1_avg_pm=22 mic1_peak_pm=620 ref_avg_pm=0 ref_peak_pm=0 raw_mic0_avg_pm=25 raw_mic0_peak_pm=700 raw_mic1_avg_pm=23 raw_mic1_peak_pm=680 raw_ref_avg_pm=0 raw_ref_peak_pm=0 mic0_feed_to_raw_pm=960 mic1_feed_to_raw_pm=956\n'
   printf 'I (35398) beetle::heartbeat: [heartbeat] audio_wake worker_turns=26 worker_idle=3 mic_polls=23 mic_frames=23 mic_zero=0 mic_read_us=319 feed_calls=23 feed_busy=0 feed_cooldown=0 feed_detect=0 feed_us=1407298 mic_level_pm=0 zcr_pm=0 speech_ratio_pm=0 speech_coverage_pm=0 speech_dominance_pm=0 activation_pm=0 speech_like=false ref_ok=false\n'
 } >"$WAKENET_BAD_LOG"
 
@@ -220,6 +222,9 @@ grep -q 'wakenet_afe_empty_spam' "$WAKENET_BAD_REGRESSIONS"
 grep -q 'wakenet_feed_hot_path_slow' "$WAKENET_BAD_REGRESSIONS"
 grep -q 'WakeNet AFE empty lines: 25' "$WAKENET_BAD_SUMMARY"
 grep -q 'WakeNet slow feed lines: 1' "$WAKENET_BAD_SUMMARY"
+grep -q 'WakeNet feed profile diagnostic lines: 1' "$WAKENET_BAD_SUMMARY"
+grep -q 'WakeNet feed diagnostic contract missing lines: 1' "$WAKENET_BAD_SUMMARY"
+grep -q 'wakenet_feed_profile_diag_missing' "$WAKENET_BAD_REGRESSIONS"
 grep -q '"wakenet_low_sensitivity_probe_missing","risk"' "$WAKENET_BAD_REGRESSIONS"
 grep -q 'wakenet_threshold_contract_missing' "$WAKENET_BAD_REGRESSIONS"
 
@@ -240,6 +245,11 @@ I (2060) beetle::audio::realtime: [voice_realtime] suppressing server VAD turn d
 I (2070) beetle::audio::realtime: [voice_realtime] suppressing server VAD turn during half-duplex playback
 I (2080) beetle::audio::realtime: [voice_realtime] suppressing server VAD turn during half-duplex playback
 I (2090) beetle::audio::realtime: [voice_realtime] realtime server event type=response.created
+W (3000) beetle::audio::realtime: [audio::realtime] realtime session transport exit reason=transport_disconnected peer_close=- turns_completed=3 input_ms=74000 output_ms=26960 duration_ms=80120 awaiting_response=true audio_playing=true response_created=true server_speech_started=true server_speech_stopped=true interrupted_active_turn=true partial_output_pending_at_exit=true
+W (3010) beetle::audio::voice_session: [voice_session] realtime session ended non-steady turns=3 input_ms=74000 output_ms=26960 duration_ms=80120 exit_reason=transport_disconnected interrupted_active_turn=true partial_output_pending_at_exit=true
+W (3020) beetle::audio::voice_session: [voice_session] realtime voice session failed: config: realtime websocket disconnected (stage: audio::realtime)
+W (3030) beetle::audio::realtime: [audio::realtime] realtime response wait timeout recovered provider=Qwen turns_completed=2 response_created=true server_speech_started=true server_speech_stopped=true
+W (3040) beetle::audio::realtime: [audio::realtime] realtime session transport exit reason=peer_closed peer_close=normal turns_completed=2 input_ms=48000 output_ms=12000 duration_ms=56000 awaiting_response=false audio_playing=false response_created=true server_speech_started=true server_speech_stopped=true interrupted_active_turn=false partial_output_pending_at_exit=false
 LOGEOF
 
 "$ROOT/scripts/esp_soak_analyze.sh" --output-dir "$REALTIME_BAD_OUT" "$REALTIME_BAD_LOG" >/dev/null
@@ -255,9 +265,19 @@ grep -q 'response_audio_done_without_downlink_summary' "$REALTIME_BAD_REGRESSION
 grep -q 'realtime_heartbeat_counters_stale' "$REALTIME_BAD_REGRESSIONS"
 grep -q 'server_vad_fragmented_turn_churn' "$REALTIME_BAD_REGRESSIONS"
 grep -q 'barge_in_enabled_without_aec' "$REALTIME_BAD_REGRESSIONS"
+grep -q 'realtime_transport_exit' "$REALTIME_BAD_REGRESSIONS"
+grep -q 'realtime_transport_interrupted_active_turn' "$REALTIME_BAD_REGRESSIONS"
+grep -q 'realtime_session_nonsteady_exit' "$REALTIME_BAD_REGRESSIONS"
+grep -q 'realtime_voice_session_failed' "$REALTIME_BAD_REGRESSIONS"
+grep -q 'realtime_response_wait_recovered' "$REALTIME_BAD_REGRESSIONS"
 grep -q 'Realtime downlink dropped lines: 1' "$REALTIME_BAD_SUMMARY"
 grep -q 'Realtime direct speaker write lines: 1' "$REALTIME_BAD_SUMMARY"
 grep -q 'Audio speaker underrun lines: 1' "$REALTIME_BAD_SUMMARY"
+grep -q 'Realtime transport exit lines: 2' "$REALTIME_BAD_SUMMARY"
+grep -q 'Realtime interrupted turn lines: 1' "$REALTIME_BAD_SUMMARY"
+grep -q 'Realtime non-steady exit lines: 1' "$REALTIME_BAD_SUMMARY"
+grep -q 'Realtime voice session failed lines: 1' "$REALTIME_BAD_SUMMARY"
+grep -q 'Realtime response wait recovered lines: 1' "$REALTIME_BAD_SUMMARY"
 
 cat >"$REALTIME_PENDING_EXPIRED_LOG" <<'LOGEOF'
 I (1000) beetle::audio::realtime: [voice_realtime] realtime server event type=input_audio_buffer.speech_started

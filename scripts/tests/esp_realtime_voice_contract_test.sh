@@ -237,6 +237,24 @@ fi
 
 rg -n 'realtime turn summary' src/audio/voice_session.rs src/audio/voice_conversation.rs >/dev/null ||
   fail "voice session must emit a realtime turn summary with NoSpeechExitReason"
+rg -n 'RealtimeSessionExitReason' src/audio/realtime.rs src/audio/voice_session.rs >/dev/null ||
+  fail "realtime session must expose explicit exit reasons to voice_session"
+rg -n 'realtime session transport exit' src/audio/realtime.rs >/dev/null ||
+  fail "realtime loop must log transport exits with partial turn context"
+rg -n 'realtime session ended non-steady' src/audio/voice_session.rs >/dev/null ||
+  fail "voice_session must not classify interrupted realtime sessions as steady success"
+rg -n 'should_recover_realtime_response_wait' src/audio/realtime.rs >/dev/null ||
+  fail "server-VAD realtime providers must recover a single response_wait turn instead of always killing the session"
+rg -n 'accepts_server_speech_events_without_local_commit' src/audio/realtime.rs >/dev/null ||
+  fail "response_wait recovery must be driven by the provider turn contract"
+rg -n 'realtime response wait timeout recovered' src/audio/realtime.rs >/dev/null ||
+  fail "response_wait recovery must leave an explicit serial-log marker"
+rg -n 'unhandled awaiting_response=true' src/audio/realtime.rs >/dev/null ||
+  fail "realtime loop must log unhandled server events while awaiting a response"
+rg -n 'realtime_turn_interrupted|realtime_transport_disconnected|realtime_response_wait' src/audio/voice_conversation.rs >/dev/null ||
+  fail "voice conversation summary must distinguish realtime interruption and transport exits"
+rg -n 'realtime_transport_interrupted_active_turn|realtime_session_nonsteady_exit|realtime_voice_session_failed' scripts/esp_soak_analyze.sh >/dev/null ||
+  fail "soak analyzer must block realtime transport interruptions and non-steady exits"
 
 rg -n 'pub const STACK_VOICE_REALTIME_CONNECT: usize = 9 \* 1024;' src/util.rs >/dev/null ||
   fail "voice realtime connect stack must stay at the measured ESP WSS-class 9KB budget"

@@ -36,6 +36,11 @@ pub enum NoSpeechExitReason {
     ServerSpeechNoResponse,
     ResponseWithoutAudio,
     ProviderNoTurnEvents,
+    RealtimeResponseWait,
+    RealtimeTransportDisconnected,
+    RealtimePeerClosed,
+    RealtimeTurnInterrupted,
+    RealtimeSessionError,
 }
 
 impl NoSpeechExitReason {
@@ -49,6 +54,11 @@ impl NoSpeechExitReason {
             Self::ServerSpeechNoResponse => "server_speech_no_response",
             Self::ResponseWithoutAudio => "response_without_audio",
             Self::ProviderNoTurnEvents => "provider_no_turn_events",
+            Self::RealtimeResponseWait => "realtime_response_wait",
+            Self::RealtimeTransportDisconnected => "realtime_transport_disconnected",
+            Self::RealtimePeerClosed => "realtime_peer_closed",
+            Self::RealtimeTurnInterrupted => "realtime_turn_interrupted",
+            Self::RealtimeSessionError => "realtime_session_error",
         }
     }
 }

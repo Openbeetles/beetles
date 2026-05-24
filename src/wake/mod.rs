@@ -12,8 +12,8 @@ pub use backend::{WakeBackend, WakeEvent};
 #[cfg(beetle_esp_sr_wakenet)]
 pub use esp_sr::{
     reset_threshold_to_model_default, EspSrWakeBackend, EspSrWakeThresholdProfile,
-    ESP_SR_WAKENET_DETECTION_MODE, ESP_SR_WAKENET_MODEL, ESP_SR_WAKENET_THRESHOLD_INDEX,
-    ESP_SR_WAKENET_THRESHOLD_PROFILE, ESP_SR_WAKE_PHRASE,
+    ESP_SR_WAKENET_DETECTION_MODE, ESP_SR_WAKENET_INPUT_PROFILE, ESP_SR_WAKENET_MODEL,
+    ESP_SR_WAKENET_THRESHOLD_INDEX, ESP_SR_WAKENET_THRESHOLD_PROFILE, ESP_SR_WAKE_PHRASE,
 };
 
 use crate::audio::voice_session::VoiceEvent;

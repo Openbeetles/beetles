@@ -61,6 +61,10 @@ require_contains "$ESP_SR_RS" \
   "pub const ESP_SR_WAKENET_MODEL: &str = \"wn9_hilexin\"" \
   "ESP-SR WakeNet model must be fixed to wn9_hilexin for the current A/B firmware"
 
+require_contains "$ESP_SR_RS" \
+  "pub const ESP_SR_WAKENET_INPUT_PROFILE: &str = \"dual_mic_zero_ref\"" \
+  "Rust WakeNet backend must name the active ESP-SR AFE input profile in logs"
+
 require_contains "$WAKENET_C" \
   "fetch_with_delay(ctx->afe_data, portMAX_DELAY)" \
   "WakeNet detection must use a blocking AFE fetch task instead of polling in the feed hot path"
@@ -70,20 +74,48 @@ require_contains "$WAKENET_C" \
   "ESP-SR AFE wake input with a secondary codec mic must use two mic inputs plus a zero playback reference"
 
 require_contains "$WAKENET_C" \
-  "afe_config->aec_init = false" \
+  "BEETLE_WN_INPUT_PROFILE_DUAL_MIC_ZERO_REF \"dual_mic_zero_ref\"" \
+  "WakeNet feed diagnostics must expose the active dual-mic zero-reference input profile"
+
+require_contains "$WAKENET_C" \
+  "BEETLE_WN_AEC_INIT_WITH_SECONDARY false" \
   "WakeNet arming must not treat the secondary ES7210 input as an AEC playback reference"
+
+require_contains "$WAKENET_C" \
+  "afe_config->aec_init = aec_init" \
+  "WakeNet arming must derive AEC from the active input profile"
 
 require_contains "$WAKENET_C" \
   "afe_config->wakenet_mode = DET_MODE_95" \
   "ESP-SR AFE WakeNet must keep the last empirically triggered aggressive detection mode until the secondary-mic feed shape is proven"
 
 require_contains "$WAKENET_C" \
+  "ch0_role=mic ch1_role=%s ch2_role=%s" \
+  "WakeNet feed diagnostics must expose the active AFE channel roles"
+
+require_contains "$WAKENET_C" \
   "s_ctx->feed_frame[index + 2] = 0" \
   "WakeNet feed must zero-fill the playback reference slot in MMR mode"
 
 require_contains "$WAKENET_C" \
-  "feed16k window chunks=%u frames=%llu mic0_avg_pm=%u mic0_peak_pm=%u mic1_avg_pm=%u mic1_peak_pm=%u ref_avg_pm=%u ref_peak_pm=%u" \
+  "feed16k window window_id=%llu input_profile=%s input_format=%s" \
+  "WakeNet feed diagnostics must report the active input profile and diagnostic window id"
+
+require_contains "$WAKENET_C" \
+  "mic0_avg_pm=%u mic0_peak_pm=%u mic1_avg_pm=%u mic1_peak_pm=%u ref_avg_pm=%u ref_peak_pm=%u" \
   "WakeNet feed diagnostics must report pre-AFE window average and peak levels"
+
+require_contains "$WAKENET_C" \
+  "raw_frames=%llu" \
+  "WakeNet feed diagnostics must include raw input frame count before 24k-to-16k normalization"
+
+require_contains "$WAKENET_C" \
+  "mic0_feed_to_raw_pm=%u" \
+  "WakeNet feed diagnostics must expose feed-to-raw energy ratios for resampling diagnosis"
+
+require_contains "$WAKENET_C" \
+  "recent_window_id=%llu input_profile=%s input_format=%s" \
+  "WakeNet detection logs must correlate detections with the latest feed diagnostic window"
 
 require_contains "$WAKENET_C" \
   "s_ctx->afe->set_wakenet_threshold(s_ctx->afe_data, index, threshold)" \

@@ -140,6 +140,8 @@ BEGIN {
   wakenet_afe_empty_count = 0;
   wakenet_afe_empty_first_line = 0;
   wakenet_slow_feed_count = 0;
+  wakenet_feed_profile_diag_count = 0;
+  wakenet_feed_diag_contract_missing_count = 0;
   wakenet_afe_empty_blocker_threshold = 20;
   wakenet_feed_slow_threshold_us = 1000000;
   realtime_downlink_dropped_count = 0;
@@ -151,6 +153,11 @@ BEGIN {
   server_vad_half_duplex_churn_threshold = 3;
   response_audio_done_without_summary_count = 0;
   realtime_local_speech_window_forced_close_count = 0;
+  realtime_transport_exit_count = 0;
+  realtime_turn_interrupted_count = 0;
+  realtime_session_nonsteady_count = 0;
+  realtime_voice_session_failed_count = 0;
+  realtime_response_wait_recovered_count = 0;
   pending_audio_done_line = 0;
   pending_audio_done_event = "";
   realtime_server_event_count = 0;
@@ -398,6 +405,28 @@ function record_pending_audio_done_without_summary(reason) {
     realtime_local_speech_window_forced_close_count++;
     record_issue(NR, "realtime_local_speech_window_forced_close", "blocker", trim(line));
   }
+  if (lower_line ~ /realtime session transport exit/) {
+    realtime_transport_exit_count++;
+    if (lower_line ~ /interrupted_active_turn=true/ ||
+        lower_line ~ /partial_output_pending_at_exit=true/) {
+      realtime_turn_interrupted_count++;
+      record_issue(NR, "realtime_transport_interrupted_active_turn", "blocker", trim(line));
+    } else {
+      record_issue(NR, "realtime_transport_exit", "blocker", trim(line));
+    }
+  }
+  if (lower_line ~ /realtime session ended non-steady/) {
+    realtime_session_nonsteady_count++;
+    record_issue(NR, "realtime_session_nonsteady_exit", "blocker", trim(line));
+  }
+  if (lower_line ~ /realtime response wait timeout recovered/) {
+    realtime_response_wait_recovered_count++;
+    record_issue(NR, "realtime_response_wait_recovered", "risk", trim(line));
+  }
+  if (lower_line ~ /realtime voice session failed/) {
+    realtime_voice_session_failed_count++;
+    record_issue(NR, "realtime_voice_session_failed", "blocker", trim(line));
+  }
   if (lower_line ~ /realtime audio downlink summary/) {
     realtime_downlink_summary_count++;
     summary_event = value_after(line, "event");
@@ -480,8 +509,21 @@ function record_pending_audio_done_without_summary(reason) {
     barge_in_enabled_without_aec_count++;
     record_issue(NR, "barge_in_enabled_without_aec", "blocker", trim(line));
   }
-  if (lower_line ~ /esp-sr afe wakenet init|wakenet triggered|beetle_wakenet.*feed window|set wakenet model/) {
+  if (lower_line ~ /esp-sr afe wakenet init|wakenet triggered|beetle_wakenet.*feed(16k)? window|set wakenet model/) {
     wakenet_path_seen = 1;
+  }
+  if (lower_line ~ /beetle_wakenet.*feed16k window/) {
+    if (lower_line ~ /input_profile=/ &&
+        lower_line ~ /input_format=/ &&
+        lower_line ~ /ch0_role=/ &&
+        lower_line ~ /ch1_role=/ &&
+        lower_line ~ /raw_frames=/ &&
+        lower_line ~ /mic0_feed_to_raw_pm=/) {
+      wakenet_feed_profile_diag_count++;
+    } else {
+      wakenet_feed_diag_contract_missing_count++;
+      record_issue(NR, "wakenet_feed_profile_diag_missing", "risk", "feed16k window line lacks input_profile/channel_role/raw_frames/feed_to_raw diagnostics");
+    }
   }
   if (lower_line ~ /audio_wake/ &&
       numeric_after(line, "feed_calls") != "" &&
@@ -1094,6 +1136,8 @@ END {
   print "- Voice session stack overflow lines: " voice_session_stack_overflow_count >> summary;
   print "- WakeNet AFE empty lines: " wakenet_afe_empty_count >> summary;
   print "- WakeNet slow feed lines: " wakenet_slow_feed_count >> summary;
+  print "- WakeNet feed profile diagnostic lines: " wakenet_feed_profile_diag_count >> summary;
+  print "- WakeNet feed diagnostic contract missing lines: " wakenet_feed_diag_contract_missing_count >> summary;
   print "- Realtime downlink dropped lines: " realtime_downlink_dropped_count >> summary;
   print "- Realtime direct speaker write lines: " realtime_direct_speaker_write_count >> summary;
   print "- Audio speaker underrun lines: " audio_speaker_underrun_count >> summary;
@@ -1102,6 +1146,11 @@ END {
   print "- Half-duplex server-VAD churn lines: " server_vad_half_duplex_churn_count >> summary;
   print "- Response audio.done without downlink summary lines: " response_audio_done_without_summary_count >> summary;
   print "- Realtime local speech window forced-close lines: " realtime_local_speech_window_forced_close_count >> summary;
+  print "- Realtime transport exit lines: " realtime_transport_exit_count >> summary;
+  print "- Realtime interrupted turn lines: " realtime_turn_interrupted_count >> summary;
+  print "- Realtime non-steady exit lines: " realtime_session_nonsteady_count >> summary;
+  print "- Realtime voice session failed lines: " realtime_voice_session_failed_count >> summary;
+  print "- Realtime response wait recovered lines: " realtime_response_wait_recovered_count >> summary;
   print "- Realtime heartbeat stale counter lines: " realtime_heartbeat_counters_stale_count >> summary;
   print "- Server-VAD fragmented turn churn lines: " realtime_fragmented_turn_churn_count >> summary;
   print "- Barge-in without AEC lines: " barge_in_enabled_without_aec_count >> summary;

@@ -12,6 +12,12 @@ pub const ESP_SR_WAKE_PHRASE: &str = "Hi 乐鑫";
 pub const ESP_SR_WAKENET_MODEL: &str = "wn9_hilexin";
 /// Fixed ESP-SR AFE WakeNet detection mode used by the current wake profile.
 pub const ESP_SR_WAKENET_DETECTION_MODE: &str = "DET_MODE_95";
+/// Current ESP-SR AFE input profile.
+///
+/// This names the C-side AFE feed shape. On ESP-BOX3 reference input mode the
+/// secondary codec channel is currently fed as a second WakeNet mic while the
+/// playback-reference slot is zero-filled.
+pub const ESP_SR_WAKENET_INPUT_PROFILE: &str = "dual_mic_zero_ref";
 /// WakeNet model index passed to ESP-SR AFE threshold APIs.
 pub const ESP_SR_WAKENET_THRESHOLD_INDEX: i32 = 1;
 
@@ -94,11 +100,12 @@ impl EspSrWakeBackend {
             return Err(error);
         }
         log::info!(
-            "[wake] ESP-SR AFE WakeNet init ok model={} phrase={} input={}Hz reference={} mode={} threshold_index={} threshold={}",
+            "[wake] ESP-SR AFE WakeNet init ok model={} phrase={} input={}Hz reference={} reference_source=codec_secondary_input input_profile={} mode={} threshold_index={} threshold={}",
             ESP_SR_WAKENET_MODEL,
             ESP_SR_WAKE_PHRASE,
             input_sample_rate_hz,
             use_reference,
+            ESP_SR_WAKENET_INPUT_PROFILE,
             ESP_SR_WAKENET_DETECTION_MODE,
             ESP_SR_WAKENET_THRESHOLD_PROFILE.index,
             threshold_label(ESP_SR_WAKENET_THRESHOLD_PROFILE.threshold)
@@ -165,11 +172,14 @@ impl EspSrWakeBackend {
         crate::metrics::record_wake_word_feed_detect();
         unsafe { beetle_wakenet_reset() };
         log::info!(
-            "[wake] ESP-SR AFE WakeNet triggered model={} phrase={} input={}Hz reference={}",
+            "[wake] ESP-SR AFE WakeNet triggered model={} phrase={} input={}Hz reference={} reference_source=codec_secondary_input input_profile={} mic_level_pm={} ref_ok={}",
             self.model_name,
             ESP_SR_WAKE_PHRASE,
             self.input_sample_rate_hz,
-            self.use_reference
+            self.use_reference,
+            ESP_SR_WAKENET_INPUT_PROFILE,
+            self.last_snapshot.mic_level_pm,
+            self.last_snapshot.reference_ok
         );
         Some(if audio_playing {
             WakeEvent::InterruptRequest

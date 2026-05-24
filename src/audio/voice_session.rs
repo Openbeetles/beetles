@@ -15,6 +15,7 @@ use crate::audio::pipeline::{
 };
 use crate::audio::realtime::{
     connect_realtime_session, run_connected_realtime_session, ConnectedRealtimeSession,
+    RealtimeSessionExitReason,
 };
 use crate::audio::voice_conversation::{NoSpeechExitReason, VoiceConversationController};
 use crate::audio::wake_handoff::WakeAudioHandoff;
@@ -635,15 +636,32 @@ fn run_prepared_realtime_session(cfg: &VoiceSessionConfig, prepared: PreparedRea
     };
     match result {
         Ok(session) => {
-            record_realtime_conversation_success(&mut ownership.conversation, &session);
-            log::info!(
-                "[{}] realtime session finished turns={} input_ms={} output_ms={} duration_ms={}",
-                TAG,
-                session.turns_completed,
-                session.input_audio_ms,
-                session.output_audio_ms,
-                session.session_ms
-            );
+            let steady_completed =
+                record_realtime_conversation_result(&mut ownership.conversation, &session);
+            if steady_completed {
+                log::info!(
+                    "[{}] realtime session finished turns={} input_ms={} output_ms={} duration_ms={} exit_reason={}",
+                    TAG,
+                    session.turns_completed,
+                    session.input_audio_ms,
+                    session.output_audio_ms,
+                    session.session_ms,
+                    session.exit_reason.as_str()
+                );
+            } else {
+                log::warn!(
+                    "[{}] realtime session ended non-steady turns={} input_ms={} output_ms={} duration_ms={} exit_reason={} interrupted_active_turn={} partial_output_pending_at_exit={}",
+                    TAG,
+                    session.turns_completed,
+                    session.input_audio_ms,
+                    session.output_audio_ms,
+                    session.session_ms,
+                    session.exit_reason.as_str(),
+                    session.interrupted_active_turn,
+                    session.partial_output_pending_at_exit
+                );
+                crate::metrics::record_voice_tool_failure("voice_session_realtime");
+            }
             log_realtime_turn_summary(&ownership.conversation);
             if session.output_audio_ms > 0 {
                 crate::metrics::record_voice_output_play_ms(session.output_audio_ms);
@@ -652,7 +670,7 @@ fn run_prepared_realtime_session(cfg: &VoiceSessionConfig, prepared: PreparedRea
         Err(error) => {
             ownership
                 .conversation
-                .finish_no_speech(NoSpeechExitReason::ProviderNoTurnEvents);
+                .finish_no_speech(NoSpeechExitReason::RealtimeSessionError);
             record_realtime_conversation_summary(&ownership.conversation);
             log_realtime_turn_summary(&ownership.conversation);
             log::warn!("[{}] realtime voice session failed: {}", TAG, error);
@@ -661,10 +679,10 @@ fn run_prepared_realtime_session(cfg: &VoiceSessionConfig, prepared: PreparedRea
     }
 }
 
-fn record_realtime_conversation_success(
+fn record_realtime_conversation_result(
     conversation: &mut VoiceConversationController,
     session: &crate::audio::realtime::RealtimeSessionResult,
-) {
+) -> bool {
     conversation.record_input_audio_ms(session.input_audio_ms);
     if session.server_speech_started {
         conversation.mark_server_speech_started();
@@ -682,7 +700,16 @@ fn record_realtime_conversation_success(
         for _ in 0..session.turns_completed {
             conversation.mark_turn_completed();
         }
+    }
+
+    let steady_completed = session.exit_reason.is_normal_dialogue_exit()
+        && session.turns_completed > 0
+        && !session.interrupted_active_turn
+        && !session.partial_output_pending_at_exit;
+    if steady_completed {
         conversation.finish_completed();
+    } else if let Some(reason) = realtime_exit_reason_for_conversation(session) {
+        conversation.finish_no_speech(reason);
     } else {
         conversation.classify_no_speech(session.turns_completed);
         if conversation.no_speech_reason().is_none() {
@@ -694,6 +721,31 @@ fn record_realtime_conversation_success(
         }
     }
     record_realtime_conversation_summary(conversation);
+    steady_completed
+}
+
+fn realtime_exit_reason_for_conversation(
+    session: &crate::audio::realtime::RealtimeSessionResult,
+) -> Option<NoSpeechExitReason> {
+    match session.exit_reason {
+        RealtimeSessionExitReason::PostPlaybackIdle => None,
+        RealtimeSessionExitReason::NoLocalSpeechAfterSessionReady => None,
+        RealtimeSessionExitReason::ResponseWait => Some(NoSpeechExitReason::RealtimeResponseWait),
+        RealtimeSessionExitReason::TransportDisconnected => {
+            if session.interrupted_active_turn || session.partial_output_pending_at_exit {
+                Some(NoSpeechExitReason::RealtimeTurnInterrupted)
+            } else {
+                Some(NoSpeechExitReason::RealtimeTransportDisconnected)
+            }
+        }
+        RealtimeSessionExitReason::PeerClosed => {
+            if session.interrupted_active_turn || session.partial_output_pending_at_exit {
+                Some(NoSpeechExitReason::RealtimeTurnInterrupted)
+            } else {
+                Some(NoSpeechExitReason::RealtimePeerClosed)
+            }
+        }
+    }
 }
 
 fn record_realtime_conversation_summary(conversation: &VoiceConversationController) {
@@ -1016,6 +1068,26 @@ mod tests {
         }
     }
 
+    fn realtime_result(
+        exit_reason: RealtimeSessionExitReason,
+        turns_completed: u32,
+        interrupted_active_turn: bool,
+        partial_output_pending_at_exit: bool,
+    ) -> crate::audio::realtime::RealtimeSessionResult {
+        crate::audio::realtime::RealtimeSessionResult {
+            turns_completed,
+            input_audio_ms: 12_000,
+            output_audio_ms: 4_000,
+            session_ms: 20_000,
+            server_speech_started: true,
+            server_speech_stopped: true,
+            response_created: true,
+            exit_reason,
+            interrupted_active_turn,
+            partial_output_pending_at_exit,
+        }
+    }
+
     #[test]
     fn wake_clears_pending_speak() {
         let mut pending = PendingVoiceEvents {
@@ -1059,6 +1131,42 @@ mod tests {
         gate.clear();
 
         assert!(gate.can_retry(Instant::now()));
+    }
+
+    #[test]
+    fn realtime_result_preserves_interrupted_transport_exit() {
+        let mut conversation = VoiceConversationController::wake_primed(&test_handoff());
+        conversation.mark_handoff_uploaded(&test_handoff());
+        let session = realtime_result(
+            RealtimeSessionExitReason::TransportDisconnected,
+            3,
+            true,
+            true,
+        );
+
+        let steady = record_realtime_conversation_result(&mut conversation, &session);
+
+        assert!(!steady);
+        let summary = conversation.summary();
+        assert_eq!(summary.turns, 3);
+        assert_eq!(
+            summary.no_speech_reason,
+            Some(NoSpeechExitReason::RealtimeTurnInterrupted)
+        );
+    }
+
+    #[test]
+    fn realtime_result_marks_post_playback_idle_as_steady_completion() {
+        let mut conversation = VoiceConversationController::wake_primed(&test_handoff());
+        conversation.mark_handoff_uploaded(&test_handoff());
+        let session = realtime_result(RealtimeSessionExitReason::PostPlaybackIdle, 2, false, false);
+
+        let steady = record_realtime_conversation_result(&mut conversation, &session);
+
+        assert!(steady);
+        let summary = conversation.summary();
+        assert_eq!(summary.turns, 2);
+        assert_eq!(summary.no_speech_reason, None);
     }
 
     #[test]

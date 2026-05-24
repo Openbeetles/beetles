@@ -39,6 +39,7 @@ const REALTIME_FOREGROUND_KEEPALIVE_MS: u64 = 5_000;
 const REALTIME_PLAYBACK_TARGET_BUFFER_MS: u32 = 800;
 const REALTIME_OUTPUT_STAGING_WAIT_MS: u64 = 30_000;
 const REALTIME_OUTPUT_STAGING_RETRY_MS: u64 = 10;
+const REALTIME_TRANSPORT_EXIT_DRAIN_MS: u64 = 20_000;
 const REALTIME_INTERRUPT_BASELINE_MS: u64 = 180;
 const REALTIME_INTERRUPT_SPEECH_MIN_MS: u32 = 180;
 const REALTIME_INTERRUPT_THRESHOLD_MIN: f32 = 0.18;
@@ -61,6 +62,34 @@ pub struct RealtimeSessionResult {
     pub server_speech_started: bool,
     pub server_speech_stopped: bool,
     pub response_created: bool,
+    pub exit_reason: RealtimeSessionExitReason,
+    pub interrupted_active_turn: bool,
+    pub partial_output_pending_at_exit: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RealtimeSessionExitReason {
+    NoLocalSpeechAfterSessionReady,
+    ResponseWait,
+    PostPlaybackIdle,
+    TransportDisconnected,
+    PeerClosed,
+}
+
+impl RealtimeSessionExitReason {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::NoLocalSpeechAfterSessionReady => "no_local_speech_after_session_ready",
+            Self::ResponseWait => "response_wait",
+            Self::PostPlaybackIdle => "post_playback_idle",
+            Self::TransportDisconnected => "transport_disconnected",
+            Self::PeerClosed => "peer_closed",
+        }
+    }
+
+    pub const fn is_normal_dialogue_exit(self) -> bool {
+        matches!(self, Self::PostPlaybackIdle)
+    }
 }
 
 pub(crate) struct ConnectedRealtimeSession {
@@ -87,6 +116,26 @@ impl NoSpeechExitReason {
             Self::PostPlaybackIdle => "post_playback_idle",
         }
     }
+}
+
+impl From<NoSpeechExitReason> for RealtimeSessionExitReason {
+    fn from(reason: NoSpeechExitReason) -> Self {
+        match reason {
+            NoSpeechExitReason::NoLocalSpeechAfterSessionReady => {
+                Self::NoLocalSpeechAfterSessionReady
+            }
+            NoSpeechExitReason::ResponseWait => Self::ResponseWait,
+            NoSpeechExitReason::PostPlaybackIdle => Self::PostPlaybackIdle,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum RealtimeDrainOutcome {
+    Idle,
+    Events,
+    TransportDisconnected,
+    PeerClosed(String),
 }
 
 #[derive(Clone, Debug)]
@@ -452,6 +501,20 @@ impl RealtimeLoopState {
             .unwrap_or(false)
     }
 
+    fn has_pending_output_audio(&self, platform: &dyn Platform, now: Instant) -> bool {
+        self.audio_playing
+            || platform.speaker_staging_samples() != 0
+            || platform.speaker_buffered_samples() != 0
+            || self.active_output_duration_pending(now)
+    }
+
+    fn transport_exit_interrupts_active_turn(&self, platform: &dyn Platform, now: Instant) -> bool {
+        self.awaiting_response
+            || self.suppress_server_audio_until_turn_end
+            || self.has_pending_output_turn(now)
+            || self.has_pending_output_audio(platform, now)
+    }
+
     fn mark_active_output_audio_done(&mut self, value: &serde_json::Value) -> bool {
         if !self.should_accept_server_audio_event(value) {
             return false;
@@ -476,6 +539,21 @@ impl RealtimeLoopState {
         if let Some(turn) = self.active_output_turn.as_mut() {
             turn.mark_cancelled();
         }
+    }
+
+    fn recover_response_wait(&mut self, now: Instant) {
+        self.cancel_active_output_turn();
+        self.awaiting_response = false;
+        self.current_turn_received_server_activity = false;
+        self.suppress_server_audio_until_turn_end = false;
+        self.current_local_speech_ms = 0;
+        self.current_local_turn_committed = false;
+        self.last_local_speech_end_at = None;
+        self.server_response_generation = 0;
+        if !self.audio_playing {
+            self.playback_finished_at = Some(now);
+        }
+        self.last_activity = now;
     }
 
     fn start_audio_playback(&mut self, now: Instant) {
@@ -952,10 +1030,13 @@ pub(crate) fn run_connected_realtime_session(
     let mut local_speech_active = false;
     let mut foreground_keepalive_at = Instant::now();
     maintain_foreground();
+    let exit_reason;
+    let interrupted_active_turn;
+    let partial_output_pending_at_exit;
 
     loop {
         crate::platform::task_wdt::feed_current_task();
-        let timed_out = drain_server_events(
+        let drain_outcome = drain_server_events(
             conn.as_mut(),
             platform,
             &mut state,
@@ -964,6 +1045,53 @@ pub(crate) fn run_connected_realtime_session(
             Duration::from_millis(REALTIME_RECV_POLL_MS),
         )?;
         let now = Instant::now();
+        let drain_idle = matches!(drain_outcome, RealtimeDrainOutcome::Idle);
+        match drain_outcome {
+            RealtimeDrainOutcome::TransportDisconnected => {
+                let pending_output = state.has_pending_output_audio(platform, now);
+                let interrupted = state.transport_exit_interrupts_active_turn(platform, now);
+                state.log_downlink_summary(
+                    "transport_disconnected",
+                    audio_cfg.speaker.sample_rate,
+                    now,
+                    true,
+                );
+                drain_pending_output_before_transport_exit(platform, &mut state, audio_cfg, now)?;
+                log_realtime_transport_exit(
+                    RealtimeSessionExitReason::TransportDisconnected,
+                    None,
+                    &state,
+                    interrupted,
+                    pending_output,
+                    session_start,
+                    audio_cfg,
+                );
+                exit_reason = RealtimeSessionExitReason::TransportDisconnected;
+                interrupted_active_turn = interrupted;
+                partial_output_pending_at_exit = pending_output;
+                break;
+            }
+            RealtimeDrainOutcome::PeerClosed(summary) => {
+                let pending_output = state.has_pending_output_audio(platform, now);
+                let interrupted = state.transport_exit_interrupts_active_turn(platform, now);
+                state.log_downlink_summary("peer_closed", audio_cfg.speaker.sample_rate, now, true);
+                drain_pending_output_before_transport_exit(platform, &mut state, audio_cfg, now)?;
+                log_realtime_transport_exit(
+                    RealtimeSessionExitReason::PeerClosed,
+                    Some(summary.as_str()),
+                    &state,
+                    interrupted,
+                    pending_output,
+                    session_start,
+                    audio_cfg,
+                );
+                exit_reason = RealtimeSessionExitReason::PeerClosed;
+                interrupted_active_turn = interrupted;
+                partial_output_pending_at_exit = pending_output;
+                break;
+            }
+            RealtimeDrainOutcome::Idle | RealtimeDrainOutcome::Events => {}
+        }
         maintain_realtime_foreground_if_due(
             &mut foreground_keepalive_at,
             now,
@@ -973,8 +1101,25 @@ pub(crate) fn run_connected_realtime_session(
         if crate::orchestrator::take_audio_interrupt_request() {
             handle_local_interrupt(conn.as_mut(), platform, &mut state, provider, now)?;
         }
-        if timed_out {
+        if drain_idle {
             if let Some(reason) = should_exit_realtime_session(provider, &state, now) {
+                if reason == NoSpeechExitReason::ResponseWait
+                    && should_recover_realtime_response_wait(provider)
+                {
+                    recover_realtime_response_wait(
+                        conn.as_mut(),
+                        &mut state,
+                        provider,
+                        audio_cfg,
+                        now,
+                    );
+                    reset_local_endpoint_window(
+                        &mut state,
+                        &mut endpoint,
+                        &mut local_speech_active,
+                    );
+                    continue;
+                }
                 match reason {
                     NoSpeechExitReason::NoLocalSpeechAfterSessionReady => {
                         crate::metrics::record_voice_no_speech_timeout()
@@ -991,6 +1136,9 @@ pub(crate) fn run_connected_realtime_session(
                     REALTIME_TAG,
                     reason.as_str()
                 );
+                exit_reason = reason.into();
+                interrupted_active_turn = false;
+                partial_output_pending_at_exit = false;
                 break;
             }
         }
@@ -1114,6 +1262,9 @@ pub(crate) fn run_connected_realtime_session(
         server_speech_started: state.server_speech_started,
         server_speech_stopped: state.server_speech_stopped,
         response_created: state.response_created,
+        exit_reason,
+        interrupted_active_turn,
+        partial_output_pending_at_exit,
     })
 }
 
@@ -1306,7 +1457,7 @@ fn drain_server_events(
     provider: RealtimeProvider,
     audio_cfg: &AudioSegment,
     timeout: Duration,
-) -> Result<bool> {
+) -> Result<RealtimeDrainOutcome> {
     let mut wait = timeout;
     let mut saw_event = false;
 
@@ -1326,21 +1477,20 @@ fn drain_server_events(
                 wait = Duration::ZERO;
             }
             Some(WssEvent::Disconnected) => {
-                return Err(Error::config(
-                    REALTIME_TAG,
-                    "realtime websocket disconnected",
-                ));
+                return Ok(RealtimeDrainOutcome::TransportDisconnected);
             }
             Some(WssEvent::Closed(close)) => {
-                return Err(Error::config(
-                    REALTIME_TAG,
-                    format!(
-                        "realtime websocket closed by peer: {}",
-                        summarize_close(close.as_ref())
-                    ),
-                ));
+                return Ok(RealtimeDrainOutcome::PeerClosed(summarize_close(
+                    close.as_ref(),
+                )));
             }
-            None => return Ok(!saw_event),
+            None => {
+                return Ok(if saw_event {
+                    RealtimeDrainOutcome::Events
+                } else {
+                    RealtimeDrainOutcome::Idle
+                })
+            }
         }
     }
 }
@@ -1658,7 +1808,26 @@ fn handle_json_server_message(
                 .unwrap_or("realtime websocket error");
             Err(Error::config("realtime_voice_ws", msg))
         }
-        _ => Ok(()),
+        _ => {
+            if !event_type.is_empty() {
+                if state.awaiting_response {
+                    log::info!(
+                        "[{}] realtime server event type={} unhandled awaiting_response=true",
+                        REALTIME_TAG,
+                        event_type
+                    );
+                    state.mark_server_response_activity(now);
+                } else {
+                    log::debug!(
+                        "[{}] realtime server event type={} unhandled awaiting_response=false",
+                        REALTIME_TAG,
+                        event_type
+                    );
+                    state.last_activity = now;
+                }
+            }
+            Ok(())
+        }
     }
 }
 
@@ -1848,6 +2017,66 @@ fn maintain_realtime_foreground_if_due(
     }
     maintain_foreground();
     *last_keepalive_at = now;
+}
+
+fn drain_pending_output_before_transport_exit(
+    platform: &dyn Platform,
+    state: &mut RealtimeLoopState,
+    audio_cfg: &AudioSegment,
+    now: Instant,
+) -> Result<()> {
+    if !state.has_pending_output_audio(platform, now) {
+        return Ok(());
+    }
+
+    let started = Instant::now();
+    while started.elapsed() < Duration::from_millis(REALTIME_TRANSPORT_EXIT_DRAIN_MS) {
+        crate::platform::task_wdt::feed_current_task();
+        let now = Instant::now();
+        update_playback_state(platform, state, audio_cfg.speaker.sample_rate, now)?;
+        refresh_output_drain_state(platform, state, now);
+        if !state.has_pending_output_audio(platform, now) {
+            return Ok(());
+        }
+        thread::sleep(Duration::from_millis(REALTIME_RECV_POLL_MS));
+    }
+
+    log::warn!(
+        "[{}] realtime transport exit drain timeout staging={} speaker={} audio_playing={} pending_output=true",
+        REALTIME_TAG,
+        platform.speaker_staging_samples(),
+        platform.speaker_buffered_samples(),
+        state.audio_playing
+    );
+    Ok(())
+}
+
+fn log_realtime_transport_exit(
+    reason: RealtimeSessionExitReason,
+    peer_close: Option<&str>,
+    state: &RealtimeLoopState,
+    interrupted_active_turn: bool,
+    partial_output_pending_at_exit: bool,
+    session_start: Instant,
+    audio_cfg: &AudioSegment,
+) {
+    log::warn!(
+        "[{}] realtime session transport exit reason={} peer_close={} turns_completed={} input_ms={} output_ms={} duration_ms={} awaiting_response={} audio_playing={} response_created={} server_speech_started={} server_speech_stopped={} interrupted_active_turn={} partial_output_pending_at_exit={}",
+        REALTIME_TAG,
+        reason.as_str(),
+        peer_close.unwrap_or("-"),
+        state.turns_completed,
+        samples_to_ms(state.input_samples, audio_cfg.microphone.sample_rate),
+        samples_to_ms(state.output_samples, audio_cfg.speaker.sample_rate),
+        session_start.elapsed().as_millis(),
+        state.awaiting_response,
+        state.audio_playing,
+        state.response_created,
+        state.server_speech_started,
+        state.server_speech_stopped,
+        interrupted_active_turn,
+        partial_output_pending_at_exit
+    );
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -2164,6 +2393,52 @@ fn should_exit_realtime_session(
         }
     }
     None
+}
+
+fn should_recover_realtime_response_wait(provider: RealtimeProvider) -> bool {
+    provider
+        .turn_contract()
+        .accepts_server_speech_events_without_local_commit
+}
+
+fn recover_realtime_response_wait(
+    conn: &mut dyn WssConnection,
+    state: &mut RealtimeLoopState,
+    provider: RealtimeProvider,
+    audio_cfg: &AudioSegment,
+    now: Instant,
+) {
+    crate::metrics::record_voice_response_wait_timeout();
+    state.log_downlink_summary(
+        "response_wait_recovered",
+        audio_cfg.speaker.sample_rate,
+        now,
+        true,
+    );
+    if let Err(error) = send_text_retry(
+        conn,
+        build_response_cancel_event().as_str(),
+        REALTIME_INITIAL_SEND_RETRY_MAX,
+    ) {
+        log::warn!(
+            "[{}] realtime response wait recovery cancel send failed provider={:?}: {}",
+            REALTIME_TAG,
+            provider,
+            error
+        );
+    } else {
+        crate::metrics::record_voice_cancel_sent();
+    }
+    log::warn!(
+        "[{}] realtime response wait timeout recovered provider={:?} turns_completed={} response_created={} server_speech_started={} server_speech_stopped={}",
+        REALTIME_TAG,
+        provider,
+        state.turns_completed,
+        state.response_created,
+        state.server_speech_started,
+        state.server_speech_stopped
+    );
+    state.recover_response_wait(now);
 }
 
 fn handle_local_interrupt(
@@ -2499,6 +2774,53 @@ mod tests {
         }
 
         assert_eq!(state.turns_completed, 1);
+    }
+
+    #[test]
+    fn server_vad_response_wait_is_recoverable_but_client_commit_is_not() {
+        assert!(super::should_recover_realtime_response_wait(
+            RealtimeProvider::Qwen
+        ));
+        assert!(super::should_recover_realtime_response_wait(
+            RealtimeProvider::OpenAiCompatible
+        ));
+        assert!(!super::should_recover_realtime_response_wait(
+            RealtimeProvider::Doubao
+        ));
+    }
+
+    #[test]
+    fn response_wait_recovery_clears_server_vad_turn_state() {
+        let mut state =
+            RealtimeLoopState::new(AudioDuplexCapabilities::duplex_with_input_reference());
+        let now = Instant::now();
+        state.mark_session_ready(now - Duration::from_millis(30_000));
+        state.begin_server_vad_turn(now - Duration::from_millis(10_000));
+        state.mark_server_vad_speech_stopped(now - Duration::from_millis(9_000));
+        state.mark_server_response_created_with_ids(now - Duration::from_millis(8_500), None, None);
+        state.mark_server_response_activity(now - Duration::from_millis(8_100));
+
+        assert_eq!(
+            super::should_exit_realtime_session(RealtimeProvider::Qwen, &state, now),
+            Some(NoSpeechExitReason::ResponseWait)
+        );
+
+        state.recover_response_wait(now);
+
+        assert!(!state.awaiting_response);
+        assert!(!state.current_turn_received_server_activity);
+        assert!(!state.suppress_server_audio_until_turn_end);
+        assert_eq!(state.current_local_speech_ms, 0);
+        assert!(state.last_local_speech_end_at.is_none());
+        assert!(!state.has_pending_output_turn(now));
+        assert_eq!(
+            super::should_exit_realtime_session(
+                RealtimeProvider::Qwen,
+                &state,
+                now + Duration::from_millis(100),
+            ),
+            None
+        );
     }
 
     #[test]

@@ -494,6 +494,13 @@ static beetle_audio_codec_status_t beetle_audio_codec_init_i2s_channels(
         return beetle_audio_codec_set_error(codec, BEETLE_AUDIO_CODEC_ERR_ESP, ret);
     }
 
+    i2s_slot_mode_t rx_slot_mode = config->input_reference
+        ? I2S_SLOT_MODE_STEREO
+        : I2S_SLOT_MODE_MONO;
+    i2s_std_slot_mask_t rx_slot_mask = config->input_reference
+        ? I2S_STD_SLOT_BOTH
+        : I2S_STD_SLOT_LEFT;
+
     i2s_std_config_t rx_cfg = {
         .clk_cfg = {
             .sample_rate_hz = sample_rate_hz,
@@ -504,8 +511,8 @@ static beetle_audio_codec_status_t beetle_audio_codec_init_i2s_channels(
         .slot_cfg = {
             .data_bit_width = I2S_DATA_BIT_WIDTH_16BIT,
             .slot_bit_width = I2S_SLOT_BIT_WIDTH_AUTO,
-            .slot_mode = I2S_SLOT_MODE_MONO,
-            .slot_mask = I2S_STD_SLOT_LEFT,
+            .slot_mode = rx_slot_mode,
+            .slot_mask = rx_slot_mask,
             .ws_width = I2S_DATA_BIT_WIDTH_16BIT,
             .ws_pol = false,
             .bit_shift = true,

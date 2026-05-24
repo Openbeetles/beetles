@@ -28,6 +28,30 @@ if grep -q 'i2s_channel_init_tdm_mode(codec->rx_handle' "$codec_c"; then
   fail "ESP-BOX3 microphone RX must not initialize 4-slot TDM"
 fi
 
+grep -Fq 'i2s_slot_mode_t rx_slot_mode = config->input_reference' "$codec_c" \
+  || fail "ES7210 input-reference RX must choose stereo STD slot mode at the I2S driver layer"
+
+grep -Fq '? I2S_SLOT_MODE_STEREO' "$codec_c" \
+  || fail "ES7210 input-reference RX must use stereo STD slot mode"
+
+grep -Fq ': I2S_SLOT_MODE_MONO' "$codec_c" \
+  || fail "non-reference microphone RX must keep mono STD slot mode"
+
+grep -Fq 'i2s_std_slot_mask_t rx_slot_mask = config->input_reference' "$codec_c" \
+  || fail "ES7210 input-reference RX must choose both STD slots at the I2S driver layer"
+
+grep -Fq '? I2S_STD_SLOT_BOTH' "$codec_c" \
+  || fail "ES7210 input-reference RX must capture both STD slots"
+
+grep -Fq ': I2S_STD_SLOT_LEFT' "$codec_c" \
+  || fail "non-reference microphone RX must keep left STD slot"
+
+grep -Fq '.slot_mode = rx_slot_mode' "$codec_c" \
+  || fail "RX std config must use the input-reference slot mode selector"
+
+grep -Fq '.slot_mask = rx_slot_mask' "$codec_c" \
+  || fail "RX std config must use the input-reference slot mask selector"
+
 if grep -q 'ES7210_SEL_MIC3' "$codec_c" || grep -q 'ES7210_SEL_MIC4' "$codec_c"; then
   fail "ESP-BOX3 ES7210 init must not force 4-mic TDM selection"
 fi
