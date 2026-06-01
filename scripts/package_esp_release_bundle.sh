@@ -84,6 +84,7 @@ while IFS= read -r bin_file; do
   board_name="$(basename "$bin_file" .bin)"
   require_file "$input_dir/${board_name}.manifest.json" "board manifest for $board_name"
   cp "$bin_file" "$output_dir/beetle-${version}-${board_name}.bin"
+  cp "$input_dir/${board_name}.manifest.json" "$output_dir/beetle-${version}-${board_name}.manifest.json"
 done < <(find "$input_dir" -maxdepth 1 -type f -name '*.bin' | LC_ALL=C sort)
 
 if [[ "$bin_found" -eq 0 ]]; then

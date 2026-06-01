@@ -1112,20 +1112,6 @@ export function FirmwareFlashDialog({ open, onClose }: FirmwareFlashDialogProps)
                       {t("device.flashModeReinstall")}
                     </ToggleButton>
                   </ToggleButtonGroup>
-                  <FormHelperText
-                    sx={{
-                      mx: 0,
-                      mt: 1,
-                      color:
-                        flashMode === "reinstall"
-                          ? "var(--semantic-danger)"
-                          : "var(--text-secondary)",
-                    }}
-                  >
-                    {flashMode === "reinstall"
-                      ? t("device.flashModeReinstallHint")
-                      : t("device.flashModeUpdateHint")}
-                  </FormHelperText>
                 </Box>
               </FormGrid>
             </Stack>

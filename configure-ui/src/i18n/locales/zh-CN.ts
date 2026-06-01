@@ -81,11 +81,8 @@ export const zhCN = {
       unlockSubmit: '继续',
       unlockSuccess: '配对成功，已解锁设备。',
       flashTriggerLabel: '刷机',
-      flashTriggerHint: '在浏览器中进行 USB 刷机',
       flashModalTitle: '在线烧录',
       flashModalClose: '关闭刷机窗口',
-      flashModalDesc:
-        '识别设备版型后自动使用官方发布固件，通过 USB 直接在本页完成刷写。',
       flashConsoleTitle: 'USB 刷写控制台',
       flashSerialLabel: '设备',
       flashScanSerial: '扫描设备',
@@ -102,10 +99,6 @@ export const zhCN = {
       flashModeLabel: '刷写方式',
       flashModeUpdate: '更新',
       flashModeReinstall: '重装',
-      flashModeUpdateHint:
-        '仅更新应用、引导程序和分区表，不擦除整片 flash；仅在存储布局与格式兼容时保留存储空间。',
-      flashModeReinstallHint:
-        '先整片擦除再烧录，会清空 WiFi、配对码、设备配置、记忆和存储空间。',
       flashFirmwareSourceUnavailable: '自动固件源不可用，请确认发布固件已挂载。',
       flashFirmwareInvalid:
         '自动固件不是有效的 Beetle ESP merged .bin。',
@@ -119,8 +112,6 @@ export const zhCN = {
         '自动固件大小为 {{actual}}，超过当前设备识别到的 {{limit}} Flash。',
       flashSerialSupported: 'Web Serial 就绪',
       flashSerialUnsupported: '当前浏览器不支持 USB 刷机',
-      flashSerialHint: '请使用 Chrome、Edge 等支持 Web Serial 的浏览器。',
-      flashModalTips: '请保持板子进入刷写模式，系统会根据识别到的官方版型自动选择固件。',
       flashStart: '开始刷写',
       flashRunning: '刷写中…',
       flashRunningWithProgress: '刷写中 {{progress}}%',

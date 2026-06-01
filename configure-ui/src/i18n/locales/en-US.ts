@@ -81,11 +81,8 @@ export const enUS = {
       unlockSubmit: 'Continue',
       unlockSuccess: 'Pairing accepted. Device unlocked.',
       flashTriggerLabel: 'Flash firmware',
-      flashTriggerHint: 'Start browser USB flashing',
       flashModalTitle: 'Online flashing',
       flashModalClose: 'Close firmware flash window',
-      flashModalDesc:
-        'Detect the board and flash the matching official firmware from this browser over USB.',
       flashConsoleTitle: 'USB flash console',
       flashSerialLabel: 'Device',
       flashScanSerial: 'Scan device',
@@ -102,10 +99,6 @@ export const enUS = {
       flashModeLabel: 'Flash mode',
       flashModeUpdate: 'Update',
       flashModeReinstall: 'Reinstall',
-      flashModeUpdateHint:
-        'Updates the app, bootloader, and partition table without erasing the whole flash; storage space is preserved only when layout and format are compatible.',
-      flashModeReinstallHint:
-        'Erase the entire flash before writing. This clears WiFi, pairing, device configuration, memory, and storage space.',
       flashFirmwareSourceUnavailable: 'Automatic firmware source is unavailable. Confirm the release firmware is mounted.',
       flashFirmwareInvalid:
         'The automatic firmware is not a valid Beetle ESP merged .bin.',
@@ -119,9 +112,6 @@ export const enUS = {
         'The automatic firmware is {{actual}}, larger than the detected {{limit}} flash.',
       flashSerialSupported: 'Web Serial ready',
       flashSerialUnsupported: 'This browser does not support USB flashing',
-      flashSerialHint: 'Use Chrome / Edge or other browsers that support Web Serial API.',
-      flashModalTips:
-        'Keep the board in flashing mode. The system chooses firmware from the detected official board.',
       flashStart: 'Flash now',
       flashRunning: 'Flashing…',
       flashRunningWithProgress: 'Flashing {{progress}}%',

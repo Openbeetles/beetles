@@ -41,15 +41,13 @@ const DEVICE_ACCESS_DIRTY_OWNER = "device-access-card";
 
 function FirmwareFlashLogoTrigger({
   label,
-  hint,
   onClick,
 }: {
   label: string;
-  hint: string;
   onClick: () => void;
 }) {
   return (
-    <Tooltip title={hint} arrow>
+    <Tooltip title={label} arrow>
       <Box
         component="button"
         type="button"
@@ -587,7 +585,6 @@ export function DeviceAccessCard() {
               />
               <FirmwareFlashLogoTrigger
                 label={t("device.flashTriggerLabel")}
-                hint={t("device.flashTriggerHint")}
                 onClick={() => setFlashDialogOpen(true)}
               />
             </Box>

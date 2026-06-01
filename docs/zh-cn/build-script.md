@@ -116,7 +116,7 @@ dist/esp/v0.1.0/SHA256SUMS
 - 版型浏览器烧录 manifest 走单 part + `offset: 0`，让安装器直接刷对应的单 bin
 - Configure UI 的在线烧录通过浏览器 Web Serial + `esptool-js` 连接 ESP ROM bootloader；扫描设备时以芯片描述和 Flash 容量作为版型匹配依据，不把 USB 桥 VID/PID 当作开发板信息
 - Configure UI 浏览器烧录不让用户手动选择 `.bin` 或 `release-catalog.json`；设备扫描后按识别到的芯片 / Flash 容量映射官方支持版型，再从同源 `/firmware/release-catalog.json`（或构建时配置的 `VITE_ESP_FIRMWARE_BASE_URL`）读取发布目录，校验固件 SHA-256 与关键 offset；PSRAM 是主线硬件合同与运行态诊断事实，不作为浏览器 ROM 阶段的刷写准入硬门槛
-- Configure UI 浏览器烧录提供「更新 / 重装」二选一模式：更新使用 `update_parts` 分别写 bootloader、partition-table、app，不会整片擦除；重装使用 merged single bin 写入 `0x0`，并会先整片擦除再烧录，清空 WiFi、配对码、设备配置、记忆和存储空间。某个发布版本是否要求干净重装由发布说明承载，不通过 release catalog 策略强制。
+- Configure UI 浏览器烧录提供「更新 / 重装」二选一模式：更新使用 `update_parts` 分别写 bootloader、partition-table、app 和 WakeNet model，不会整片擦除；重装使用 merged single bin 写入 `0x0`，并会先整片擦除再烧录，清空 WiFi、配对码、设备配置、记忆和存储空间。某个发布版本是否要求干净重装由发布说明承载，不通过 release catalog 策略强制。
 - 发布目录先在临时 stage 下构建，全部成功后再整体替换最终版本目录，避免残留半成品产物
 - `dist/esp/v<version>/` 是发布包真源；`configure-ui/public/firmware/` 是浏览器烧录协议目录，由脚本在发布成功后整体替换，避免残留旧固件或旧 catalog
 

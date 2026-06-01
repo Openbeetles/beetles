@@ -671,6 +671,14 @@ assert_file_not_contains \
   "$tmp_dir/dist/esp/v9.9.9/release-catalog.json" \
   'storage_migration' \
   "release catalog must not carry release-specific storage migration policy"
+assert_file_not_contains \
+  "$tmp_dir/dist/esp/v9.9.9/release-catalog.json" \
+  'clean_reinstall_required' \
+  "release catalog must not carry release-specific reinstall policy"
+assert_file_not_contains \
+  "$tmp_dir/dist/esp/v9.9.9/release-catalog.json" \
+  'clean_reinstall_reason' \
+  "release catalog must not carry release-specific reinstall reasons"
 assert_file_contains \
   "$tmp_dir/dist/esp/v9.9.9/release-report.json" \
   '"status": "ok"' \
@@ -687,6 +695,14 @@ assert_file_not_contains \
   "$tmp_dir/dist/esp/v9.9.9/release-report.json" \
   'storage_migration' \
   "release report must not carry release-specific storage migration policy"
+assert_file_not_contains \
+  "$tmp_dir/dist/esp/v9.9.9/release-report.json" \
+  'clean_reinstall_required' \
+  "release report must not carry release-specific reinstall policy"
+assert_file_not_contains \
+  "$tmp_dir/dist/esp/v9.9.9/release-report.json" \
+  'clean_reinstall_reason' \
+  "release report must not carry release-specific reinstall reasons"
 assert_file_contains \
   "$tmp_dir/dist/esp/v9.9.9/SHA256SUMS" \
   'esp32-s3-8mb.bin' \
@@ -744,5 +760,8 @@ assert_file_exists \
 assert_file_exists \
   "$tmp_dir/release-assets/beetle-v9.9.9-esp32-s3-8mb.bin" \
   "release packaging should expose each merged board firmware as a direct release asset"
+assert_file_exists \
+  "$tmp_dir/release-assets/beetle-v9.9.9-esp32-s3-8mb.manifest.json" \
+  "release packaging should expose each board ESP Web Tools manifest as a direct release asset"
 
 echo "esp_bin_build_test: ok"

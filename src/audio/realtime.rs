@@ -242,6 +242,7 @@ struct RealtimeLoopState {
     session_ready_at: Option<Instant>,
     first_local_speech_at: Option<Instant>,
     last_local_speech_end_at: Option<Instant>,
+    last_local_endpoint_activity_at: Option<Instant>,
     playback_finished_at: Option<Instant>,
     current_turn_received_server_activity: bool,
     server_speech_started: bool,
@@ -283,6 +284,7 @@ impl RealtimeLoopState {
             session_ready_at: None,
             first_local_speech_at: None,
             last_local_speech_end_at: None,
+            last_local_endpoint_activity_at: None,
             playback_finished_at: None,
             current_turn_received_server_activity: false,
             server_speech_started: false,
@@ -320,11 +322,13 @@ impl RealtimeLoopState {
     fn begin_local_speech_window(&mut self, now: Instant, frame_ms: u32) {
         self.current_local_speech_ms = frame_ms;
         self.current_local_turn_committed = false;
+        self.last_local_endpoint_activity_at = Some(now);
         self.last_activity = now;
     }
 
     fn extend_local_speech_window(&mut self, now: Instant, frame_ms: u32, min_active_ms: u32) {
         self.current_local_speech_ms = self.current_local_speech_ms.saturating_add(frame_ms);
+        self.last_local_endpoint_activity_at = Some(now);
         if !self.current_local_turn_committed && self.current_local_speech_ms >= min_active_ms {
             self.commit_local_turn(now);
         } else {
@@ -339,6 +343,7 @@ impl RealtimeLoopState {
         }
         self.current_local_speech_ms = 0;
         self.current_local_turn_committed = false;
+        self.last_local_endpoint_activity_at = Some(now);
         self.last_activity = now;
         should_submit
     }
@@ -351,17 +356,20 @@ impl RealtimeLoopState {
     fn begin_local_activity_window(&mut self, now: Instant, frame_ms: u32) {
         self.current_local_speech_ms = frame_ms;
         self.current_local_turn_committed = false;
+        self.last_local_endpoint_activity_at = Some(now);
         self.last_activity = now;
     }
 
     fn extend_local_activity_window(&mut self, now: Instant, frame_ms: u32) {
         self.current_local_speech_ms = self.current_local_speech_ms.saturating_add(frame_ms);
+        self.last_local_endpoint_activity_at = Some(now);
         self.last_activity = now;
     }
 
     fn finish_local_activity_window(&mut self, now: Instant) {
         self.current_local_speech_ms = 0;
         self.current_local_turn_committed = false;
+        self.last_local_endpoint_activity_at = Some(now);
         self.last_activity = now;
     }
 
@@ -464,6 +472,11 @@ impl RealtimeLoopState {
 
     fn has_committed_local_turn(&self) -> bool {
         self.local_turn_generation != 0 || self.first_local_speech_at.is_some()
+    }
+
+    fn no_local_speech_timeout_anchor(&self, session_ready_at: Instant) -> Instant {
+        self.last_local_endpoint_activity_at
+            .unwrap_or(session_ready_at)
     }
 
     fn should_accept_server_audio_event(&self, value: &serde_json::Value) -> bool {
@@ -2351,10 +2364,12 @@ fn should_exit_realtime_session(
     now: Instant,
 ) -> Option<NoSpeechExitReason> {
     if let Some(session_ready_at) = state.session_ready_at {
+        let no_speech_anchor = state.no_local_speech_timeout_anchor(session_ready_at);
         if state.first_local_speech_at.is_none()
+            && state.current_local_speech_ms == 0
             && !state.awaiting_response
             && !state.audio_playing
-            && now.duration_since(session_ready_at)
+            && now.duration_since(no_speech_anchor)
                 >= Duration::from_millis(REALTIME_NO_SPEECH_TIMEOUT_MS)
         {
             return Some(NoSpeechExitReason::NoLocalSpeechAfterSessionReady);
@@ -2837,6 +2852,75 @@ mod tests {
 
         assert_eq!(
             reason,
+            Some(NoSpeechExitReason::NoLocalSpeechAfterSessionReady)
+        );
+    }
+
+    #[test]
+    fn no_local_speech_exit_waits_while_server_vad_local_activity_is_active() {
+        let mut state =
+            RealtimeLoopState::new(AudioDuplexCapabilities::duplex_with_input_reference());
+        let now = Instant::now();
+        state.mark_session_ready(now - Duration::from_millis(10_000));
+        let mut local_speech_active = false;
+
+        assert!(!super::handle_local_endpoint_event(
+            RealtimeProvider::Qwen,
+            &mut state,
+            &mut local_speech_active,
+            EndpointEvent::SpeechStart,
+            40,
+            120,
+            now,
+        ));
+
+        assert_eq!(
+            super::should_exit_realtime_session(RealtimeProvider::Qwen, &state, now),
+            None
+        );
+    }
+
+    #[test]
+    fn no_local_speech_exit_uses_recent_server_vad_local_activity_as_anchor() {
+        let mut state =
+            RealtimeLoopState::new(AudioDuplexCapabilities::duplex_with_input_reference());
+        let now = Instant::now();
+        state.mark_session_ready(now - Duration::from_millis(10_000));
+        let mut local_speech_active = false;
+
+        assert!(!super::handle_local_endpoint_event(
+            RealtimeProvider::Qwen,
+            &mut state,
+            &mut local_speech_active,
+            EndpointEvent::SpeechStart,
+            40,
+            120,
+            now - Duration::from_millis(1_000),
+        ));
+        assert!(!super::handle_local_endpoint_event(
+            RealtimeProvider::Qwen,
+            &mut state,
+            &mut local_speech_active,
+            EndpointEvent::SpeechEnd,
+            40,
+            120,
+            now,
+        ));
+
+        assert_eq!(
+            super::should_exit_realtime_session(
+                RealtimeProvider::Qwen,
+                &state,
+                now + Duration::from_millis(super::REALTIME_NO_SPEECH_TIMEOUT_MS - 1),
+            ),
+            None
+        );
+        assert_eq!(
+            super::should_exit_realtime_session(
+                RealtimeProvider::Qwen,
+                &state,
+                now + Duration::from_millis(super::REALTIME_NO_SPEECH_TIMEOUT_MS),
+            ),
             Some(NoSpeechExitReason::NoLocalSpeechAfterSessionReady)
         );
     }
