@@ -1,9 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  FLASH_BOARD_OPTIONS,
   extractMemoryFeature,
   flashPartsTouchPreservedRanges,
+  firmwareFlashRequiredUpdatePartKinds,
   formatFlashDeviceLabel,
+  isFirmwareFlashUpdatePartKind,
   nextFlashDeviceSelectionAfterFailure,
   resolveFlashBoard,
   shouldCloseFirmwareFlashDialog,
@@ -77,6 +80,21 @@ test("shouldCloseFirmwareFlashDialog only allows explicit close button actions",
 test("shouldEraseBeforeFirmwareFlash maps reinstall to full-chip erase only", () => {
   assert.equal(shouldEraseBeforeFirmwareFlash("update"), false);
   assert.equal(shouldEraseBeforeFirmwareFlash("reinstall"), true);
+});
+
+test("firmware update parts include WakeNet model for supported release boards", () => {
+  assert.equal(isFirmwareFlashUpdatePartKind("model"), true);
+  assert.equal(isFirmwareFlashUpdatePartKind("storage"), false);
+
+  for (const board of FLASH_BOARD_OPTIONS) {
+    assert.equal(board.requiresModelPartition, true);
+    assert.deepEqual(firmwareFlashRequiredUpdatePartKinds(board), [
+      "bootloader",
+      "partition-table",
+      "app",
+      "model",
+    ]);
+  }
 });
 
 test("nextFlashDeviceSelectionAfterFailure keeps device selection on submit failures", () => {

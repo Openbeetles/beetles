@@ -3,10 +3,10 @@
   "kind": "beetle-esp-release-bundle",
   "status": "ok",
   "version": "v0.1.0",
-  "generated_at_utc": "2026-05-19T07:35:28Z",
+  "generated_at_utc": "2026-06-01T00:24:51Z",
   "source": {
     "cargo_version": "0.1.0",
-    "git_commit": "11fd52f9eeb0612ff78e802f80799bd0f902cf9d",
+    "git_commit": "207bf6c645523157c6998c519838914561c67e6f",
     "git_ref": "0.1.0-esp-real-time-voice",
     "git_dirty": true
   },
@@ -31,30 +31,37 @@
       "artifacts": {
         "bin": {
           "file": "esp32-s3-8mb.bin",
-          "sha256": "7673af300e6ba63114b9fcf9f6c980da0f1a33742a9c19c9c5b3aa3e71c92c69",
-          "size_bytes": 5543440
+          "sha256": "73f34b0f1625c4fbaeff4022e8f20c8ff77f9ff2ab3a0874b12c064651dde50f",
+          "size_bytes": 8089933
         },
         "update_parts": [
           {
             "kind": "bootloader",
             "file": "esp32-s3-8mb/update/bootloader.bin",
             "offset": 0,
-            "sha256": "7bde909abac7de9ab435497b78da42f7d3328c8cec948840e0bd2cb0898bdf68",
+            "sha256": "79e67ca822264daf369a7909a8f7b1d1f95c7489b061e73b20ae2ca12afb41f8",
             "size_bytes": 22496
           },
           {
             "kind": "partition-table",
             "file": "esp32-s3-8mb/update/partition-table.bin",
             "offset": 32768,
-            "sha256": "9e3da4b7dba0142aac20f53db68f5da48128cfe4e5d7e0d5218ef68bd221e3b5",
+            "sha256": "50fd241abc28f9a2a2b033fab1753bebb4f02ab2fe11ee563f9820d12b17f84f",
             "size_bytes": 3072
           },
           {
             "kind": "app",
             "file": "esp32-s3-8mb/update/app.bin",
             "offset": 131072,
-            "sha256": "29c7289405701e4606aafe3aef66892f69c05b67ea274b3ff055ac84293869dd",
-            "size_bytes": 5412368
+            "sha256": "58fd2f5145fc78eadf8964d60347784db9917a985ea3bea0193272a56df1ec84",
+            "size_bytes": 5794816
+          },
+          {
+            "kind": "model",
+            "file": "esp32-s3-8mb/update/srmodels.bin",
+            "offset": 7798784,
+            "sha256": "40ad74736c1b6d6897fd591d13ebc396eb1b27c7ce33ade5a9a8e125713a65d7",
+            "size_bytes": 291149
           }
         ],
         "manifest": {
@@ -74,30 +81,37 @@
       "artifacts": {
         "bin": {
           "file": "esp32-s3-16mb.bin",
-          "sha256": "af1eda364cfddd9ce6d32ff8f7c6264e4132fe7d0b7c09d9fe1fd92911dfc2fa",
-          "size_bytes": 5543440
+          "sha256": "e80ab2c74994ffbc65e35f9d462d0974bb5ee54766cc28ac23a3aeb620c26aa5",
+          "size_bytes": 16478541
         },
         "update_parts": [
           {
             "kind": "bootloader",
             "file": "esp32-s3-16mb/update/bootloader.bin",
             "offset": 0,
-            "sha256": "1a22ff624dd7408b48e146f367903ce5a7adf60b5c6b4057fe9e0e3a6892e614",
+            "sha256": "8cbe9f18f622d20992cb8e6560ea145493987857fe7f7dacb6aa0da275c8112a",
             "size_bytes": 22496
           },
           {
             "kind": "partition-table",
             "file": "esp32-s3-16mb/update/partition-table.bin",
             "offset": 32768,
-            "sha256": "794a299cceb19beb2cc3261fb3bee30fe9b7b5ca34bd6a577cd6c1e72aaf00a7",
+            "sha256": "7da4345df5c02ba489c777b2722c769231df0ad71452c27a68d07bb14a932d8e",
             "size_bytes": 3072
           },
           {
             "kind": "app",
             "file": "esp32-s3-16mb/update/app.bin",
             "offset": 131072,
-            "sha256": "2c4084adcbfdf206d50edf1d3b8d29ed8f5372ecd5b8e90d12b66d0ded573deb",
-            "size_bytes": 5412368
+            "sha256": "cad8738897d5ae57d004f9f284f58f1b946efb7f935eedcc6be09547e95f73ea",
+            "size_bytes": 5794816
+          },
+          {
+            "kind": "model",
+            "file": "esp32-s3-16mb/update/srmodels.bin",
+            "offset": 16187392,
+            "sha256": "40ad74736c1b6d6897fd591d13ebc396eb1b27c7ce33ade5a9a8e125713a65d7",
+            "size_bytes": 291149
           }
         ],
         "manifest": {
@@ -117,30 +131,37 @@
       "artifacts": {
         "bin": {
           "file": "esp32-s3-32mb.bin",
-          "sha256": "4c898bf5a145b24d12fdb939c4db2f74e39aca003c025c874cfaa56c29aeee26",
-          "size_bytes": 5543440
+          "sha256": "3e22c95890b9a31c1ca175dd1b978a55683edb48b91082e14294fa249f02efef",
+          "size_bytes": 33255757
         },
         "update_parts": [
           {
             "kind": "bootloader",
             "file": "esp32-s3-32mb/update/bootloader.bin",
             "offset": 0,
-            "sha256": "fc259d46b02d3974cb12de71906e75a3cded7efb558727406d746d241e16adb2",
+            "sha256": "1492ab98f80f00e2215339bba69859dea31862827399c2bdec1ea83d71cbfc7e",
             "size_bytes": 22496
           },
           {
             "kind": "partition-table",
             "file": "esp32-s3-32mb/update/partition-table.bin",
             "offset": 32768,
-            "sha256": "ca03bb3f94c213ccd8b3de1e72db680c0511251d488e995dd5d991bf45505d1f",
+            "sha256": "c2b5e6e3233bd3d9d21595143c51916627e6228166b6e0fa63d826b5ef768ee8",
             "size_bytes": 3072
           },
           {
             "kind": "app",
             "file": "esp32-s3-32mb/update/app.bin",
             "offset": 131072,
-            "sha256": "7c0b5f2bffde2373191fa396f396ee7782ee8c0acf044fa40fe588e17b19e10f",
-            "size_bytes": 5412368
+            "sha256": "b2e7e4ffcbac4ba912e029266c89b6f70adea2ff609da52445086451fefda673",
+            "size_bytes": 5794816
+          },
+          {
+            "kind": "model",
+            "file": "esp32-s3-32mb/update/srmodels.bin",
+            "offset": 32964608,
+            "sha256": "40ad74736c1b6d6897fd591d13ebc396eb1b27c7ce33ade5a9a8e125713a65d7",
+            "size_bytes": 291149
           }
         ],
         "manifest": {
@@ -160,30 +181,37 @@
       "artifacts": {
         "bin": {
           "file": "esp32-p4-nano-16mb.bin",
-          "sha256": "5c8ce02bc066e1c4ec3ebfd79afab45d6cb4f31678ba925358141bd643c56b6b",
-          "size_bytes": 5034928
+          "sha256": "a18eaba1bd21f346973b5c4cd19076711047052a04d4ead574247d6f9a0cdb12",
+          "size_bytes": 16478541
         },
         "update_parts": [
           {
             "kind": "bootloader",
             "file": "esp32-p4-nano-16mb/update/bootloader.bin",
             "offset": 8192,
-            "sha256": "c9e526c69af75bbdd88c7dbaa61b2cf185ffd57abfa670338f426a39e1f6f397",
-            "size_bytes": 24000
+            "sha256": "6bb639d9fc3b413eb66dbba11c223ea751be75ba41e4ef60b6aa61c5c384c12d",
+            "size_bytes": 23984
           },
           {
             "kind": "partition-table",
             "file": "esp32-p4-nano-16mb/update/partition-table.bin",
             "offset": 32768,
-            "sha256": "794a299cceb19beb2cc3261fb3bee30fe9b7b5ca34bd6a577cd6c1e72aaf00a7",
+            "sha256": "7da4345df5c02ba489c777b2722c769231df0ad71452c27a68d07bb14a932d8e",
             "size_bytes": 3072
           },
           {
             "kind": "app",
             "file": "esp32-p4-nano-16mb/update/app.bin",
             "offset": 131072,
-            "sha256": "de6eba7a7636d4f5338e348f775935d47568a56ef8817671d7abcd57d625022c",
-            "size_bytes": 4903856
+            "sha256": "220b3bda12e26b9a7e6b6f7bbd57eabd9fb56b78f9a9ff90ba643ad876c51e15",
+            "size_bytes": 5539376
+          },
+          {
+            "kind": "model",
+            "file": "esp32-p4-nano-16mb/update/srmodels.bin",
+            "offset": 16187392,
+            "sha256": "40ad74736c1b6d6897fd591d13ebc396eb1b27c7ce33ade5a9a8e125713a65d7",
+            "size_bytes": 291149
           }
         ],
         "manifest": {

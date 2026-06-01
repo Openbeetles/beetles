@@ -3,7 +3,14 @@ export type FlashBoard = {
   label: string;
   chipName: string;
   flashSize: string;
+  requiresModelPartition: boolean;
 };
+
+export type FirmwareFlashUpdatePartKind =
+  | "bootloader"
+  | "partition-table"
+  | "app"
+  | "model";
 
 export type FlashDeviceInfo = {
   chipName: string;
@@ -38,26 +45,55 @@ export const FLASH_BOARD_OPTIONS: FlashBoard[] = [
     label: "ESP32-S3 8MB",
     chipName: "ESP32-S3",
     flashSize: "8MB",
+    requiresModelPartition: true,
   },
   {
     value: "esp32-s3-16mb",
     label: "ESP32-S3 16MB",
     chipName: "ESP32-S3",
     flashSize: "16MB",
+    requiresModelPartition: true,
   },
   {
     value: "esp32-s3-32mb",
     label: "ESP32-S3 32MB",
     chipName: "ESP32-S3",
     flashSize: "32MB",
+    requiresModelPartition: true,
   },
   {
     value: "esp32-p4-nano-16mb",
     label: "ESP32-P4 Nano 16MB",
     chipName: "ESP32-P4",
     flashSize: "16MB",
+    requiresModelPartition: true,
   },
 ];
+
+export function isFirmwareFlashUpdatePartKind(
+  kind: string | null,
+): kind is FirmwareFlashUpdatePartKind {
+  return (
+    kind === "bootloader" ||
+    kind === "partition-table" ||
+    kind === "app" ||
+    kind === "model"
+  );
+}
+
+export function firmwareFlashRequiredUpdatePartKinds(
+  board: FlashBoard,
+): FirmwareFlashUpdatePartKind[] {
+  const kinds: FirmwareFlashUpdatePartKind[] = [
+    "bootloader",
+    "partition-table",
+    "app",
+  ];
+  if (board.requiresModelPartition) {
+    kinds.push("model");
+  }
+  return kinds;
+}
 
 export function normalizeMemorySize(size: string): string {
   return size.replace(/\s+/g, "").toUpperCase();

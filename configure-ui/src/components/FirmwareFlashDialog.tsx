@@ -31,8 +31,10 @@ import {
   FLASH_BOARD_OPTIONS,
   extractMemoryFeature,
   flashPartsTouchPreservedRanges,
+  firmwareFlashRequiredUpdatePartKinds,
   formatFlashDeviceLabel,
   formatMemorySize,
+  isFirmwareFlashUpdatePartKind,
   nextFlashDeviceSelectionAfterFailure,
   normalizeMemorySize,
   parseMemorySizeBytes,
@@ -42,6 +44,7 @@ import {
   type FlashBoard,
   type FirmwareFlashCloseReason,
   type FirmwareFlashMode,
+  type FirmwareFlashUpdatePartKind,
   type FlashDeviceInfo,
 } from "./firmwareFlashModel";
 
@@ -64,7 +67,7 @@ type FirmwareCatalogAsset = {
 };
 
 type FirmwareCatalogUpdatePart = FirmwareCatalogAsset & {
-  kind: "bootloader" | "partition-table" | "app";
+  kind: FirmwareFlashUpdatePartKind;
   offset: number;
 };
 
@@ -303,10 +306,7 @@ function readCatalogUpdateParts(value: unknown): FirmwareCatalogUpdatePart[] {
     if (asset == null || !isRecord(item)) continue;
     const kind = readStringField(item, "kind");
     const offset = readNumberField(item, "offset");
-    if (
-      offset == null ||
-      (kind !== "bootloader" && kind !== "partition-table" && kind !== "app")
-    ) {
+    if (offset == null || !isFirmwareFlashUpdatePartKind(kind)) {
       continue;
     }
     parts.push({ ...asset, kind, offset });
@@ -414,9 +414,14 @@ function validateFirmwareUpdateFiles(
   files: FirmwareFlashFile[],
   deviceInfo: FlashDeviceInfo,
 ) {
-  const requiredKinds = new Set(["bootloader", "partition-table", "app"]);
+  const firmwareBoard = ensureSupportedFlashBoard(deviceInfo);
+  const requiredKinds = new Set(
+    firmwareFlashRequiredUpdatePartKinds(firmwareBoard),
+  );
   for (const file of files) {
-    requiredKinds.delete(file.kind);
+    if (file.kind !== "merged") {
+      requiredKinds.delete(file.kind);
+    }
   }
   if (requiredKinds.size > 0) {
     throw new FlashDeviceError("device.flashFirmwareCatalogInvalid");
