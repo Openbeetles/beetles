@@ -33,6 +33,7 @@
 | 选择包型与 Cargo feature | [zh-cn/package-profiles-and-features.md](zh-cn/package-profiles-and-features.md) | [en-us/package-profiles-and-features.md](en-us/package-profiles-and-features.md) |
 | Linux 部署、重启、停止与回滚 | [zh-cn/linux-release-rollback.md](zh-cn/linux-release-rollback.md) | [en-us/linux-release-rollback.md](en-us/linux-release-rollback.md) |
 | 查看 `0.1.0-chat` 英文变更清单 | - | [en-us/release-notes/0.1.0-chat.md](en-us/release-notes/0.1.0-chat.md) |
+| 查看 `0.1.0-esp-real-time-voice` 版本说明 | [zh-cn/release-notes/0.1.0-esp-real-time-voice.md](zh-cn/release-notes/0.1.0-esp-real-time-voice.md) | [en-us/release-notes/0.1.0-esp-real-time-voice.md](en-us/release-notes/0.1.0-esp-real-time-voice.md) |
 
 ## Reference
 
@@ -82,6 +83,7 @@
 | Choose package profiles and Cargo features | [en-us/package-profiles-and-features.md](en-us/package-profiles-and-features.md) | [zh-cn/package-profiles-and-features.md](zh-cn/package-profiles-and-features.md) |
 | Deploy, restart, stop, and roll back on Linux | [en-us/linux-release-rollback.md](en-us/linux-release-rollback.md) | [zh-cn/linux-release-rollback.md](zh-cn/linux-release-rollback.md) |
 | Review the `0.1.0-chat` release notes | [en-us/release-notes/0.1.0-chat.md](en-us/release-notes/0.1.0-chat.md) | - |
+| Review the `0.1.0-esp-real-time-voice` release notes | [en-us/release-notes/0.1.0-esp-real-time-voice.md](en-us/release-notes/0.1.0-esp-real-time-voice.md) | [zh-cn/release-notes/0.1.0-esp-real-time-voice.md](zh-cn/release-notes/0.1.0-esp-real-time-voice.md) |
 
 ### Reference
 

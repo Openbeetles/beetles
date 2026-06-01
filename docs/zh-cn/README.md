@@ -27,6 +27,7 @@
 - [build-script.md](build-script.md)：构建、烧录和部署
 - [package-profiles-and-features.md](package-profiles-and-features.md)：打包方案与 Cargo Feature
 - [linux-release-rollback.md](linux-release-rollback.md)：Linux 部署、重启、停止和回滚
+- [release-notes/0.1.0-esp-real-time-voice.md](release-notes/0.1.0-esp-real-time-voice.md)：`0.1.0-esp-real-time-voice` 版本说明
 
 ## Reference
 

@@ -28,6 +28,7 @@ Product-facing docs use the name Beetle OS. Commands, service names, and filesys
 - [package-profiles-and-features.md](package-profiles-and-features.md): package profiles and Cargo features
 - [linux-release-rollback.md](linux-release-rollback.md): Linux deploy, restart, stop, and rollback
 - [release-notes/0.1.0-chat.md](release-notes/0.1.0-chat.md): audited release notes for `0.1.0-chat`
+- [release-notes/0.1.0-esp-real-time-voice.md](release-notes/0.1.0-esp-real-time-voice.md): release notes for `0.1.0-esp-real-time-voice`
 
 ## Reference
 
